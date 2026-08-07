@@ -1,0 +1,34 @@
+[project]
+name = "protean-mcp"
+version = "0.1.0.dev0"
+description = "Agent-native molecular visualization: an MCP server driving a Mol* viewer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Charlie Emrich", email = "emrich@gmail.com" }]
+keywords = ["mcp", "molstar", "pymol", "structural-biology", "visualization"]
+dependencies = [
+    "mcp[cli]>=1.2.0,<2",
+    "aiohttp>=3.9",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+protean-mcp = "protean_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/protean_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

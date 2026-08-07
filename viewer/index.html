@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>protean</title>
+    <link rel="stylesheet" href="/molstar.css" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; }
+      #app { position: absolute; inset: 0; }
+      #status {
+        position: fixed; top: 8px; right: 8px; z-index: 100;
+        font: 12px/1.4 sans-serif; color: #fff; padding: 3px 10px;
+        border-radius: 10px; background: #b33; opacity: 0.85;
+        pointer-events: none;
+      }
+      #status.connected { background: #2a7; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="status">disconnected</div>
+    <script src="/molstar.js"></script>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

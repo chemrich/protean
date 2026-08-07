@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+.pytest_cache/
+
+# Viewer
+viewer/node_modules/
+viewer/dist/
+viewer/public/molstar.*
+src/protean_mcp/static/
+
+# Misc
+.DS_Store
