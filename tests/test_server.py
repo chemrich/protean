@@ -18,6 +18,7 @@ from protean_mcp.server import (
     mcp,
     save_session,
     screenshot,
+    select,
 )
 
 # 1x1 transparent PNG
@@ -41,7 +42,10 @@ async def test_tools_registered():
 
 async def test_fetch_structure_tool(wired_bridge, tmp_path, monkeypatch):
     f = tmp_path / "toy.pdb"
-    f.write_text("ATOM      1  N   MET A   1\n")
+    f.write_text(
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "END\n"
+    )
     loaded = {}
 
     def on_load(args):
@@ -160,3 +164,20 @@ async def test_load_session_rejects_future_version(wired_bridge, tmp_path):
     )
     with pytest.raises(ViewerError, match="session version 99"):
         await load_session(str(future))
+
+
+async def test_unparseable_coordinates_still_load_but_flag_analysis(
+    wired_bridge, tmp_path
+):
+    """Mol* renders files our analysis parser rejects. Display should survive;
+    analysis should degrade visibly rather than silently matching nothing."""
+    f = tmp_path / "broken.pdb"
+    f.write_text("ATOM      1  N   MET A   1  garbage\nEND\n")
+    wired_bridge.handlers["load_structure"] = lambda args: {"loaded": args["name"]}
+    task = wired_bridge.serve(1)
+    message = await fetch_structure(str(f))
+    await task
+    assert "analysis unavailable" in message
+
+    with pytest.raises(ViewerError, match="could not be parsed for analysis"):
+        await select("chain A")

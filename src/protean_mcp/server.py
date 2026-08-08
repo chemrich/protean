@@ -11,6 +11,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from mcp.server.fastmcp import FastMCP, Image
 
 from .analysis.contacts import ContactError
@@ -19,7 +20,17 @@ from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, fetch_structure_data
-from .selections import SelectionError, to_molscript
+from .handles import HandleError, HandleRegistry
+from .handles import combine as _combine_indices
+from .handles import summarise as _summarise
+from .handles import to_molscript as _indices_to_molscript
+from .selections import SelectionError
+from .selections import parse as _parse_selection
+from .selections_numpy import _residue_keys
+from .selections_numpy import _widen as _widen_mask
+from .selections_numpy import _within as _within_mask
+from .selections_numpy import evaluate as _evaluate
+from .selections_numpy import load_structure as _load_structure
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +44,41 @@ mcp = FastMCP(
 )
 
 _bridge: ViewerBridge | None = None
+
+# The loaded structure, held in Python so selections and analysis do not need a
+# browser. The viewer displays what we resolve; it is not the source of truth.
+_structure: Any = None
+_structure_error: str | None = None
+_handles = HandleRegistry()
+
+
+def _require_structure() -> Any:
+    if _structure is None:
+        if _structure_error is not None:
+            raise ViewerError(
+                "The loaded structure could not be parsed for analysis, so "
+                f"selections are unavailable: {_structure_error}"
+            )
+        raise ViewerError("No structure loaded — call fetch_structure first.")
+    return _structure
+
+
+async def _display(name: str, indices: Any) -> None:
+    """Mirror a handle into the viewer, if one is connected.
+
+    Selections are usable without a viewer; display is a side effect, not a
+    precondition.
+    """
+    bridge = get_bridge()
+    if not bridge.viewer_connected:
+        return
+    expression = _indices_to_molscript(_require_structure(), indices)
+    await bridge.request("select", {"name": name, "expression": expression, "limit": 0})
+
+
+def _register(name: str, indices: Any, origin: str) -> dict[str, Any]:
+    _handles.set(name, indices, origin)
+    return {"name": name, "origin": origin, **_summarise(_require_structure(), indices)}
 
 
 def _static_dir() -> Path | None:
@@ -122,6 +168,16 @@ async def fetch_structure(
         structure = await fetch_structure_data(identifier, source)
     except FetchError as exc:
         raise ViewerError(str(exc)) from exc
+    # Mol* is more tolerant than our analysis parser, so a file it can render
+    # should still display. Only analysis degrades, and it says so rather than
+    # silently matching nothing.
+    global _structure, _structure_error  # noqa: PLW0603 - session state
+    _handles.clear()
+    try:
+        _structure = _load_structure(structure.data, structure.format)
+        _structure_error = None
+    except SelectionError as exc:
+        _structure, _structure_error = None, str(exc)
     label = name or structure.name
     result = await bridge.request(
         "load_structure",
@@ -133,66 +189,158 @@ async def fetch_structure(
         "alphafold": "AlphaFold DB",
         "cache": "cache",
     }[structure.source]
-    return f"Loaded {label} ({structure.format}, from {origin}): {result}"
-
-
-def _compile(selection: str) -> str:
-    """PyMOL syntax → MolScript, surfacing compile errors as viewer errors."""
-    try:
-        return to_molscript(selection)
-    except SelectionError as exc:
-        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+    note = (
+        "" if _structure_error is None else f" [analysis unavailable: {_structure_error}]"
+    )
+    return f"Loaded {label} ({structure.format}, from {origin}): {result}{note}"
 
 
 @mcp.tool()
 async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[str, Any]:
-    """Resolve a PyMOL-syntax selection and report exactly what it matched.
+    """Resolve a PyMOL-syntax selection into a named handle.
 
-    selection: PyMOL algebra, e.g. "chain A and resi 50-60", "byres (polymer
-      within 4 of resn HEM)", "glycan", "metals". Unsupported constructs raise
-      rather than silently matching nothing.
-    name: handle for this selection, reusable by show() and color().
-    limit: cap on residues listed back; counts are always exact.
+    selection: PyMOL algebra for leaf predicates, e.g. "chain A and resi 50-60",
+      "byres (polymer within 4 of resn HEM)", "glycan", "metals". Combining
+      selections is done with combine()/near()/invert() rather than in this
+      string, so there is no operator precedence to get wrong.
+    name: the handle. Pass it to show(), color(), measure(), combine() and so on.
 
-    Returns atom/residue counts, the chains touched, and the residue list —
-    so the contents are known rather than inferred from a picture.
+    Resolved in Python, so it works with no viewer open. Returns atom and
+    residue counts, the chains touched, and the residue list.
     """
-    return await _call(
-        "select", {"name": name, "expression": _compile(selection), "limit": limit}
-    )
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection(selection), array)
+    except SelectionError as exc:
+        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+    indices = np.flatnonzero(mask)
+    summary = _register(name, indices, f"select({selection!r})")
+    await _display(name, indices)
+    summary["residues"] = summary["residues"][:limit]
+    return summary
+
+
+@mcp.tool()
+async def combine(operation: str, of: list[str], name: str) -> dict[str, Any]:
+    """Build a handle from existing ones: union, intersect or subtract.
+
+    of: handle names, applied left to right. subtract removes every later
+      selection from the first.
+
+    This is where composition lives, instead of inside the selection string.
+    """
+    try:
+        indices = _combine_indices(_handles, operation, of)
+    except HandleError as exc:
+        raise ViewerError(str(exc)) from exc
+    summary = _register(name, indices, f"{operation}({', '.join(of)})")
+    await _display(name, indices)
+    return summary
+
+
+@mcp.tool()
+async def near(
+    of: str,
+    radius: float = 5.0,
+    whole_residues: bool = True,
+    exclude_self: bool = True,
+    name: str = "near",
+) -> dict[str, Any]:
+    """Atoms within a distance of an existing handle.
+
+    whole_residues: widen to complete residues, which is usually what a figure
+      or a contact list wants.
+    exclude_self: leave out the atoms of `of` itself.
+    """
+    array = _require_structure()
+    try:
+        source = _handles.get(of)
+    except HandleError as exc:
+        raise ViewerError(str(exc)) from exc
+    mask = np.zeros(array.array_length(), dtype=bool)
+    mask[source.indices] = True
+    found = _within_mask(array, mask, radius)
+    if whole_residues:
+        found = _widen_mask(found, _residue_keys(array))
+    if exclude_self:
+        found = found & ~mask
+    indices = np.flatnonzero(found)
+    origin = f"near({of}, radius={radius}, whole_residues={whole_residues})"
+    summary = _register(name, indices, origin)
+    await _display(name, indices)
+    return summary
+
+
+@mcp.tool()
+async def invert(of: str, name: str) -> dict[str, Any]:
+    """Everything the given handle does not contain."""
+    array = _require_structure()
+    try:
+        source = _handles.get(of)
+    except HandleError as exc:
+        raise ViewerError(str(exc)) from exc
+    mask = np.ones(array.array_length(), dtype=bool)
+    mask[source.indices] = False
+    indices = np.flatnonzero(mask)
+    summary = _register(name, indices, f"invert({of})")
+    await _display(name, indices)
+    return summary
 
 
 @mcp.tool()
 async def show(
-    selection: str,
     representation: str = "cartoon",
+    selection: str | None = None,
+    handle: str | None = None,
     color: str | None = None,
     size: float | None = None,
     name: str = "sele",
-    limit: int = 200,
 ) -> dict[str, Any]:
-    """Display a selection with a representation, and report what it matched.
+    """Display a selection, given either a handle or a selection string.
+
+    handle: an existing handle from select(), combine(), near() or an analysis
+      tool — the usual way to display something already computed.
+    selection: PyMOL syntax, resolved and registered under `name` as a
+      shorthand for select() followed by show().
 
     representation: cartoon, ball-and-stick, spacefill, molecular-surface,
       gaussian-surface, putty, line, point, ellipsoid, backbone, carbohydrate.
       An unknown name is rejected with the full list; see capabilities().
-    color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
-      b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
-    size: scales the representation. For spacefill this scales the van der
-      Waals radius, so an ion drawn at full radius (which hides what it
-      coordinates) can be shrunk with size=0.3.
+    color: a Mol* colour theme or a literal hex value like "#ff0000".
+    size: scales the representation; for spacefill this scales the van der
+      Waals radius, so an ion that would hide what it coordinates can be shrunk.
     """
+    if (selection is None) == (handle is None):
+        raise ViewerError("Pass exactly one of selection or handle")
+    array = _require_structure()
+    if handle is not None:
+        try:
+            target = _handles.get(handle)
+        except HandleError as exc:
+            raise ViewerError(str(exc)) from exc
+        indices, label = target.indices, handle
+    else:
+        assert selection is not None
+        try:
+            mask = _evaluate(_parse_selection(selection), array)
+        except SelectionError as exc:
+            raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+        indices = np.flatnonzero(mask)
+        _register(name, indices, f"select({selection!r})")
+        label = name
+
     args: dict[str, Any] = {
-        "name": name,
-        "expression": _compile(selection),
+        "name": label,
+        "expression": _indices_to_molscript(array, indices),
         "representation": representation,
-        "limit": limit,
+        "limit": 0,
     }
     if color:
         args["color"] = color
     if size is not None:
         args["size"] = size
-    return await _call("show", args)
+    await _call("show", args)
+    return {"name": label, "representation": representation, **_summarise(array, indices)}
 
 
 @mcp.tool()
@@ -234,11 +382,24 @@ async def remove(name: str = "sele") -> dict[str, Any]:
 
 @mcp.tool()
 async def list_selections() -> dict[str, Any]:
-    """List the named selections in the scene, with atom counts and visibility.
+    """The named handles in this session, with sizes and where each came from.
 
-    Lets the scene be inspected directly rather than inferred from a picture.
+    Read from Python, so it answers with or without a viewer.
     """
-    return await _call("list_selections", {})
+    array = _require_structure()
+    return {
+        "selections": [
+            {
+                "name": name,
+                "atom_count": len(_handles.get(name)),
+                "residue_count": _summarise(array, _handles.get(name).indices, limit=0)[
+                    "residue_count"
+                ],
+                "origin": _handles.get(name).origin,
+            }
+            for name in _handles.names()
+        ]
+    }
 
 
 @mcp.tool()
