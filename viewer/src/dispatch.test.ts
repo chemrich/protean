@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { colorParams, createDispatcher, summarise } from './dispatch';
+import { colorParams, createDispatcher, lociOf, summarise } from './dispatch';
 
 /** A structure shaped like Mol*'s, with the table layout the real one uses:
  *  comp_id on the atom table, seq/ins_code on the residue table. */
@@ -78,6 +78,45 @@ describe('summarise', () => {
 
   it('is not truncated when everything fits', () => {
     expect(summarise(structure, 10).truncated).toBe(false);
+  });
+});
+
+describe('lociOf', () => {
+  // Element ids are model-wide atom indices; a component's units carry a
+  // subset of them, and the root splits the same ids across several units.
+  const root = {
+    units: [
+      { id: 0, elements: Int32Array.from([10, 11, 12]) },
+      { id: 1, elements: Int32Array.from([20, 21, 22, 23]) },
+    ],
+  };
+
+  it('anchors to the root structure, not the component', () => {
+    const component = { units: [{ id: 9, elements: Int32Array.from([21]) }] };
+    const loci = lociOf(root, component);
+    expect(loci.kind).toBe('element-loci');
+    expect(loci.structure).toBe(root);
+  });
+
+  it('maps element ids to unit-local indices in the root unit that holds them', () => {
+    const component = { units: [{ id: 9, elements: Int32Array.from([21]) }] };
+    const loci = lociOf(root, component);
+    // 21 is the second element of the root's second unit.
+    expect(loci.elements).toHaveLength(1);
+    expect(loci.elements[0].unit).toBe(root.units[1]);
+    expect(Array.from(loci.elements[0].indices)).toEqual([1]);
+  });
+
+  it('spans several root units and skips those contributing nothing', () => {
+    const component = { units: [{ id: 9, elements: Int32Array.from([12, 20, 23]) }] };
+    const loci = lociOf(root, component);
+    expect(loci.elements).toHaveLength(2);
+    expect(Array.from(loci.elements[0].indices)).toEqual([2]);
+    expect(Array.from(loci.elements[1].indices)).toEqual([0, 3]);
+  });
+
+  it('yields no elements for an empty component', () => {
+    expect(lociOf(root, { units: [] }).elements).toHaveLength(0);
   });
 });
 
