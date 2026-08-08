@@ -117,7 +117,7 @@ async function withRenderPump<T>(
  * selection's contents from a picture: PyMOL reports a bare count and makes you
  * `iterate` for the rest.
  */
-function summarise(structure: any, limit: number) {
+export function summarise(structure: any, limit: number) {
   const residues: Array<Record<string, unknown>> = [];
   const chains = new Set<string>();
   const seen = new Set<string>();
@@ -403,7 +403,7 @@ export function createDispatcher(plugin: any): Handler {
 }
 
 /** A leading '#' means a literal colour; anything else is a Mol* colour theme. */
-function colorParams(color: string): Record<string, unknown> {
+export function colorParams(color: string): Record<string, unknown> {
   if (color.startsWith('#')) {
     return { color: 'uniform', colorParams: { value: parseInt(color.slice(1), 16) } };
   }
