@@ -7,6 +7,7 @@ import datetime
 import logging
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Image
 
@@ -39,7 +40,7 @@ def _static_dir() -> Path | None:
 
 
 def get_bridge() -> ViewerBridge:
-    global _bridge
+    global _bridge  # noqa: PLW0603 - deliberate module-level singleton
     if _bridge is None:
         _bridge = ViewerBridge(static_dir=_static_dir())
     return _bridge
@@ -50,6 +51,22 @@ def _require_viewer() -> ViewerBridge:
     if not bridge.viewer_connected:
         raise ViewerError("No viewer connected — call open_viewer first.")
     return bridge
+
+
+async def _call(action: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Send an action to the viewer and insist the reply is a JSON object.
+
+    The bridge hands back whatever the viewer serialised, so the shape is
+    unverified until something checks it. Tools declare a dict return type;
+    this makes that declaration true rather than assumed.
+    """
+    bridge = _require_viewer()
+    result = await bridge.request(action, args or {})
+    if not isinstance(result, dict):
+        raise ViewerError(
+            f"Viewer returned {type(result).__name__} for {action!r}, expected an object"
+        )
+    return result
 
 
 def _visibility_note(bridge: ViewerBridge) -> str:
@@ -122,7 +139,7 @@ def _compile(selection: str) -> str:
 
 
 @mcp.tool()
-async def select(selection: str, name: str = "sele", limit: int = 200) -> dict:
+async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[str, Any]:
     """Resolve a PyMOL-syntax selection and report exactly what it matched.
 
     selection: PyMOL algebra, e.g. "chain A and resi 50-60", "byres (polymer
@@ -134,8 +151,7 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict:
     Returns atom/residue counts, the chains touched, and the residue list —
     so the contents are known rather than inferred from a picture.
     """
-    bridge = _require_viewer()
-    return await bridge.request(
+    return await _call(
         "select", {"name": name, "expression": _compile(selection), "limit": limit}
     )
 
@@ -147,7 +163,7 @@ async def show(
     color: str | None = None,
     name: str = "sele",
     limit: int = 200,
-) -> dict:
+) -> dict[str, Any]:
     """Display a selection with a representation, and report what it matched.
 
     representation: cartoon, ball-and-stick, spacefill, molecular-surface,
@@ -156,8 +172,7 @@ async def show(
     color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
       b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
     """
-    bridge = _require_viewer()
-    args = {
+    args: dict[str, Any] = {
         "name": name,
         "expression": _compile(selection),
         "representation": representation,
@@ -165,93 +180,83 @@ async def show(
     }
     if color:
         args["color"] = color
-    return await bridge.request("show", args)
+    return await _call("show", args)
 
 
 @mcp.tool()
-async def color(color: str, name: str = "sele") -> dict:
+async def color(color: str, name: str = "sele") -> dict[str, Any]:
     """Recolour an existing named selection.
 
     color: a Mol* colour theme or a literal hex value like "#3366cc".
     name: the handle passed to a previous select() or show().
     """
-    bridge = _require_viewer()
-    return await bridge.request("color", {"name": name, "color": color})
+    return await _call("color", {"name": name, "color": color})
 
 
 @mcp.tool()
-async def hide(name: str = "sele") -> dict:
+async def hide(name: str = "sele") -> dict[str, Any]:
     """Hide a named selection without discarding it; unhide() brings it back."""
-    bridge = _require_viewer()
-    return await bridge.request("hide", {"name": name})
+    return await _call("hide", {"name": name})
 
 
 @mcp.tool()
-async def unhide(name: str = "sele") -> dict:
+async def unhide(name: str = "sele") -> dict[str, Any]:
     """Show a selection previously hidden with hide()."""
-    bridge = _require_viewer()
-    return await bridge.request("unhide", {"name": name})
+    return await _call("unhide", {"name": name})
 
 
 @mcp.tool()
-async def remove(name: str = "sele") -> dict:
+async def remove(name: str = "sele") -> dict[str, Any]:
     """Delete a named selection and its representations from the scene."""
-    bridge = _require_viewer()
-    return await bridge.request("remove", {"name": name})
+    return await _call("remove", {"name": name})
 
 
 @mcp.tool()
-async def list_selections() -> dict:
+async def list_selections() -> dict[str, Any]:
     """List the named selections in the scene, with atom counts and visibility.
 
     Lets the scene be inspected directly rather than inferred from a picture.
     """
-    bridge = _require_viewer()
-    return await bridge.request("list_selections", {})
+    return await _call("list_selections", {})
 
 
 @mcp.tool()
-async def focus(name: str = "sele") -> dict:
+async def focus(name: str = "sele") -> dict[str, Any]:
     """Zoom the camera to a named selection, returning the resulting camera target."""
-    bridge = _require_viewer()
-    return await bridge.request("focus", {"name": name})
+    return await _call("focus", {"name": name})
 
 
 @mcp.tool()
-async def reset_view() -> dict:
+async def reset_view() -> dict[str, Any]:
     """Reset the camera to frame the whole scene."""
-    bridge = _require_viewer()
-    return await bridge.request("reset_view", {})
+    return await _call("reset_view", {})
 
 
 @mcp.tool()
-async def orient() -> dict:
+async def orient() -> dict[str, Any]:
     """Align the camera to the structure's principal axes."""
-    bridge = _require_viewer()
-    return await bridge.request("orient", {})
+    return await _call("orient", {})
 
 
 @mcp.tool()
-async def measure(kind: str, names: list[str]) -> dict:
+async def measure(kind: str, names: list[str]) -> dict[str, Any]:
     """Add a distance, angle, or dihedral between named selections.
 
     kind: "distance" (2 selections), "angle" (3), or "dihedral" (4).
     Each selection is measured at its centroid, so point-like selections read
     most clearly — e.g. select("chain A and resi 58 and name NE2", name="ne2").
     """
-    bridge = _require_viewer()
-    return await bridge.request("measure", {"kind": kind, "names": names})
+    return await _call("measure", {"kind": kind, "names": names})
 
 
 @mcp.tool()
-async def capabilities() -> dict:
+async def capabilities() -> dict[str, Any]:
     """List the representation and colour-theme names this viewer accepts.
 
     Read from Mol*'s live registries, so the list matches the bundled version
     rather than a hardcoded guess.
     """
-    bridge = _require_viewer()
-    return await bridge.request("capabilities", {})
+    return await _call("capabilities", {})
 
 
 @mcp.tool()
@@ -263,7 +268,7 @@ async def clear_viewer() -> str:
 
 
 @mcp.tool()
-async def screenshot(path: str | None = None) -> list:
+async def screenshot(path: str | None = None) -> list[Any]:
     """Capture the current viewport as a PNG.
 
     path: optional output file path; defaults to a timestamped file in
@@ -280,7 +285,7 @@ async def screenshot(path: str | None = None) -> list:
     if path:
         out = Path(path).expanduser()
     else:
-        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d-%H%M%S")
         out = Path.home() / ".cache" / "protean" / "screenshots" / f"protean-{stamp}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(png)

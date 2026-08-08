@@ -25,9 +25,10 @@ Grammar (loosest to tightest binding, matching PyMOL):
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-__all__ = ["SelectionError", "to_molscript", "parse"]
+__all__ = ["SelectionError", "parse", "to_molscript"]
 
 
 class SelectionError(ValueError):
@@ -213,9 +214,53 @@ _UNSUPPORTED: dict[str, str] = {
 
 # Atomic numbers PyMOL counts as metals.
 _METAL_NUMBERS = (
-    3, 4, 11, 12, 13, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-    55, 56, 57, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+    3,
+    4,
+    11,
+    12,
+    13,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    55,
+    56,
+    57,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
 )
 
 _BACKBONE_ATOMS = ("N", "CA", "C", "O")
@@ -259,7 +304,7 @@ class _Parser:
     def parse(self) -> object:
         node = self.or_expr()
         if self.peek() is not None:
-            kind, value = self.peek()  # type: ignore[misc]
+            _, value = self.peek()  # type: ignore[misc]
             raise SelectionError(f"Unexpected trailing token: {value!r}")
         return node
 
@@ -312,7 +357,9 @@ class _Parser:
                 self.next()
                 node = Expand(node, self._number())
             elif self.at_word("extend"):
-                raise SelectionError(f"'extend' is not supported: {_UNSUPPORTED['extend']}")
+                raise SelectionError(
+                    f"'extend' is not supported: {_UNSUPPORTED['extend']}"
+                )
             else:
                 return node
 
@@ -351,7 +398,9 @@ class _Parser:
 
         raise SelectionError(
             f"Unknown selection keyword: {value!r}. Supported keywords: "
-            + ", ".join(sorted(set(_KEYWORD_EMITTERS) | set(_PROPERTIES) | set(_COMPARABLE)))
+            + ", ".join(
+                sorted(set(_KEYWORD_EMITTERS) | set(_PROPERTIES) | set(_COMPARABLE))
+            )
         )
 
     def _comparison(self, prop: str) -> Compare:
@@ -429,7 +478,9 @@ def _in_set(prop: str, values: tuple[str, ...]) -> str:
     return f"(set.has (set {rendered}) {prop})"
 
 
-def _int_terms(prop: str, values: tuple[str, ...], *, insertion_codes: bool = False) -> str:
+def _int_terms(
+    prop: str, values: tuple[str, ...], *, insertion_codes: bool = False
+) -> str:
     """Integer values with PyMOL range support: ``50-60+70``.
 
     When *insertion_codes* is set (``resi``), a trailing letter selects a single
@@ -452,8 +503,10 @@ def _int_terms(prop: str, values: tuple[str, ...], *, insertion_codes: bool = Fa
                 )
                 continue
         if not re.fullmatch(r"-?\d+", value):
-            expected = "an integer, range, or insertion code" if insertion_codes else (
-                "an integer or range"
+            expected = (
+                "an integer, range, or insertion code"
+                if insertion_codes
+                else ("an integer or range")
             )
             raise SelectionError(f"Expected {expected}, got {value!r}")
         terms.append(f"(= {prop} {value})")
@@ -499,7 +552,7 @@ def _expand_property(inner: str, prop: str) -> str:
     return f"(sel.atom.expand-property {inner} :property ({prop}))"
 
 
-_KEYWORD_EMITTERS: dict[str, object] = {
+_KEYWORD_EMITTERS: dict[str, Callable[[], str]] = {
     "all": _all,
     "none": lambda: "(sel.atom.empty)",
     "polymer": _keyword_polymer,
@@ -528,7 +581,7 @@ _KEYWORD_EMITTERS: dict[str, object] = {
 
 def _emit(node: object) -> str:
     if isinstance(node, Keyword):
-        return _KEYWORD_EMITTERS[node.name]()  # type: ignore[operator]
+        return _KEYWORD_EMITTERS[node.name]()
 
     if isinstance(node, Property):
         level, prop, kind = _PROPERTIES[node.prop]

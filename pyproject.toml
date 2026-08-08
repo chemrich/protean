@@ -18,8 +18,11 @@ protean-mcp = "protean_mcp.server:main"
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.0",
+    "pre-commit>=4.6.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.16.2",
 ]
 
 [build-system]
@@ -32,3 +35,54 @@ packages = ["src/protean_mcp"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # import sorting
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # simplify
+    "C4",            # comprehensions
+    "RET",           # returns
+    "PT",            # pytest style
+    "ASYNC",         # async pitfalls
+    "DTZ",           # naive datetimes
+    "PL",            # pylint subset
+    "RUF",
+]
+ignore = [
+    # trio/anyio idioms; this project is plain asyncio, where an explicit
+    # timeout parameter and synchronous reads of small local files are fine.
+    "ASYNC109",
+    "ASYNC240",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The differential harness deliberately drives a real browser: blocking
+# subprocess calls and broad excepts are the point, not an oversight.
+"tests/*" = ["ASYNC220", "ASYNC221", "BLE001", "PLW1510", "PLR2004", "PT018"]
+# The emitter dispatches on AST node type; branch and return counts are the
+# shape of the problem, not complexity worth refactoring away.
+"src/protean_mcp/selections.py" = ["PLR0911", "PLR0912"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# FastMCP's tool decorator carries no annotations, so every tool it wraps is
+# reported as untyped. That is a property of the library, not of our code.
+module = "protean_mcp.server"
+disable_error_code = ["untyped-decorator"]
+
+[[tool.mypy.overrides]]
+# Test bodies stay unannotated; they are still type-checked internally.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false

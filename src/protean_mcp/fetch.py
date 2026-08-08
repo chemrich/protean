@@ -9,6 +9,8 @@ from pathlib import Path
 
 import httpx
 
+HTTP_NOT_FOUND = 404
+
 PDB_ID_RE = re.compile(r"^[0-9][a-zA-Z0-9]{3}$")
 # Standard UniProt accession pattern (6- and 10-char forms).
 UNIPROT_RE = re.compile(
@@ -109,7 +111,7 @@ async def _download_cached(
         transport=transport, follow_redirects=True, timeout=60
     ) as client:
         resp = await client.get(url)
-        if resp.status_code == 404:
+        if resp.status_code == HTTP_NOT_FOUND:
             raise FetchError(f"Not found upstream: {url}")
         resp.raise_for_status()
         text = resp.text
