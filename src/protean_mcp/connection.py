@@ -10,6 +10,7 @@ The viewer page connects to ``/ws`` and identifies itself with a
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -191,6 +192,11 @@ class ViewerBridge:
             if data.get("action") == "protean_ping":
                 # Handshake: this connection is a protean viewer.
                 if self._ws is not None and self._ws is not ws and not self._ws.closed:
+                    # Tell the displaced viewer it lost the connection on
+                    # purpose. Without this it reconnects on its timer, wins the
+                    # handshake back, and the two tabs trade the socket forever.
+                    with contextlib.suppress(ConnectionResetError):
+                        await self._ws.send_json({"action": "protean_superseded"})
                     await self._ws.close()
                 self._ws = ws
                 registered = True

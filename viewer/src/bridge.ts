@@ -12,9 +12,18 @@ export function connectBridge(handle: Handler): void {
   // Tracked so the visibilitychange listener (registered once) can reach the
   // live socket across reconnects.
   let current: WebSocket | null = null;
+  // Set when the server hands the bridge to a newer tab. Reconnecting after
+  // that would take the connection straight back off the tab that now owns it,
+  // and the two would trade it on every retry timer.
+  let superseded = false;
 
   const setStatus = (connected: boolean) => {
     if (!status) return;
+    if (superseded) {
+      status.textContent = 'superseded — reload to take over';
+      status.classList.remove('connected');
+      return;
+    }
     const hidden = document.visibilityState !== 'visible';
     status.textContent = connected ? (hidden ? 'connected (hidden)' : 'connected') : 'disconnected';
     status.classList.toggle('connected', connected);
@@ -42,6 +51,11 @@ export function connectBridge(handle: Handler): void {
         setStatus(true);
         return;
       }
+      if (msg.action === 'protean_superseded') {
+        superseded = true;
+        setStatus(false);
+        return;
+      }
       const { id, action, args } = msg;
       try {
         const result = await handle(action, args ?? {});
@@ -56,7 +70,7 @@ export function connectBridge(handle: Handler): void {
     ws.onclose = () => {
       if (current === ws) current = null;
       setStatus(false);
-      setTimeout(open, RECONNECT_MS);
+      if (!superseded) setTimeout(open, RECONNECT_MS);
     };
     ws.onerror = () => ws.close();
   };

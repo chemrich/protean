@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 
 import aiohttp
@@ -87,6 +88,22 @@ async def test_new_viewer_replaces_old(bridge, viewer):
     await ws.receive()  # pong
     await asyncio.sleep(0.1)
     assert bridge.viewer_connected
+    await ws.close()
+    await session.close()
+
+
+async def test_displaced_viewer_is_told_it_was_superseded(bridge, viewer):
+    """Otherwise the old tab reconnects on its timer, takes the socket back,
+    and the two tabs trade it forever."""
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws")
+    await ws.send_json({"action": "protean_ping", "version": 1})
+    await ws.receive()  # pong for the newcomer
+
+    # The original viewer should be told why it is losing the connection.
+    message = json.loads((await viewer.ws.receive()).data)
+    assert message["action"] == "protean_superseded"
+
     await ws.close()
     await session.close()
 
