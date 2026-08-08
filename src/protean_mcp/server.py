@@ -179,6 +179,37 @@ async def color(color: str, name: str = "sele") -> dict:
 
 
 @mcp.tool()
+async def hide(name: str = "sele") -> dict:
+    """Hide a named selection without discarding it; unhide() brings it back."""
+    bridge = _require_viewer()
+    return await bridge.request("hide", {"name": name})
+
+
+@mcp.tool()
+async def unhide(name: str = "sele") -> dict:
+    """Show a selection previously hidden with hide()."""
+    bridge = _require_viewer()
+    return await bridge.request("unhide", {"name": name})
+
+
+@mcp.tool()
+async def remove(name: str = "sele") -> dict:
+    """Delete a named selection and its representations from the scene."""
+    bridge = _require_viewer()
+    return await bridge.request("remove", {"name": name})
+
+
+@mcp.tool()
+async def list_selections() -> dict:
+    """List the named selections in the scene, with atom counts and visibility.
+
+    Lets the scene be inspected directly rather than inferred from a picture.
+    """
+    bridge = _require_viewer()
+    return await bridge.request("list_selections", {})
+
+
+@mcp.tool()
 async def clear_viewer() -> str:
     """Remove all loaded structures from the viewer."""
     bridge = _require_viewer()
