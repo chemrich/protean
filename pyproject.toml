@@ -66,6 +66,9 @@ ignore = [
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = ["ASYNC220", "ASYNC221", "BLE001", "PLW1510", "PLR2004", "PT018"]
+# MCP tools deliberately expose flat keyword parameters: a model fills a flat
+# tool schema far more reliably than a nested options object.
+"src/protean_mcp/server.py" = ["PLR0913", "PLR0917"]
 # The emitter dispatches on AST node type; branch and return counts are the
 # shape of the problem, not complexity worth refactoring away.
 "src/protean_mcp/selections.py" = ["PLR0911", "PLR0912"]

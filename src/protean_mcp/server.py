@@ -163,6 +163,7 @@ async def show(
     selection: str,
     representation: str = "cartoon",
     color: str | None = None,
+    size: float | None = None,
     name: str = "sele",
     limit: int = 200,
 ) -> dict[str, Any]:
@@ -173,6 +174,9 @@ async def show(
       An unknown name is rejected with the full list; see capabilities().
     color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
       b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
+    size: scales the representation. For spacefill this scales the van der
+      Waals radius, so an ion drawn at full radius (which hides what it
+      coordinates) can be shrunk with size=0.3.
     """
     args: dict[str, Any] = {
         "name": name,
@@ -182,6 +186,8 @@ async def show(
     }
     if color:
         args["color"] = color
+    if size is not None:
+        args["size"] = size
     return await _call("show", args)
 
 
@@ -193,6 +199,15 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
     name: the handle passed to a previous select() or show().
     """
     return await _call("color", {"name": name, "color": color})
+
+
+@mcp.tool()
+async def label(name: str = "sele", level: str = "residue") -> dict[str, Any]:
+    """Draw text labels on a named selection.
+
+    level: "residue" (e.g. HIS 94), "chain", or "element" for per-atom names.
+    """
+    return await _call("label", {"name": name, "level": level})
 
 
 @mcp.tool()
