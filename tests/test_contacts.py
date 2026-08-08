@@ -132,3 +132,72 @@ def test_interface_residues_report_how_much_each_buries(salt_bridge_pair):
 
 def test_contact_limit_is_respected(salt_bridge_pair):
     assert len(interface(salt_bridge_pair, "A", "B", contact_limit=1).contacts) == 1
+
+
+def test_indices_cover_the_whole_interface_residue(salt_bridge_pair):
+    """The handle is the residue, not just the atoms that lost surface.
+
+    ASP1's CA buries nothing, but colouring an interface residue and getting
+    two of its four atoms would be wrong.
+    """
+    result = interface(salt_bridge_pair, "A", "B")
+    assert sorted(result.indices_a.tolist()) == [0, 1, 2, 3]
+    assert sorted(result.indices_b.tolist()) == [4, 5, 6, 7]
+
+
+def test_indices_are_numbered_against_the_caller_s_array():
+    """Solvent is dropped before analysis, which renumbers every later atom.
+
+    Waters sit at 0 and 3 here, so indices computed on the filtered copy would
+    be shifted by two and would name a water as an interface atom. This is the
+    case that distinguishes a mapped index from a plausible-looking one.
+    """
+    mixed = atom_array(
+        [
+            _atom("W", 9, "HOH", "O", "O", [50.0, 0.0, 0.0]),
+            _atom("A", 1, "ASP", "CA", "C", [0.0, 0.0, 0.0]),
+            _atom("A", 1, "ASP", "CG", "C", [1.5, 0.0, 0.0]),
+            _atom("W", 10, "HOH", "O", "O", [60.0, 0.0, 0.0]),
+            _atom("A", 1, "ASP", "OD1", "O", [2.2, 1.0, 0.0]),
+            _atom("A", 1, "ASP", "OD2", "O", [2.2, -1.0, 0.0]),
+            _atom("B", 2, "ARG", "CA", "C", [8.0, 0.0, 0.0]),
+            _atom("B", 2, "ARG", "CZ", "C", [6.5, 0.0, 0.0]),
+            _atom("B", 2, "ARG", "NH1", "N", [5.2, 1.0, 0.0]),
+            _atom("B", 2, "ARG", "NH2", "N", [5.2, -1.0, 0.0]),
+        ]
+    )
+    result = interface(mixed, "A", "B")
+
+    assert sorted(result.indices_a.tolist()) == [1, 2, 4, 5]
+    assert sorted(result.indices_b.tolist()) == [6, 7, 8, 9]
+    # Read the atoms back out, which is what a handle actually does with them.
+    picked = mixed[result.indices_a]
+    assert set(picked.res_name.tolist()) == {"ASP"}
+    assert set(picked.chain_id.tolist()) == {"A"}
+
+
+def test_indices_match_the_reported_residues(salt_bridge_pair):
+    """The two halves of the answer have to describe the same set."""
+    result = interface(salt_bridge_pair, "A", "B")
+    for indices, residues in (
+        (result.indices_a, result.interface_residues_a),
+        (result.indices_b, result.interface_residues_b),
+    ):
+        picked = salt_bridge_pair[indices]
+        from_indices = {
+            (str(c), int(s)) for c, s in zip(picked.chain_id, picked.res_id, strict=True)
+        }
+        from_residues = {(r["chain"], r["seq"]) for r in residues}
+        assert from_indices == from_residues
+
+
+def test_no_interface_yields_no_indices():
+    far = atom_array(
+        [
+            _atom("A", 1, "ALA", "CA", "C", [0.0, 0.0, 0.0]),
+            _atom("B", 2, "ALA", "CA", "C", [80.0, 0.0, 0.0]),
+        ]
+    )
+    result = interface(far, "A", "B")
+    assert result.indices_a.tolist() == []
+    assert result.indices_b.tolist() == []

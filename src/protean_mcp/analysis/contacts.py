@@ -72,11 +72,18 @@ class InterfaceResult:
     buried_area_b: float
     interface_residues_a: list[dict[str, Any]]
     interface_residues_b: list[dict[str, Any]]
+    # Every atom of the residues listed above, indexed into the array as it was
+    # passed in — before solvent was dropped. These are what the caller turns
+    # into handles, so the set never has to be re-encoded as a selection string.
+    indices_a: np.ndarray[Any, Any]
+    indices_b: np.ndarray[Any, Any]
     contacts: list[Contact]
     criterion: str
     solvent: str
 
     def as_dict(self) -> dict[str, Any]:
+        # indices_a/indices_b are deliberately absent: thousands of integers
+        # are not something a caller should read. They become handles instead.
         kinds: dict[str, int] = {}
         for contact in self.contacts:
             kinds[contact.kind] = kinds.get(contact.kind, 0) + 1
@@ -107,8 +114,14 @@ def _chain(array: AtomArray[Any], chain_id: str) -> np.ndarray[Any, Any]:
 
 def _residues(
     array: AtomArray[Any], mask: np.ndarray[Any, Any], delta: np.ndarray[Any, Any]
-) -> list[dict[str, Any]]:
-    """Per-residue buried area for the residues that lose surface on binding."""
+) -> tuple[list[dict[str, Any]], np.ndarray[Any, Any]]:
+    """Per-residue buried area for the residues that lose surface on binding.
+
+    Returns the residue entries and the indices of every atom belonging to
+    them. The atom set is deliberately wider than the atoms that lost surface:
+    a side chain packed against the partner has atoms with zero delta, and a
+    caller colouring the interface wants the whole residue, not the rind of it.
+    """
     out: dict[tuple[str, int], dict[str, Any]] = {}
     for i in np.flatnonzero(mask):
         if delta[i] <= 0:
@@ -124,10 +137,44 @@ def _residues(
             },
         )
         entry["buried"] += float(delta[i])
-    keep = [r for r in out.values() if r["buried"] > INTERFACE_DELTA_SASA]
+    kept_keys = {k for k, r in out.items() if r["buried"] > INTERFACE_DELTA_SASA}
+    keep = [r for k, r in out.items() if k in kept_keys]
     for r in keep:
         r["buried"] = round(r["buried"], 1)
-    return sorted(keep, key=lambda r: (-r["buried"], r["seq"]))
+
+    side = np.flatnonzero(mask)
+    labels = np.char.add(
+        np.char.add(array.chain_id[side].astype(str), "|"),
+        array.res_id[side].astype(str),
+    )
+    wanted = [f"{chain}|{seq}" for chain, seq in kept_keys]
+    indices = side[np.isin(labels, wanted)]
+
+    return sorted(keep, key=lambda r: (-r["buried"], r["seq"])), indices
+
+
+def _delta_sasa(
+    array: AtomArray[Any], mask_a: np.ndarray[Any, Any], mask_b: np.ndarray[Any, Any]
+) -> np.ndarray[Any, Any]:
+    """Surface area each atom loses when the two chains come together.
+
+    sasa() returns NaN for atoms it has no radius for (water, unknowns);
+    treating those as zero area is right, and is why buried area is
+    solvent-free whatever include_water says.
+    """
+    pair_mask = mask_a | mask_b
+    sasa_complex = np.nan_to_num(sasa(array[pair_mask]))
+    alone = np.concatenate(
+        [np.nan_to_num(sasa(array[mask_a])), np.nan_to_num(sasa(array[mask_b]))]
+    )
+
+    order = np.concatenate([np.flatnonzero(mask_a), np.flatnonzero(mask_b)])
+    position = {int(idx): k for k, idx in enumerate(np.flatnonzero(pair_mask))}
+    complex_in_order = np.array([sasa_complex[position[int(idx)]] for idx in order])
+
+    delta = np.zeros(array.array_length())
+    delta[order] = alone - complex_in_order
+    return delta
 
 
 def _classify(
@@ -173,33 +220,18 @@ def interface(
     """
     if chain_a == chain_b:
         raise ContactError("chain_a and chain_b must differ")
-    if not include_water:
-        array = array[~filter_solvent(array)]
+    # Dropping solvent renumbers the atoms, so keep the map back to the
+    # caller's numbering: the indices we return have to mean something in the
+    # array they handed us, not in this private copy.
+    if include_water:
+        origin_index = np.arange(array.array_length())
+    else:
+        origin_index = np.flatnonzero(~filter_solvent(array))
+        array = array[origin_index]
     mask_a = _chain(array, chain_a)
     mask_b = _chain(array, chain_b)
-    pair_mask = mask_a | mask_b
-    pair = array[pair_mask]
 
-    # Buried area is the surface each side loses when the two come together.
-    # sasa() returns NaN for atoms it has no radius for (water, unknowns);
-    # treating those as zero area is right, and is why buried area is
-    # solvent-free whatever include_water says.
-    sasa_complex = np.nan_to_num(sasa(pair))
-    sub_a = array[mask_a]
-    sub_b = array[mask_b]
-    sasa_a = np.nan_to_num(sasa(sub_a))
-    sasa_b = np.nan_to_num(sasa(sub_b))
-
-    alone = np.concatenate([sasa_a, sasa_b])
-    order = np.concatenate([np.flatnonzero(mask_a), np.flatnonzero(mask_b)])
-    delta_by_index = np.zeros(array.array_length())
-    complex_in_order = np.zeros_like(alone)
-    pair_indices = np.flatnonzero(pair_mask)
-    position = {int(idx): k for k, idx in enumerate(pair_indices)}
-    for k, idx in enumerate(order):
-        complex_in_order[k] = sasa_complex[position[int(idx)]]
-    delta_by_index[order] = alone - complex_in_order
-
+    delta_by_index = _delta_sasa(array, mask_a, mask_b)
     buried_a = float(delta_by_index[mask_a].sum())
     buried_b = float(delta_by_index[mask_b].sum())
 
@@ -217,8 +249,8 @@ def interface(
         )
 
     cutoff = max(POLAR_CUTOFF, SALT_BRIDGE_CUTOFF)
-    cell_list = CellList(sub_b, cell_size=cutoff)
-    neighbours = cell_list.get_atoms(sub_a.coord, radius=cutoff)
+    cell_list: Any = CellList(array[mask_b], cell_size=cutoff)
+    neighbours = cell_list.get_atoms(array[mask_a].coord, radius=cutoff)
     indices_a = np.flatnonzero(mask_a)
     indices_b = np.flatnonzero(mask_b)
 
@@ -247,14 +279,19 @@ def interface(
             )
     contacts.sort(key=lambda c: c.distance)
 
+    residues_a, atoms_a = _residues(array, mask_a, delta_by_index)
+    residues_b, atoms_b = _residues(array, mask_b, delta_by_index)
+
     return InterfaceResult(
         chain_a=chain_a,
         chain_b=chain_b,
         buried_area=buried_a + buried_b,
         buried_area_a=buried_a,
         buried_area_b=buried_b,
-        interface_residues_a=_residues(array, mask_a, delta_by_index),
-        interface_residues_b=_residues(array, mask_b, delta_by_index),
+        interface_residues_a=residues_a,
+        interface_residues_b=residues_b,
+        indices_a=origin_index[atoms_a],
+        indices_b=origin_index[atoms_b],
         contacts=contacts[:contact_limit],
         criterion=criterion,
         solvent=(
