@@ -1,4 +1,4 @@
-"""Parser and emitter tests for the PyMOL → MolScript compiler.
+"""Parser tests for protean's PyMOL selection grammar.
 
 Pure Python; no browser. Semantic correctness against a real structure is
 covered by the differential suite in test_selection_differential.py.
@@ -6,9 +6,16 @@ covered by the differential suite in test_selection_differential.py.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from biotite.structure import Atom, AtomArray
+from biotite.structure import array as atom_array
 
 from protean_mcp.selections import (
+    COMPARABLE,
+    KEYWORDS,
+    PROPERTIES,
     And,
     Compare,
     Keyword,
@@ -19,8 +26,51 @@ from protean_mcp.selections import (
     SelectionError,
     Within,
     parse,
-    to_molscript,
 )
+from protean_mcp.selections_numpy import select_mask
+
+
+@pytest.fixture
+def tiny_structure() -> AtomArray[Any]:
+    """Enough of a structure for every vocabulary name to resolve against.
+
+    Deliberately mixed: a protein residue, a water and a metal ion, so a
+    keyword cannot pass by matching everything or nothing on a uniform array.
+    """
+
+    def atom(
+        chain: str,
+        res_id: int,
+        res_name: str,
+        atom_name: str,
+        element: str,
+        hetero: bool,
+        atom_id: int,
+    ) -> Atom:
+        return Atom(
+            [float(atom_id), 0.0, 0.0],
+            chain_id=chain,
+            res_id=res_id,
+            ins_code="",
+            res_name=res_name,
+            atom_name=atom_name,
+            element=element,
+            hetero=hetero,
+            atom_id=atom_id,
+            b_factor=10.0,
+            occupancy=1.0,
+        )
+
+    return atom_array(
+        [
+            atom("A", 1, "ALA", "N", "N", False, 1),
+            atom("A", 1, "ALA", "CA", "C", False, 2),
+            atom("A", 1, "ALA", "CB", "C", False, 3),
+            atom("A", 2, "HOH", "O", "O", True, 4),
+            atom("A", 3, "ZN", "ZN", "ZN", True, 5),
+        ]
+    )
+
 
 # -- tokenizing and parsing --------------------------------------------------
 
@@ -112,92 +162,6 @@ def test_around_excludes_source():
     assert isinstance(node, Within) and node.exclude_self
 
 
-# -- emitting ----------------------------------------------------------------
-
-
-def test_emit_chain():
-    assert to_molscript("chain A") == (
-        "(sel.atom.atom-groups :chain-test (= atom.auth_asym_id A))"
-    )
-
-
-def test_emit_set_membership():
-    assert "set.has (set CA CB)" in to_molscript("name CA+CB")
-
-
-def test_emit_integer_range():
-    out = to_molscript("resi 50-60")
-    assert "(>= atom.auth_seq_id 50)" in out and "(<= atom.auth_seq_id 60)" in out
-
-
-def test_emit_negative_range():
-    out = to_molscript("resi -5--1")
-    assert "(>= atom.auth_seq_id -5)" in out and "(<= atom.auth_seq_id -1)" in out
-
-
-def test_emit_and_uses_intersect_by_with_named_arg():
-    """Mol* modifiers take positional arg 0 plus named args; two positionals
-    silently evaluate to nothing."""
-    out = to_molscript("chain A and name CA")
-    assert out.startswith("(sel.atom.intersect-by ")
-    assert " :by " in out
-
-
-def test_emit_not_is_except_by_from_all():
-    out = to_molscript("not chain A")
-    assert out.startswith("(sel.atom.except-by (sel.atom.all) :by ")
-
-
-def test_emit_or_uses_merge():
-    assert to_molscript("chain A or chain B").startswith("(sel.atom.merge ")
-
-
-def test_emit_byres_expands_residue_key():
-    assert ":property (atom.key.res)" in to_molscript("byres name CA")
-
-
-def test_emit_uses_backticks_for_awkward_values():
-    """mol-script delimits strings with backticks; double quotes are accepted
-    by the parser and then match nothing."""
-    assert "`polypeptide(L)`" in to_molscript("protein")
-
-
-def test_emit_leaves_nucleic_atom_names_bare():
-    """Apostrophes tokenize fine bare; quoting C1' would match nothing."""
-    assert "C1'" in to_molscript("name C1'")
-    assert "`" not in to_molscript("name C1'")
-
-
-def test_emit_bare_identifier_is_unquoted():
-    assert "`" not in to_molscript("resn HEM")
-
-
-def test_emit_expand_keeps_source():
-    out = to_molscript("resn HEM expand 5")
-    assert "include-surroundings" in out and ":as-whole-residues false" in out
-
-
-def test_emit_around_subtracts_source():
-    out = to_molscript("resn HEM around 5")
-    assert out.startswith("(sel.atom.except-by ")
-
-
-def test_emit_metals_is_not_empty():
-    """Mol*'s transpiler ships `metals` as a description-only stub."""
-    out = to_molscript("metals")
-    assert "atom.atomic-number" in out and "26" in out
-
-
-def test_emit_sidechain_is_polymer_minus_backbone():
-    out = to_molscript("sidechain")
-    assert out.startswith("(sel.atom.except-by ") and "label_atom_id" in out
-
-
-def test_nested_expression_round_trips():
-    out = to_molscript("byres (polymer within 4 of resn HEM) and not solvent")
-    assert out.count("(") == out.count(")")
-
-
 # -- error handling ----------------------------------------------------------
 
 
@@ -215,56 +179,82 @@ def test_nested_expression_round_trips():
 def test_unsupported_constructs_raise(selection):
     """The core contract: never answer an unsupported construct with silence."""
     with pytest.raises(SelectionError, match="not supported"):
-        to_molscript(selection)
+        parse(selection)
 
 
 def test_unknown_keyword_lists_alternatives():
     with pytest.raises(SelectionError, match="Unknown selection keyword"):
-        to_molscript("banana")
+        parse("banana")
 
 
 def test_unbalanced_parenthesis_raises():
     with pytest.raises(SelectionError, match="Unbalanced"):
-        to_molscript("(chain A")
+        parse("(chain A")
 
 
 def test_trailing_token_raises():
     with pytest.raises(SelectionError, match="trailing"):
-        to_molscript("chain A chain B")
+        parse("chain A chain B")
 
 
 def test_empty_selection_raises():
     with pytest.raises(SelectionError, match="Empty"):
-        to_molscript("   ")
+        parse("   ")
 
 
 def test_within_without_of_raises():
     with pytest.raises(SelectionError, match="Expected 'of'"):
-        to_molscript("chain A within 5 chain B")
+        parse("chain A within 5 chain B")
 
 
 def test_non_numeric_comparison_raises():
     with pytest.raises(SelectionError, match="Expected a number"):
-        to_molscript("b > high")
+        parse("b > high")
 
 
-def test_non_integer_resi_raises():
+def test_non_integer_resi_raises(tiny_structure):
+    """Caught when the value is used, since the grammar accepts any value list.
+
+    It has to surface as a SelectionError: a bare ValueError out of int() would
+    escape the tool layer's handling and reach the caller as a crash rather
+    than an explanation.
+    """
     with pytest.raises(SelectionError, match="integer, range, or insertion code"):
-        to_molscript("resi fifty")
+        select_mask("resi fifty", tiny_structure)
 
 
-def test_insertion_code_compiles():
-    """Antibody numbering: resi 100A is a distinct residue from resi 100."""
-    out = to_molscript("resi 100A")
-    assert "(= atom.auth_seq_id 100)" in out
-    assert "(= atom.pdbx_PDB_ins_code A)" in out
+def test_non_integer_index_raises(tiny_structure):
+    with pytest.raises(SelectionError, match="integer, range, or insertion code"):
+        select_mask("index abc", tiny_structure)
 
 
-def test_glycan_selects_branched_entities():
-    """Glycans are mmCIF `branched` entities, not non-polymer."""
-    assert "(= atom.entity-type branched)" in to_molscript("glycan")
+def test_insertion_code_survives_parsing():
+    """Antibody numbering: resi 100A is a distinct residue from resi 100.
+
+    That it *resolves* to the inserted residue is asserted against real
+    coordinates in test_selections_numpy.py.
+    """
+    assert parse("resi 100A") == Property("resi", ("100A",))
 
 
-def test_organic_spans_branched_and_non_polymer():
-    out = to_molscript("organic")
-    assert "non-polymer" in out and "branched" in out
+# -- vocabulary ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("keyword", sorted(KEYWORDS))
+def test_every_keyword_is_evaluable(keyword, tiny_structure):
+    """The grammar's vocabulary and the evaluator's must not drift.
+
+    A name accepted here but unknown to the evaluator would parse and then
+    fail at use, which is the failure this table exists to prevent.
+    """
+    select_mask(keyword, tiny_structure)
+
+
+@pytest.mark.parametrize("prop", sorted(PROPERTIES))
+def test_every_property_is_evaluable(prop, tiny_structure):
+    select_mask(f"{prop} 1" if prop in ("resi", "index") else f"{prop} X", tiny_structure)
+
+
+@pytest.mark.parametrize("prop", sorted(COMPARABLE))
+def test_every_comparable_is_evaluable(prop, tiny_structure):
+    select_mask(f"{prop} > 0", tiny_structure)
