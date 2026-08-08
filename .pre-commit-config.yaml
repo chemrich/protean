@@ -1,0 +1,61 @@
+# Local feedback before a commit. CI is the authoritative gate — these hooks
+# only run in clones that have run `pre-commit install`, and any of them can be
+# skipped with `git commit --no-verify`.
+#
+#   uv run pre-commit install
+#
+# ruff and mypy run from the project venv rather than a pinned mirror, so the
+# versions here can never drift from the ones CI and `uv sync` resolve.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest (browser tests excluded)
+        entry: uv run pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: tsc
+        name: tsc --noEmit
+        entry: bash -c 'cd viewer && npx tsc --noEmit'
+        language: system
+        files: ^viewer/.*\.(ts|json)$
+        pass_filenames: false
+
+      - id: vitest
+        name: vitest
+        entry: bash -c 'cd viewer && npm test'
+        language: system
+        files: ^viewer/src/.*\.ts$
+        pass_filenames: false

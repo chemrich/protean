@@ -22,7 +22,6 @@ from protean_mcp.selections import (
     to_molscript,
 )
 
-
 # -- tokenizing and parsing --------------------------------------------------
 
 
@@ -204,8 +203,14 @@ def test_nested_expression_round_trips():
 
 @pytest.mark.parametrize(
     "selection",
-    ["ss H", "bymolecule resi 50", "last chain A", "bound_to resn HEM",
-     "resi 50-60 extend 2", "rank 1"],
+    [
+        "ss H",
+        "bymolecule resi 50",
+        "last chain A",
+        "bound_to resn HEM",
+        "resi 50-60 extend 2",
+        "rank 1",
+    ],
 )
 def test_unsupported_constructs_raise(selection):
     """The core contract: never answer an unsupported construct with silence."""

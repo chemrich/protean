@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 
@@ -14,7 +16,7 @@ from protean_mcp.fetch import (
 FAKE_CIF = "data_test\n_entry.id TEST\n"
 
 
-def make_transport(calls: list):
+def make_transport(calls: list[Any]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(str(request.url))
         if "missing" in str(request.url):
@@ -51,7 +53,7 @@ async def test_missing_file_with_explicit_source(tmp_path):
 
 
 async def test_pdb_id_fetch_and_cache(tmp_path):
-    calls: list = []
+    calls: list[Any] = []
     transport = make_transport(calls)
     s = await fetch_structure_data("1UBQ", cache_dir=tmp_path, transport=transport)
     assert (s.name, s.format, s.source) == ("1ubq", "mmcif", "pdb")
@@ -64,7 +66,7 @@ async def test_pdb_id_fetch_and_cache(tmp_path):
 
 
 async def test_alphafold_accession(tmp_path):
-    calls: list = []
+    calls: list[Any] = []
     s = await fetch_structure_data(
         "P69905", cache_dir=tmp_path, transport=make_transport(calls)
     )
@@ -84,7 +86,7 @@ async def test_unknown_source(tmp_path):
 
 async def test_upstream_404(tmp_path):
     # 4-char ID routed to PDB but upstream 404s; use 'missing'-triggering ID.
-    calls: list = []
+    calls: list[Any] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(str(request.url))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from typing import Any
 
 import aiohttp
 import pytest
@@ -15,7 +16,8 @@ from protean_mcp.connection import ViewerBridge
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 @pytest.fixture
@@ -29,32 +31,36 @@ async def bridge():
 class MockViewer:
     """Fake viewer peer speaking the protean wire protocol."""
 
-    def __init__(self, session: aiohttp.ClientSession, ws: aiohttp.ClientWebSocketResponse):
+    def __init__(
+        self, session: aiohttp.ClientSession, ws: aiohttp.ClientWebSocketResponse
+    ):
         self.session = session
         self.ws = ws
-        self.handlers: dict = {}
+        self.handlers: dict[str, Any] = {}
 
-    async def handshake(self, visibility: str | None = None):
+    async def handshake(self, visibility: str | None = None) -> dict[str, Any]:
         ping = {"action": "protean_ping", "version": 1}
         if visibility is not None:
             ping["visibility"] = visibility
         await self.ws.send_json(ping)
-        pong = json.loads((await self.ws.receive()).data)
+        pong: dict[str, Any] = json.loads((await self.ws.receive()).data)
         assert pong["action"] == "protean_pong"
         return pong
 
-    async def report_visibility(self, visibility: str):
+    async def report_visibility(self, visibility: str) -> None:
         await self.ws.send_json(
             {"action": "protean_visibility", "visibility": visibility}
         )
 
-    async def serve_one(self):
+    async def serve_one(self) -> None:
         """Answer a single request using registered handlers."""
         msg = json.loads((await self.ws.receive()).data)
         action, args, rid = msg["action"], msg.get("args", {}), msg["id"]
         handler = self.handlers.get(action)
         if handler is None:
-            await self.ws.send_json({"id": rid, "ok": False, "error": f"no handler: {action}"})
+            await self.ws.send_json(
+                {"id": rid, "ok": False, "error": f"no handler: {action}"}
+            )
         else:
             try:
                 result = handler(args)
@@ -62,14 +68,14 @@ class MockViewer:
             except Exception as exc:
                 await self.ws.send_json({"id": rid, "ok": False, "error": str(exc)})
 
-    def serve(self, n: int = 1) -> asyncio.Task:
-        async def loop():
+    def serve(self, n: int = 1) -> asyncio.Task[None]:
+        async def loop() -> None:
             for _ in range(n):
                 await self.serve_one()
 
         return asyncio.create_task(loop())
 
-    async def close(self):
+    async def close(self) -> None:
         await self.ws.close()
         await self.session.close()
 

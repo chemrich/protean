@@ -33,7 +33,31 @@ from protean_mcp.selections import to_molscript
 
 from .conftest import free_port
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+def _find_chrome() -> str | None:
+    """Locate a Chrome binary: explicit override, then the usual suspects.
+
+    CI runners are Linux and have no /Applications, so the macOS path alone
+    would silently skip the whole suite there.
+    """
+    override = os.environ.get("PROTEAN_CHROME")
+    if override:
+        return override if Path(override).exists() else None
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+    return next((c for c in candidates if Path(c).exists()), None)
+
+
+CHROME = _find_chrome()
+
+# Headless CI needs software WebGL; locally we want a real window.
+CHROME_FLAGS = [f for f in os.environ.get("PROTEAN_CHROME_FLAGS", "").split(" ") if f]
 STATIC = Path(__file__).resolve().parents[1] / "src" / "protean_mcp" / "static"
 FIXTURE = "4hhb"
 
@@ -65,7 +89,7 @@ pytestmark = [
         os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
         reason="needs a browser; set PROTEAN_DIFFERENTIAL=1 to run",
     ),
-    pytest.mark.skipif(not Path(CHROME).exists(), reason="Google Chrome not installed"),
+    pytest.mark.skipif(CHROME is None, reason="no Chrome binary found"),
     pytest.mark.skipif(
         not (STATIC / "index.html").exists(),
         reason="viewer not built (npm run build in viewer/)",
@@ -178,7 +202,8 @@ async def _cdp_eval(port: int, url: str, expression: str):
                 await asyncio.sleep(0.3)
                 continue
             pages = [
-                t for t in targets
+                t
+                for t in targets
                 if t.get("type") == "page"
                 and t.get("url", "").rstrip("/") == url.rstrip("/")
             ]
@@ -191,8 +216,17 @@ async def _cdp_eval(port: int, url: str, expression: str):
         async with session.ws_connect(
             pages[0]["webSocketDebuggerUrl"], max_msg_size=64 * 1024 * 1024
         ) as ws:
-            await ws.send_json({"id": 1, "method": "Runtime.evaluate", "params": {
-                "expression": expression, "awaitPromise": True, "returnByValue": True}})
+            await ws.send_json(
+                {
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": expression,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                    },
+                }
+            )
             async for msg in ws:
                 payload = json.loads(msg.data)
                 if payload.get("id") == 1:
@@ -212,22 +246,41 @@ async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, 
     cdp_port = free_port()
     profile = tempfile.mkdtemp(prefix="protean-diff-")
 
+    chrome = CHROME
+    assert chrome is not None  # guaranteed by the module-level skipif
+    # Chrome's own output is the only clue when the page never connects, so
+    # keep it rather than sending it to /dev/null.
+    log_path = Path(profile) / "chrome.log"
+    log = log_path.open("wb")
     proc = subprocess.Popen(
-        [CHROME, f"--user-data-dir={profile}", "--no-first-run",
-         "--no-default-browser-check", f"--remote-debugging-port={cdp_port}", url],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            chrome,
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            f"--remote-debugging-port={cdp_port}",
+            *CHROME_FLAGS,
+            url,
+        ],
+        stdout=log,
+        stderr=log,
     )
     try:
         await bridge.wait_for_viewer(40)
-        await bridge.request("load_structure", {
-            "name": pdb_id, "format": structure.format, "data": structure.data},
-            timeout=120)
+        await bridge.request(
+            "load_structure",
+            {"name": pdb_id, "format": structure.format, "data": structure.data},
+            timeout=120,
+        )
         raw = await _cdp_eval(cdp_port, url, _EVAL_JS % json.dumps(cases))
         return {entry["key"]: entry for entry in raw}
     finally:
         proc.terminate()
-        subprocess.run(["pkill", "-f", f"user-data-dir={profile}"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["pkill", "-f", f"user-data-dir={profile}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         await bridge.stop()
         shutil.rmtree(profile, ignore_errors=True)
 
@@ -259,7 +312,8 @@ def _count(counts, prefix: str, selection: str) -> int:
     entry = counts[f"{prefix}::{selection}"]
     if "error" in entry:
         pytest.fail(f"{prefix} '{selection}' errored: {entry['error']}")
-    return entry["count"]
+    count: int = entry["count"]
+    return count
 
 
 @pytest.mark.parametrize("selection", sorted(EXPECTED))

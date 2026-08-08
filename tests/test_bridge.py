@@ -12,7 +12,7 @@ import pytest
 from protean_mcp import DEFAULT_PORT
 from protean_mcp.connection import ViewerBridge, ViewerError
 
-from .conftest import free_port
+from .conftest import MockViewer, free_port
 
 
 async def test_handshake_marks_viewer_connected(bridge, viewer):
@@ -111,8 +111,6 @@ async def test_displaced_viewer_is_told_it_was_superseded(bridge, viewer):
 async def test_handshake_records_visibility(bridge):
     session = aiohttp.ClientSession()
     ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws")
-    from .conftest import MockViewer
-
     v = MockViewer(session, ws)
     await v.handshake(visibility="hidden")
     await bridge.wait_for_viewer(timeout=5)
@@ -159,7 +157,9 @@ async def test_timeout_has_no_hint_when_visible(bridge, viewer):
 
 
 async def test_placeholder_page_when_not_built(bridge):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"http://127.0.0.1:{bridge.port}/") as resp:
-            assert resp.status == 200
-            assert "not built" in await resp.text()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(f"http://127.0.0.1:{bridge.port}/") as resp,
+    ):
+        assert resp.status == 200
+        assert "not built" in await resp.text()

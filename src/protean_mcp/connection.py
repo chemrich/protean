@@ -45,7 +45,7 @@ class ViewerBridge:
         self.port: int | None = None
         self.static_dir = static_dir
         self._ws: web.WebSocketResponse | None = None
-        self._pending: dict[str, asyncio.Future] = {}
+        self._pending: dict[str, asyncio.Future[Any]] = {}
         self._connected = asyncio.Event()
         self._runner: web.AppRunner | None = None
         self._visibility: str | None = None
@@ -115,7 +115,7 @@ class ViewerBridge:
     async def wait_for_viewer(self, timeout: float = 15) -> None:
         try:
             await asyncio.wait_for(self._connected.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise ViewerError(
                 f"No viewer connected within {timeout}s. Is the browser tab open?"
             ) from None
@@ -130,12 +130,12 @@ class ViewerBridge:
             raise ViewerError("No viewer connected — call open_viewer first.")
         assert self._ws is not None
         rid = uuid.uuid4().hex
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending[rid] = fut
         try:
             await self._ws.send_json({"id": rid, "action": action, "args": args or {}})
             reply = await asyncio.wait_for(fut, timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise ViewerError(
                 f"Viewer timed out on '{action}' after {timeout}s.{self._stall_hint()}"
             ) from None
@@ -162,7 +162,7 @@ class ViewerBridge:
 
     # -- handlers ------------------------------------------------------------
 
-    async def _index_handler(self, request: web.Request) -> web.Response:
+    async def _index_handler(self, request: web.Request) -> web.StreamResponse:
         if self.static_dir and (self.static_dir / "index.html").exists():
             return web.FileResponse(self.static_dir / "index.html")
         return web.Response(text=PLACEHOLDER_HTML, content_type="text/html")
