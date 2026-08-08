@@ -49,7 +49,28 @@ _bridge: ViewerBridge | None = None
 # browser. The viewer displays what we resolve; it is not the source of truth.
 _structure: Any = None
 _structure_error: str | None = None
+_structure_identifier: str | None = None
 _handles = HandleRegistry()
+
+
+def _same_structure(identifier: str) -> bool:
+    """Is this identifier the structure we already have loaded?
+
+    Handles index into the loaded structure, so an analysis of anything else
+    cannot produce one. Getting this wrong would register handles whose atom
+    indices point into a different molecule — right-looking numbers, wrong
+    atoms — so the comparison is conservative: unsure means no.
+    """
+    if _structure is None or _structure_identifier is None:
+        return False
+    if identifier.casefold() == _structure_identifier.casefold():
+        return True
+    try:
+        return Path(identifier).expanduser().resolve() == (
+            Path(_structure_identifier).expanduser().resolve()
+        )
+    except OSError:
+        return False
 
 
 def _require_structure() -> Any:
@@ -171,13 +192,14 @@ async def fetch_structure(
     # Mol* is more tolerant than our analysis parser, so a file it can render
     # should still display. Only analysis degrades, and it says so rather than
     # silently matching nothing.
-    global _structure, _structure_error  # noqa: PLW0603 - session state
+    global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
     _handles.clear()
     try:
         _structure = _load_structure(structure.data, structure.format)
         _structure_error = None
     except SelectionError as exc:
         _structure, _structure_error = None, str(exc)
+    _structure_identifier = identifier
     label = name or structure.name
     result = await bridge.request(
         "load_structure",
@@ -551,12 +573,21 @@ async def superpose(
 
 @mcp.tool()
 async def interface(
-    identifier: str,
     chain_a: str,
     chain_b: str,
+    identifier: str | None = None,
     contact_limit: int = 200,
+    name_a: str = "iface_a",
+    name_b: str = "iface_b",
 ) -> dict[str, Any]:
     """Describe the interface between two chains: buried area and contacts.
+
+    identifier: defaults to the loaded structure, which is the usual case.
+      Naming a different structure runs the analysis standalone, with no
+      viewer and no handles.
+    name_a, name_b: handles registered for the interface residues of each side,
+      so the result can be shown or coloured without re-encoding it as a
+      selection string. Pass them to show(), color(), combine() or near().
 
     Returns the buried surface area (total and per side), the interface
     residues with how much each buries, and the contacts classified as salt
@@ -565,19 +596,52 @@ async def interface(
     Solvent is excluded. The `criterion` field states how contacts were
     judged: real donor-H...acceptor geometry when the structure has hydrogens,
     a heavy-atom distance cutoff when it does not.
-
-    This is pure analysis and does not touch the viewer.
     """
+    # Handles are atom indices into the loaded structure, so they can only be
+    # registered when that is what we analysed. Reuse the loaded array rather
+    # than re-parsing: identical indices by construction, not by assumption.
+    label: str | None
+    if identifier is not None and not _same_structure(identifier):
+        on_loaded = False
+        label = identifier
+        try:
+            structure = await fetch_structure_data(identifier)
+            array = parse_structure(structure.data, structure.format)
+        except FetchError as exc:
+            raise ViewerError(str(exc)) from exc
+        except SuperpositionError as exc:
+            raise ViewerError(str(exc)) from exc
+    else:
+        on_loaded = True
+        array = _require_structure()
+        label = identifier or _structure_identifier
+
     try:
-        structure = await fetch_structure_data(identifier)
-    except FetchError as exc:
-        raise ViewerError(str(exc)) from exc
-    try:
-        array = parse_structure(structure.data, structure.format)
         result = _interface(array, chain_a, chain_b, contact_limit=contact_limit)
     except (ContactError, SuperpositionError) as exc:
         raise ViewerError(str(exc)) from exc
-    return {"identifier": identifier, **result.as_dict()}
+
+    payload: dict[str, Any] = {"identifier": label, **result.as_dict()}
+    if on_loaded:
+        call = f"interface({chain_a}, {chain_b})"
+        for name, indices, side in (
+            (name_a, result.indices_a, chain_a),
+            (name_b, result.indices_b, chain_b),
+        ):
+            # Name the side in the origin: list_selections shows it, and two
+            # handles reading "interface(A, B)" would be indistinguishable.
+            _register(name, indices, f"{call} side {side}")
+            await _display(name, indices)
+        payload["handles"] = {"a": name_a, "b": name_b}
+    else:
+        # Say why rather than omitting them: a missing key reads as "there was
+        # no interface", which is a different and much worse claim.
+        payload["handles"] = None
+        payload["handles_note"] = (
+            f"No handles registered: {identifier!r} is not the loaded structure. "
+            "Load it with fetch_structure to get handles for its interface."
+        )
+    return payload
 
 
 @mcp.tool()
