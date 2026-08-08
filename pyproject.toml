@@ -11,6 +11,7 @@ dependencies = [
     "mcp[cli]>=1.2.0,<2",
     "aiohttp>=3.9",
     "httpx>=0.27",
+    "biotite>=1.6.0",
 ]
 
 [project.scripts]
@@ -69,12 +70,14 @@ ignore = [
 # MCP tools deliberately expose flat keyword parameters: a model fills a flat
 # tool schema far more reliably than a nested options object.
 "src/protean_mcp/server.py" = ["PLR0913", "PLR0917"]
+# Two structures x (text, format, chain) plus a limit; folding them into an
+# options object would make every call site worse.
+"src/protean_mcp/analysis/superposition.py" = ["PLR0913", "PLR0917"]
 # The emitter dispatches on AST node type; branch and return counts are the
 # shape of the problem, not complexity worth refactoring away.
 "src/protean_mcp/selections.py" = ["PLR0911", "PLR0912"]
 
 [tool.mypy]
-python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 

@@ -1,0 +1,173 @@
+"""Superposition analysis: pure Python, no browser."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from protean_mcp.analysis.superposition import (
+    SuperpositionError,
+    parse_structure,
+    protein_atoms,
+    superpose,
+)
+
+# Two residues of a minimal poly-alanine backbone, enough for biotite to parse
+# and for chain/format handling to be exercised without a network fetch.
+TINY_PDB = """\
+ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  ALA A   1      1.458   0.000   0.000  1.00  0.00           C
+ATOM      3  C   ALA A   1      2.009   1.420   0.000  1.00  0.00           C
+ATOM      4  O   ALA A   1      1.251   2.390   0.000  1.00  0.00           O
+ATOM      5  N   GLY A   2      3.332   1.552   0.000  1.00  0.00           N
+ATOM      6  CA  GLY A   2      3.993   2.849   0.000  1.00  0.00           C
+ATOM      7  C   GLY A   2      5.500   2.700   0.000  1.00  0.00           C
+ATOM      8  O   GLY A   2      6.000   1.580   0.000  1.00  0.00           O
+ATOM      9  N   HOH B   3      9.000   9.000   9.000  1.00  0.00           N
+END
+"""
+
+
+def test_parses_pdb_text():
+    array = parse_structure(TINY_PDB, "pdb")
+    assert array.array_length() == 9
+
+
+def test_malformed_coordinates_raise_our_error():
+    with pytest.raises(SuperpositionError, match="Could not parse"):
+        parse_structure("ATOM  nonsense\nEND\n", "pdb")
+
+
+def test_unknown_format_is_refused():
+    with pytest.raises(SuperpositionError, match="Unsupported format"):
+        parse_structure(TINY_PDB, "mol2")
+
+
+def test_protein_atoms_drops_non_amino_acids():
+    array = parse_structure(TINY_PDB, "pdb")
+    protein = protein_atoms(array, None, "test")
+    assert protein.array_length() == 8  # the water nitrogen is excluded
+    assert set(protein.res_name.tolist()) == {"ALA", "GLY"}
+
+
+def test_missing_chain_names_the_available_ones():
+    array = parse_structure(TINY_PDB, "pdb")
+    with pytest.raises(SuperpositionError, match="chains present: A, B"):
+        protein_atoms(array, "Z", "mobile")
+
+
+def test_chainless_structure_is_refused():
+    # Reuse the line from TINY_PDB rather than hand-writing PDB columns.
+    only_water = (
+        "\n".join(
+            line for line in TINY_PDB.splitlines() if "HOH" in line or line == "END"
+        )
+        + "\n"
+    )
+    with pytest.raises(SuperpositionError, match="no amino acids"):
+        protein_atoms(parse_structure(only_water, "pdb"), None, "mobile")
+
+
+# -- fixtures with a known answer --------------------------------------------
+
+
+def _shifted(text: str, offset: float) -> str:
+    """Translate every atom, so the correct superposition is exactly recoverable."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("ATOM"):
+            x = float(line[30:38]) + offset
+            out.append(f"{line[:30]}{x:8.3f}{line[38:]}")
+        else:
+            out.append(line)
+    return "\n".join(out) + "\n"
+
+
+@pytest.fixture
+def helix_pdb():
+    """A 12-residue helix with a varied sequence.
+
+    Deliberately not poly-alanine: anchors come from a sequence alignment, and
+    a homopolymer has no unique register, so identical structures can align
+    off-by-one and score a non-zero RMSD.
+    """
+    residues = [
+        "ALA",
+        "GLY",
+        "SER",
+        "VAL",
+        "LEU",
+        "THR",
+        "ILE",
+        "PRO",
+        "PHE",
+        "TYR",
+        "TRP",
+        "MET",
+    ]
+    lines = []
+    n = 1
+    for i in range(12):
+        angle = np.deg2rad(100 * i)
+        z = 1.5 * i
+        for name, element, radius in (
+            ("N", "N", 1.4),
+            ("CA", "C", 2.3),
+            ("C", "C", 2.0),
+            ("O", "O", 2.6),
+        ):
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            lines.append(
+                f"ATOM  {n:5d}  {name:<3s} {residues[i]} A{i + 1:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {element}"
+            )
+            n += 1
+    return "\n".join(lines) + "\nEND\n"
+
+
+def test_identical_structures_superpose_exactly(helix_pdb):
+    result = superpose(helix_pdb, "pdb", helix_pdb, "pdb")
+    assert result.rmsd == pytest.approx(0.0, abs=1e-4)
+    assert result.sequence_identity == pytest.approx(1.0)
+    # superimpose_homologs iteratively discards outlier anchors, so even a
+    # structure against itself keeps most rather than all of them.
+    assert 8 <= result.aligned_residues <= 12
+
+
+def test_a_pure_translation_is_undone(helix_pdb):
+    """The fit must recover a known offset, not merely report a small number."""
+    moved = _shifted(helix_pdb, 25.0)
+    result = superpose(moved, "pdb", helix_pdb, "pdb")
+    assert result.rmsd == pytest.approx(0.0, abs=1e-4)
+
+
+def test_transform_is_a_four_by_four_matrix(helix_pdb):
+    result = superpose(helix_pdb, "pdb", helix_pdb, "pdb")
+    assert len(result.transform) == 4
+    assert all(len(row) == 4 for row in result.transform)
+
+
+def test_outliers_are_ordered_worst_first(helix_pdb):
+    result = superpose(_shifted(helix_pdb, 3.0), "pdb", helix_pdb, "pdb")
+    deviations = [o.deviation for o in result.outliers]
+    assert deviations == sorted(deviations, reverse=True)
+
+
+def test_result_dict_rounds_for_reporting(helix_pdb):
+    payload = superpose(helix_pdb, "pdb", helix_pdb, "pdb").as_dict()
+    assert set(payload) == {
+        "rmsd",
+        "aligned_residues",
+        "sequence_identity",
+        "transform",
+        "mobile_chains",
+        "target_chains",
+        "outliers",
+    }
+    assert payload["mobile_chains"] == ["A"]
+
+
+def test_unrelated_structures_are_refused(helix_pdb):
+    with pytest.raises(SuperpositionError):
+        superpose(TINY_PDB, "pdb", helix_pdb, "pdb")
