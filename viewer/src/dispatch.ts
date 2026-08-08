@@ -28,6 +28,8 @@ interface SelectArgs {
 interface ShowArgs extends SelectArgs {
   representation: string;
   color?: string;
+  /** Scales the representation; for spacefill this scales the vdW radius. */
+  size?: number;
 }
 
 declare global {
@@ -269,6 +271,25 @@ export function createDispatcher(plugin: any): Handler {
   const colorThemeNames = () =>
     registryNames(plugin.representation?.structure?.themes?.colorThemeRegistry);
 
+  /** Which params a representation actually accepts, for the same reason we
+   * validate its name: an unsupported one is ignored rather than refused. */
+  function representationParams(type: string): string[] | null {
+    try {
+      const provider = plugin.representation.structure.registry.get(type);
+      const params = provider.getParams(
+        plugin.representation.structure.themes,
+        rootStructure()
+      );
+      return Object.keys(params);
+    } catch (err) {
+      // Returning [] here would make the size check quietly pass for every
+      // representation, which is the failure mode this whole layer exists to
+      // avoid. null means "could not introspect" and is reported as such.
+      console.warn(`protean: cannot read params for '${type}':`, err);
+      return null;
+    }
+  }
+
   /** Mol* accepts an unknown representation or theme name without complaint and
    * then draws nothing, so a typo would look like an empty selection. */
   function checkName(kind: string, value: string, valid: string[]) {
@@ -365,10 +386,21 @@ export function createDispatcher(plugin: any): Handler {
 
     show: {
       render: true,
-      async run({ name, expression, representation, color, limit }: ShowArgs) {
+      async run({ name, expression, representation, color, size, limit }: ShowArgs) {
         checkName('representation', representation, representationTypes());
         if (color && !color.startsWith('#')) {
           checkName('colour theme', color, colorThemeNames());
+        }
+        let sizeValidated: boolean | undefined;
+        if (size !== undefined) {
+          const accepted = representationParams(representation);
+          sizeValidated = accepted !== null;
+          if (accepted && !accepted.includes('sizeFactor')) {
+            throw new Error(
+              `Representation '${representation}' has no size control. ` +
+                `It accepts: ${accepted.filter((k) => /size|scale/i.test(k)).join(', ') || '(no size-like params)'}`
+            );
+          }
         }
         const selector = await component(name, expression);
         const structure = dataOf(selector);
@@ -377,10 +409,12 @@ export function createDispatcher(plugin: any): Handler {
         }
         const params: Record<string, unknown> = { type: representation };
         if (color) Object.assign(params, colorParams(color));
+        if (size !== undefined) params.typeParams = { sizeFactor: size };
         await plugin.builders.structure.representation.addRepresentation(selector, params);
         return {
           name,
           representation,
+          ...(size !== undefined ? { size, size_validated: sizeValidated } : {}),
           ...summarise(structure, limit ?? DEFAULT_RESIDUE_LIMIT),
         };
       },
@@ -517,6 +551,29 @@ export function createDispatcher(plugin: any): Handler {
         else if (kind === 'angle') await measurement.addAngle(loci[0], loci[1], loci[2]);
         else await measurement.addDihedral(loci[0], loci[1], loci[2], loci[3]);
         return { kind, names, atoms: names.map((n) => structureOf(require(n))!.elementCount) };
+      },
+    },
+
+    label: {
+      render: true,
+      async run({ name, level }: { name: string; level?: string }) {
+        const entry = require(name);
+        const chosen = level ?? 'residue';
+        const levels = ['chain', 'residue', 'element'];
+        if (!levels.includes(chosen)) {
+          throw new Error(`Unknown label level '${chosen}'. Available: ${levels.join(', ')}`);
+        }
+        const structure = structureOf(entry);
+        if (!structure?.elementCount) {
+          throw new Error(`Selection '${name}' has no atoms to label`);
+        }
+        // addRepresentation takes a StateObjectRef, and a plain ref string is
+        // one — which matters because a restored handle has no selector object.
+        await plugin.builders.structure.representation.addRepresentation(entry.refs[0], {
+          type: 'label',
+          typeParams: { level: chosen },
+        });
+        return { name, level: chosen, labelled: structure.elementCount };
       },
     },
 

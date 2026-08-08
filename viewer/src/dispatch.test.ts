@@ -142,7 +142,7 @@ function fakePlugin() {
     ['A']
   );
   const hierarchyStructure = {
-    cell: { transform: { ref: 'structure-ref' } },
+    cell: { transform: { ref: 'structure-ref' }, obj: { data: structure } },
     components: componentRefs,
   };
   const toggleVisibility = vi.fn(async (comps: any[]) => {
@@ -153,7 +153,15 @@ function fakePlugin() {
     toggleVisibility,
     representation: {
       structure: {
-        registry: { types: [['cartoon'], ['spacefill']] },
+        registry: {
+          types: [['cartoon'], ['spacefill']],
+          get: (type: string) => ({
+            getParams: () =>
+              type === 'spacefill'
+                ? { sizeFactor: 1, alpha: 1 }
+                : { alpha: 1, aspectRatio: 1 },
+          }),
+        },
         themes: { colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] } },
       },
     },
@@ -322,6 +330,65 @@ describe('createDispatcher', () => {
     await dispatch('load_session', { snapshot: {}, handles: {} });
     const listed: any = await dispatch('list_selections', {});
     expect(listed.selections).toEqual([]);
+  });
+
+  it('passes size through as a sizeFactor', async () => {
+    const plugin = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    const result: any = await dispatch('show', {
+      name: 's', expression: '(sel.atom.all)', representation: 'spacefill', size: 0.35,
+    });
+    expect(result).toMatchObject({ size: 0.35, size_validated: true });
+    expect(
+      plugin.builders.structure.representation.addRepresentation
+    ).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      typeParams: { sizeFactor: 0.35 },
+    }));
+  });
+
+  it('refuses size on a representation that has no sizeFactor', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(
+      dispatch('show', {
+        name: 's', expression: '(sel.atom.all)', representation: 'cartoon', size: 2,
+      })
+    ).rejects.toThrow(/has no size control/);
+  });
+
+  it('says so when it cannot check whether size is supported', async () => {
+    // Reporting an unchecked size beats silently pretending it was validated.
+    const plugin: any = fakePlugin();
+    plugin.representation.structure.registry.get = () => {
+      throw new Error('registry unavailable');
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dispatch = createDispatcher(plugin);
+    const result: any = await dispatch('show', {
+      name: 's', expression: '(sel.atom.all)', representation: 'spacefill', size: 0.5,
+    });
+    expect(result.size_validated).toBe(false);
+  });
+
+  it('labels a selection at the requested level', async () => {
+    const plugin = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    await dispatch('select', { name: 'site', expression: '(sel.atom.all)' });
+    const result: any = await dispatch('label', { name: 'site', level: 'chain' });
+    expect(result).toMatchObject({ name: 'site', level: 'chain' });
+    expect(
+      plugin.builders.structure.representation.addRepresentation
+    ).toHaveBeenCalledWith(expect.anything(), { type: 'label', typeParams: { level: 'chain' } });
+  });
+
+  it('defaults labels to residue level and rejects an unknown one', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await dispatch('select', { name: 'site', expression: '(sel.atom.all)' });
+    await expect(dispatch('label', { name: 'site' })).resolves.toMatchObject({
+      level: 'residue',
+    });
+    await expect(dispatch('label', { name: 'site', level: 'atoms' })).rejects.toThrow(
+      /Unknown label level 'atoms'\. Available: chain, residue, element/
+    );
   });
 
   it('drops the handle on remove', async () => {
