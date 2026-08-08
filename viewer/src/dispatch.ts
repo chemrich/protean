@@ -175,11 +175,14 @@ export function createDispatcher(plugin: any): Handler {
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
 
-  const structureRef = () => {
+  const currentStructure = () => {
     const current = plugin.managers.structure.hierarchy.current.structures[0];
     if (!current) throw new Error('No structure loaded — call fetch_structure first.');
-    return current.cell.transform.ref;
+    return current;
   };
+
+  const structureRef = () => currentStructure().cell.transform.ref;
+  const rootStructure = () => currentStructure().cell.obj.data;
 
   async function component(name: string, expression: string) {
     const existing = components.get(name);
@@ -369,6 +372,68 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    focus: {
+      render: true,
+      async run({ name }: { name: string }) {
+        const structure = dataOf(require(name).selector);
+        if (!structure?.elementCount) {
+          throw new Error(`Selection '${name}' has no atoms to focus on`);
+        }
+        // focusLoci, not focusSphere: a point-like selection's boundary sphere
+        // has ~zero radius and the camera barely moves.
+        plugin.managers.camera.focusLoci(lociOf(rootStructure(), structure));
+        const camera = plugin.canvas3d?.camera?.state;
+        return {
+          name,
+          target: camera ? Array.from(camera.target as ArrayLike<number>) : null,
+          radius: camera?.radius ?? null,
+        };
+      },
+    },
+
+    reset_view: {
+      render: true,
+      async run() {
+        plugin.managers.camera.reset();
+        return { reset: true };
+      },
+    },
+
+    orient: {
+      render: true,
+      async run() {
+        // Aligns the camera to the structure's principal axes.
+        plugin.managers.camera.orientAxes();
+        return { oriented: true };
+      },
+    },
+
+    measure: {
+      render: true,
+      async run({ kind, names }: { kind: string; names: string[] }) {
+        const arity: Record<string, number> = { distance: 2, angle: 3, dihedral: 4 };
+        const wanted = arity[kind];
+        if (!wanted) {
+          throw new Error(`Unknown measurement '${kind}' (distance, angle, dihedral)`);
+        }
+        if (names.length !== wanted) {
+          throw new Error(`A ${kind} needs ${wanted} selections, got ${names.length}`);
+        }
+        const loci = names.map((n) => {
+          const structure = dataOf(require(n).selector);
+          if (!structure?.elementCount) {
+            throw new Error(`Selection '${n}' has no atoms to measure`);
+          }
+          return lociOf(rootStructure(), structure);
+        });
+        const measurement = plugin.managers.structure.measurement;
+        if (kind === 'distance') await measurement.addDistance(loci[0], loci[1]);
+        else if (kind === 'angle') await measurement.addAngle(loci[0], loci[1], loci[2]);
+        else await measurement.addDihedral(loci[0], loci[1], loci[2], loci[3]);
+        return { kind, names, atoms: names.map((n) => dataOf(require(n).selector).elementCount) };
+      },
+    },
+
     clear: {
       render: true,
       async run() {
@@ -400,6 +465,38 @@ export function createDispatcher(plugin: any): Handler {
     if (!spec.render) return spec.run(args);
     return withRenderPump(plugin, action, () => spec.run(args));
   };
+}
+
+/** Build a StructureElement.Loci covering every atom of *structure*.
+ *
+ * The prebuilt global exposes no helper for this, but the shape is safe to
+ * construct by hand: an OrderedSet of element indices is either an Interval or
+ * a SortedArray, and a SortedArray is a plain typed array — so a 0..n-1
+ * Int32Array is a valid one. `indices` are unit-local, not element ids.
+ *
+ * Verified by handing the result to `camera.focusLoci`, which parked the camera
+ * on exactly the intended atom's coordinates.
+ */
+export function lociOf(root: any, component: any) {
+  // Anchored to the *root* structure, not the component's own child structure.
+  // Mol* serialises a loci to a bundle keyed by unit id and re-resolves it
+  // against the parent, so a child-anchored loci silently points at whatever
+  // atom happens to sit at the same unit-local index in the root's unit — a
+  // distance that should read 4.56 A rendered as 24.93 A. Immediate consumers
+  // like camera.focusLoci never round-trip and so hid the bug.
+  const wanted = new Set<number>();
+  for (const unit of component.units) {
+    for (let i = 0; i < unit.elements.length; i++) wanted.add(unit.elements[i]);
+  }
+  const elements: Array<{ unit: any; indices: Int32Array }> = [];
+  for (const unit of root.units) {
+    const indices: number[] = [];
+    for (let i = 0; i < unit.elements.length; i++) {
+      if (wanted.has(unit.elements[i])) indices.push(i);
+    }
+    if (indices.length) elements.push({ unit, indices: Int32Array.from(indices) });
+  }
+  return { kind: 'element-loci', structure: root, elements };
 }
 
 /** A leading '#' means a literal colour; anything else is a Mol* colour theme. */

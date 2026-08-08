@@ -210,6 +210,39 @@ async def list_selections() -> dict:
 
 
 @mcp.tool()
+async def focus(name: str = "sele") -> dict:
+    """Zoom the camera to a named selection, returning the resulting camera target."""
+    bridge = _require_viewer()
+    return await bridge.request("focus", {"name": name})
+
+
+@mcp.tool()
+async def reset_view() -> dict:
+    """Reset the camera to frame the whole scene."""
+    bridge = _require_viewer()
+    return await bridge.request("reset_view", {})
+
+
+@mcp.tool()
+async def orient() -> dict:
+    """Align the camera to the structure's principal axes."""
+    bridge = _require_viewer()
+    return await bridge.request("orient", {})
+
+
+@mcp.tool()
+async def measure(kind: str, names: list[str]) -> dict:
+    """Add a distance, angle, or dihedral between named selections.
+
+    kind: "distance" (2 selections), "angle" (3), or "dihedral" (4).
+    Each selection is measured at its centroid, so point-like selections read
+    most clearly — e.g. select("chain A and resi 58 and name NE2", name="ne2").
+    """
+    bridge = _require_viewer()
+    return await bridge.request("measure", {"kind": kind, "names": names})
+
+
+@mcp.tool()
 async def clear_viewer() -> str:
     """Remove all loaded structures from the viewer."""
     bridge = _require_viewer()
