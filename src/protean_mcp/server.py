@@ -13,7 +13,9 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from .analysis.superposition import SuperpositionError
+from .analysis.contacts import ContactError
+from .analysis.contacts import interface as _interface
+from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, fetch_structure_data
@@ -384,6 +386,37 @@ async def superpose(
     except SuperpositionError as exc:
         raise ViewerError(str(exc)) from exc
     return {"mobile": mobile, "target": target, **result.as_dict()}
+
+
+@mcp.tool()
+async def interface(
+    identifier: str,
+    chain_a: str,
+    chain_b: str,
+    contact_limit: int = 200,
+) -> dict[str, Any]:
+    """Describe the interface between two chains: buried area and contacts.
+
+    Returns the buried surface area (total and per side), the interface
+    residues with how much each buries, and the contacts classified as salt
+    bridges, hydrogen bonds or polar contacts.
+
+    Solvent is excluded. The `criterion` field states how contacts were
+    judged: real donor-H...acceptor geometry when the structure has hydrogens,
+    a heavy-atom distance cutoff when it does not.
+
+    This is pure analysis and does not touch the viewer.
+    """
+    try:
+        structure = await fetch_structure_data(identifier)
+    except FetchError as exc:
+        raise ViewerError(str(exc)) from exc
+    try:
+        array = parse_structure(structure.data, structure.format)
+        result = _interface(array, chain_a, chain_b, contact_limit=contact_limit)
+    except (ContactError, SuperpositionError) as exc:
+        raise ViewerError(str(exc)) from exc
+    return {"identifier": identifier, **result.as_dict()}
 
 
 @mcp.tool()

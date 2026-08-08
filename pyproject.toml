@@ -66,7 +66,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
-"tests/*" = ["ASYNC220", "ASYNC221", "BLE001", "PLW1510", "PLR2004", "PT018"]
+"tests/*" = [
+    "ASYNC220", "ASYNC221", "BLE001", "PLW1510", "PLR2004", "PT018",
+    # Fixture builders take one argument per structural field on purpose.
+    "PLR0913", "PLR0917",
+]
 # MCP tools deliberately expose flat keyword parameters: a model fills a flat
 # tool schema far more reliably than a nested options object.
 "src/protean_mcp/server.py" = ["PLR0913", "PLR0917"]
