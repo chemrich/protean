@@ -1,6 +1,11 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts'],
+  },
   base: './',
   build: {
     outDir: '../src/protean_mcp/static',

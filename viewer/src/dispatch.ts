@@ -117,7 +117,7 @@ async function withRenderPump<T>(
  * selection's contents from a picture: PyMOL reports a bare count and makes you
  * `iterate` for the rest.
  */
-function summarise(structure: any, limit: number) {
+export function summarise(structure: any, limit: number) {
   const residues: Array<Record<string, unknown>> = [];
   const chains = new Set<string>();
   const seen = new Set<string>();
@@ -158,9 +158,22 @@ function summarise(structure: any, limit: number) {
   };
 }
 
+/** Handle for the representations `applyPreset` builds on load.
+ *
+ * Without this they are unreachable: `show` layers new components on top of
+ * them, so hiding your own selection leaves the automatic cartoon still drawn
+ * and nothing appears to happen. */
+const AUTO = 'auto';
+
+interface Entry {
+  refs: string[];
+  /** Present only for components we created from a selection. */
+  selector?: any;
+}
+
 export function createDispatcher(plugin: any): Handler {
   /** Named components, so later show/color calls can target an earlier select. */
-  const components = new Map<string, any>();
+  const components = new Map<string, Entry>();
 
   const structureRef = () => {
     const current = plugin.managers.structure.hierarchy.current.structures[0];
@@ -170,8 +183,10 @@ export function createDispatcher(plugin: any): Handler {
 
   async function component(name: string, expression: string) {
     const existing = components.get(name);
-    if (existing?.ref) {
-      await plugin.state.data.build().delete(existing.ref).commit();
+    if (existing) {
+      for (const ref of existing.refs) {
+        await plugin.state.data.build().delete(ref).commit();
+      }
       components.delete(name);
     }
     const selector = await plugin.builders.structure.tryCreateComponent(
@@ -183,12 +198,66 @@ export function createDispatcher(plugin: any): Handler {
       },
       `protean-${name}`
     );
-    if (selector) components.set(name, selector);
+    if (selector) components.set(name, { refs: [selector.ref], selector });
     return selector;
   }
 
   function dataOf(selector: any) {
     return selector?.data ?? selector?.cell?.obj?.data ?? undefined;
+  }
+
+  function known(): string[] {
+    return [...components.keys()].sort();
+  }
+
+  function require(name: string): Entry {
+    const entry = components.get(name);
+    if (!entry) {
+      throw new Error(
+        `No selection named '${name}'. Known: ${known().join(', ') || '(none)'}`
+      );
+    }
+    return entry;
+  }
+
+  /** All components the hierarchy currently knows about. */
+  function allComponents() {
+    return plugin.managers.structure.hierarchy.current.structures.flatMap(
+      (s: any) => s.components ?? []
+    );
+  }
+
+  /** The hierarchy's view of our refs, which is what the managers act on. */
+  function hierarchyComponents(refs: string[]) {
+    const wanted = new Set(refs);
+    return allComponents().filter((c: any) => wanted.has(c.cell.transform.ref));
+  }
+
+  function isHiddenComponent(c: any): boolean {
+    return !!c.cell?.state?.isHidden;
+  }
+
+  /** Hiding a component hides its representation subtree along with it.
+   *
+   * Goes through the component manager: `updateCellState` flips the flag in the
+   * state tree but never reaches the renderer, so the scene keeps drawing the
+   * "hidden" component. The manager's two-argument form is not usable either —
+   * passing `true` throws inside Mol* — but the no-argument form flips, which
+   * is all we need once we have read the current state.
+   */
+  async function setHidden(name: string, hidden: boolean) {
+    const entry = require(name);
+    const found = hierarchyComponents(entry.refs);
+    if (!found.length) {
+      throw new Error(`Selection '${name}' has no component in the hierarchy to hide`);
+    }
+    let changed = 0;
+    for (const c of found) {
+      if (isHiddenComponent(c) === hidden) continue;
+      await plugin.managers.structure.component.toggleVisibility([c]);
+      changed++;
+    }
+    return { name, hidden, components: found.length, changed };
   }
 
   const actions: Record<string, { render?: boolean; run: (args: any) => Promise<unknown> }> = {
@@ -202,7 +271,11 @@ export function createDispatcher(plugin: any): Handler {
           format === 'pdb' ? 'pdb' : 'mmcif'
         );
         await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
-        return { loaded: name };
+        // Register the preset's own representations under a reserved handle so
+        // they can be hidden or removed like any other selection.
+        const auto = allComponents().map((c: any) => c.cell.transform.ref);
+        if (auto.length) components.set(AUTO, { refs: auto });
+        return { loaded: name, auto_components: auto.length };
       },
     },
 
@@ -237,25 +310,62 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    hide: {
+      render: true,
+      run: ({ name }: { name: string }) => setHidden(name, true),
+    },
+
+    unhide: {
+      render: true,
+      run: ({ name }: { name: string }) => setHidden(name, false),
+    },
+
+    remove: {
+      render: true,
+      async run({ name }: { name: string }) {
+        const entry = require(name);
+        for (const ref of entry.refs) {
+          await plugin.state.data.build().delete(ref).commit();
+        }
+        components.delete(name);
+        return { name, removed: entry.refs.length, remaining: known() };
+      },
+    },
+
+    list_selections: {
+      async run() {
+        const selections = known().map((name) => {
+          const entry = components.get(name)!;
+          const found = hierarchyComponents(entry.refs);
+          const structure = dataOf(entry.selector);
+          const atoms =
+            structure?.elementCount ??
+            found.reduce((n: number, c: any) => n + (c.cell?.obj?.data?.elementCount ?? 0), 0);
+          return {
+            name,
+            atom_count: atoms,
+            components: found.length,
+            // `auto` can be partly hidden if its components were toggled apart.
+            hidden: found.length > 0 && found.every(isHiddenComponent),
+          };
+        });
+        return { selections };
+      },
+    },
+
     color: {
       render: true,
       async run({ name, color }: { name: string; color: string }) {
-        const selector = components.get(name);
-        if (!selector) {
-          throw new Error(
-            `No selection named '${name}'. Known: ${[...components.keys()].join(', ') || '(none)'}`
-          );
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy to colour`);
         }
-        const cell = plugin.state.data.cells.get(selector.ref);
-        const structures = plugin.managers.structure.hierarchy.current.structures;
-        const target = structures
-          .flatMap((s: any) => s.components)
-          .filter((c: any) => c.cell.transform.ref === selector.ref);
         await plugin.managers.structure.component.updateRepresentationsTheme(
-          target.length ? target : [{ cell }],
+          target,
           colorParams(color)
         );
-        return { name, color };
+        return { name, color, components: target.length };
       },
     },
 
@@ -293,7 +403,7 @@ export function createDispatcher(plugin: any): Handler {
 }
 
 /** A leading '#' means a literal colour; anything else is a Mol* colour theme. */
-function colorParams(color: string): Record<string, unknown> {
+export function colorParams(color: string): Record<string, unknown> {
   if (color.startsWith('#')) {
     return { color: 'uniform', colorParams: { value: parseInt(color.slice(1), 16) } };
   }
