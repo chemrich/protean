@@ -43,6 +43,8 @@ declare global {
 /** Must stay below the bridge's own request timeout so our error wins the race. */
 const HIDDEN_TIMEOUT_MS = 30_000;
 const DEFAULT_RESIDUE_LIMIT = 200;
+/** Camera moves are tweened; this bounds the wait for one to land. */
+const CAMERA_TIMEOUT_MS = 3_000;
 
 export function isHidden(): boolean {
   return document.visibilityState !== 'visible';
@@ -66,6 +68,39 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const current = sample();
     quiet = current === previous ? quiet + 1 : 0;
+    previous = current;
+  }
+}
+
+/** Waits for a camera move to land before its result is read.
+ *
+ * `focusLoci` does not update `camera.state` synchronously — the new position
+ * is applied on the next render frame, and by default tweened over ~250ms on
+ * top of that. Reading the state straight after the call returns the *old*
+ * camera, or a mid-tween one; either way the reported target is wrong while
+ * the camera itself ends up in the right place.
+ */
+async function settleCamera(plugin: any, budgetMs: number): Promise<void> {
+  const camera = plugin.canvas3d?.camera;
+  if (!camera) return;
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+  const sample = () => {
+    const state = camera.state;
+    return `${Array.from(state.target as ArrayLike<number>).join(',')}|${state.radius}`;
+  };
+
+  const start = performance.now();
+  // Give the move a few frames to begin, so stillness beforehand is not
+  // mistaken for having arrived.
+  for (let i = 0; i < 3; i++) await frame();
+
+  let previous = sample();
+  let quiet = 0;
+  while (quiet < 3 && performance.now() - start < budgetMs) {
+    await frame();
+    const current = sample();
+    const moving = !!camera.transition?.inTransition || current !== previous;
+    quiet = moving ? 0 : quiet + 1;
     previous = current;
   }
 }
@@ -382,6 +417,7 @@ export function createDispatcher(plugin: any): Handler {
         // focusLoci, not focusSphere: a point-like selection's boundary sphere
         // has ~zero radius and the camera barely moves.
         plugin.managers.camera.focusLoci(lociOf(rootStructure(), structure));
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
         const camera = plugin.canvas3d?.camera?.state;
         return {
           name,
@@ -395,6 +431,7 @@ export function createDispatcher(plugin: any): Handler {
       render: true,
       async run() {
         plugin.managers.camera.reset();
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
         return { reset: true };
       },
     },
@@ -404,6 +441,7 @@ export function createDispatcher(plugin: any): Handler {
       async run() {
         // Aligns the camera to the structure's principal axes.
         plugin.managers.camera.orientAxes();
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
         return { oriented: true };
       },
     },
