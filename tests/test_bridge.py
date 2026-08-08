@@ -91,6 +91,56 @@ async def test_new_viewer_replaces_old(bridge, viewer):
     await session.close()
 
 
+async def test_handshake_records_visibility(bridge):
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws")
+    from .conftest import MockViewer
+
+    v = MockViewer(session, ws)
+    await v.handshake(visibility="hidden")
+    await bridge.wait_for_viewer(timeout=5)
+    assert bridge.viewer_visibility == "hidden"
+    await v.close()
+
+
+async def test_visibility_updates_are_tracked(bridge, viewer):
+    await viewer.report_visibility("hidden")
+    await asyncio.sleep(0.1)
+    assert bridge.viewer_visibility == "hidden"
+    await viewer.report_visibility("visible")
+    await asyncio.sleep(0.1)
+    assert bridge.viewer_visibility == "visible"
+
+
+async def test_visibility_is_none_when_disconnected(bridge, viewer):
+    await viewer.report_visibility("visible")
+    await asyncio.sleep(0.1)
+    await viewer.close()
+    await asyncio.sleep(0.1)
+    assert bridge.viewer_visibility is None
+
+
+async def test_timeout_explains_hidden_tab(bridge, viewer):
+    """A stalled hidden tab is the common case — the error must say so."""
+    await viewer.report_visibility("hidden")
+    await asyncio.sleep(0.1)
+    with pytest.raises(ViewerError, match="requestAnimationFrame"):
+        await bridge.request("slow", timeout=0.2)
+
+
+async def test_timeout_notes_unknown_visibility(bridge, viewer):
+    with pytest.raises(ViewerError, match="did not report its visibility"):
+        await bridge.request("slow", timeout=0.2)
+
+
+async def test_timeout_has_no_hint_when_visible(bridge, viewer):
+    await viewer.report_visibility("visible")
+    await asyncio.sleep(0.1)
+    with pytest.raises(ViewerError) as excinfo:
+        await bridge.request("slow", timeout=0.2)
+    assert "requestAnimationFrame" not in str(excinfo.value)
+
+
 async def test_placeholder_page_when_not_built(bridge):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"http://127.0.0.1:{bridge.port}/") as resp:

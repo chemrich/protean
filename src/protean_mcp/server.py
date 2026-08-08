@@ -51,6 +51,14 @@ def _require_viewer() -> ViewerBridge:
     return bridge
 
 
+def _visibility_note(bridge: ViewerBridge) -> str:
+    """Flag a backgrounded tab: loads still work there, but only via the pump."""
+    visibility = bridge.viewer_visibility
+    if visibility is None or visibility == "visible":
+        return ""
+    return f" (tab is {visibility} — rendering runs on the background-tab pump)"
+
+
 @mcp.tool()
 async def open_viewer(timeout: float = 20) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
@@ -62,7 +70,7 @@ async def open_viewer(timeout: float = 20) -> str:
     port = await bridge.start()
     url = f"http://127.0.0.1:{port}/"
     if bridge.viewer_connected:
-        return f"Viewer already connected at {url}"
+        return f"Viewer already connected at {url}{_visibility_note(bridge)}"
     if _static_dir() is None:
         return (
             f"Bridge is listening at {url}, but the viewer app is not built. "
@@ -71,7 +79,7 @@ async def open_viewer(timeout: float = 20) -> str:
         )
     webbrowser.open(url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {url}"
+    return f"Viewer connected at {url}{_visibility_note(bridge)}"
 
 
 @mcp.tool()

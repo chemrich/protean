@@ -34,11 +34,19 @@ class MockViewer:
         self.ws = ws
         self.handlers: dict = {}
 
-    async def handshake(self):
-        await self.ws.send_json({"action": "protean_ping", "version": 1})
+    async def handshake(self, visibility: str | None = None):
+        ping = {"action": "protean_ping", "version": 1}
+        if visibility is not None:
+            ping["visibility"] = visibility
+        await self.ws.send_json(ping)
         pong = json.loads((await self.ws.receive()).data)
         assert pong["action"] == "protean_pong"
         return pong
+
+    async def report_visibility(self, visibility: str):
+        await self.ws.send_json(
+            {"action": "protean_visibility", "visibility": visibility}
+        )
 
     async def serve_one(self):
         """Answer a single request using registered handlers."""
