@@ -152,6 +152,7 @@ async def show(
 
     representation: cartoon, ball-and-stick, spacefill, molecular-surface,
       gaussian-surface, putty, line, point, ellipsoid, backbone, carbohydrate.
+      An unknown name is rejected with the full list; see capabilities().
     color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
       b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
     """
@@ -240,6 +241,17 @@ async def measure(kind: str, names: list[str]) -> dict:
     """
     bridge = _require_viewer()
     return await bridge.request("measure", {"kind": kind, "names": names})
+
+
+@mcp.tool()
+async def capabilities() -> dict:
+    """List the representation and colour-theme names this viewer accepts.
+
+    Read from Mol*'s live registries, so the list matches the bundled version
+    rather than a hardcoded guess.
+    """
+    bridge = _require_viewer()
+    return await bridge.request("capabilities", {})
 
 
 @mcp.tool()

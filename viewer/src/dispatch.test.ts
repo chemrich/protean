@@ -151,6 +151,12 @@ function fakePlugin() {
   return {
     componentRefs,
     toggleVisibility,
+    representation: {
+      structure: {
+        registry: { types: [['cartoon'], ['spacefill']] },
+        themes: { colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] } },
+      },
+    },
     clear: vi.fn(async () => {}),
     builders: {
       data: { rawData: vi.fn(async () => ({})) },
@@ -236,6 +242,51 @@ describe('createDispatcher', () => {
 
     const shown: any = await dispatch('unhide', { name: 'sele' });
     expect(shown).toMatchObject({ hidden: false, changed: 1 });
+  });
+
+  it('rejects an unknown representation instead of drawing nothing', async () => {
+    // Mol* accepts a bogus name without complaint and renders nothing, so a
+    // typo would be indistinguishable from an empty selection.
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(
+      dispatch('show', { name: 's', expression: '(sel.atom.all)', representation: 'cartoonn' })
+    ).rejects.toThrow(/Unknown representation 'cartoonn'\. Available: cartoon, spacefill/);
+  });
+
+  it('rejects an unknown colour theme', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(
+      dispatch('show', {
+        name: 's', expression: '(sel.atom.all)', representation: 'cartoon', color: 'nope',
+      })
+    ).rejects.toThrow(/Unknown colour theme 'nope'/);
+  });
+
+  it('treats a hex value as a literal colour, not a theme name', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(
+      dispatch('show', {
+        name: 's', expression: '(sel.atom.all)', representation: 'cartoon', color: '#ff0000',
+      })
+    ).resolves.toMatchObject({ name: 's' });
+  });
+
+  it('reports the names it accepts', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(dispatch('capabilities', {})).resolves.toEqual({
+      representations: ['cartoon', 'spacefill'],
+      color_themes: ['chain-id', 'element-symbol'],
+    });
+  });
+
+  it('skips validation when the registry cannot be read', async () => {
+    // Better to attempt the call than to block on an empty list.
+    const plugin: any = fakePlugin();
+    plugin.representation = {};
+    const dispatch = createDispatcher(plugin);
+    await expect(
+      dispatch('show', { name: 's', expression: '(sel.atom.all)', representation: 'anything' })
+    ).resolves.toMatchObject({ name: 's' });
   });
 
   it('drops the handle on remove', async () => {

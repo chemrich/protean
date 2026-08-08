@@ -244,6 +244,30 @@ export function createDispatcher(plugin: any): Handler {
     return selector?.data ?? selector?.cell?.obj?.data ?? undefined;
   }
 
+  /** Names Mol* accepts, read from the live registries rather than hardcoded,
+   * so the list cannot drift from the bundled version. */
+  const registryNames = (registry: any): string[] => {
+    try {
+      return (registry?.types ?? []).map((t: any) => t[0]);
+    } catch {
+      return [];
+    }
+  };
+
+  const representationTypes = () =>
+    registryNames(plugin.representation?.structure?.registry);
+  const colorThemeNames = () =>
+    registryNames(plugin.representation?.structure?.themes?.colorThemeRegistry);
+
+  /** Mol* accepts an unknown representation or theme name without complaint and
+   * then draws nothing, so a typo would look like an empty selection. */
+  function checkName(kind: string, value: string, valid: string[]) {
+    if (!valid.length || valid.includes(value)) return;
+    throw new Error(
+      `Unknown ${kind} '${value}'. Available: ${valid.sort().join(', ')}`
+    );
+  }
+
   function known(): string[] {
     return [...components.keys()].sort();
   }
@@ -332,6 +356,10 @@ export function createDispatcher(plugin: any): Handler {
     show: {
       render: true,
       async run({ name, expression, representation, color, limit }: ShowArgs) {
+        checkName('representation', representation, representationTypes());
+        if (color && !color.startsWith('#')) {
+          checkName('colour theme', color, colorThemeNames());
+        }
         const selector = await component(name, expression);
         const structure = dataOf(selector);
         if (!structure || structure.elementCount === 0) {
@@ -394,6 +422,7 @@ export function createDispatcher(plugin: any): Handler {
     color: {
       render: true,
       async run({ name, color }: { name: string; color: string }) {
+        if (!color.startsWith('#')) checkName('colour theme', color, colorThemeNames());
         const entry = require(name);
         const target = hierarchyComponents(entry.refs);
         if (!target.length) {
@@ -404,6 +433,15 @@ export function createDispatcher(plugin: any): Handler {
           colorParams(color)
         );
         return { name, color, components: target.length };
+      },
+    },
+
+    capabilities: {
+      async run() {
+        return {
+          representations: representationTypes().sort(),
+          color_themes: colorThemeNames().sort(),
+        };
       },
     },
 
