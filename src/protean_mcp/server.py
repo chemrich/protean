@@ -13,6 +13,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Image
 
+from .analysis.superposition import SuperpositionError
+from .analysis.superposition import superpose as _superpose
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, fetch_structure_data
 from .selections import SelectionError, to_molscript
@@ -342,6 +344,46 @@ async def load_session(path: str) -> dict[str, Any]:
         {"snapshot": document["molstar"], "handles": document.get("handles", {})},
     )
     return {"path": str(src), "created": document.get("created"), **result}
+
+
+@mcp.tool()
+async def superpose(
+    mobile: str,
+    target: str,
+    mobile_chain: str | None = None,
+    target_chain: str | None = None,
+) -> dict[str, Any]:
+    """Superpose one structure onto another and report how well it fits.
+
+    mobile, target: PDB IDs, UniProt accessions or local files, as fetch_structure takes.
+    mobile_chain, target_chain: restrict to one chain each; otherwise all
+      protein chains are used, which requires them to correspond in order.
+
+    Correspondence comes from a sequence alignment, so the two structures need
+    not share residue numbering. Returns the RMSD, how many residues were
+    aligned, the sequence identity over those residues, the 4x4 transform, and
+    the worst-fitting residues — an RMSD alone hides whether the disagreement is
+    spread out or concentrated in one loop.
+
+    This is pure analysis and does not touch the viewer.
+    """
+    try:
+        first = await fetch_structure_data(mobile)
+        second = await fetch_structure_data(target)
+    except FetchError as exc:
+        raise ViewerError(str(exc)) from exc
+    try:
+        result = _superpose(
+            first.data,
+            first.format,
+            second.data,
+            second.format,
+            mobile_chain=mobile_chain,
+            target_chain=target_chain,
+        )
+    except SuperpositionError as exc:
+        raise ViewerError(str(exc)) from exc
+    return {"mobile": mobile, "target": target, **result.as_dict()}
 
 
 @mcp.tool()
