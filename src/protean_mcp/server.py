@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP, Image
 
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, fetch_structure_data
+from .selections import SelectionError, to_molscript
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,71 @@ async def fetch_structure(
         "cache": "cache",
     }[structure.source]
     return f"Loaded {label} ({structure.format}, from {origin}): {result}"
+
+
+def _compile(selection: str) -> str:
+    """PyMOL syntax → MolScript, surfacing compile errors as viewer errors."""
+    try:
+        return to_molscript(selection)
+    except SelectionError as exc:
+        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+
+
+@mcp.tool()
+async def select(selection: str, name: str = "sele", limit: int = 200) -> dict:
+    """Resolve a PyMOL-syntax selection and report exactly what it matched.
+
+    selection: PyMOL algebra, e.g. "chain A and resi 50-60", "byres (polymer
+      within 4 of resn HEM)", "glycan", "metals". Unsupported constructs raise
+      rather than silently matching nothing.
+    name: handle for this selection, reusable by show() and color().
+    limit: cap on residues listed back; counts are always exact.
+
+    Returns atom/residue counts, the chains touched, and the residue list —
+    so the contents are known rather than inferred from a picture.
+    """
+    bridge = _require_viewer()
+    return await bridge.request(
+        "select", {"name": name, "expression": _compile(selection), "limit": limit}
+    )
+
+
+@mcp.tool()
+async def show(
+    selection: str,
+    representation: str = "cartoon",
+    color: str | None = None,
+    name: str = "sele",
+    limit: int = 200,
+) -> dict:
+    """Display a selection with a representation, and report what it matched.
+
+    representation: cartoon, ball-and-stick, spacefill, molecular-surface,
+      gaussian-surface, putty, line, point, ellipsoid, backbone, carbohydrate.
+    color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
+      b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
+    """
+    bridge = _require_viewer()
+    args = {
+        "name": name,
+        "expression": _compile(selection),
+        "representation": representation,
+        "limit": limit,
+    }
+    if color:
+        args["color"] = color
+    return await bridge.request("show", args)
+
+
+@mcp.tool()
+async def color(color: str, name: str = "sele") -> dict:
+    """Recolour an existing named selection.
+
+    color: a Mol* colour theme or a literal hex value like "#3366cc".
+    name: the handle passed to a previous select() or show().
+    """
+    bridge = _require_viewer()
+    return await bridge.request("color", {"name": name, "color": color})
 
 
 @mcp.tool()

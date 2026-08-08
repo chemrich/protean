@@ -3,6 +3,10 @@
  * `plugin` is the PluginUIContext of the prebuilt Mol* viewer. Typed as `any`
  * because molstar is loaded as a prebuilt global rather than bundled (see
  * main.ts); Phase 2 can layer type-only imports on top if wanted.
+ *
+ * Actions are declared in one registry with an explicit `render` flag rather
+ * than a hand-maintained name list, so a new action cannot forget the
+ * hidden-tab pump.
  */
 
 import type { Handler } from './bridge';
@@ -11,6 +15,19 @@ interface LoadStructureArgs {
   name: string;
   format: 'pdb' | 'mmcif';
   data: string;
+}
+
+interface SelectArgs {
+  name: string;
+  /** MolScript source, compiled from PyMOL syntax by the Python side. */
+  expression: string;
+  /** Cap on residues listed back; the count is always exact. */
+  limit?: number;
+}
+
+interface ShowArgs extends SelectArgs {
+  representation: string;
+  color?: string;
 }
 
 declare global {
@@ -23,25 +40,14 @@ declare global {
   }
 }
 
-/** Actions that need Mol*'s rAF-driven render loop to make progress. */
-const RENDER_ACTIONS = new Set(['load_structure', 'clear', 'screenshot']);
-
 /** Must stay below the bridge's own request timeout so our error wins the race. */
 const HIDDEN_TIMEOUT_MS = 30_000;
+const DEFAULT_RESIDUE_LIMIT = 200;
 
 export function isHidden(): boolean {
   return document.visibilityState !== 'visible';
 }
 
-/**
- * Waits for Mol* to actually commit its renderables.
- *
- * Building the state tree and drawing it are separate: `applyPreset` resolves as
- * soon as the representations are queued, and the animation loop drains that
- * queue over subsequent frames. Returning at that point would drop the pump
- * mid-flight and leave a hidden tab with a built-but-unrendered scene — a load
- * that reports success and screenshots blank.
- */
 async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   const canvas3d = plugin.canvas3d;
   if (!canvas3d) return;
@@ -64,15 +70,6 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   }
 }
 
-/**
- * Runs a render-dependent action, keeping the render loop alive if the tab is
- * hidden (see public/raf-pump.js) and surfacing a real error if it still stalls.
- *
- * Without this, a hidden tab turns every load into an unexplained bridge
- * timeout; the pump normally prevents that outright, and the deadline is the
- * backstop for when it can't (no pump installed, or a browser that clamps
- * MessageChannel too).
- */
 async function withRenderPump<T>(
   plugin: any,
   action: string,
@@ -114,40 +111,191 @@ async function withRenderPump<T>(
   }
 }
 
-export function createDispatcher(plugin: any): Handler {
-  const handlers: Record<string, (args: any) => Promise<unknown>> = {
-    async load_structure({ name, format, data }: LoadStructureArgs) {
-      const raw = await plugin.builders.data.rawData({ data, label: name });
-      const trajectory = await plugin.builders.structure.parseTrajectory(
-        raw,
-        format === 'pdb' ? 'pdb' : 'mmcif'
-      );
-      await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
-      return { loaded: name };
-    },
+/** Summarise what a selection actually resolved to.
+ *
+ * The point of returning this is that the agent never has to infer a
+ * selection's contents from a picture: PyMOL reports a bare count and makes you
+ * `iterate` for the rest.
+ */
+function summarise(structure: any, limit: number) {
+  const residues: Array<Record<string, unknown>> = [];
+  const chains = new Set<string>();
+  const seen = new Set<string>();
 
-    async clear() {
-      await plugin.clear();
-      return {};
-    },
-
-    async screenshot() {
-      const helper = plugin.helpers?.viewportScreenshot;
-      if (helper?.getImageDataUri) {
-        return { data_uri: await helper.getImageDataUri() };
+  for (const unit of structure.units) {
+    const h = unit.model.atomicHierarchy;
+    const residueIndex = h.residueAtomSegments.index;
+    const chainIndex = h.chainAtomSegments.index;
+    const elements = unit.elements;
+    for (let i = 0, n = elements.length; i < n; i++) {
+      const element = elements[i];
+      const ri = residueIndex[element];
+      const key = `${unit.model.id}:${ri}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const chain = h.chains.auth_asym_id.value(chainIndex[element]);
+      chains.add(chain);
+      if (residues.length < limit) {
+        // comp_id is carried on the atom table, not the residue table.
+        const entry: Record<string, unknown> = {
+          chain,
+          seq: h.residues.auth_seq_id.value(ri),
+          comp: h.atoms.label_comp_id.value(element),
+        };
+        const insertion = h.residues.pdbx_PDB_ins_code.value(ri);
+        if (insertion) entry.ins_code = insertion;
+        residues.push(entry);
       }
-      // Fallback: read the 3D canvas directly.
-      const canvas: HTMLCanvasElement | undefined =
-        plugin.canvas3dContext?.canvas ?? document.querySelector('#app canvas') ?? undefined;
-      if (!canvas) throw new Error('No screenshot mechanism available');
-      return { data_uri: canvas.toDataURL('image/png') };
+    }
+  }
+
+  return {
+    atom_count: structure.elementCount,
+    residue_count: seen.size,
+    chains: Array.from(chains).sort(),
+    residues,
+    truncated: seen.size > residues.length,
+  };
+}
+
+export function createDispatcher(plugin: any): Handler {
+  /** Named components, so later show/color calls can target an earlier select. */
+  const components = new Map<string, any>();
+
+  const structureRef = () => {
+    const current = plugin.managers.structure.hierarchy.current.structures[0];
+    if (!current) throw new Error('No structure loaded — call fetch_structure first.');
+    return current.cell.transform.ref;
+  };
+
+  async function component(name: string, expression: string) {
+    const existing = components.get(name);
+    if (existing?.ref) {
+      await plugin.state.data.build().delete(existing.ref).commit();
+      components.delete(name);
+    }
+    const selector = await plugin.builders.structure.tryCreateComponent(
+      structureRef(),
+      {
+        type: { name: 'script', params: { language: 'mol-script', expression } },
+        nullIfEmpty: false,
+        label: name,
+      },
+      `protean-${name}`
+    );
+    if (selector) components.set(name, selector);
+    return selector;
+  }
+
+  function dataOf(selector: any) {
+    return selector?.data ?? selector?.cell?.obj?.data ?? undefined;
+  }
+
+  const actions: Record<string, { render?: boolean; run: (args: any) => Promise<unknown> }> = {
+    load_structure: {
+      render: true,
+      async run({ name, format, data }: LoadStructureArgs) {
+        components.clear();
+        const raw = await plugin.builders.data.rawData({ data, label: name });
+        const trajectory = await plugin.builders.structure.parseTrajectory(
+          raw,
+          format === 'pdb' ? 'pdb' : 'mmcif'
+        );
+        await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
+        return { loaded: name };
+      },
+    },
+
+    select: {
+      render: true,
+      async run({ name, expression, limit }: SelectArgs) {
+        const selector = await component(name, expression);
+        const structure = dataOf(selector);
+        if (!structure) {
+          return { name, atom_count: 0, residue_count: 0, chains: [], residues: [], truncated: false };
+        }
+        return { name, ...summarise(structure, limit ?? DEFAULT_RESIDUE_LIMIT) };
+      },
+    },
+
+    show: {
+      render: true,
+      async run({ name, expression, representation, color, limit }: ShowArgs) {
+        const selector = await component(name, expression);
+        const structure = dataOf(selector);
+        if (!structure || structure.elementCount === 0) {
+          return { name, representation, atom_count: 0, residue_count: 0, chains: [], residues: [], truncated: false };
+        }
+        const params: Record<string, unknown> = { type: representation };
+        if (color) Object.assign(params, colorParams(color));
+        await plugin.builders.structure.representation.addRepresentation(selector, params);
+        return {
+          name,
+          representation,
+          ...summarise(structure, limit ?? DEFAULT_RESIDUE_LIMIT),
+        };
+      },
+    },
+
+    color: {
+      render: true,
+      async run({ name, color }: { name: string; color: string }) {
+        const selector = components.get(name);
+        if (!selector) {
+          throw new Error(
+            `No selection named '${name}'. Known: ${[...components.keys()].join(', ') || '(none)'}`
+          );
+        }
+        const cell = plugin.state.data.cells.get(selector.ref);
+        const structures = plugin.managers.structure.hierarchy.current.structures;
+        const target = structures
+          .flatMap((s: any) => s.components)
+          .filter((c: any) => c.cell.transform.ref === selector.ref);
+        await plugin.managers.structure.component.updateRepresentationsTheme(
+          target.length ? target : [{ cell }],
+          colorParams(color)
+        );
+        return { name, color };
+      },
+    },
+
+    clear: {
+      render: true,
+      async run() {
+        components.clear();
+        await plugin.clear();
+        return {};
+      },
+    },
+
+    screenshot: {
+      render: true,
+      async run() {
+        const helper = plugin.helpers?.viewportScreenshot;
+        if (helper?.getImageDataUri) {
+          return { data_uri: await helper.getImageDataUri() };
+        }
+        // Fallback: read the 3D canvas directly.
+        const canvas: HTMLCanvasElement | undefined =
+          plugin.canvas3dContext?.canvas ?? document.querySelector('#app canvas') ?? undefined;
+        if (!canvas) throw new Error('No screenshot mechanism available');
+        return { data_uri: canvas.toDataURL('image/png') };
+      },
     },
   };
 
   return async (action, args) => {
-    const handler = handlers[action];
-    if (!handler) throw new Error(`Unknown action: ${action}`);
-    if (!RENDER_ACTIONS.has(action)) return handler(args);
-    return withRenderPump(plugin, action, () => handler(args));
+    const spec = actions[action];
+    if (!spec) throw new Error(`Unknown action: ${action}`);
+    if (!spec.render) return spec.run(args);
+    return withRenderPump(plugin, action, () => spec.run(args));
   };
+}
+
+/** A leading '#' means a literal colour; anything else is a Mol* colour theme. */
+function colorParams(color: string): Record<string, unknown> {
+  if (color.startsWith('#')) {
+    return { color: 'uniform', colorParams: { value: parseInt(color.slice(1), 16) } };
+  }
+  return { color };
 }
