@@ -179,6 +179,8 @@ function fakePlugin() {
       },
     },
     state: {
+      getSnapshot: () => ({ id: 'snapshot-1' }),
+      setSnapshot: vi.fn(async () => {}),
       data: {
         cells: { get: (ref: string) => componentRefs.find((c) => c.cell.transform.ref === ref)?.cell },
         build: () => ({ delete: () => ({ commit: async () => {} }) }),
@@ -287,6 +289,39 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('show', { name: 's', expression: '(sel.atom.all)', representation: 'anything' })
     ).resolves.toMatchObject({ name: 's' });
+  });
+
+  it('saves the snapshot alongside the named handles', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await dispatch('select', { name: 'pocket', expression: '(sel.atom.all)' });
+    const saved: any = await dispatch('save_session', {});
+    expect(saved.snapshot).toEqual({ id: 'snapshot-1' });
+    expect(Object.keys(saved.handles)).toEqual(['pocket']);
+  });
+
+  it('restores handles and reports ones the state no longer contains', async () => {
+    // A stale or hand-edited session should lose handles rather than keep ones
+    // pointing at components that are not there.
+    const plugin = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    plugin.componentRefs.push({ cell: { transform: { ref: 'live-ref' }, state: {} } });
+
+    const result: any = await dispatch('load_session', {
+      snapshot: { id: 'x' },
+      handles: { kept: ['live-ref'], gone: ['dead-ref'] },
+    });
+    expect(plugin.state.setSnapshot).toHaveBeenCalled();
+    expect(result.restored).toEqual(['kept']);
+    expect(result.dropped).toEqual(['gone']);
+  });
+
+  it('replaces any pre-existing handles on load', async () => {
+    const plugin = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    await dispatch('select', { name: 'stale', expression: '(sel.atom.all)' });
+    await dispatch('load_session', { snapshot: {}, handles: {} });
+    const listed: any = await dispatch('list_selections', {});
+    expect(listed.selections).toEqual([]);
   });
 
   it('drops the handle on remove', async () => {

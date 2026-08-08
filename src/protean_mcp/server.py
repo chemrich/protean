@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import datetime
+import gzip
+import json
 import logging
 import webbrowser
 from pathlib import Path
@@ -257,6 +259,74 @@ async def capabilities() -> dict[str, Any]:
     rather than a hardcoded guess.
     """
     return await _call("capabilities", {})
+
+
+SESSION_FORMAT = "protean-session"
+SESSION_VERSION = 1
+
+
+def _session_path(path: str) -> Path:
+    out = Path(path).expanduser()
+    return out if out.suffix else out.with_suffix(".protean")
+
+
+@mcp.tool()
+async def save_session(path: str) -> dict[str, Any]:
+    """Save the whole scene to a .protean file.
+
+    The file embeds the structure data along with representations, colours,
+    camera and the named selection handles, so reopening it reproduces the
+    scene exactly without refetching anything.
+    """
+    payload = await _call("save_session")
+    out = _session_path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "format": SESSION_FORMAT,
+        "version": SESSION_VERSION,
+        "created": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+        "handles": payload["handles"],
+        "molstar": payload["snapshot"],
+    }
+    # Sessions are mostly embedded mmCIF text, which compresses roughly 5x.
+    raw = json.dumps(document).encode()
+    out.write_bytes(gzip.compress(raw))
+    return {
+        "path": str(out),
+        "bytes": out.stat().st_size,
+        "uncompressed_bytes": len(raw),
+        "handles": sorted(payload["handles"]),
+    }
+
+
+@mcp.tool()
+async def load_session(path: str) -> dict[str, Any]:
+    """Restore a scene previously written by save_session().
+
+    Reports which named handles came back, and which were dropped because the
+    restored state no longer contains them.
+    """
+    src = _session_path(path)
+    if not src.is_file():
+        raise ViewerError(f"No session file at {src}")
+    try:
+        document = json.loads(gzip.decompress(src.read_bytes()))
+    except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
+        raise ViewerError(f"{src} is not a readable protean session: {exc}") from exc
+    if document.get("format") != SESSION_FORMAT:
+        raise ViewerError(
+            f"{src} is not a protean session (format={document.get('format')!r})"
+        )
+    if document.get("version") != SESSION_VERSION:
+        raise ViewerError(
+            f"{src} is session version {document.get('version')!r}; "
+            f"this build reads version {SESSION_VERSION}"
+        )
+    result = await _call(
+        "load_session",
+        {"snapshot": document["molstar"], "handles": document.get("handles", {})},
+    )
+    return {"path": str(src), "created": document.get("created"), **result}
 
 
 @mcp.tool()

@@ -58,7 +58,7 @@ Scaffold the uv workspace and viewer app. WebSocket bridge with handshake, port 
 
 ### Phase 2 — Core viz + selections (v0.1)
 
-Representations (cartoon, surface, ball-and-stick, sticks, spacefill, ribbon), per-selection apply/remove. Color schemes: chain, secondary structure, element, spectrum, B-factor, pLDDT. Camera control (orient, zoom-to-selection, turntable). Measurements: distances, angles, dihedrals, labels. **Selection translator:** accept PyMOL algebra (`chain A and resi 50-60 and not solvent`, `byres`, `within`) and compile to **MolScript source** (see decision 5) — the single most important migration feature. Sessions: save/load Mol* state snapshots as `.protean` files. *Exit: reproduce a typical published PyMOL figure from a prompt.*
+Representations (cartoon, surface, ball-and-stick, sticks, spacefill, ribbon), per-selection apply/remove. Color schemes: chain, secondary structure, element, spectrum, B-factor, pLDDT. Camera control (orient, zoom-to-selection, turntable). Measurements: distances, angles, dihedrals, labels. **Selection translator:** accept PyMOL algebra (`chain A and resi 50-60 and not solvent`, `byres`, `within`) and compile to **MolScript source** (see decision 5) — the single most important migration feature. Sessions: save/load Mol* state snapshots as `.protean` files (gzipped JSON; the snapshot embeds the structure data, so a session reopens without refetching, and the named selection handles round-trip with it). *Exit: reproduce a typical published PyMOL figure from a prompt.*
 
 ### Phase 3 — Analysis layers (v0.2)
 
