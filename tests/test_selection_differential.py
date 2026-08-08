@@ -30,6 +30,7 @@ import pytest
 from protean_mcp.connection import ViewerBridge
 from protean_mcp.fetch import fetch_structure_data
 from protean_mcp.selections import to_molscript
+from protean_mcp.selections_numpy import load_structure, select_mask
 
 from .conftest import free_port
 
@@ -162,6 +163,16 @@ AGREEMENT_ONLY: tuple[str, ...] = (
 )
 
 CORPUS = list(EXPECTED) + list(AGREEMENT_ONLY) + list(DIVERGENCES)
+
+# Where the Python evaluator deliberately differs from the MolScript backend.
+# Value is the Python answer.
+ENGINE_DIVERGENCES: dict[str, int] = {
+    # Mol*'s chain key follows label_asym_id, so `bychain` there widens to the
+    # protein chains only while `chain A` (auth_asym_id) includes the heme.
+    # The Python engine widens over the same id it selects on, so the two
+    # agree with each other and with PyMOL.
+    "bychain resi 50": 4779,
+}
 
 _EVAL_JS = r"""(async () => {
   const p = window.__protean.plugin;
@@ -364,3 +375,34 @@ async def test_class_selectors(class_counts, pdb_id, selection, expectation):
         assert count > 0, f"'{selection}' found nothing in {pdb_id}"
     else:
         assert count == 0, f"'{selection}' unexpectedly matched {count} atoms in {pdb_id}"
+
+
+@pytest.fixture(scope="module")
+async def python_counts() -> dict[str, int]:
+    """The same corpus evaluated by the Python engine, no browser involved."""
+    structure = await fetch_structure_data(FIXTURE)
+    array = load_structure(structure.data, structure.format)
+    return {sel: int(select_mask(sel, array).sum()) for sel in CORPUS}
+
+
+@pytest.mark.parametrize("selection", sorted(set(EXPECTED) | set(AGREEMENT_ONLY)))
+async def test_python_engine_agrees_with_molscript(counts, python_counts, selection):
+    """Two independent engines, one grammar.
+
+    This is what makes moving evaluation into Python safe: the MolScript
+    backend is still here to disagree.
+    """
+    if selection in ENGINE_DIVERGENCES:
+        pytest.skip("deliberate divergence, asserted separately")
+    assert python_counts[selection] == _count(counts, "ours", selection)
+
+
+@pytest.mark.parametrize("selection", sorted(ENGINE_DIVERGENCES))
+async def test_python_engine_diverges_only_where_intended(
+    counts, python_counts, selection
+):
+    expected = ENGINE_DIVERGENCES[selection]
+    assert python_counts[selection] == expected
+    assert _count(counts, "ours", selection) != expected, (
+        f"MolScript now agrees on {selection!r}; retire the divergence"
+    )

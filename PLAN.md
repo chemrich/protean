@@ -90,6 +90,39 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
 3. **Electrostatics:** optional extra — `protean-mcp[apbs]`.
 4. **MCPymol relationship:** coexist for now; may subsume MCPymol long-term but not near-term. Keep tool names and conventions compatible so a later merge is low-friction.
 
+## Decisions (2026-08-08b) — selections for a model, not a CLI
+
+6. **Selections compose through handles and set operations, not through the DSL.**
+
+   PyMOL's grammar is optimised for typing into a REPL. Terseness and muscle
+   memory are worth nothing to a model, while the costs transfer in full: the
+   precedence trap we hit with `byres (X) and Y`, free text that the tool
+   schema cannot validate, and no way to name a set. One virtue does transfer —
+   the syntax is deep in a model's prior, so `chain A and resi 50-60` comes out
+   right with no instruction, cheaply in tokens.
+
+   So the DSL shrinks to *leaf predicates* and composition moves into the tool
+   layer: analysis returns named handles, and `combine` / `near` / `invert`
+   operate on them. The decisive observation is that analysis rarely wants a
+   predicate — it wants a set that already exists (the interface just computed,
+   the residues that superposed badly, the conserved positions). Re-encoding
+   those as `resi 31+114+117+...` is lossy and absurd when the system holds the
+   set. `byres (X) and Y` simply stops being expressible.
+
+7. **Selections are evaluated in Python; the viewer receives atom indices.**
+
+   One engine, so a selection cannot mean two things depending on whether it
+   was drawn or analysed. It also makes selection and analysis work headlessly,
+   with no browser at all. Index-based loci are already proven to work in the
+   viewer (see the measurement work in decision 5's wake).
+
+   Migration is guarded by the differential harness, which now runs both
+   engines over the same corpus and asserts agreement: 34 of 35 selections
+   match on first implementation. The one divergence is deliberate and better —
+   Mol*'s `bychain` widens over its chain key (label_asym_id) while `chain A`
+   matches auth_asym_id, so the MolScript backend disagrees with itself about
+   what a chain is; the Python engine widens over the same id it selects on.
+
 ## Decisions (2026-08-08)
 
 5. **Selection pipeline: Python parses PyMOL syntax → emits MolScript source → Mol\* evaluates.**
