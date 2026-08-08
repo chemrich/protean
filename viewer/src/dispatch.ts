@@ -202,8 +202,6 @@ const AUTO = 'auto';
 
 interface Entry {
   refs: string[];
-  /** Present only for components we created from a selection. */
-  selector?: any;
 }
 
 export function createDispatcher(plugin: any): Handler {
@@ -236,12 +234,24 @@ export function createDispatcher(plugin: any): Handler {
       },
       `protean-${name}`
     );
-    if (selector) components.set(name, { refs: [selector.ref], selector });
+    if (selector) components.set(name, { refs: [selector.ref] });
     return selector;
   }
 
   function dataOf(selector: any) {
     return selector?.data ?? selector?.cell?.obj?.data ?? undefined;
+  }
+
+  /** Resolve a handle's structure from the state tree.
+   *
+   * Reading through the refs rather than a captured selector is what lets a
+   * handle survive a session restore, where no selector object exists. */
+  function structureOf(entry: Entry) {
+    for (const ref of entry.refs) {
+      const data = plugin.state.data.cells.get(ref)?.obj?.data;
+      if (data) return data;
+    }
+    return undefined;
   }
 
   /** Names Mol* accepts, read from the live registries rather than hardcoded,
@@ -403,7 +413,7 @@ export function createDispatcher(plugin: any): Handler {
         const selections = known().map((name) => {
           const entry = components.get(name)!;
           const found = hierarchyComponents(entry.refs);
-          const structure = dataOf(entry.selector);
+          const structure = structureOf(entry);
           const atoms =
             structure?.elementCount ??
             found.reduce((n: number, c: any) => n + (c.cell?.obj?.data?.elementCount ?? 0), 0);
@@ -448,7 +458,7 @@ export function createDispatcher(plugin: any): Handler {
     focus: {
       render: true,
       async run({ name }: { name: string }) {
-        const structure = dataOf(require(name).selector);
+        const structure = structureOf(require(name));
         if (!structure?.elementCount) {
           throw new Error(`Selection '${name}' has no atoms to focus on`);
         }
@@ -496,7 +506,7 @@ export function createDispatcher(plugin: any): Handler {
           throw new Error(`A ${kind} needs ${wanted} selections, got ${names.length}`);
         }
         const loci = names.map((n) => {
-          const structure = dataOf(require(n).selector);
+          const structure = structureOf(require(n));
           if (!structure?.elementCount) {
             throw new Error(`Selection '${n}' has no atoms to measure`);
           }
@@ -506,7 +516,44 @@ export function createDispatcher(plugin: any): Handler {
         if (kind === 'distance') await measurement.addDistance(loci[0], loci[1]);
         else if (kind === 'angle') await measurement.addAngle(loci[0], loci[1], loci[2]);
         else await measurement.addDihedral(loci[0], loci[1], loci[2], loci[3]);
-        return { kind, names, atoms: names.map((n) => dataOf(require(n).selector).elementCount) };
+        return { kind, names, atoms: names.map((n) => structureOf(require(n))!.elementCount) };
+      },
+    },
+
+    save_session: {
+      async run() {
+        // The snapshot embeds the structure data, so a session reproduces the
+        // scene without refetching anything.
+        const snapshot = plugin.state.getSnapshot();
+        const handles: Record<string, string[]> = {};
+        for (const [name, entry] of components) handles[name] = entry.refs;
+        return { snapshot, handles };
+      },
+    },
+
+    load_session: {
+      render: true,
+      async run({ snapshot, handles }: { snapshot: any; handles: Record<string, string[]> }) {
+        await plugin.state.setSnapshot(snapshot);
+        components.clear();
+        // Keep only refs the restored state actually contains, so a stale or
+        // hand-edited session degrades to fewer handles rather than to handles
+        // that point at nothing.
+        const live = new Set<string>(
+          allComponents().map((c: any) => c.cell.transform.ref)
+        );
+        const dropped: string[] = [];
+        for (const [name, refs] of Object.entries(handles ?? {})) {
+          const kept = refs.filter((ref) => live.has(ref));
+          if (kept.length) components.set(name, { refs: kept });
+          else dropped.push(name);
+        }
+        const structure = plugin.managers.structure.hierarchy.current.structures[0];
+        return {
+          restored: known(),
+          dropped,
+          atom_count: structure?.cell?.obj?.data?.elementCount ?? 0,
+        };
       },
     },
 
