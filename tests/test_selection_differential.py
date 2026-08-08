@@ -248,6 +248,10 @@ async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, 
 
     chrome = CHROME
     assert chrome is not None  # guaranteed by the module-level skipif
+    # Chrome's own output is the only clue when the page never connects, so
+    # keep it rather than sending it to /dev/null.
+    log_path = Path(profile) / "chrome.log"
+    log = log_path.open("wb")
     proc = subprocess.Popen(
         [
             chrome,
@@ -255,10 +259,11 @@ async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, 
             "--no-first-run",
             "--no-default-browser-check",
             f"--remote-debugging-port={cdp_port}",
+            *CHROME_FLAGS,
             url,
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
     )
     try:
         await bridge.wait_for_viewer(40)

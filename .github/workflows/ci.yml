@@ -66,6 +66,10 @@ jobs:
         id: chrome
         with:
           chrome-version: stable
+      - name: chrome sanity check
+        run: |
+          echo "path: ${{ steps.chrome.outputs.chrome-path }}"
+          "${{ steps.chrome.outputs.chrome-path }}" --version
       - name: build viewer
         # The differential suite serves the built app from
         # src/protean_mcp/static, so this has to run before pytest.
