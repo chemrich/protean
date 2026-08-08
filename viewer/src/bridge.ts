@@ -9,9 +9,14 @@ export function connectBridge(handle: Handler): void {
   const url = `ws://${location.host}/ws`;
   const status = document.getElementById('status');
 
+  // Tracked so the visibilitychange listener (registered once) can reach the
+  // live socket across reconnects.
+  let current: WebSocket | null = null;
+
   const setStatus = (connected: boolean) => {
     if (!status) return;
-    status.textContent = connected ? 'connected' : 'disconnected';
+    const hidden = document.visibilityState !== 'visible';
+    status.textContent = connected ? (hidden ? 'connected (hidden)' : 'connected') : 'disconnected';
     status.classList.toggle('connected', connected);
   };
 
@@ -19,7 +24,16 @@ export function connectBridge(handle: Handler): void {
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ action: 'protean_ping', version: PROTOCOL_VERSION }));
+      current = ws;
+      // The server records visibility so it can explain a stalled action rather
+      // than reporting a bare timeout.
+      ws.send(
+        JSON.stringify({
+          action: 'protean_ping',
+          version: PROTOCOL_VERSION,
+          visibility: document.visibilityState,
+        })
+      );
     };
 
     ws.onmessage = async (ev: MessageEvent) => {
@@ -40,11 +54,20 @@ export function connectBridge(handle: Handler): void {
     };
 
     ws.onclose = () => {
+      if (current === ws) current = null;
       setStatus(false);
       setTimeout(open, RECONNECT_MS);
     };
     ws.onerror = () => ws.close();
   };
+
+  document.addEventListener('visibilitychange', () => {
+    setStatus(current !== null && current.readyState === WebSocket.OPEN);
+    if (current?.readyState !== WebSocket.OPEN) return;
+    current.send(
+      JSON.stringify({ action: 'protean_visibility', visibility: document.visibilityState })
+    );
+  });
 
   open();
 }

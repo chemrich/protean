@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP, Image
 
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, fetch_structure_data
+from .selections import SelectionError, to_molscript
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,14 @@ def _require_viewer() -> ViewerBridge:
     return bridge
 
 
+def _visibility_note(bridge: ViewerBridge) -> str:
+    """Flag a backgrounded tab: loads still work there, but only via the pump."""
+    visibility = bridge.viewer_visibility
+    if visibility is None or visibility == "visible":
+        return ""
+    return f" (tab is {visibility} — rendering runs on the background-tab pump)"
+
+
 @mcp.tool()
 async def open_viewer(timeout: float = 20) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
@@ -62,7 +71,7 @@ async def open_viewer(timeout: float = 20) -> str:
     port = await bridge.start()
     url = f"http://127.0.0.1:{port}/"
     if bridge.viewer_connected:
-        return f"Viewer already connected at {url}"
+        return f"Viewer already connected at {url}{_visibility_note(bridge)}"
     if _static_dir() is None:
         return (
             f"Bridge is listening at {url}, but the viewer app is not built. "
@@ -71,7 +80,7 @@ async def open_viewer(timeout: float = 20) -> str:
         )
     webbrowser.open(url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {url}"
+    return f"Viewer connected at {url}{_visibility_note(bridge)}"
 
 
 @mcp.tool()
@@ -102,6 +111,71 @@ async def fetch_structure(
         "cache": "cache",
     }[structure.source]
     return f"Loaded {label} ({structure.format}, from {origin}): {result}"
+
+
+def _compile(selection: str) -> str:
+    """PyMOL syntax → MolScript, surfacing compile errors as viewer errors."""
+    try:
+        return to_molscript(selection)
+    except SelectionError as exc:
+        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+
+
+@mcp.tool()
+async def select(selection: str, name: str = "sele", limit: int = 200) -> dict:
+    """Resolve a PyMOL-syntax selection and report exactly what it matched.
+
+    selection: PyMOL algebra, e.g. "chain A and resi 50-60", "byres (polymer
+      within 4 of resn HEM)", "glycan", "metals". Unsupported constructs raise
+      rather than silently matching nothing.
+    name: handle for this selection, reusable by show() and color().
+    limit: cap on residues listed back; counts are always exact.
+
+    Returns atom/residue counts, the chains touched, and the residue list —
+    so the contents are known rather than inferred from a picture.
+    """
+    bridge = _require_viewer()
+    return await bridge.request(
+        "select", {"name": name, "expression": _compile(selection), "limit": limit}
+    )
+
+
+@mcp.tool()
+async def show(
+    selection: str,
+    representation: str = "cartoon",
+    color: str | None = None,
+    name: str = "sele",
+    limit: int = 200,
+) -> dict:
+    """Display a selection with a representation, and report what it matched.
+
+    representation: cartoon, ball-and-stick, spacefill, molecular-surface,
+      gaussian-surface, putty, line, point, ellipsoid, backbone, carbohydrate.
+    color: a Mol* colour theme (chain-id, element-symbol, secondary-structure,
+      b-factor, hydrophobicity, uniform) or a literal hex value like "#ff0000".
+    """
+    bridge = _require_viewer()
+    args = {
+        "name": name,
+        "expression": _compile(selection),
+        "representation": representation,
+        "limit": limit,
+    }
+    if color:
+        args["color"] = color
+    return await bridge.request("show", args)
+
+
+@mcp.tool()
+async def color(color: str, name: str = "sele") -> dict:
+    """Recolour an existing named selection.
+
+    color: a Mol* colour theme or a literal hex value like "#3366cc".
+    name: the handle passed to a previous select() or show().
+    """
+    bridge = _require_viewer()
+    return await bridge.request("color", {"name": name, "color": color})
 
 
 @mcp.tool()

@@ -20,6 +20,9 @@
   <body>
     <div id="app"></div>
     <div id="status">disconnected</div>
+    <!-- Must precede molstar.js: Mol* captures window.requestAnimationFrame at
+         module-eval time, so the hidden-tab pump has to be installed first. -->
+    <script src="/raf-pump.js"></script>
     <script src="/molstar.js"></script>
     <script type="module" src="./src/main.ts"></script>
   </body>

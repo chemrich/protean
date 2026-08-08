@@ -58,7 +58,7 @@ Scaffold the uv workspace and viewer app. WebSocket bridge with handshake, port 
 
 ### Phase 2 — Core viz + selections (v0.1)
 
-Representations (cartoon, surface, ball-and-stick, sticks, spacefill, ribbon), per-selection apply/remove. Color schemes: chain, secondary structure, element, spectrum, B-factor, pLDDT. Camera control (orient, zoom-to-selection, turntable). Measurements: distances, angles, dihedrals, labels. **Selection translator:** accept PyMOL algebra (`chain A and resi 50-60 and not solvent`, `byres`, `within`) and compile to MolQL — the single most important migration feature. Sessions: save/load Mol* state snapshots as `.protean` files. *Exit: reproduce a typical published PyMOL figure from a prompt.*
+Representations (cartoon, surface, ball-and-stick, sticks, spacefill, ribbon), per-selection apply/remove. Color schemes: chain, secondary structure, element, spectrum, B-factor, pLDDT. Camera control (orient, zoom-to-selection, turntable). Measurements: distances, angles, dihedrals, labels. **Selection translator:** accept PyMOL algebra (`chain A and resi 50-60 and not solvent`, `byres`, `within`) and compile to **MolScript source** (see decision 5) — the single most important migration feature. Sessions: save/load Mol* state snapshots as `.protean` files. *Exit: reproduce a typical published PyMOL figure from a prompt.*
 
 ### Phase 3 — Analysis layers (v0.2)
 
@@ -89,3 +89,38 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
 2. **PyMOL selection parity:** ~25 most-used keywords first; full grammar is the ultimate goal. Design the translator so the grammar can grow without rework (proper parser, not regex).
 3. **Electrostatics:** optional extra — `protean-mcp[apbs]`.
 4. **MCPymol relationship:** coexist for now; may subsume MCPymol long-term but not near-term. Keep tool names and conventions compatible so a later merge is low-friction.
+
+## Decisions (2026-08-08)
+
+5. **Selection pipeline: Python parses PyMOL syntax → emits MolScript source → Mol\* evaluates.**
+
+   Mol\* ships a PyMOL/VMD/Jmol selection transpiler in the prebuilt bundle, so "just use theirs" looked tempting. Measured against 51 PyMOL idioms on 4HHB, all 51 *parsed* — but ~8 returned silently wrong answers, which for an agent is worse than an error:
+
+   | Idiom | Mol\* transpiler | Correct |
+   |---|---|---|
+   | `chain A and not hydro` | 0 | 1168 (`not` breaks on an empty operand, poisoning the whole expression) |
+   | `within 5 of resn HEM` | 0 | 535 (bare `within` needs an explicit left operand) |
+   | `metals` | 0 | 4 (keyword is a `@desc`-only stub, no implementation) |
+   | `first` / `last` / `rank` / `bychain` / `bymolecule` | 0 | non-empty |
+   | `bound_to resn HEM` | the HEM atoms themselves | atoms bonded to HEM |
+   | `byres (X) and Y` | 502 | 295 — it swallows the `and` across the parenthesis boundary, computing `byres (X and Y)`; writing that form explicitly returns 0 |
+
+   Emitting MolScript instead was validated against the same ground truth and is exact, including every case above (`and` 141, `not` 3611, `metals` 4, `first` 1, `byres` 4384). We own the grammar and its correctness; Mol\* owns execution; we never write a query engine. This satisfies decision 2's "proper parser" and keeps science out of the viewer.
+
+   Mechanics worth recording: reach it via `plugin.builders.structure.tryCreateComponent(ref, {type: {name: 'script', params: {language: 'mol-script', expression}}})` — the prebuilt global exposes only ~12 names, so the transform registry is not directly reachable. MolScript modifiers take **positional arg 0 plus named args** (`(sel.atom.intersect-by A :by B)`, not two positionals). Verified vocabulary: `sel.atom.{all,empty,atom-groups,merge,intersect-by,except-by,expand-property,include-surroundings,include-connected,within,first}`, properties `atom.{el,is-het,atomic-number,B_iso_or_equiv,occupancy,auth_seq_id,auth_asym_id,label_atom_id,label_comp_id,entity-type}`, keys `atom.key.{res,chain,molecule,entity}`, and `(set.has (set ...) prop)`.
+
+   **mol-script string literals are delimited with backticks.** Double and
+   single quotes parse without error and then match nothing, so `` (= atom.entity-subtype "polypeptide(L)") ``
+   silently selects zero atoms while `` `polypeptide(L)` `` selects 2039.
+   Apostrophes are safe bare, so nucleic atom names (`C1'`) must *not* be
+   quoted. Both failure modes are invisible to unit tests — only the
+   differential suite catches them.
+
+   **Entity typing beyond globular proteins.** Glycans are `branched` entities,
+   not `non-polymer`, so `organic` must span both or glycoproteins lose their
+   sugars entirely. Verified entity subtypes include `polypeptide(L)`,
+   `polydeoxyribonucleotide`, `oligosaccharide`, and `ion` — the last two give
+   us `glycan` and `ion` selectors that PyMOL has no equivalent for. Fixtures:
+   1BNA (DNA), 5FJI (glycoprotein), 1CA2 (ion), 4HHB (the main corpus).
+
+   Keep Mol\*'s transpiler wired up as a **differential test oracle**: agreement is a regression signal, and the 8 divergences above are our first "we beat PyMOL" test cases. Open gap: `bymolecule` (`atom.key.molecule`) returned 0 and needs investigation.

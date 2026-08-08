@@ -23,6 +23,10 @@ async function init() {
     viewportShowExpand: true,
     viewportShowSelectionMode: true,
   });
+  // Exposed for debugging and for the render pump's introspection hooks.
+  (window as any).__protean = Object.assign((window as any).__protean ?? {}, {
+    plugin: viewer.plugin,
+  });
   connectBridge(createDispatcher(viewer.plugin));
 }
 

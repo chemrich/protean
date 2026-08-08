@@ -47,6 +47,7 @@ class ViewerBridge:
         self._pending: dict[str, asyncio.Future] = {}
         self._connected = asyncio.Event()
         self._runner: web.AppRunner | None = None
+        self._visibility: str | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -101,6 +102,15 @@ class ViewerBridge:
     def viewer_connected(self) -> bool:
         return self._ws is not None and not self._ws.closed
 
+    @property
+    def viewer_visibility(self) -> str | None:
+        """Last reported ``document.visibilityState``, or None if unknown.
+
+        A hidden tab has its animation frames paused, which stalls any Mol*
+        work that needs the render loop — worth surfacing when things go wrong.
+        """
+        return self._visibility if self.viewer_connected else None
+
     async def wait_for_viewer(self, timeout: float = 15) -> None:
         try:
             await asyncio.wait_for(self._connected.wait(), timeout)
@@ -125,12 +135,29 @@ class ViewerBridge:
             await self._ws.send_json({"id": rid, "action": action, "args": args or {}})
             reply = await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            raise ViewerError(f"Viewer timed out on '{action}' after {timeout}s") from None
+            raise ViewerError(
+                f"Viewer timed out on '{action}' after {timeout}s.{self._stall_hint()}"
+            ) from None
         finally:
             self._pending.pop(rid, None)
         if not reply.get("ok"):
             raise ViewerError(reply.get("error", f"Viewer error on '{action}'"))
         return reply.get("result")
+
+    def _stall_hint(self) -> str:
+        """Explain a timeout when the tab being hidden is the likely cause."""
+        if self._visibility is None:
+            return (
+                " The viewer did not report its visibility; if its tab is in the "
+                "background, bring it to the front and retry."
+            )
+        if self._visibility != "visible":
+            return (
+                f" The viewer tab is {self._visibility}: browsers pause "
+                "requestAnimationFrame in background tabs, which Mol* needs to "
+                "build representations. Bring the protean tab to the front and retry."
+            )
+        return ""
 
     # -- handlers ------------------------------------------------------------
 
@@ -167,10 +194,17 @@ class ViewerBridge:
                     await self._ws.close()
                 self._ws = ws
                 registered = True
+                self._visibility = data.get("visibility")
                 self._connected.set()
                 await ws.send_json(
                     {"action": "protean_pong", "version": PROTOCOL_VERSION}
                 )
+                continue
+
+            if data.get("action") == "protean_visibility":
+                if ws is self._ws:
+                    self._visibility = data.get("visibility")
+                    logger.debug("Viewer visibility: %s", self._visibility)
                 continue
 
             rid = data.get("id")
@@ -182,6 +216,7 @@ class ViewerBridge:
 
         if registered and self._ws is ws:
             self._ws = None
+            self._visibility = None
             self._connected.clear()
             logger.info("Viewer disconnected")
         return ws
