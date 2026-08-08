@@ -1,7 +1,7 @@
 """The Python selection evaluator, on synthetic structures with known answers.
 
-Runs offline: no browser, no network. Agreement with the MolScript engine on
-real structures is covered by the differential suite.
+Runs offline: no browser, no network. Agreement with Mol*'s bundled PyMOL
+transpiler on real structures is covered by the differential suite.
 """
 
 from __future__ import annotations
@@ -154,3 +154,35 @@ def test_unsupported_constructs_still_raise(mixed):
 def test_unknown_keyword_raises(mixed):
     with pytest.raises(SelectionError, match="Unknown selection keyword"):
         select_mask("banana", mixed)
+
+
+def test_insertion_code_selects_only_the_inserted_residue():
+    """Antibody numbering: resi 52A is a different residue from resi 52.
+
+    Insertion codes are the case where a selector can look right and quietly
+    answer for the wrong residue, so both directions are asserted.
+    """
+    atoms = [
+        Atom(
+            [float(i), 0.0, 0.0],
+            chain_id="H",
+            res_id=res_id,
+            ins_code=ins,
+            res_name="ALA",
+            atom_name=name,
+            element="C",
+            hetero=False,
+            b_factor=10.0,
+            occupancy=1.0,
+            atom_id=i,
+        )
+        for i, (res_id, ins, name) in enumerate(
+            [(52, "", "CA"), (52, "", "CB"), (52, "A", "CA"), (53, "", "CA")], start=1
+        )
+    ]
+    array = atom_array(atoms)
+
+    assert select_mask("resi 52A", array).sum() == 1
+    assert array[select_mask("resi 52A", array)].ins_code[0] == "A"
+    # Lower case is the same residue; PDB insertion codes are upper case.
+    assert select_mask("resi 52a", array).sum() == 1

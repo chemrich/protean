@@ -1,13 +1,28 @@
-"""Differential tests: our MolScript vs Mol*'s bundled PyMOL transpiler.
+"""Differential tests: the Python engine vs Mol*'s bundled PyMOL transpiler.
 
-Both compile the same PyMOL selection; both are evaluated by the same Mol*
-query engine against 4HHB. Where they agree, we have a regression signal for
-free. Where they disagree, the divergence is asserted explicitly — those are
-the cases from PLAN.md decision 5 where the bundled transpiler silently
-answers nothing.
+Two independent implementations of the same grammar, evaluated against 4HHB.
+Where they agree, we have a regression signal for free. Where they disagree,
+the divergence is asserted explicitly — those are the cases from PLAN.md
+decision 5 where the bundled transpiler silently answers nothing.
 
 Absolute expected counts are asserted too, so that a *mutual* failure (both
 returning 0) cannot masquerade as agreement.
+
+Three different claims are checked here, and they are not interchangeable:
+
+  ground truth  the Python engine against counts derived by hand from 4HHB.
+  semantics     the Python engine against a foreign implementation of PyMOL
+                selection syntax. This is the only independent opinion we
+                have about what a selection *means*.
+  transport     atom sets resolved in Python, emitted as explicit-atom-id
+                MolScript, and re-counted by Mol*. This is the production
+                path every handle travels to reach the viewer, and the one
+                place a set can be corrupted between computed and drawn.
+
+The third used to be untested: the suite compiled selections with a second
+MolScript emitter that the server never called, so the browser only ever saw
+code that shipped to nobody. Retiring that emitter meant pointing these tests
+at the path that actually runs.
 
 Requires a real browser and is opt-in:
 
@@ -25,11 +40,12 @@ import tempfile
 from pathlib import Path
 
 import aiohttp
+import numpy as np
 import pytest
 
 from protean_mcp.connection import ViewerBridge
 from protean_mcp.fetch import fetch_structure_data
-from protean_mcp.selections import to_molscript
+from protean_mcp.handles import to_molscript as indices_to_molscript
 from protean_mcp.selections_numpy import load_structure, select_mask
 
 from .conftest import free_port
@@ -138,7 +154,11 @@ DIVERGENCES: dict[str, int] = {
     "chain A and not hydro": 1168,  # their `not` collapses on an empty operand
     "within 5 of resn HEM": 535,  # they require an explicit left operand
     "first chain A": 1,  # silently 0
-    "bychain resi 50": 4384,  # silently 0
+    # Silently 0 for them. 4779 is PyMOL's answer: `bychain` widens over the
+    # same chain id it selected on, so the hemes come with their chain. The
+    # retired MolScript backend said 4384 because Mol*'s chain key follows
+    # label_asym_id, which splits the hemes off into their own chains.
+    "bychain resi 50": 4779,
     # Prefix-operator precedence. PyMOL binds `byres` tighter than `and`, so
     # this is (byres X) and Y = 295. The transpiler swallows the `and` across
     # the parenthesis boundary and computes byres (X and Y) = 502 — which is
@@ -163,16 +183,6 @@ AGREEMENT_ONLY: tuple[str, ...] = (
 )
 
 CORPUS = list(EXPECTED) + list(AGREEMENT_ONLY) + list(DIVERGENCES)
-
-# Where the Python evaluator deliberately differs from the MolScript backend.
-# Value is the Python answer.
-ENGINE_DIVERGENCES: dict[str, int] = {
-    # Mol*'s chain key follows label_asym_id, so `bychain` there widens to the
-    # protein chains only while `chain A` (auth_asym_id) includes the heme.
-    # The Python engine widens over the same id it selects on, so the two
-    # agree with each other and with PyMOL.
-    "bychain resi 50": 4779,
-}
 
 _EVAL_JS = r"""(async () => {
   const p = window.__protean.plugin;
@@ -298,24 +308,47 @@ async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, 
 
 @pytest.fixture(scope="module")
 async def counts() -> dict[str, dict[str, object]]:
-    """Every corpus selection, compiled both ways, evaluated on 4HHB."""
+    """One browser session carrying both browser-side claims.
+
+    `theirs::` is their transpiler compiling the PyMOL string — the semantics
+    oracle. `roundtrip::` is our own atom set, resolved in Python and emitted
+    as explicit atom ids — the transport check. They are deliberately in the
+    same session so a structure that loaded differently cannot make one look
+    right while the other is wrong.
+    """
+    structure = await fetch_structure_data(FIXTURE)
+    array = load_structure(structure.data, structure.format)
+
     cases: list[list[str]] = []
     for selection in CORPUS:
-        cases.append([f"ours::{selection}", "mol-script", to_molscript(selection)])
         cases.append([f"theirs::{selection}", "pymol", selection])
+        indices = np.flatnonzero(select_mask(selection, array))
+        cases.append(
+            [
+                f"roundtrip::{selection}",
+                "mol-script",
+                indices_to_molscript(array, indices),
+            ]
+        )
     return await _evaluate(FIXTURE, cases)
 
 
 @pytest.fixture(scope="module")
-async def class_counts() -> dict[str, dict[str, dict[str, object]]]:
-    """Class-specific selectors evaluated on one fixture per structure class."""
-    out: dict[str, dict[str, dict[str, object]]] = {}
+async def class_counts() -> dict[str, dict[str, int]]:
+    """Class-specific selectors, resolved by the Python engine.
+
+    No browser: the engine under test is the Python one, and these fixtures
+    exist to exercise entity typing on structure classes a globular protein
+    would never reach.
+    """
+    out: dict[str, dict[str, int]] = {}
     for pdb_id, expectations in CLASS_FIXTURES.items():
-        cases = [
-            [f"ours::{selection}", "mol-script", to_molscript(selection)]
+        structure = await fetch_structure_data(pdb_id)
+        array = load_structure(structure.data, structure.format)
+        out[pdb_id] = {
+            selection: int(select_mask(selection, array).sum())
             for selection in expectations
-        ]
-        out[pdb_id] = await _evaluate(pdb_id, cases)
+        }
     return out
 
 
@@ -328,19 +361,24 @@ def _count(counts, prefix: str, selection: str) -> int:
 
 
 @pytest.mark.parametrize("selection", sorted(EXPECTED))
-async def test_matches_ground_truth(counts, selection):
-    """Our compiler produces the hand-checked atom count."""
-    assert _count(counts, "ours", selection) == EXPECTED[selection]
+async def test_matches_ground_truth(python_counts, selection):
+    """The Python engine produces the hand-checked atom count."""
+    assert python_counts[selection] == EXPECTED[selection]
 
 
 @pytest.mark.parametrize("selection", sorted(EXPECTED) + sorted(AGREEMENT_ONLY))
-async def test_agrees_with_bundled_transpiler(counts, selection):
-    """Independent implementations agreeing is a strong regression signal."""
-    assert _count(counts, "ours", selection) == _count(counts, "theirs", selection)
+async def test_agrees_with_bundled_transpiler(counts, python_counts, selection):
+    """Two independent implementations of one grammar.
+
+    This is the whole safety argument for evaluating selections in Python:
+    something that did not read our code still has to agree about what the
+    selection means.
+    """
+    assert python_counts[selection] == _count(counts, "theirs", selection)
 
 
 @pytest.mark.parametrize("selection", sorted(DIVERGENCES))
-async def test_beats_bundled_transpiler(counts, selection):
+async def test_beats_bundled_transpiler(counts, python_counts, selection):
     """Cases where Mol*'s transpiler is silently wrong and we are not.
 
     Asserting *both* halves keeps this honest: if upstream ever fixes one of
@@ -348,13 +386,24 @@ async def test_beats_bundled_transpiler(counts, selection):
     stale claim.
     """
     expected = DIVERGENCES[selection]
-    ours = _count(counts, "ours", selection)
     theirs = _count(counts, "theirs", selection)
-    assert ours == expected
+    assert python_counts[selection] == expected
     assert theirs != expected, (
         f"Mol*'s transpiler now returns {theirs} for {selection!r}; "
         "move it out of DIVERGENCES"
     )
+
+
+@pytest.mark.parametrize("selection", sorted(EXPECTED) + sorted(AGREEMENT_ONLY))
+async def test_handles_survive_the_trip_to_the_viewer(counts, python_counts, selection):
+    """The production path: Python resolves it, Mol* has to agree on the set.
+
+    Every handle reaches the viewer as explicit atom ids compressed into
+    ranges. A bug in that compression would show up here as a count that
+    drifts from what Python resolved — and nowhere else, because the numbers
+    the tools report all come from the Python side.
+    """
+    assert python_counts[selection] == _count(counts, "roundtrip", selection)
 
 
 @pytest.mark.parametrize(
@@ -367,10 +416,7 @@ async def test_class_selectors(class_counts, pdb_id, selection, expectation):
     Entity typing is where these break: glycans are `branched`, not
     `non-polymer`, so a protein-only fixture would never catch it.
     """
-    entry = class_counts[pdb_id][f"ours::{selection}"]
-    if "error" in entry:
-        pytest.fail(f"'{selection}' on {pdb_id} errored: {entry['error']}")
-    count = entry["count"]
+    count = class_counts[pdb_id][selection]
     if expectation == "nonzero":
         assert count > 0, f"'{selection}' found nothing in {pdb_id}"
     else:
@@ -379,30 +425,7 @@ async def test_class_selectors(class_counts, pdb_id, selection, expectation):
 
 @pytest.fixture(scope="module")
 async def python_counts() -> dict[str, int]:
-    """The same corpus evaluated by the Python engine, no browser involved."""
+    """The corpus evaluated by the Python engine, no browser involved."""
     structure = await fetch_structure_data(FIXTURE)
     array = load_structure(structure.data, structure.format)
     return {sel: int(select_mask(sel, array).sum()) for sel in CORPUS}
-
-
-@pytest.mark.parametrize("selection", sorted(set(EXPECTED) | set(AGREEMENT_ONLY)))
-async def test_python_engine_agrees_with_molscript(counts, python_counts, selection):
-    """Two independent engines, one grammar.
-
-    This is what makes moving evaluation into Python safe: the MolScript
-    backend is still here to disagree.
-    """
-    if selection in ENGINE_DIVERGENCES:
-        pytest.skip("deliberate divergence, asserted separately")
-    assert python_counts[selection] == _count(counts, "ours", selection)
-
-
-@pytest.mark.parametrize("selection", sorted(ENGINE_DIVERGENCES))
-async def test_python_engine_diverges_only_where_intended(
-    counts, python_counts, selection
-):
-    expected = ENGINE_DIVERGENCES[selection]
-    assert python_counts[selection] == expected
-    assert _count(counts, "ours", selection) != expected, (
-        f"MolScript now agrees on {selection!r}; retire the divergence"
-    )

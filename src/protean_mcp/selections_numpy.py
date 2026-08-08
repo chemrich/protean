@@ -1,9 +1,9 @@
 """Evaluate a parsed selection against coordinates, in Python.
 
-The same AST that `selections.to_molscript` compiles for the viewer is
-evaluated here into a boolean atom mask. That is the point: one grammar, and
-eventually one engine, so a selection cannot mean two different things
-depending on whether it was drawn or analysed.
+The AST from :mod:`selections` is evaluated here into a boolean atom mask.
+This is now the only engine: a selection cannot mean two different things
+depending on whether it was drawn or analysed, because only one thing decides
+what it means. The viewer is told the resulting atoms, not the query.
 
 Evaluating in Python also means selections and analysis work with no browser
 at all — headless, in CI, in a script.
@@ -193,7 +193,15 @@ def _numeric_terms(
                     np.char.upper(array.ins_code.astype(str)) == coded.group(2).upper()
                 )
                 continue
-        mask |= numbers == int(term)
+        try:
+            mask |= numbers == int(term)
+        except ValueError:
+            # Everything this package refuses has to arrive as a SelectionError;
+            # a bare ValueError escapes the tool layer's error handling and
+            # reaches the caller as a crash instead of an explanation.
+            raise SelectionError(
+                f"Expected an integer, range, or insertion code, got {term!r}"
+            ) from None
     return mask
 
 
