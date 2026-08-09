@@ -11,12 +11,14 @@ from typing import Any
 import pytest
 
 import protean_mcp.server as server_mod
+from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
 from protean_mcp.server import (
     clear_viewer,
     combine,
     conservation,
+    electrostatics,
     fetch_structure,
     interface,
     load_session,
@@ -315,6 +317,95 @@ async def test_interface_without_a_structure_asks_for_one(bridge, monkeypatch):
     monkeypatch.setattr(server_mod, "_structure_error", None)
     with pytest.raises(ViewerError, match="No structure loaded"):
         await interface("A", "B")
+
+
+def _tiny_protein_pdb(path: Path) -> Path:
+    """Two glycines with a complete C-terminus, so pdb2pqr will charge them."""
+    atoms = [
+        (1, "N", "GLY", 1, (0.0, 0.0, 0.0), "N"),
+        (2, "CA", "GLY", 1, (1.46, 0.0, 0.0), "C"),
+        (3, "C", "GLY", 1, (2.0, 1.42, 0.0), "C"),
+        (4, "O", "GLY", 1, (1.25, 2.39, 0.0), "O"),
+        (5, "N", "GLY", 2, (3.33, 1.5, 0.0), "N"),
+        (6, "CA", "GLY", 2, (4.0, 2.78, 0.0), "C"),
+        (7, "C", "GLY", 2, (5.5, 2.65, 0.0), "C"),
+        (8, "O", "GLY", 2, (6.1, 1.58, 0.0), "O"),
+        (9, "OXT", "GLY", 2, (6.05, 3.75, 0.0), "O"),
+    ]
+    path.write_text(
+        "\n".join(_pdb_line(s, n, r, "A", i, xyz, e) for s, n, r, i, xyz, e in atoms)
+        + "\nEND\n"
+    )
+    return path
+
+
+async def test_electrostatics_reports_which_method_ran(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out = await electrostatics(
+        method="coulombic", spacing=2.0, padding=6.0, path=str(tmp_path / "p.dx")
+    )
+    assert "screened Coulomb" in out["method"]
+    assert out["units"] == "kT/e"
+    assert "caveat" in out, "the approximation must carry its own caveat"
+    assert out["charges"]["forcefield"] == "AMBER"
+    assert Path(out["dx_path"]).is_file()
+
+
+async def test_written_dx_is_readable_back(wired_bridge, tmp_path):
+    """The file is the artifact the viewer will consume, so it has to parse."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out = await electrostatics(
+        method="coulombic", spacing=2.0, padding=6.0, path=str(tmp_path / "p.dx")
+    )
+    grid = read_dx(Path(out["dx_path"]).read_text())
+    assert list(grid.shape) == out["grid_shape"]
+
+
+async def test_unknown_method_is_refused(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="Unknown method"):
+        await electrostatics(method="magic")
+
+
+async def test_electrostatics_samples_a_handle_per_residue(wired_bridge, tmp_path):
+    """Answers 'is this patch acidic?' with no rendering involved."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("all", name="whole")
+    await task
+
+    out = await electrostatics(
+        method="coulombic",
+        spacing=1.0,
+        padding=8.0,
+        handle="whole",
+        path=str(tmp_path / "p.dx"),
+    )
+    sampled = out["sampled"]
+    assert sampled["handle"] == "whole"
+    assert sampled["residues_sampled"] == 2
+    assert sampled["atoms_outside_grid"] == 0
+    assert {r["comp"] for r in sampled["most_negative"]} == {"GLY"}
+    # Sorted by potential, so the two ends bracket each other.
+    assert (
+        sampled["most_negative"][0]["potential"]
+        <= sampled["most_positive"][0]["potential"]
+    )
+
+
+async def test_sampling_an_unknown_handle_names_the_known_ones(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="No selection named"):
+        await electrostatics(method="coulombic", spacing=2.0, handle="nope")
+
+
+async def test_electrostatics_without_a_structure_asks_for_one(bridge, monkeypatch):
+    monkeypatch.setattr(server_mod, "_bridge", bridge)
+    monkeypatch.setattr(server_mod, "_structure", None)
+    monkeypatch.setattr(server_mod, "_structure_error", None)
+    with pytest.raises(ViewerError, match="No structure loaded"):
+        await electrostatics()
 
 
 def _peptide_pdb(path: Path, n: int = 12) -> Path:

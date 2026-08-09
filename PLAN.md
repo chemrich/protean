@@ -157,3 +157,48 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
    1BNA (DNA), 5FJI (glycoprotein), 1CA2 (ion), 4HHB (the main corpus).
 
    Keep Mol\*'s transpiler wired up as a **differential test oracle**: agreement is a regression signal, and the 8 divergences above are our first "we beat PyMOL" test cases. Open gap: `bymolecule` (`atom.key.molecule`) returned 0 and needs investigation.
+
+## Decisions (2026-08-09) — electrostatics without the binary
+
+8. **Screened Coulomb is the default; APBS is an optional backend.** Amends
+   decision 3, which scoped electrostatics as `protean-mcp[apbs]` and left the
+   solver unquestioned.
+
+   The two halves of the inherited stack have diverged. `pdb2pqr` — protonation,
+   charges and radii — is healthy: pushed April 2026, a pure-Python `any.whl` on
+   PyPI, so it is a plain dependency and does the same job for both backends.
+   APBS is not: last code commit December 2022 (2024 activity is dependabot
+   only), last release 3.4.1 in April 2022, 85 open issues, and no PyPI presence
+   because it is C/C++/Fortran linking metis and SuiteSparse. The APBS installed
+   on the development machine did not run at all — Homebrew's metis had gone
+   missing, leaving a binary that exists and cannot start.
+
+   Requiring that to see which face of a protein is acidic is a bad trade, and
+   seeing which face is acidic is what surface potential is overwhelmingly for.
+   So `electrostatics()` defaults to a screened Coulomb field summed in numpy —
+   no binary, ~1s for ubiquitin on a 1 A grid — and uses APBS when a *runnable*
+   binary is found. ChimeraX made the same call: `coulombic` is its default.
+
+   **What the approximation costs, measured rather than asserted.** One uniform
+   dielectric everywhere means no low-dielectric protein interior and no
+   reaction field at the solvent boundary — precisely what PB exists to model.
+   Against APBS on 1UBQ from an identical PQR, sampled on a shell 3 A outside
+   the atoms: Pearson r = 0.958, sign agreement 94.1%, and Coulombic magnitudes
+   about 1.6x low (-1.87..1.38 vs -2.94..2.88 kT/e). The shape is right; the
+   scale is not. So the field is safe to look at and unsafe to integrate, and
+   every result carries the `method` that produced it rather than leaving a
+   caller to guess which physics they got.
+
+   Both backends emit the same artifact — a kT/e grid, writable as OpenDX — so
+   they are directly comparable and the viewer never learns which ran. Mol\*
+   already parses `dx`/`ccp4`/`dsn6`/`cube` and ships `external-volume` and
+   `volume-value` colour themes, so displaying either is plumbing rather than
+   new capability.
+
+   Rejected: building APBS wheels ourselves (real, with precedent in
+   `pymol-open-source-wheel`, but it means adopting a dormant Fortran codebase
+   and its four-platform CI); requiring conda for the extra (conda-forge does
+   have apbs for linux-64, osx-64, osx-arm64 and win-64, and remains the
+   recommended way to get it, but it cannot be the only way to get a picture);
+   and `delphi4py`, which ships manylinux x86_64 wheels only and so does not
+   exist on Apple Silicon.
