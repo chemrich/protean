@@ -73,6 +73,8 @@ _conservation_scores: dict[str, Any] = {}
 _DOMAIN_BOUNDS = 2
 # The uncertainty theme ramps over a fixed [0, 100] domain.
 _B_FACTOR_FULL = 100.0
+# A homogeneous transform is 4x4.
+_TRANSFORM_SIZE = 4
 _MIN_BINS = 2
 # Ramps for banded colouring. Conservation runs variable -> conserved, which is
 # the direction the eye reads as "important is saturated".
@@ -617,6 +619,8 @@ async def superpose(
     target: str,
     mobile_chain: str | None = None,
     target_chain: str | None = None,
+    show: bool = True,
+    mobile_suffix: str = "_2",
 ) -> dict[str, Any]:
     """Superpose one structure onto another and report how well it fits.
 
@@ -630,7 +634,11 @@ async def superpose(
     the worst-fitting residues — an RMSD alone hides whether the disagreement is
     spread out or concentrated in one loop.
 
-    This is pure analysis and does not touch the viewer.
+    show: load the superposed pair into the viewer as one structure, with the
+      mobile coordinates already moved into the target's frame. This replaces
+      whatever was loaded, and selections afterwards address both halves.
+    mobile_suffix: appended to a mobile chain id that the target already uses,
+      since the pair share one chain namespace once combined.
     """
     try:
         first = await fetch_structure_data(mobile)
@@ -648,7 +656,88 @@ async def superpose(
         )
     except SuperpositionError as exc:
         raise ViewerError(str(exc)) from exc
-    return {"mobile": mobile, "target": target, **result.as_dict()}
+
+    payload = {"mobile": mobile, "target": target, **result.as_dict()}
+    if not show:
+        return payload
+    return {
+        **payload,
+        **await _display_superposition(
+            first, second, mobile, target, result, mobile_suffix
+        ),
+    }
+
+
+async def _display_superposition(
+    mobile_data: Any,
+    target_data: Any,
+    mobile: str,
+    target: str,
+    result: Any,
+    suffix: str,
+) -> dict[str, Any]:
+    """Load the pair, with the mobile structure moved into the target's frame.
+
+    The transform is applied to the coordinates here rather than sent to the
+    viewer as a matrix, and the two are loaded as a single structure. That is
+    what lets everything else keep working: handles, selections and every
+    analysis tool address one structure, and a superposition that arrived as
+    two would have needed all of them to grow a structure argument.
+
+    The cost is that the pair share one namespace, so a mobile chain whose id
+    the target also uses is renamed. Which chains moved is reported, because a
+    selection written against the original name would otherwise pick up the
+    wrong molecule.
+    """
+    moved = _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
+    fixed = _load_structure(target_data.data, target_data.format, "asymmetric").array
+
+    matrix = np.asarray(result.transform, dtype=float)
+    if matrix.shape != (_TRANSFORM_SIZE, _TRANSFORM_SIZE):
+        raise ViewerError(f"Expected a 4x4 transform, got {matrix.shape}")
+    # x' = xR^T + t, the convention biotite's superimpose_homologs returns.
+    moved.coord = moved.coord @ matrix[:3, :3].T + matrix[:3, 3]
+
+    taken = {str(c) for c in fixed.chain_id}
+    renamed: dict[str, str] = {}
+    relabelled = []
+    for chain in moved.chain_id:
+        name = str(chain)
+        if name in taken:
+            renamed.setdefault(name, f"{name}{suffix}")
+            relabelled.append(renamed[name])
+        else:
+            relabelled.append(name)
+    moved.set_annotation("chain_id", np.asarray(relabelled))
+
+    combined = fixed + moved
+    _renumber_for_viewer(combined)
+
+    global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
+    _handles.clear()
+    _conservation_scores.clear()
+    _structure, _structure_error = combined, None
+    _structure_identifier = f"{target}+{mobile}"
+
+    viewer = await _send_structure(combined, f"{target}+{mobile}")
+    ours = int(combined.array_length())
+    theirs = viewer.get("atom_count")
+    return {
+        "displayed": True,
+        "structure": _structure_identifier,
+        "target_chains_shown": sorted(taken),
+        "mobile_chains_shown": sorted({str(c) for c in moved.chain_id}),
+        "renamed_chains": renamed,
+        "atoms": ours,
+        "viewer_atom_count": theirs,
+        "agree": theirs is None or int(theirs) == ours,
+        "note": (
+            "The loaded structure is now the superposed pair, so selections and "
+            "analysis address both. The mobile copy is in the target's frame; "
+            "its coordinates were transformed, not just displayed shifted."
+            + (f" Renamed to avoid collisions: {renamed}." if renamed else "")
+        ),
+    }
 
 
 @mcp.tool()
@@ -1142,6 +1231,9 @@ async def _conservation_gradient(
         (s.chain, s.seq, s.ins_code): float(v)
         for s, v in zip(scores, scaled, strict=True)
     }
+    # Renumber before the copy so the analysis array and the file the viewer
+    # parses agree on which atom is which.
+    _renumber_for_viewer(array)
     display = array.copy()
     # Keyed without the symmetry copy, so a score computed once for a chain
     # lands on every copy of it — conservation is a property of the sequence,
@@ -1160,19 +1252,7 @@ async def _conservation_gradient(
     display.b_factor = values
 
     scored = sum(1 for label in labels if label in lookup)
-    data = _structure_as_mmcif(display)
-    # Sent as the asymmetric unit: these coordinates are already whatever
-    # assembly was chosen, and letting the viewer expand them again would
-    # duplicate the molecule.
-    result = await _call(
-        "load_structure",
-        {
-            "name": f"conservation:{chain}",
-            "format": "mmcif",
-            "data": data,
-            "assembly": "asymmetric",
-        },
-    )
+    result = await _send_structure(display, f"conservation:{chain}")
     if hide_others:
         with contextlib.suppress(ViewerError):
             await _call("hide", {"name": "auto"})
@@ -1214,6 +1294,37 @@ async def _conservation_gradient(
             "temperature factor."
         ),
     }
+
+
+def _renumber_for_viewer(array: Any) -> None:
+    """Give the array the atom ids the viewer will end up parsing.
+
+    biotite's mmCIF writer numbers atom_site.id sequentially from 1 and
+    discards whatever the array carried. Handles reach the viewer as atom.id
+    ranges, so leaving the analysis copy on its original ids means every handle
+    names different atoms than intended — silently, because the counts still
+    agree. A biological assembly makes it certain rather than likely: its ids
+    are duplicated across symmetry copies, and the written file's are not.
+    """
+    array.atom_id = np.arange(1, array.array_length() + 1)
+
+
+async def _send_structure(array: Any, label: str) -> dict[str, Any]:
+    """Load an array we built ourselves into the viewer.
+
+    Always as the asymmetric unit: these coordinates already are whatever
+    molecule was chosen, and biotite writes no assembly for the viewer to
+    expand even if it were asked to.
+    """
+    return await _call(
+        "load_structure",
+        {
+            "name": label,
+            "format": "mmcif",
+            "data": _structure_as_mmcif(array),
+            "assembly": "asymmetric",
+        },
+    )
 
 
 def _structure_as_mmcif(array: Any) -> str:

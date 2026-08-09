@@ -10,13 +10,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
+from biotite.structure import Atom
+from biotite.structure import array as atom_array
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
-from protean_mcp.selections_numpy import load_structure
+from protean_mcp.selections_numpy import load_structure, select_mask
 from protean_mcp.server import (
     clear_viewer,
     color_by_conservation,
@@ -713,3 +716,156 @@ async def test_unknown_scale_is_refused(wired_bridge, tmp_path, monkeypatch):
         await conservation()
         with pytest.raises(ViewerError, match="Unknown scale"):
             await color_by_conservation(mode="gradient", scale="logarithmic")
+
+
+# -- displaying a superposition ------------------------------------------------
+
+
+def _shifted_pdb(path: Path, offset: float, chain: str = "A", n: int = 6) -> Path:
+    """A short peptide, optionally translated along x."""
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
+        ):
+            xyz = (float(res) * 4 + offset, float(i), 0.0)
+            lines.append(_pdb_line(serial, name, "ALA", chain, res, xyz, elem))
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
+class _FakeFetched:
+    def __init__(self, path: Path) -> None:
+        self.data = path.read_text()
+        self.format = "pdb"
+
+
+class _FakeResult:
+    """A superposition result carrying a known transform."""
+
+    def __init__(self, matrix: Any) -> None:
+        self.transform = matrix
+
+
+async def _combine(
+    wired_bridge: Any,
+    tmp_path: Path,
+    matrix: Any,
+    suffix: str = "_2",
+    chain: str = "A",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    mobile = _FakeFetched(_shifted_pdb(tmp_path / "mob.pdb", offset=50.0, chain=chain))
+    target = _FakeFetched(_shifted_pdb(tmp_path / "tar.pdb", offset=0.0))
+    sent: dict[str, Any] = {}
+
+    def on_load(args: dict[str, Any]) -> dict[str, Any]:
+        sent.update(args)
+        return {"loaded": args["name"], "atom_count": 48}
+
+    async with _serving(wired_bridge, load_structure=on_load):
+        out = await server_mod._display_superposition(
+            mobile, target, "mob", "tar", _FakeResult(matrix), suffix
+        )
+    return out, sent
+
+
+async def test_the_transform_is_applied_to_the_coordinates(wired_bridge, tmp_path):
+    """The bug this fixes: a matrix that nothing ever applied.
+
+    The mobile copy starts 50 A away; a matrix that translates by -50 has to
+    bring it exactly onto the target, not merely near it.
+    """
+    matrix = np.eye(4)
+    matrix[0, 3] = -50.0
+    await _combine(wired_bridge, tmp_path, matrix)
+
+    array = server_mod._structure
+    fixed = array[array.chain_id == "A"]
+    moved = array[array.chain_id == "A_2"]
+    assert moved.array_length() == fixed.array_length()
+    np.testing.assert_allclose(moved.coord, fixed.coord, atol=1e-4)
+
+
+async def test_an_unapplied_transform_would_leave_them_apart(wired_bridge, tmp_path):
+    """Guards the test above: identity must *not* superpose them."""
+    await _combine(wired_bridge, tmp_path, np.eye(4))
+    array = server_mod._structure
+    fixed = array[array.chain_id == "A"]
+    moved = array[array.chain_id == "A_2"]
+    assert np.abs(moved.coord - fixed.coord).max() == pytest.approx(50.0, abs=1e-4)
+
+
+async def test_colliding_chain_ids_are_renamed_and_reported(wired_bridge, tmp_path):
+    out, _ = await _combine(wired_bridge, tmp_path, np.eye(4))
+    assert out["renamed_chains"] == {"A": "A_2"}
+    assert out["mobile_chains_shown"] == ["A_2"]
+    assert out["target_chains_shown"] == ["A"]
+
+
+async def test_a_non_colliding_chain_keeps_its_name(wired_bridge, tmp_path):
+    out, _ = await _combine(wired_bridge, tmp_path, np.eye(4), chain="Z")
+    assert out["renamed_chains"] == {}
+    assert out["mobile_chains_shown"] == ["Z"]
+
+
+async def test_the_pair_becomes_one_selectable_structure(wired_bridge, tmp_path):
+    """Both halves have to be addressable, or the picture is all you get."""
+    await _combine(wired_bridge, tmp_path, np.eye(4))
+    both = select_mask("chain A or chain A_2", server_mod._structure)
+    assert both.sum() == server_mod._structure.array_length()
+
+
+async def test_atom_ids_match_what_the_viewer_will_parse(wired_bridge, tmp_path):
+    """The transport reads atom.id, and biotite renumbers on write.
+
+    Two structures concatenated both start at id 1, so without renumbering a
+    handle would name one atom in each half.
+    """
+    _, sent = await _combine(wired_bridge, tmp_path, np.eye(4))
+    ours = np.asarray(server_mod._structure.atom_id)
+    assert len(np.unique(ours)) == len(ours), "ids must be unique across the pair"
+    theirs = load_structure(sent["data"], "mmcif", "asymmetric").array.atom_id
+    np.testing.assert_array_equal(ours, theirs)
+
+
+async def test_the_combined_structure_is_sent_as_the_asymmetric_unit(
+    wired_bridge, tmp_path
+):
+    _, sent = await _combine(wired_bridge, tmp_path, np.eye(4))
+    assert sent["assembly"] == "asymmetric"
+
+
+async def test_stale_handles_do_not_survive_a_new_structure(wired_bridge, tmp_path):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "old.pdb", n=6))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("all", name="stale")
+    await task
+    assert "stale" in server_mod._handles.names()
+
+    await _combine(wired_bridge, tmp_path, np.eye(4))
+    assert server_mod._handles.names() == [], "indices into the old structure"
+
+
+def test_renumbering_makes_ids_unique_and_one_based():
+    atoms = [
+        Atom(
+            [0.0, 0.0, float(i)],
+            chain_id="A",
+            res_id=1,
+            ins_code="",
+            res_name="ALA",
+            atom_name="CA",
+            element="C",
+            hetero=False,
+            b_factor=1.0,
+            occupancy=1.0,
+            atom_id=7,  # every atom claiming the same id
+        )
+        for i in range(5)
+    ]
+    array = atom_array(atoms)
+    server_mod._renumber_for_viewer(array)
+    assert array.atom_id.tolist() == [1, 2, 3, 4, 5]
