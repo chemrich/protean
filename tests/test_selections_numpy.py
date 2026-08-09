@@ -8,12 +8,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
 
 from protean_mcp.selections import SelectionError
-from protean_mcp.selections_numpy import select_mask
+from protean_mcp.selections_numpy import (
+    _residue_keys,
+    load_structure,
+    residue_labels,
+    select_mask,
+)
 
 
 def _atom(
@@ -186,3 +192,67 @@ def test_insertion_code_selects_only_the_inserted_residue():
     assert array[select_mask("resi 52A", array)].ins_code[0] == "A"
     # Lower case is the same residue; PDB insertion codes are upper case.
     assert select_mask("resi 52a", array).sum() == 1
+
+
+# -- assemblies ----------------------------------------------------------------
+
+
+def _with_copies(n_copies: int) -> AtomArray[Any]:
+    """One alanine, repeated as *n_copies* symmetry copies.
+
+    The copies share chain id and residue number, exactly as biotite's
+    assembly expansion produces them, so anything keying on those alone will
+    fold them together.
+    """
+    atoms = []
+    for copy in range(n_copies):
+        for i, name in enumerate(("N", "CA", "C", "O")):
+            atoms.append(
+                _atom("A", 1, "ALA", name, "C", [float(i), float(copy * 30), 0.0])
+            )
+    array = atom_array(atoms)
+    array.set_annotation("sym_id", np.repeat(np.arange(n_copies), 4))
+    return array
+
+
+def test_residue_labels_separate_symmetry_copies():
+    labels = residue_labels(_with_copies(2))
+    assert len(set(labels.tolist())) == 2, "two copies must not share one label"
+
+
+def test_residue_labels_omit_the_copy_when_there_is_only_one():
+    """A single-copy structure should read exactly as it did before."""
+    labels = residue_labels(_with_copies(1))
+    assert all("#0" in label for label in labels.tolist())
+
+
+def test_residue_keys_do_not_merge_copies():
+    assert len(set(_residue_keys(_with_copies(3)).tolist())) == 3
+
+
+def test_unknown_assembly_is_refused():
+    with pytest.raises(SelectionError, match="Unknown assembly"):
+        load_structure("", "mmcif", "supercell")
+
+
+def test_pdb_input_says_its_assembly_was_not_read():
+    """PDB keeps assemblies in REMARK 350, which biotite does not parse.
+
+    Falling back silently would leave the viewer showing a molecule the
+    analysis has never seen.
+    """
+    text = (
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "END\n"
+    )
+    loaded = load_structure(text, "pdb", "biological")
+    assert loaded.assembly == "asymmetric"
+    assert "REMARK 350" in loaded.note
+
+
+def test_asymmetric_pdb_load_carries_no_note():
+    text = (
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "END\n"
+    )
+    assert load_structure(text, "pdb", "asymmetric").note == ""

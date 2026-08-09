@@ -187,7 +187,10 @@ async def open_viewer(timeout: float = 20) -> str:
 
 @mcp.tool()
 async def fetch_structure(
-    identifier: str, source: str = "auto", name: str | None = None
+    identifier: str,
+    source: str = "auto",
+    name: str | None = None,
+    assembly: str = "biological",
 ) -> str:
     """Fetch a structure and load it into the viewer.
 
@@ -195,6 +198,14 @@ async def fetch_structure(
     "1ubq"), or a UniProt accession for an AlphaFold model (e.g. "P69905").
     source: "auto" (default), "file", "pdb", or "alphafold".
     name: optional label for the loaded structure.
+    assembly: "biological" (default) builds the molecule as it exists —
+      haemoglobin is a tetramer, not the deposited dimer — and "asymmetric"
+      uses the deposited coordinates. The viewer and the analysis always make
+      the same choice, and the reply states the atom count each of them ended
+      up with so a disagreement is visible rather than latent.
+
+    Note that the biological assembly is not always larger: an asymmetric unit
+    holding two copies of a complex has an assembly *half* its size.
     """
     bridge = _require_viewer()
     try:
@@ -206,16 +217,23 @@ async def fetch_structure(
     # silently matching nothing.
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
     _handles.clear()
+    loaded = None
     try:
-        _structure = _load_structure(structure.data, structure.format)
-        _structure_error = None
+        loaded = _load_structure(structure.data, structure.format, assembly)
+        _structure, _structure_error = loaded.array, None
     except SelectionError as exc:
         _structure, _structure_error = None, str(exc)
     _structure_identifier = identifier
     label = name or structure.name
+
     result = await bridge.request(
         "load_structure",
-        {"name": label, "format": structure.format, "data": structure.data},
+        {
+            "name": label,
+            "format": structure.format,
+            "data": structure.data,
+            "assembly": loaded.assembly if loaded else assembly,
+        },
     )
     origin = {
         "file": "local file",
@@ -226,7 +244,37 @@ async def fetch_structure(
     note = (
         "" if _structure_error is None else f" [analysis unavailable: {_structure_error}]"
     )
+    if loaded is not None:
+        note += _assembly_note(loaded, result)
     return f"Loaded {label} ({structure.format}, from {origin}): {result}{note}"
+
+
+def _assembly_note(loaded: Any, viewer_result: Any) -> str:
+    """State whether the viewer and the analysis are holding the same molecule.
+
+    They are built by two independent implementations from the same file, and
+    for years the only symptom of them disagreeing was an atom count nobody
+    compared. Comparing it is cheap; discovering the mismatch later, through a
+    potential map computed for a different molecule, is not.
+    """
+    parts = [f" [{loaded.assembly} assembly"]
+    if loaded.copies > 1:
+        parts.append(f", {loaded.copies} symmetry copies")
+    ours = int(loaded.array.array_length())
+    theirs = viewer_result.get("atom_count") if isinstance(viewer_result, dict) else None
+    if theirs is None:
+        parts.append(f", {ours} atoms here; the viewer reported no count")
+    elif int(theirs) == ours:
+        parts.append(f", {ours} atoms in both viewer and analysis")
+    else:
+        parts.append(
+            f", MISMATCH: {ours} atoms here but {theirs} in the viewer. "
+            "Analysis and the picture are different molecules; treat counts, "
+            "buried areas and potentials as unreliable"
+        )
+    if loaded.note:
+        parts.append(f" — {loaded.note}")
+    return "".join(parts) + "]"
 
 
 @mcp.tool()

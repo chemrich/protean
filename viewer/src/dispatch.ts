@@ -15,6 +15,13 @@ interface LoadStructureArgs {
   name: string;
   format: 'pdb' | 'mmcif';
   data: string;
+  /**
+   * Which molecule to build: the biological assembly (Mol*'s default, and a
+   * tetramer for haemoglobin) or the deposited asymmetric unit. The server
+   * makes the same choice for its own copy — analysis describing a different
+   * molecule than the picture is a bug that hides until someone counts atoms.
+   */
+  assembly?: 'biological' | 'asymmetric';
 }
 
 interface SelectArgs {
@@ -356,19 +363,41 @@ export function createDispatcher(plugin: any): Handler {
   const actions: Record<string, { render?: boolean; run: (args: any) => Promise<unknown> }> = {
     load_structure: {
       render: true,
-      async run({ name, format, data }: LoadStructureArgs) {
+      async run({ name, format, data, assembly }: LoadStructureArgs) {
         components.clear();
+        // Everything downstream reads structures[0], so a second load without
+        // clearing leaves every later answer describing the *first* structure.
+        // That is how a reload with different assembly settings silently kept
+        // reporting the old molecule's atom count.
+        await plugin.clear();
         const raw = await plugin.builders.data.rawData({ data, label: name });
         const trajectory = await plugin.builders.structure.parseTrajectory(
           raw,
           format === 'pdb' ? 'pdb' : 'mmcif'
         );
-        await plugin.builders.structure.hierarchy.applyPreset(trajectory, 'default');
+        // The preset builds the assembly by default; 'model' is the deposited
+        // asymmetric unit instead.
+        const structureParams =
+          assembly === 'asymmetric' ? { name: 'model', params: {} } : undefined;
+        await plugin.builders.structure.hierarchy.applyPreset(
+          trajectory,
+          'default',
+          structureParams ? { structure: structureParams } : undefined
+        );
         // Register the preset's own representations under a reserved handle so
         // they can be hidden or removed like any other selection.
         const auto = allComponents().map((c: any) => c.cell.transform.ref);
         if (auto.length) components.set(AUTO, { refs: auto });
-        return { loaded: name, auto_components: auto.length };
+        // Report what was actually built. The server holds its own copy of the
+        // same molecule, and this is the number that proves the two agree.
+        const built = plugin.managers.structure.hierarchy.current.structures[0];
+        const atomCount = built?.cell?.obj?.data?.elementCount ?? 0;
+        return {
+          loaded: name,
+          auto_components: auto.length,
+          atom_count: atomCount,
+          assembly: assembly ?? 'biological',
+        };
       },
     },
 

@@ -19,6 +19,8 @@ from typing import Any
 import numpy as np
 from biotite.structure import AtomArray, CellList, filter_solvent, hbond, sasa
 
+from ..selections_numpy import residue_labels
+
 # Heavy-atom fallback: N/O pairs this close are conventionally treated as
 # putative polar contacts when hydrogens are absent.
 POLAR_CUTOFF = 3.5
@@ -122,35 +124,44 @@ def _residues(
     a side chain packed against the partner has atoms with zero delta, and a
     caller colouring the interface wants the whole residue, not the rind of it.
     """
-    out: dict[tuple[str, int], dict[str, Any]] = {}
+    # Keyed by the residue's full identity, symmetry copy included. In a
+    # biological assembly two copies share a chain id and a residue number, so
+    # a key without the copy silently folds two physically distinct residues
+    # into one and sums their buried areas.
+    all_labels = residue_labels(array)
+    symmetric = _sym_ids(array)
+
+    out: dict[str, dict[str, Any]] = {}
     for i in np.flatnonzero(mask):
         if delta[i] <= 0:
             continue
-        key = (str(array.chain_id[i]), int(array.res_id[i]))
         entry = out.setdefault(
-            key,
+            str(all_labels[i]),
             {
-                "chain": key[0],
-                "seq": key[1],
+                "chain": str(array.chain_id[i]),
+                "seq": int(array.res_id[i]),
                 "comp": str(array.res_name[i]),
                 "buried": 0.0,
+                **({"sym": int(symmetric[i])} if symmetric is not None else {}),
             },
         )
         entry["buried"] += float(delta[i])
-    kept_keys = {k for k, r in out.items() if r["buried"] > INTERFACE_DELTA_SASA}
-    keep = [r for k, r in out.items() if k in kept_keys]
-    for r in keep:
+    kept = {k: r for k, r in out.items() if r["buried"] > INTERFACE_DELTA_SASA}
+    for r in kept.values():
         r["buried"] = round(r["buried"], 1)
 
     side = np.flatnonzero(mask)
-    labels = np.char.add(
-        np.char.add(array.chain_id[side].astype(str), "|"),
-        array.res_id[side].astype(str),
-    )
-    wanted = [f"{chain}|{seq}" for chain, seq in kept_keys]
-    indices = side[np.isin(labels, wanted)]
+    indices = side[np.isin(all_labels[side], list(kept))]
+    entries = sorted(kept.values(), key=lambda r: (-r["buried"], r["seq"]))
+    return entries, indices
 
-    return sorted(keep, key=lambda r: (-r["buried"], r["seq"])), indices
+
+def _sym_ids(array: AtomArray[Any]) -> Any:
+    """Per-atom symmetry copy, or None when there is only one copy."""
+    if "sym_id" not in array.get_annotation_categories():
+        return None
+    ids = np.asarray(array.get_annotation("sym_id"))
+    return ids if np.unique(ids).size > 1 else None
 
 
 def _delta_sasa(

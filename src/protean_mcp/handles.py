@@ -104,12 +104,24 @@ def summarise(
     """
     subset = array[indices]
     chains = sorted({str(c) for c in subset.chain_id})
-    seen: set[tuple[str, int, str]] = set()
+    # Symmetry copies share chain ids and residue numbers, so the copy is part
+    # of a residue's identity in an assembly; without it two distinct residues
+    # count as one and the total comes out half.
+    has_sym = "sym_id" in array.get_annotation_categories()
+    syms = subset.get_annotation("sym_id") if has_sym else [0] * len(subset)
+    multiple = has_sym and len({int(s) for s in syms}) > 1
+
+    seen: set[tuple[str, int, str, int]] = set()
     residues: list[dict[str, Any]] = []
-    for chain, seq, ins, comp in zip(
-        subset.chain_id, subset.res_id, subset.ins_code, subset.res_name, strict=True
+    for chain, seq, ins, comp, sym in zip(
+        subset.chain_id,
+        subset.res_id,
+        subset.ins_code,
+        subset.res_name,
+        syms,
+        strict=True,
     ):
-        key = (str(chain), int(seq), str(ins))
+        key = (str(chain), int(seq), str(ins), int(sym))
         if key in seen:
             continue
         seen.add(key)
@@ -121,6 +133,8 @@ def summarise(
             }
             if str(ins).strip():
                 entry["ins_code"] = str(ins).strip()
+            if multiple:
+                entry["sym"] = int(sym)
             residues.append(entry)
     return {
         "atom_count": len(indices),
