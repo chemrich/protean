@@ -166,6 +166,16 @@ function fakePlugin() {
       },
     },
     clear: vi.fn(async () => {}),
+    dataFormats: {
+      get: (name: string) =>
+        name === 'dx'
+          ? {
+              parse: vi.fn(async () => ({
+                volume: { ref: 'volume-1', obj: { data: { grid: { stats: { min: -3, max: 4 } } } } },
+              })),
+            }
+          : undefined,
+    },
     builders: {
       data: { rawData: vi.fn(async () => ({})) },
       structure: {
@@ -414,5 +424,34 @@ describe('createDispatcher', () => {
     // list_selections is not a render action, so it must not spin the pump.
     await dispatch('list_selections', {});
     expect(setTurbo).not.toHaveBeenCalled();
+  });
+
+  it('colours a selection from a volume and reports its range', async () => {
+    const plugin: any = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    await dispatch('select', { name: 'surf', expression: '(sel.atom.all)' });
+
+    const result: any = await dispatch('color_by_volume', {
+      name: 'surf',
+      volume: 'object 1 class gridpositions counts 2 2 2',
+      domain: [-5, 5],
+    });
+
+    expect(result.volume_min).toBe(-3);
+    expect(result.volume_max).toBe(4);
+    const theme = plugin.managers.structure.component.updateRepresentationsTheme.mock.calls.at(-1)[1];
+    expect(theme.color).toBe('external-volume');
+    // A ColorList value must carry real colours; a preset name with an empty
+    // array paints the surface black, which reads as a render failure.
+    expect(theme.colorParams.coloring.params.list.colors.length).toBeGreaterThan(1);
+    // The theme resolves the volume through a getter, not the ref alone.
+    expect(theme.colorParams.volume.getValue()).toBeTruthy();
+  });
+
+  it('refuses to colour a selection that was never shown', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(
+      dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
+    ).rejects.toThrow(/No selection named/);
   });
 });

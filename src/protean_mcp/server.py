@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
 import gzip
 import json
@@ -63,6 +64,20 @@ _structure: Any = None
 _structure_error: str | None = None
 _structure_identifier: str | None = None
 _handles = HandleRegistry()
+# Conservation scores from the last conservation() call, per chain, so they can
+# be coloured without paying for the alignment again.
+_conservation_scores: dict[str, Any] = {}
+
+_DOMAIN_BOUNDS = 2
+_MIN_BINS = 2
+# Ramps for banded colouring. Conservation runs variable -> conserved, which is
+# the direction the eye reads as "important is saturated".
+_PALETTES: dict[str, list[str]] = {
+    "conservation": ["#2c7bb6", "#ffffbf", "#d7191c"],
+    "red-white-blue": ["#d7191c", "#ffffff", "#2c7bb6"],
+    "viridis": ["#440154", "#21918c", "#fde725"],
+    "white-red": ["#ffffff", "#d7191c"],
+}
 
 
 def _same_structure(identifier: str) -> bool:
@@ -217,6 +232,7 @@ async def fetch_structure(
     # silently matching nothing.
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
     _handles.clear()
+    _conservation_scores.clear()
     loaded = None
     try:
         loaded = _load_structure(structure.data, structure.format, assembly)
@@ -893,6 +909,10 @@ async def conservation(
     except ConservationError as exc:
         raise ViewerError(str(exc)) from exc
 
+    # Keep the scores so color_by_conservation does not have to pay for the
+    # alignment again just to change how it is drawn.
+    _conservation_scores[chain] = result.scores
+
     entropies = np.array([s.entropy for s in result.scores])
     low = float(np.percentile(entropies, conserved_percentile))
     high = float(np.percentile(entropies, variable_percentile))
@@ -919,6 +939,175 @@ async def conservation(
         await _display(name, indices)
     payload["handles"] = {"conserved": name_conserved, "variable": name_variable}
     return payload
+
+
+@mcp.tool()
+async def color_by_potential(
+    handle: str = "sele",
+    path: str | None = None,
+    domain: list[float] | None = None,
+    palette: str = "red-white-blue",
+) -> dict[str, Any]:
+    """Colour a displayed selection by an electrostatic potential grid.
+
+    handle: a selection that is already shown — a molecular surface is the
+      usual target, since surface potential is what this is for.
+    path: an OpenDX grid; defaults to the one electrostatics() last wrote.
+    domain: [min, max] in kT/e. Defaults to a symmetric range about zero, which
+      keeps neutral white and makes the two signs comparable. +/-5 is a common
+      choice for figures.
+    palette: red-white-blue by convention — acidic red, basic blue.
+
+    Run electrostatics() first; this only displays what that computed, so the
+    method and its caveats belong to that call, not this one.
+    """
+    grid_path = Path(path).expanduser() if path else default_cache_dir() / "potential.dx"
+    if not grid_path.is_file():
+        raise ViewerError(
+            f"No potential grid at {grid_path}. Run electrostatics() first, or "
+            "pass path= to an OpenDX file."
+        )
+    args: dict[str, Any] = {
+        "name": handle,
+        "volume": grid_path.read_text(),
+        "palette": palette,
+    }
+    if domain is not None:
+        if len(domain) != _DOMAIN_BOUNDS:
+            raise ViewerError("domain must be [min, max]")
+        args["domain"] = [float(domain[0]), float(domain[1])]
+    result = await _call("color_by_volume", args)
+    return {"handle": handle, "dx_path": str(grid_path), **result}
+
+
+@mcp.tool()
+async def color_by_conservation(
+    chain: str | None = None,
+    bins: int = 7,
+    representation: str = "molecular-surface",
+    palette: str = "conservation",
+    prefix: str = "cons",
+    hide_others: bool = True,
+) -> dict[str, Any]:
+    """Colour the structure by the conservation scores from conservation().
+
+    bins: how many bands to split the entropy range into, low entropy (most
+      conserved) first. Each band becomes its own handle named
+      prefix_0 .. prefix_n, so a band can be reused, hidden or measured.
+
+    representation: each band is drawn in this style. Bands are drawn, not
+      recoloured: a per-residue scalar is not something Mol* can theme, so the
+      colour has to live in geometry. Avoid "cartoon" here — a ribbon needs
+      consecutive backbone and conservation bands are scattered single
+      residues, so most of the structure simply does not draw. Surface and
+      spacefill are per-atom and tile correctly.
+    hide_others: hide the automatic representations first, so the bands are
+      not sitting underneath a uniformly coloured copy of the same atoms.
+
+    This is a banded ramp rather than a continuous one. Mol* colours by fields
+    it can read off the structure — b-factor, occupancy — or by a volume, and
+    per-residue conservation is neither, so bands over handles is what the
+    existing machinery expresses honestly. It reads as a gradient at 7 bands
+    and it composes, which a continuous theme would not.
+    """
+    array = _require_structure()
+    if not _conservation_scores:
+        raise ViewerError("No conservation scores yet — call conservation() first.")
+    key = chain or next(iter(_conservation_scores))
+    if key not in _conservation_scores:
+        known = ", ".join(sorted(_conservation_scores))
+        raise ViewerError(f"No conservation for chain {key!r}. Scored: {known}")
+    scores = _conservation_scores[key]
+    if bins < _MIN_BINS:
+        raise ViewerError(f"bins must be at least {_MIN_BINS}")
+
+    entropies = np.array([s.entropy for s in scores])
+    edges = np.linspace(entropies.min(), entropies.max(), bins + 1)
+    ramp = _ramp(palette, bins)
+
+    if hide_others:
+        # The preset's own cartoon covers the same atoms; leaving it visible
+        # buries the bands under a uniform colour.
+        for existing in (
+            "auto",
+            *(n for n in _handles.names() if not n.startswith(prefix)),
+        ):
+            # A handle with no drawn representation cannot be hidden; that is
+            # not a failure worth interrupting the colouring for.
+            with contextlib.suppress(ViewerError):
+                await _call("hide", {"name": existing})
+
+    bands: list[dict[str, Any]] = []
+    for i in range(bins):
+        low, high = edges[i], edges[i + 1]
+        # The last band has to include its upper edge or the most variable
+        # residue silently lands in no band at all.
+        in_band = (entropies >= low) & (
+            entropies <= high if i == bins - 1 else entropies < high
+        )
+        keys = {
+            (s.chain, s.seq, s.ins_code)
+            for s, hit in zip(scores, in_band, strict=True)
+            if hit
+        }
+        if not keys:
+            continue
+        indices = _residue_indices(array, keys)
+        name = f"{prefix}_{i}"
+        _register(name, indices, f"conservation band {i} ({low:.2f}-{high:.2f} entropy)")
+        # Each band gets its own *representation*, not just a selection. A
+        # selection component carries no geometry, so recolouring one changes
+        # nothing on screen while every call still reports success.
+        await _call(
+            "show",
+            {
+                "name": name,
+                "expression": _indices_to_molscript(array, indices),
+                "representation": representation,
+                "color": ramp[i],
+                "limit": 0,
+            },
+        )
+        bands.append(
+            {
+                "handle": name,
+                "entropy_range": [round(float(low), 3), round(float(high), 3)],
+                "residues": len(keys),
+                "color": ramp[i],
+            }
+        )
+    return {
+        "chain": key,
+        "bins": len(bands),
+        "palette": palette,
+        "most_conserved_first": True,
+        "bands": bands,
+    }
+
+
+def _ramp(palette: str, steps: int) -> list[str]:
+    """Interpolate a colour ramp to *steps* hex strings, low value first."""
+    stops = _PALETTES.get(palette)
+    if stops is None:
+        known = ", ".join(sorted(_PALETTES))
+        raise ViewerError(f"Unknown palette {palette!r}. Available: {known}")
+    if steps == 1:
+        return [stops[0]]
+    out: list[str] = []
+    for i in range(steps):
+        position = i * (len(stops) - 1) / (steps - 1)
+        low = int(np.floor(position))
+        high = min(low + 1, len(stops) - 1)
+        blend = position - low
+        channels = [
+            round(
+                int(stops[low][1:][c * 2 : c * 2 + 2], 16) * (1 - blend)
+                + int(stops[high][1:][c * 2 : c * 2 + 2], 16) * blend
+            )
+            for c in range(3)
+        ]
+        out.append("#" + "".join(f"{v:02x}" for v in channels))
+    return out
 
 
 @mcp.tool()
