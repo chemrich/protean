@@ -16,6 +16,7 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
+from protean_mcp.selections_numpy import load_structure
 from protean_mcp.server import (
     clear_viewer,
     color_by_conservation,
@@ -583,7 +584,9 @@ async def test_conservation_bands_cover_every_scored_residue(
 
     async with _serving(wired_bridge, select=nothing, show=nothing, hide=nothing):
         await conservation()
-        banded = await color_by_conservation(bins=4, representation="spacefill")
+        banded = await color_by_conservation(
+            mode="bands", bins=4, representation="spacefill"
+        )
 
     covered = sum(b["residues"] for b in banded["bands"])
     assert covered == 12, f"bands covered {covered} of 12 residues"
@@ -602,6 +605,111 @@ async def test_conservation_bands_are_registered_as_handles(
 
     async with _serving(wired_bridge, select=nothing, show=nothing, hide=nothing):
         await conservation()
-        banded = await color_by_conservation(bins=3, representation="spacefill")
+        banded = await color_by_conservation(
+            mode="bands", bins=3, representation="spacefill"
+        )
     for band in banded["bands"]:
         assert band["handle"] in server_mod._handles.names()
+
+
+# -- the continuous conservation gradient --------------------------------------
+
+
+async def _gradient(
+    wired_bridge: Any, tmp_path: Path, monkeypatch: Any, **kwargs: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run conservation then the gradient, capturing what the viewer was sent."""
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb", n=12))
+    _fake_msa(monkeypatch, sequence_length=12)
+    sent: dict[str, Any] = {}
+
+    def on_load(args: dict[str, Any]) -> dict[str, Any]:
+        sent.update(args)
+        return {"loaded": args["name"], "atom_count": 48}
+
+    def nothing(args: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async with _serving(
+        wired_bridge, load_structure=on_load, select=nothing, show=nothing, hide=nothing
+    ):
+        await conservation()
+        result = await color_by_conservation(mode="gradient", **kwargs)
+    return result, sent
+
+
+async def test_gradient_sends_entropy_in_the_b_factor_column(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The whole mechanism: Mol* ramps over B-factor, so entropy has to be it.
+
+    Column 0 of the fake alignment is invariant, so residue 1 must arrive at
+    the conserved end of the scale and the rest above it.
+    """
+    result, sent = await _gradient(wired_bridge, tmp_path, monkeypatch)
+    assert result["reloaded"] is True
+    assert sent["format"] == "mmcif"
+
+    array = load_structure(sent["data"], "mmcif", "asymmetric").array
+    first = array.b_factor[array.res_id == 1]
+    rest = array.b_factor[array.res_id > 1]
+    assert first.max() == pytest.approx(0.0, abs=1e-6), "invariant residue is conserved"
+    assert rest.min() > first.max(), "every varied residue ranks above it"
+
+
+async def test_gradient_reloads_as_the_asymmetric_unit(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """These coordinates are already whatever assembly was chosen.
+
+    Letting the viewer expand them a second time would duplicate the molecule,
+    which is the bug decision 9 exists to prevent.
+    """
+    _, sent = await _gradient(wired_bridge, tmp_path, monkeypatch)
+    assert sent["assembly"] == "asymmetric"
+    assert "pdbx_struct_assembly" not in sent["data"]
+
+
+async def test_gradient_discloses_that_b_factor_now_means_something_else(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """A B-factor column quietly holding conservation would be read as temperature."""
+    result, _ = await _gradient(wired_bridge, tmp_path, monkeypatch)
+    assert "B-factor" in result["note"]
+    assert "conservation" in result["note"]
+
+
+async def test_relative_and_absolute_scales_differ(wired_bridge, tmp_path, monkeypatch):
+    """Relative stretches this protein's range; absolute keeps 0-1 comparable."""
+    _, relative = await _gradient(wired_bridge, tmp_path, monkeypatch, scale="relative")
+    _, absolute = await _gradient(wired_bridge, tmp_path, monkeypatch, scale="absolute")
+    rel = load_structure(relative["data"], "mmcif", "asymmetric").array.b_factor
+    ab = load_structure(absolute["data"], "mmcif", "asymmetric").array.b_factor
+    assert rel.max() == pytest.approx(100.0, abs=1e-6)
+    assert ab.max() < rel.max(), "absolute leaves headroom above the observed range"
+
+
+async def test_handles_survive_the_reload(wired_bridge, tmp_path, monkeypatch):
+    """Atom indices stay valid because the atom order does not change."""
+    result, _ = await _gradient(wired_bridge, tmp_path, monkeypatch)
+    assert result["handles_redisplayed"] >= 2, "conserved and variable at least"
+    assert "conserved" in server_mod._handles.names()
+
+
+async def test_unknown_mode_is_refused(wired_bridge, tmp_path, monkeypatch):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb", n=12))
+    with pytest.raises(ViewerError, match="Unknown mode"):
+        await color_by_conservation(mode="rainbow")
+
+
+async def test_unknown_scale_is_refused(wired_bridge, tmp_path, monkeypatch):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb", n=12))
+    _fake_msa(monkeypatch, sequence_length=12)
+
+    def nothing(args: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async with _serving(wired_bridge, select=nothing):
+        await conservation()
+        with pytest.raises(ViewerError, match="Unknown scale"):
+            await color_by_conservation(mode="gradient", scale="logarithmic")

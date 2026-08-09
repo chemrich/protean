@@ -6,6 +6,7 @@ import base64
 import contextlib
 import datetime
 import gzip
+import io
 import json
 import logging
 import webbrowser
@@ -14,6 +15,7 @@ from typing import Any
 
 import numpy as np
 from biotite.structure import filter_amino_acids
+from biotite.structure.io.pdbx import CIFFile, set_structure
 from mcp.server.fastmcp import FastMCP, Image
 
 from .analysis.conservation import ConservationError
@@ -69,6 +71,8 @@ _handles = HandleRegistry()
 _conservation_scores: dict[str, Any] = {}
 
 _DOMAIN_BOUNDS = 2
+# The uncertainty theme ramps over a fixed [0, 100] domain.
+_B_FACTOR_FULL = 100.0
 _MIN_BINS = 2
 # Ramps for banded colouring. Conservation runs variable -> conserved, which is
 # the direction the eye reads as "important is saturated".
@@ -983,33 +987,41 @@ async def color_by_potential(
 @mcp.tool()
 async def color_by_conservation(
     chain: str | None = None,
+    mode: str = "gradient",
+    representation: str | None = None,
+    scale: str = "relative",
     bins: int = 7,
-    representation: str = "molecular-surface",
     palette: str = "conservation",
     prefix: str = "cons",
     hide_others: bool = True,
 ) -> dict[str, Any]:
     """Colour the structure by the conservation scores from conservation().
 
-    bins: how many bands to split the entropy range into, low entropy (most
-      conserved) first. Each band becomes its own handle named
-      prefix_0 .. prefix_n, so a band can be reused, hidden or measured.
+    mode:
+      "gradient" (default) gives a continuous ramp on a cartoon, which is the
+        usual conservation figure. Entropy is carried into the viewer in the
+        B-factor column and drawn with Mol*'s uncertainty theme — the one
+        per-atom numeric field it will colour by. That means re-sending the
+        structure, so it is a heavier call than it looks; `reloaded` says so.
+      "bands" splits the entropy range into `bins` discrete handles, each drawn
+        separately. No reload, and every band stays addressable — combine it
+        with an interface, hide it, measure it.
 
-    representation: each band is drawn in this style. Bands are drawn, not
-      recoloured: a per-residue scalar is not something Mol* can theme, so the
-      colour has to live in geometry. Avoid "cartoon" here — a ribbon needs
-      consecutive backbone and conservation bands are scattered single
-      residues, so most of the structure simply does not draw. Surface and
-      spacefill are per-atom and tile correctly.
-    hide_others: hide the automatic representations first, so the bands are
-      not sitting underneath a uniformly coloured copy of the same atoms.
+    representation: defaults to "cartoon" for gradient and "molecular-surface"
+      for bands. Do not draw *bands* as a cartoon: a ribbon needs consecutive
+      backbone and bands are scattered single residues, so most of the
+      structure will not draw at all. The gradient has no such problem, because
+      one representation covers the whole chain.
+    scale: "relative" stretches the ramp across this protein's own entropy
+      range, which is what makes a conserved core visible; "absolute" uses the
+      full 0-1 entropy range so two proteins can be compared.
+    hide_others: hide existing representations first, so the result is not
+      sitting underneath a uniformly coloured copy of the same atoms.
 
-    This is a banded ramp rather than a continuous one. Mol* colours by fields
-    it can read off the structure — b-factor, occupancy — or by a volume, and
-    per-residue conservation is neither, so bands over handles is what the
-    existing machinery expresses honestly. It reads as a gradient at 7 bands
-    and it composes, which a continuous theme would not.
+    Blue is conserved and red is variable in both modes.
     """
+    if mode not in ("gradient", "bands"):
+        raise ViewerError(f"Unknown mode {mode!r} (gradient, bands)")
     array = _require_structure()
     if not _conservation_scores:
         raise ViewerError("No conservation scores yet — call conservation() first.")
@@ -1018,8 +1030,14 @@ async def color_by_conservation(
         known = ", ".join(sorted(_conservation_scores))
         raise ViewerError(f"No conservation for chain {key!r}. Scored: {known}")
     scores = _conservation_scores[key]
+    if mode == "gradient":
+        return await _conservation_gradient(
+            array, key, scores, representation or "cartoon", scale, hide_others
+        )
+
     if bins < _MIN_BINS:
         raise ViewerError(f"bins must be at least {_MIN_BINS}")
+    representation = representation or "molecular-surface"
 
     entropies = np.array([s.entropy for s in scores])
     edges = np.linspace(entropies.min(), entropies.max(), bins + 1)
@@ -1083,6 +1101,133 @@ async def color_by_conservation(
         "most_conserved_first": True,
         "bands": bands,
     }
+
+
+async def _conservation_gradient(
+    array: Any,
+    chain: str,
+    scores: list[Any],
+    representation: str,
+    scale: str,
+    hide_others: bool,
+) -> dict[str, Any]:
+    r"""Carry entropy into the viewer's B-factor column and colour by it.
+
+    Mol\*'s uncertainty theme is the only per-atom numeric field it will ramp
+    over, and a model's B-factors cannot be edited in place — so the structure
+    is re-sent with entropy written into that column. The analysis copy keeps
+    its crystallographic B values; only the viewer's copy is overwritten, and
+    the reply says so, because a B-factor that silently means something else is
+    exactly the kind of thing that gets read as temperature later.
+
+    The theme's own scale is reversed, so low values come out blue. Entropy is
+    written rather than conservation for that reason: conserved is low entropy,
+    and therefore blue, matching the banded palette.
+    """
+    if scale not in ("relative", "absolute"):
+        raise ViewerError(f"Unknown scale {scale!r} (relative, absolute)")
+
+    entropies = np.array([s.entropy for s in scores])
+    lowest, highest = float(entropies.min()), float(entropies.max())
+    span = highest - lowest
+
+    # The uncertainty theme's domain is [0, 100], so the values have to arrive
+    # already stretched into it; the theme takes no domain from us here.
+    if scale == "relative" and span > 0:
+        scaled = (entropies - lowest) / span * _B_FACTOR_FULL
+    else:
+        scaled = entropies * _B_FACTOR_FULL
+
+    by_residue = {
+        (s.chain, s.seq, s.ins_code): float(v)
+        for s, v in zip(scores, scaled, strict=True)
+    }
+    display = array.copy()
+    # Keyed without the symmetry copy, so a score computed once for a chain
+    # lands on every copy of it — conservation is a property of the sequence,
+    # not of which copy you happen to be looking at.
+    labels = np.char.add(
+        np.char.add(array.chain_id.astype(str), "|"),
+        np.char.add(array.res_id.astype(str), array.ins_code.astype(str)),
+    ).tolist()
+    lookup = {f"{c}|{s}{i}": v for (c, s, i), v in by_residue.items()}
+    # Residues with no score — other chains, ligands, waters — are pinned to the
+    # variable end rather than left at their crystallographic B, which would
+    # otherwise be read as a conservation value they never had.
+    values = np.array(
+        [lookup.get(label, _B_FACTOR_FULL) for label in labels], dtype=float
+    )
+    display.b_factor = values
+
+    scored = sum(1 for label in labels if label in lookup)
+    data = _structure_as_mmcif(display)
+    # Sent as the asymmetric unit: these coordinates are already whatever
+    # assembly was chosen, and letting the viewer expand them again would
+    # duplicate the molecule.
+    result = await _call(
+        "load_structure",
+        {
+            "name": f"conservation:{chain}",
+            "format": "mmcif",
+            "data": data,
+            "assembly": "asymmetric",
+        },
+    )
+    if hide_others:
+        with contextlib.suppress(ViewerError):
+            await _call("hide", {"name": "auto"})
+
+    # Handles survive the reload because they are Python-side atom indices and
+    # the atom order is untouched; their components do not, so redraw them.
+    restored = 0
+    for name in _handles.names():
+        await _display(name, _handles.get(name).indices)
+        restored += 1
+
+    name = f"{chain}_conservation"
+    _register(name, np.arange(array.array_length()), f"conservation gradient ({chain})")
+    await _call(
+        "show",
+        {
+            "name": name,
+            "expression": _indices_to_molscript(array, np.arange(array.array_length())),
+            "representation": representation,
+            "color": "uncertainty",
+            "limit": 0,
+        },
+    )
+    return {
+        "chain": chain,
+        "mode": "gradient",
+        "handle": name,
+        "representation": representation,
+        "scale": scale,
+        "entropy_range": [round(lowest, 3), round(highest, 3)],
+        "residues_scored": scored,
+        "reloaded": True,
+        "viewer_atom_count": result.get("atom_count"),
+        "handles_redisplayed": restored,
+        "note": (
+            "The viewer's B-factor column now carries conservation entropy "
+            "scaled to 0-100, not crystallographic B. Blue is conserved. The "
+            "analysis copy is unchanged, so selections on `b` still mean "
+            "temperature factor."
+        ),
+    }
+
+
+def _structure_as_mmcif(array: Any) -> str:
+    """Serialise an AtomArray as mmCIF for the viewer.
+
+    mmCIF rather than PDB because PDB cannot carry more than 99,999 atoms or a
+    multi-character chain id. What biotite writes declares no assembly, so the
+    viewer has nothing to expand even if it were asked to.
+    """
+    handle = CIFFile()
+    set_structure(handle, array)
+    buffer = io.StringIO()
+    handle.write(buffer)
+    return buffer.getvalue()
 
 
 def _ramp(palette: str, steps: int) -> list[str]:
