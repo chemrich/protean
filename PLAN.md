@@ -66,11 +66,11 @@ Superposition/alignment (align, cealign-equivalent via biotite) with RMSD report
 
 ### Phase 4 — Publication rendering (v0.3)
 
-High-resolution snapshot pipeline (Mol* ray-tracing pass, transparent backgrounds, outline/occlusion styles). Preset system: YAML recipes (publication-cartoon, active-site, ghost-surface — a chance to do the ghost-heart transparency properly, with correct per-selection scoping this time). Optional Blender bridge: export scene to proteinblend-mcp for cinematic renders rather than duplicating that work here. *Exit: journal-ready TIFF/PNG at arbitrary DPI from one tool call.*
+High-resolution snapshot pipeline, a render-style surface, and presets. Scoped in decisions 10-13 after auditing what Mol\* 4.18 actually ships, which is considerably more than this line originally assumed: a progressive path tracer, an array of lights, PBR materials, skybox and gradient backgrounds, bloom, depth of field, cel shading, and built-in camera motion. Almost none of the phase is new rendering machinery; it is surfacing knobs Mol\* already has in a form a model can see, plus the two things Mol\* genuinely lacks — DPI and TIFF. Seven changes, in order: pixel-assertion harness; background and opacity; lighting rigs; effects and backgrounds; PBR materials; path-traced rendering; `snapshot()`; then presets. Turntable and rocking capture land here (decision 13); the keyframed timeline stays in Phase 5. The Blender bridge is dropped — proteinblend-mcp does it better and nothing here needs it. *Exit: journal-ready TIFF/PNG at arbitrary DPI from one tool call.*
 
 ### Phase 5 — Trajectories + animation (v0.4)
 
-MDAnalysis-backed loading (XTC/DCD/TRR + topology), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera + representation states with smooth interpolation; ffmpeg encoding to MP4/GIF. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
+MDAnalysis-backed loading (XTC/DCD/TRR + topology), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera + representation states with smooth interpolation; ffmpeg encoding to MP4/GIF. Phase 4 lands turntable and rocking capture ahead of this (decision 13), so the frame-capture loop already exists and this phase adds keyframes, trajectories and encoding rather than starting from nothing. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
 
 ### Phase 6 — Polish and publish (v1.0)
 
@@ -81,7 +81,7 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
 | From | What |
 |------|------|
 | MCPymol | conservation pipeline + cache, test patterns, README/release conventions, tool naming |
-| proteinblend-mcp | port-scan + handshake code, YAML preset loader, addon dispatch pattern (adapted to TS) |
+| proteinblend-mcp | port-scan + handshake code, addon dispatch pattern (adapted to TS). Its YAML preset loader is *not* reused — see decision 10 |
 
 ## Decisions (2026-08-07)
 
@@ -249,3 +249,123 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
    refused above `MAX_ASSEMBLY_COPIES`, read from the operator list before
    anything is built. PDB input keeps assemblies in REMARK 350, which biotite
    does not parse; that falls back to the deposited coordinates and says so.
+
+## Decisions (2026-08-10) — publication rendering
+
+10. **Styles are named enums in the tool schema, not YAML recipes on disk.**
+    Supersedes the "YAML recipes" wording in Phase 4 and strikes the YAML
+    preset loader from the proteinblend-mcp reuse table.
+
+    A YAML file is the right shape for a human curating recipes in an editor.
+    For a model it is the wrong shape in three ways: it must first discover the
+    file exists, its names are invisible at the point of use because they are
+    not in the tool schema, and a typo cannot be refused because nothing
+    validates against a list. That last one is not hypothetical here —
+    `show(representation="cartoonn")` was accepted and rendered nothing, which
+    is why `checkName` exists and reads the live Mol\* registries rather than a
+    hardcoded list.
+
+    So presets, lighting rigs, effect styles and background variants are all
+    enums declared in the tool signature and reported by `capabilities()`,
+    alongside the representations and colour themes it already reports. The
+    recipes themselves live in code. A user-authored YAML overlay can be added
+    later if anyone actually wants to write one; nothing in this design
+    forecloses it, and building it before there is a second author would be
+    speculative.
+
+    The same reasoning settles the scope of the style surface. Mol\* 4.18
+    already carries far more than Phase 4 assumed, and the work is to name it,
+    not to build it:
+
+    - **Lighting rigs.** `renderer.light` is an *array* of
+      `{inclination, azimuth, color, intensity}` with separate `ambientColor`
+      and `ambientIntensity`, so `ring`, `three-point`, `rim`, `studio` and
+      `flat` are generated light lists behind one enum rather than five
+      features.
+    - **Effects and backgrounds.** `postprocessing` carries `outline`
+      (with its own colour and threshold), `occlusion` (multi-scale SSAO),
+      `shadow`, `dof`, `bloom` (luminosity or emissive), `sharpening`,
+      SMAA/FXAA, and a `background.variant` of skybox, image, radial gradient
+      or horizontal gradient. Cel shading is `celShaded` per representation
+      plus `renderer.celSteps`; the flat look is `ignoreLight`; the ghost look
+      is `xrayShaded`, which also accepts `'inverted'`.
+    - **PBR materials.** `material: {metalness, roughness, bumpiness}` and
+      `emissive` are ordinary per-representation params, so they travel the
+      same path `sizeFactor` and `alpha` already do.
+
+    Opacity and canvas background colour, carried in from Phase 2, are the same
+    kind of work and land first because everything else composes with them.
+
+11. **Figure size is physical, and DPI is a real number written into the file.**
+
+    Mol\* thinks in pixels and journals think in millimetres — Nature's single
+    column is 89 mm, its double column 183 mm. Requiring a model to multiply
+    those into a pixel count invites a figure that claims 600 dpi and is 900
+    pixels wide, which is a wrong answer that looks like a right one and which
+    no return value would catch. So `snapshot()` takes a physical width and a
+    `dpi`, computes the pixels itself, and stamps the resolution into the file
+    (PNG `pHYs`, TIFF tags) so the claim survives outside the tool reply.
+    Explicit pixel `width`/`height` stays available as an escape hatch.
+
+    This adds **Pillow** as a dependency. It writes TIFF, writes the DPI
+    metadata, and decodes PNG for the pixel assertions of decision 12; without
+    it the PNG side is a hand-built chunk and the TIFF side is a project.
+
+    Resolution is not DPI-bound. Capture goes through a framebuffer, so the cap
+    is `gl.MAX_RENDERBUFFER_SIZE` — commonly 16384, which at double-column
+    width is about 2270 dpi. The binding constraint is memory: 16384² RGBA is
+    roughly a gigabyte per target and postprocessing allocates several, so the
+    real ceiling arrives well before the advertised one. The limit is probed
+    and reported, and exceeding it is an error rather than a truncated or black
+    image.
+
+12. **A render is verified by its pixels, and a render pass must prove it ran.**
+
+    Phase 4 is the phase most exposed to protean's standing failure mode, and
+    the usual cheap signal fails here. Screenshot byte size cannot separate a
+    transparent background from a black one, barely moves when an outline is
+    switched on, and moves the *wrong way* for reduced opacity. So the phase
+    opens with a harness, not a feature: decode the returned PNG and assert on
+    actual pixels — corner RGBA for background colour, the alpha channel for
+    transparency, decoded dimensions for sizing, an edge-pixel count for
+    outline, mean alpha over the molecule's footprint for opacity. Each
+    assertion is confirmed by breaking the thing it guards.
+
+    The path tracer needs this most, because it fails silently by construction.
+    `IlluminationPass.isSupported()` checks for the `textureFloat`,
+    `colorBufferFloat`, `depthTexture` and `drawBuffers` extensions, and when
+    any is missing the constructor simply returns early with `_supported =
+    false`. Asking for a ray-traced image on such a machine yields an ordinary
+    raster image and a perfectly successful reply. The capability is therefore
+    probed explicitly and the answer is reported in the response, in the
+    tradition of `size_validated` and `handles_note`: a render that could not
+    be traced says so rather than defaulting to "passed".
+
+    Two consequences follow. Progressive accumulation means completion is an
+    iteration count, not an event — the existing render pump settles on a quiet
+    commit queue, which a converging tracer does not signal, so tracing needs
+    its own convergence wait or it captures a noisy image and reports success.
+    And the differential CI job runs headless SwiftShader, where those float
+    extensions are the likely casualties and where a path tracer would be
+    punishingly slow even if present; ray-traced output is expected to be
+    opt-in behind an environment gate and verified on a real GPU, as
+    `PROTEAN_APBS` and `PROTEAN_MSA_LIVE` already are.
+
+13. **Turntables land in Phase 4; the keyframed timeline stays in Phase 5.**
+
+    Mol\* already ships `camera-spin`, `camera-rock`, `spin-structure`,
+    `explode-units`, `assembly-unwind` and `state-interpolation`, plus
+    `trackball.animate` in `spin` and `rock` modes, so orbiting a molecule is
+    configuration rather than construction. What it does not ship is an
+    encoder: frames must be captured and handed to ffmpeg, which is exactly
+    what Phase 5 was already scoped to build.
+
+    Splitting there keeps the phase boundary honest. Phase 4 exposes the motion
+    Mol\* hands us and the frame-capture loop that a turntable needs, both of
+    which reuse the snapshot pipeline it is already building. Phase 5 then adds
+    keyframes, trajectory frames and encoding on top of a capture loop that
+    exists, rather than starting from nothing.
+
+    The Blender bridge is dropped rather than deferred. It was already marked
+    optional, proteinblend-mcp does it better, and with a path tracer in the
+    viewer nothing in this phase needs it.
