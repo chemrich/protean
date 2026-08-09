@@ -258,7 +258,9 @@ async def _cdp_eval(port: int, url: str, expression: str):
     raise RuntimeError("no CDP reply")
 
 
-async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, object]]:
+async def _evaluate(
+    pdb_id: str, cases: list[list[str]], assembly: str = "asymmetric"
+) -> dict[str, dict[str, object]]:
     """Load *pdb_id* in a throwaway browser and evaluate every case in it."""
     structure = await fetch_structure_data(pdb_id)
     bridge = ViewerBridge(port=free_port(), static_dir=STATIC)
@@ -290,7 +292,14 @@ async def _evaluate(pdb_id: str, cases: list[list[str]]) -> dict[str, dict[str, 
         await bridge.wait_for_viewer(40)
         await bridge.request(
             "load_structure",
-            {"name": pdb_id, "format": structure.format, "data": structure.data},
+            {
+                "name": pdb_id,
+                "format": structure.format,
+                "data": structure.data,
+                # Ground-truth counts are for the deposited coordinates, and
+                # both engines must be shown the same molecule.
+                "assembly": assembly,
+            },
             timeout=120,
         )
         raw = await _cdp_eval(cdp_port, url, _EVAL_JS % json.dumps(cases))
@@ -317,7 +326,7 @@ async def counts() -> dict[str, dict[str, object]]:
     right while the other is wrong.
     """
     structure = await fetch_structure_data(FIXTURE)
-    array = load_structure(structure.data, structure.format)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
 
     cases: list[list[str]] = []
     for selection in CORPUS:
@@ -344,7 +353,7 @@ async def class_counts() -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for pdb_id, expectations in CLASS_FIXTURES.items():
         structure = await fetch_structure_data(pdb_id)
-        array = load_structure(structure.data, structure.format)
+        array = load_structure(structure.data, structure.format, "asymmetric").array
         out[pdb_id] = {
             selection: int(select_mask(selection, array).sum())
             for selection in expectations
@@ -427,5 +436,52 @@ async def test_class_selectors(class_counts, pdb_id, selection, expectation):
 async def python_counts() -> dict[str, int]:
     """The corpus evaluated by the Python engine, no browser involved."""
     structure = await fetch_structure_data(FIXTURE)
-    array = load_structure(structure.data, structure.format)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
     return {sel: int(select_mask(sel, array).sum()) for sel in CORPUS}
+
+
+# -- assembly agreement --------------------------------------------------------
+
+# 1HHO is the case that exposed the split: its asymmetric unit is one alpha-beta
+# dimer and its biological assembly is the alpha2beta2 tetramer, so the two
+# halves of the system used to describe different molecules without saying so.
+ASSEMBLY_FIXTURE = "1hho"
+ASSEMBLY_EXPECTED = {"asymmetric": 2396, "biological": 4792}
+
+
+@pytest.fixture(scope="module")
+async def assembly_counts() -> dict[str, dict[str, int]]:
+    """Atom counts from both engines, for both assembly settings."""
+    structure = await fetch_structure_data(ASSEMBLY_FIXTURE)
+    out: dict[str, dict[str, int]] = {}
+    for mode in ASSEMBLY_EXPECTED:
+        loaded = load_structure(structure.data, structure.format, mode)
+        viewer = await _evaluate(
+            ASSEMBLY_FIXTURE,
+            [["all::", "mol-script", "(sel.atom.all)"]],
+            assembly=mode,
+        )
+        out[mode] = {
+            "python": int(loaded.array.array_length()),
+            "molstar": _count(viewer, "all", ""),
+        }
+    return out
+
+
+@pytest.mark.parametrize("mode", sorted(ASSEMBLY_EXPECTED))
+async def test_viewer_and_analysis_hold_the_same_molecule(assembly_counts, mode):
+    """The invariant the assembly work exists to establish.
+
+    Both numbers are also asserted absolutely, so the two engines agreeing on
+    the wrong molecule cannot pass as agreement.
+    """
+    counts = assembly_counts[mode]
+    assert counts["python"] == counts["molstar"]
+    assert counts["python"] == ASSEMBLY_EXPECTED[mode]
+
+
+async def test_the_two_settings_are_actually_different(assembly_counts):
+    """Guards the test above: if both modes gave the same molecule it proves nothing."""
+    assert (
+        assembly_counts["biological"]["python"] != assembly_counts["asymmetric"]["python"]
+    )

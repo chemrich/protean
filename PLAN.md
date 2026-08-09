@@ -202,3 +202,50 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
    recommended way to get it, but it cannot be the only way to get a picture);
    and `delphi4py`, which ships manylinux x86_64 wheels only and so does not
    exist on Apple Silicon.
+
+## Decisions (2026-08-09b) — one molecule, chosen once
+
+9. **The viewer and the analysis load the same assembly, and say so.**
+
+   They did not. Mol\*'s default preset builds the biological assembly; the
+   Python side parsed the asymmetric unit. Nothing compared them, and for
+   1UBQ, 1CA2, 4HHB, 1BNA and 5FJI the two are identical, so the entire test
+   corpus was blind to it. On 1HHO they differ by exactly 2x — the asymmetric
+   unit is one alpha-beta dimer, the assembly is the alpha2beta2 tetramer.
+
+   The consequences were not cosmetic. Buried surface area treated
+   symmetry-contacted surface as solvent-exposed. Interfaces that exist only
+   between symmetry copies were invisible, and for a homodimer deposited as a
+   single chain, `interface()` cannot see the dimer on screen at all. An
+   electrostatic potential grid computed on the asymmetric unit does not even
+   span the displayed molecule.
+
+   So `fetch_structure(assembly=...)` is one choice honoured by both halves,
+   defaulting to `biological`: analysis should describe what is on screen, and
+   what is on screen should be the molecule as it exists. The reply states the
+   atom count each half arrived at, so a future divergence is visible in the
+   answer rather than latent. A differential test asserts the two agree on
+   1HHO in both settings, and asserts the settings differ from each other so
+   agreement on the wrong molecule cannot pass.
+
+   **Symmetry copies are part of a residue's identity.** Copies share chain id
+   and residue number, so keying on those alone merges two physically distinct
+   residues, halving the count and summing their buried areas — numbers that
+   all look plausible. Residue keys, handle summaries and interface residues
+   now carry `sym`, which appears only when more than one copy is present.
+
+   **Not solved: addressing one copy.** Handles reach the viewer as `atom.id`
+   ranges, and an assembly duplicates those ids, so a set covering one copy
+   cannot be expressed. Everything the tools currently produce is symmetric
+   across copies, which is why the transport stays exact — but until it can
+   say "this copy", `interface("A", "B")` on a tetramer reports the total A-B
+   interface rather than alpha1beta1 alone. Mol\* exposes `operator-name` for
+   colouring but appears to offer no MolScript predicate for it, so this needs
+   new transport, not a bigger array.
+
+   Two things worth recording. The biological assembly is not always larger:
+   12E8's asymmetric unit holds two Fabs and its assembly is *half* its size,
+   so "copies" is not a multiplier. And a capsid is 60 copies, so expansion is
+   refused above `MAX_ASSEMBLY_COPIES`, read from the operator list before
+   anything is built. PDB input keeps assemblies in REMARK 350, which biotite
+   does not parse; that falls back to the deposited coordinates and says so.

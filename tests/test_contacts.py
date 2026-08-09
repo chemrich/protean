@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
@@ -201,3 +202,47 @@ def test_no_interface_yields_no_indices():
     result = interface(far, "A", "B")
     assert result.indices_a.tolist() == []
     assert result.indices_b.tolist() == []
+
+
+def _copied(array: AtomArray[Any], shift: float = 40.0) -> AtomArray[Any]:
+    """The same atoms twice, as an assembly presents symmetry copies.
+
+    Both copies keep chain A / residue 1, differing only in ``sym_id`` — which
+    is precisely the situation where keying on chain and number alone merges
+    them.
+    """
+    moved = array.copy()
+    moved.coord = moved.coord + np.array([0.0, 0.0, shift])
+    both = array + moved
+    both.set_annotation(
+        "sym_id", np.concatenate([np.zeros(len(array)), np.ones(len(moved))]).astype(int)
+    )
+    return both
+
+
+def test_symmetry_copies_are_not_merged_into_one_residue(salt_bridge_pair):
+    """Two copies of ASP1 are two residues, and their buried areas are separate.
+
+    Merging them would report half the residues, each with double the area,
+    and every number would still look reasonable.
+    """
+    single = interface(salt_bridge_pair, "A", "B")
+    doubled = interface(_copied(salt_bridge_pair), "A", "B")
+
+    assert len(doubled.interface_residues_a) == 2 * len(single.interface_residues_a)
+    assert {r["sym"] for r in doubled.interface_residues_a} == {0, 1}
+    for residue in doubled.interface_residues_a:
+        assert residue["buried"] == pytest.approx(
+            single.interface_residues_a[0]["buried"], rel=0.05
+        )
+
+
+def test_single_copy_structures_carry_no_sym_field(salt_bridge_pair):
+    """Nothing changes for the ordinary case."""
+    result = interface(salt_bridge_pair, "A", "B")
+    assert all("sym" not in r for r in result.interface_residues_a)
+
+
+def test_indices_still_cover_both_copies(salt_bridge_pair):
+    doubled = interface(_copied(salt_bridge_pair), "A", "B")
+    assert len(doubled.indices_a) == 8, "all four atoms of both ASP copies"

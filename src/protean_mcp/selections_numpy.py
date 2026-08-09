@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -26,7 +27,7 @@ from biotite.structure import (
     filter_solvent,
 )
 from biotite.structure.io.pdb import PDBFile
-from biotite.structure.io.pdbx import CIFFile, get_structure
+from biotite.structure.io.pdbx import CIFFile, get_assembly, get_structure
 
 from .selections import (
     And,
@@ -57,30 +58,125 @@ _BACKBONE = frozenset({"N", "CA", "C", "O"})
 _HYDROGEN = frozenset({"H", "D"})
 
 
-def load_structure(text: str, fmt: str) -> AtomArray[Any]:
-    """Parse coordinates with the fields selections need."""
-    handle = io.StringIO(text)
+@dataclass
+class LoadedStructure:
+    """A parsed structure and what it actually contains.
+
+    ``copies`` is how many symmetry copies of the deposited coordinates are
+    present. It is reported rather than inferred because it is the number that
+    decides whether an atom count here means the same thing as an atom count
+    in the viewer.
+    """
+
+    array: AtomArray[Any]
+    assembly: str
+    copies: int
+    note: str = ""
+
+
+# A whole viral capsid is 60 copies of its asymmetric unit; expanding one
+# unasked would turn a routine load into gigabytes.
+MAX_ASSEMBLY_COPIES = 12
+
+
+def assembly_multiplicity(text: str) -> int:
+    """How many copies assembly 1 would make, read without building it."""
+    try:
+        block = CIFFile.read(io.StringIO(text)).block
+        return len(block["pdbx_struct_oper_list"]["id"].as_array())
+    except Exception:
+        return 1
+
+
+def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedStructure:
+    """Parse coordinates with the fields selections need.
+
+    ``assembly`` chooses what "the structure" means. The biological assembly is
+    the molecule as it exists — haemoglobin is a tetramer — and is what Mol\\*
+    renders by default, so it is the default here too: analysis that describes
+    something other than what is on screen is worse than useless. "asymmetric"
+    gives the deposited coordinates instead.
+
+    The two must be chosen together. Loading one here and the other in the
+    viewer means every atom count in a result refers to a different molecule
+    than the picture, which is invisible until someone compares them.
+    """
+    if assembly not in ("biological", "asymmetric"):
+        raise SelectionError(f"Unknown assembly {assembly!r} (biological, asymmetric)")
     if fmt not in ("pdb", "mmcif"):
         raise SelectionError(f"Unsupported format {fmt!r} (expected 'pdb' or 'mmcif')")
-    try:
-        if fmt == "pdb":
-            array = PDBFile.read(handle).get_structure(model=1, extra_fields=EXTRA_FIELDS)
-        else:
-            array = get_structure(
-                CIFFile.read(handle), model=1, extra_fields=EXTRA_FIELDS
+
+    if fmt == "pdb":
+        try:
+            array = PDBFile.read(io.StringIO(text)).get_structure(
+                model=1, extra_fields=EXTRA_FIELDS
             )
+        except Exception as exc:
+            raise SelectionError(f"Could not parse pdb coordinates: {exc}") from exc
+        note = ""
+        if assembly == "biological":
+            # PDB carries assemblies in REMARK 350, which biotite does not read.
+            note = (
+                "PDB input carries its assembly in REMARK 350, which is not "
+                "parsed; the asymmetric unit was loaded instead"
+            )
+        return LoadedStructure(array=array, assembly="asymmetric", copies=1, note=note)
+
+    try:
+        handle = CIFFile.read(io.StringIO(text))
+        if assembly == "asymmetric":
+            array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
+            return LoadedStructure(array=array, assembly="asymmetric", copies=1)
+
+        copies = assembly_multiplicity(text)
+        if copies > MAX_ASSEMBLY_COPIES:
+            array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
+            return LoadedStructure(
+                array=array,
+                assembly="asymmetric",
+                copies=1,
+                note=(
+                    f"the biological assembly is {copies} copies, over the "
+                    f"limit of {MAX_ASSEMBLY_COPIES}; the asymmetric unit was "
+                    "loaded instead and the viewer will show more than this"
+                ),
+            )
+        array = get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS)
+    except SelectionError:
+        raise
     except Exception as exc:
-        raise SelectionError(f"Could not parse {fmt} coordinates: {exc}") from exc
-    return array
+        raise SelectionError(f"Could not parse mmcif coordinates: {exc}") from exc
+
+    present = int(np.unique(np.asarray(array.sym_id)).size) if _has_sym(array) else 1
+    return LoadedStructure(array=array, assembly="biological", copies=present)
 
 
-def _residue_keys(array: AtomArray[Any]) -> Mask:
-    """One integer per residue, so masks can be widened to residue granularity."""
+def _has_sym(array: AtomArray[Any]) -> bool:
+    return "sym_id" in array.get_annotation_categories()
+
+
+def residue_labels(array: AtomArray[Any]) -> Any:
+    """A string per atom identifying its residue uniquely.
+
+    Symmetry copies share chain ids and residue numbers, so in an assembly the
+    copy has to be part of the identity. Leaving it out merges two physically
+    distinct residues into one, which silently sums their buried area and
+    halves their count.
+    """
     labels = np.char.add(
         np.char.add(array.chain_id.astype(str), "|"),
         np.char.add(array.res_id.astype(str), array.ins_code.astype(str)),
     )
-    _, inverse = np.unique(labels, return_inverse=True)
+    if _has_sym(array):
+        labels = np.char.add(
+            np.char.add(labels, "#"), np.asarray(array.sym_id).astype(str)
+        )
+    return labels
+
+
+def _residue_keys(array: AtomArray[Any]) -> Mask:
+    """One integer per residue, so masks can be widened to residue granularity."""
+    _, inverse = np.unique(residue_labels(array), return_inverse=True)
     return np.asarray(inverse)
 
 
