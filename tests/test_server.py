@@ -16,6 +16,8 @@ from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
 from protean_mcp.server import (
     clear_viewer,
+    combine,
+    conservation,
     electrostatics,
     fetch_structure,
     interface,
@@ -404,3 +406,81 @@ async def test_electrostatics_without_a_structure_asks_for_one(bridge, monkeypat
     monkeypatch.setattr(server_mod, "_structure_error", None)
     with pytest.raises(ViewerError, match="No structure loaded"):
         await electrostatics()
+
+
+def _peptide_pdb(path: Path, n: int = 12) -> Path:
+    """A single chain long enough to clear the minimum sequence length."""
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
+        ):
+            lines.append(
+                _pdb_line(
+                    serial, name, "ALA", "A", res, (float(res) * 4, float(i), 0.0), elem
+                )
+            )
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
+def _fake_msa(monkeypatch, sequence_length: int, depth: int = 20) -> None:
+    """Stand in for the MMseqs2 search: column 0 conserved, the rest varied."""
+    query = "A" * sequence_length
+    varied = "A" + "W" * (sequence_length - 1)
+    a3m = f">query\n{query}\n" + "".join(
+        f">h{i}\n{query if i % 2 else varied}\n" for i in range(depth)
+    )
+
+    async def fake_fetch(sequence, cache_dir, **kwargs):
+        return a3m, "search"
+
+    monkeypatch.setattr(server_mod, "_fetch_msa", fake_fetch)
+
+
+async def test_conservation_registers_conserved_and_variable_handles(
+    wired_bridge, tmp_path, monkeypatch
+):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    _fake_msa(monkeypatch, sequence_length=12)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(2)
+    payload = await conservation()
+    await task
+
+    assert payload["handles"] == {"conserved": "conserved", "variable": "variable"}
+    assert payload["chain"] == "A"
+    assert payload["residues_scored"] == 12
+    assert payload["msa_depth"] == 21
+    assert set(server_mod._handles.names()) >= {"conserved", "variable"}
+    # Residue 1 is the invariant column, so it must land in the conserved set.
+    conserved = summarise(
+        server_mod._structure, server_mod._handles.get("conserved").indices
+    )
+    assert 1 in [r["seq"] for r in conserved["residues"]]
+
+
+async def test_conservation_handles_compose_with_other_handles(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The exit criterion's shape: the conserved part of another set."""
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    _fake_msa(monkeypatch, sequence_length=12)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(4)
+    await conservation()
+    await select("resi 1-4", name="patch")
+    result = await combine("intersect", ["patch", "conserved"], "hot")
+    await task
+    assert result["atom_count"] > 0
+    assert all(r["seq"] <= 4 for r in result["residues"])
+
+
+async def test_conservation_without_a_structure_asks_for_one(bridge, monkeypatch):
+    monkeypatch.setattr(server_mod, "_bridge", bridge)
+    monkeypatch.setattr(server_mod, "_structure", None)
+    monkeypatch.setattr(server_mod, "_structure_error", None)
+    with pytest.raises(ViewerError, match="No structure loaded"):
+        await conservation()

@@ -12,8 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from biotite.structure import filter_amino_acids
 from mcp.server.fastmcp import FastMCP, Image
 
+from .analysis.conservation import ConservationError
+from .analysis.conservation import chain_sequence as _chain_sequence
+from .analysis.conservation import fetch_msa as _fetch_msa
+from .analysis.conservation import score as _score_conservation
 from .analysis.contacts import ContactError
 from .analysis.contacts import interface as _interface
 from .analysis.electrostatics import ElectrostaticsError
@@ -777,6 +782,94 @@ async def electrostatics(
         )
     if handle is not None:
         payload["sampled"] = _sample_handle(grid, handle, limit)
+    return payload
+
+
+def _residue_indices(array: Any, keys: set[tuple[str, int, str]]) -> Any:
+    """Every atom of the given (chain, seq, ins_code) residues."""
+    labels = np.char.add(
+        np.char.add(array.chain_id.astype(str), "|"),
+        np.char.add(array.res_id.astype(str), array.ins_code.astype(str)),
+    )
+    wanted = [f"{chain}|{seq}{ins}" for chain, seq, ins in keys]
+    return np.flatnonzero(np.isin(labels, wanted))
+
+
+@mcp.tool()
+async def conservation(
+    chain: str | None = None,
+    conserved_percentile: float = 25.0,
+    variable_percentile: float = 75.0,
+    name_conserved: str = "conserved",
+    name_variable: str = "variable",
+    use_env: bool = True,
+    force_refresh: bool = False,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Score a chain by evolutionary conservation and register the extremes.
+
+    chain: defaults to the first protein chain in the loaded structure.
+    conserved_percentile, variable_percentile: cutoffs *within this chain*, so
+      the split adapts to how variable the protein actually is. The defaults
+      take the most-conserved and least-conserved quartiles.
+    name_conserved, name_variable: handles for those two sets. They compose —
+      combine("intersect", ["iface_a", "conserved"], "hot") is the conserved
+      part of an interface.
+
+    Submits the sequence to an MMseqs2 server (the ColabFold public API by
+    default, overridable with PROTEAN_MSA_URL) and scores each position by
+    Shannon entropy over the resulting alignment. The first call for a
+    sequence takes tens of seconds to minutes; the alignment is then cached on
+    disk, so later calls are immediate.
+
+    Returns per-residue entropy and conservation, plus `msa_depth`. Read that
+    number before trusting the scores: a protein with few known homologs looks
+    conserved everywhere because nothing was found to disagree with it.
+    """
+    array = _require_structure()
+    if chain is None:
+        protein: Any = np.asarray(filter_amino_acids(array))
+        if not protein.any():
+            raise ViewerError("No protein in the loaded structure to score")
+        chain = str(array.chain_id[protein][0])
+
+    try:
+        sequence, _ = _chain_sequence(array, chain)
+        a3m, source = await _fetch_msa(
+            sequence,
+            default_cache_dir(),
+            use_env=use_env,
+            force_refresh=force_refresh,
+        )
+        result = _score_conservation(array, chain, a3m, source=source)
+    except ConservationError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    entropies = np.array([s.entropy for s in result.scores])
+    low = float(np.percentile(entropies, conserved_percentile))
+    high = float(np.percentile(entropies, variable_percentile))
+
+    payload: dict[str, Any] = {
+        **result.as_dict(limit=limit),
+        "conserved_below_entropy": round(low, 3),
+        "variable_above_entropy": round(high, 3),
+    }
+    for name, keys, origin in (
+        (
+            name_conserved,
+            {(s.chain, s.seq, s.ins_code) for s in result.scores if s.entropy <= low},
+            f"conservation({chain}) below the {conserved_percentile}th percentile",
+        ),
+        (
+            name_variable,
+            {(s.chain, s.seq, s.ins_code) for s in result.scores if s.entropy >= high},
+            f"conservation({chain}) above the {variable_percentile}th percentile",
+        ),
+    ):
+        indices = _residue_indices(array, keys)
+        _register(name, indices, origin)
+        await _display(name, indices)
+    payload["handles"] = {"conserved": name_conserved, "variable": name_variable}
     return payload
 
 
