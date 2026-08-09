@@ -85,4 +85,6 @@ jobs:
           PROTEAN_CHROME_FLAGS: >-
             --headless=new --no-sandbox --disable-dev-shm-usage
             --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
-        run: uv run pytest tests/test_selection_differential.py -q
+        run: >-
+          uv run pytest tests/test_selection_differential.py
+          tests/test_render_differential.py -q

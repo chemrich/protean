@@ -31,51 +31,17 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
 
-import aiohttp
 import numpy as np
 import pytest
 
-from protean_mcp.connection import ViewerBridge
 from protean_mcp.fetch import fetch_structure_data
 from protean_mcp.handles import to_molscript as indices_to_molscript
 from protean_mcp.selections_numpy import load_structure, select_mask
 
-from .conftest import free_port
+from .browser import BROWSER_MARKS, viewer_session
 
-
-def _find_chrome() -> str | None:
-    """Locate a Chrome binary: explicit override, then the usual suspects.
-
-    CI runners are Linux and have no /Applications, so the macOS path alone
-    would silently skip the whole suite there.
-    """
-    override = os.environ.get("PROTEAN_CHROME")
-    if override:
-        return override if Path(override).exists() else None
-    candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    ]
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-    return next((c for c in candidates if Path(c).exists()), None)
-
-
-CHROME = _find_chrome()
-
-# Headless CI needs software WebGL; locally we want a real window.
-CHROME_FLAGS = [f for f in os.environ.get("PROTEAN_CHROME_FLAGS", "").split(" ") if f]
-STATIC = Path(__file__).resolve().parents[1] / "src" / "protean_mcp" / "static"
 FIXTURE = "4hhb"
 
 # Structure classes whose entity typing differs enough to break selectors that
@@ -101,17 +67,7 @@ CLASS_FIXTURES: dict[str, dict[str, str]] = {
     },
 }
 
-pytestmark = [
-    pytest.mark.skipif(
-        os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
-        reason="needs a browser; set PROTEAN_DIFFERENTIAL=1 to run",
-    ),
-    pytest.mark.skipif(CHROME is None, reason="no Chrome binary found"),
-    pytest.mark.skipif(
-        not (STATIC / "index.html").exists(),
-        reason="viewer not built (npm run build in viewer/)",
-    ),
-]
+pytestmark = BROWSER_MARKS
 
 # Ground truth on 4HHB, cross-checked by hand:
 #   4 protein chains + 4 HEM + 221 waters = 4779 atoms
@@ -213,106 +169,18 @@ _EVAL_JS = r"""(async () => {
 })()"""
 
 
-async def _cdp_eval(port: int, url: str, expression: str):
-    async with aiohttp.ClientSession() as session:
-        for _ in range(60):
-            try:
-                async with session.get(f"http://127.0.0.1:{port}/json") as resp:
-                    targets = await resp.json()
-            except Exception:
-                await asyncio.sleep(0.3)
-                continue
-            pages = [
-                t
-                for t in targets
-                if t.get("type") == "page"
-                and t.get("url", "").rstrip("/") == url.rstrip("/")
-            ]
-            if pages:
-                break
-            await asyncio.sleep(0.3)
-        else:
-            raise RuntimeError("viewer page never appeared on the CDP endpoint")
-
-        async with session.ws_connect(
-            pages[0]["webSocketDebuggerUrl"], max_msg_size=64 * 1024 * 1024
-        ) as ws:
-            await ws.send_json(
-                {
-                    "id": 1,
-                    "method": "Runtime.evaluate",
-                    "params": {
-                        "expression": expression,
-                        "awaitPromise": True,
-                        "returnByValue": True,
-                    },
-                }
-            )
-            async for msg in ws:
-                payload = json.loads(msg.data)
-                if payload.get("id") == 1:
-                    result = payload.get("result", {}).get("result", {})
-                    if "value" not in result:
-                        raise RuntimeError(f"CDP evaluate failed: {str(payload)[:400]}")
-                    return json.loads(result["value"])
-    raise RuntimeError("no CDP reply")
-
-
 async def _evaluate(
     pdb_id: str, cases: list[list[str]], assembly: str = "asymmetric"
 ) -> dict[str, dict[str, object]]:
-    """Load *pdb_id* in a throwaway browser and evaluate every case in it."""
-    structure = await fetch_structure_data(pdb_id)
-    bridge = ViewerBridge(port=free_port(), static_dir=STATIC)
-    viewer_port = await bridge.start()
-    url = f"http://127.0.0.1:{viewer_port}/"
-    cdp_port = free_port()
-    profile = tempfile.mkdtemp(prefix="protean-diff-")
+    """Load *pdb_id* in a throwaway browser and evaluate every case in it.
 
-    chrome = CHROME
-    assert chrome is not None  # guaranteed by the module-level skipif
-    # Chrome's own output is the only clue when the page never connects, so
-    # keep it rather than sending it to /dev/null.
-    log_path = Path(profile) / "chrome.log"
-    log = log_path.open("wb")
-    proc = subprocess.Popen(
-        [
-            chrome,
-            f"--user-data-dir={profile}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            f"--remote-debugging-port={cdp_port}",
-            *CHROME_FLAGS,
-            url,
-        ],
-        stdout=log,
-        stderr=log,
-    )
-    try:
-        await bridge.wait_for_viewer(40)
-        await bridge.request(
-            "load_structure",
-            {
-                "name": pdb_id,
-                "format": structure.format,
-                "data": structure.data,
-                # Ground-truth counts are for the deposited coordinates, and
-                # both engines must be shown the same molecule.
-                "assembly": assembly,
-            },
-            timeout=120,
-        )
-        raw = await _cdp_eval(cdp_port, url, _EVAL_JS % json.dumps(cases))
-        return {entry["key"]: entry for entry in raw}
-    finally:
-        proc.terminate()
-        subprocess.run(
-            ["pkill", "-f", f"user-data-dir={profile}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        await bridge.stop()
-        shutil.rmtree(profile, ignore_errors=True)
+    `assembly` defaults to the deposited coordinates because the ground-truth
+    counts are derived from those, and both engines must be shown the same
+    molecule for the comparison to mean anything.
+    """
+    async with viewer_session(pdb_id, assembly=assembly) as session:
+        raw = await session.evaluate(_EVAL_JS % json.dumps(cases))
+    return {entry["key"]: entry for entry in raw}
 
 
 @pytest.fixture(scope="module")
