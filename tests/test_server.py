@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import gzip
 import json
 from pathlib import Path
@@ -16,6 +18,8 @@ from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
 from protean_mcp.server import (
     clear_viewer,
+    color_by_conservation,
+    color_by_potential,
     combine,
     conservation,
     electrostatics,
@@ -484,3 +488,120 @@ async def test_conservation_without_a_structure_asks_for_one(bridge, monkeypatch
     monkeypatch.setattr(server_mod, "_structure_error", None)
     with pytest.raises(ViewerError, match="No structure loaded"):
         await conservation()
+
+
+@contextlib.asynccontextmanager
+async def _serving(viewer, **handlers):
+    """Answer whatever the viewer is asked, for as long as the block runs.
+
+    serve(n) blocks forever if fewer than n requests arrive, and the exact
+    count for a multi-step tool is an implementation detail no test should
+    have to predict.
+    """
+    for action, handler in handlers.items():
+        viewer.handlers[action] = handler
+    task = viewer.serve(10_000)
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+# -- colouring by a scalar field -----------------------------------------------
+
+
+def test_ramp_interpolates_between_the_stops():
+    ramp = server_mod._ramp("conservation", 7)
+    assert len(ramp) == 7
+    assert ramp[0] == "#2c7bb6" and ramp[-1] == "#d7191c"
+    assert ramp[3] == "#ffffbf", "the middle stop should land on the middle band"
+    assert all(c.startswith("#") and len(c) == 7 for c in ramp)
+
+
+def test_ramp_of_one_band_is_the_first_stop():
+    """Guards a divide-by-zero in the interpolation."""
+    assert server_mod._ramp("conservation", 1) == ["#2c7bb6"]
+
+
+def test_unknown_palette_lists_the_known_ones():
+    with pytest.raises(ViewerError, match="Available:"):
+        server_mod._ramp("chartreuse", 5)
+
+
+async def test_color_by_potential_without_a_grid_says_what_to_run(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="Run electrostatics"):
+        await color_by_potential(handle="sele", path=str(tmp_path / "absent.dx"))
+
+
+async def test_color_by_potential_sends_the_grid(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    grid = tmp_path / "p.dx"
+    await electrostatics(method="coulombic", spacing=2.0, padding=6.0, path=str(grid))
+
+    sent = {}
+    wired_bridge.handlers["color_by_volume"] = lambda args: (
+        sent.update(args) or {"components": 1}
+    )
+    task = wired_bridge.serve(1)
+    out = await color_by_potential(handle="sele", path=str(grid), domain=[-5.0, 5.0])
+    await task
+    assert sent["domain"] == [-5.0, 5.0]
+    assert "object 1 class gridpositions" in sent["volume"], "the OpenDX itself is sent"
+    assert out["dx_path"] == str(grid)
+
+
+async def test_color_by_potential_rejects_a_malformed_domain(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    grid = tmp_path / "p.dx"
+    await electrostatics(method="coulombic", spacing=2.0, padding=6.0, path=str(grid))
+    with pytest.raises(ViewerError, match="min, max"):
+        await color_by_potential(handle="sele", path=str(grid), domain=[1.0, 2.0, 3.0])
+
+
+async def test_color_by_conservation_needs_scores_first(wired_bridge, tmp_path):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    with pytest.raises(ViewerError, match="call conservation"):
+        await color_by_conservation()
+
+
+async def test_conservation_bands_cover_every_scored_residue(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The top band must include its own upper edge.
+
+    A half-open last band drops the single most variable residue, which is
+    exactly the residue someone colouring by conservation is looking for.
+    """
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb", n=12))
+    _fake_msa(monkeypatch, sequence_length=12)
+
+    def nothing(args: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async with _serving(wired_bridge, select=nothing, show=nothing, hide=nothing):
+        await conservation()
+        banded = await color_by_conservation(bins=4, representation="spacefill")
+
+    covered = sum(b["residues"] for b in banded["bands"])
+    assert covered == 12, f"bands covered {covered} of 12 residues"
+    assert banded["most_conserved_first"] is True
+    assert banded["bands"][0]["color"] == "#2c7bb6"
+
+
+async def test_conservation_bands_are_registered_as_handles(
+    wired_bridge, tmp_path, monkeypatch
+):
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb", n=12))
+    _fake_msa(monkeypatch, sequence_length=12)
+
+    def nothing(args: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async with _serving(wired_bridge, select=nothing, show=nothing, hide=nothing):
+        await conservation()
+        banded = await color_by_conservation(bins=3, representation="spacefill")
+    for band in banded["bands"]:
+        assert band["handle"] in server_mod._handles.names()

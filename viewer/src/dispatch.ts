@@ -24,6 +24,19 @@ interface LoadStructureArgs {
   assembly?: 'biological' | 'asymmetric';
 }
 
+interface ColorByVolumeArgs {
+  /** Existing selection whose representations get recoloured. */
+  name: string;
+  /** OpenDX source. Both electrostatics backends emit this. */
+  volume: string;
+  /** 'absolute-value' reads the grid's own units; 'relative-value' normalises. */
+  coloring?: 'absolute-value' | 'relative-value';
+  /** Explicit [min, max]; omitted means a symmetric range about zero. */
+  domain?: [number, number];
+  /** Mol* colour list name; the default is the red-white-blue convention. */
+  palette?: string;
+}
+
 interface SelectArgs {
   name: string;
   /** MolScript source, compiled from PyMOL syntax by the Python side. */
@@ -48,6 +61,19 @@ declare global {
     };
   }
 }
+
+/** Colour ramps for scalar fields, low value first.
+ *
+ * red-white-blue is the electrostatics convention: acidic red, basic blue.
+ * Mol* resolves preset names internally, but a ColorList *value* has to carry
+ * real colours, so they are spelled out here.
+ */
+const PALETTES: Record<string, number[]> = {
+  'red-white-blue': [0xd7191c, 0xffffff, 0x2c7bb6],
+  'blue-white-red': [0x2c7bb6, 0xffffff, 0xd7191c],
+  viridis: [0x440154, 0x21918c, 0xfde725],
+  'white-red': [0xffffff, 0xd7191c],
+};
 
 /** Must stay below the bridge's own request timeout so our error wins the race. */
 const HIDDEN_TIMEOUT_MS = 30_000;
@@ -489,6 +515,60 @@ export function createDispatcher(plugin: any): Handler {
           };
         });
         return { selections };
+      },
+    },
+
+    color_by_volume: {
+      render: true,
+      async run({ name, volume, coloring, domain, palette }: ColorByVolumeArgs) {
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy to colour`);
+        }
+
+        const provider = plugin.dataFormats.get('dx');
+        if (!provider) throw new Error('This Mol* build cannot parse OpenDX volumes');
+        const raw = await plugin.builders.data.rawData({ data: volume, label: name });
+        const parsed = await provider.parse(plugin, raw);
+        const cell = parsed.volume ?? parsed.volumes?.[0] ?? parsed;
+        const data = cell?.obj?.data ?? cell?.cell?.obj?.data;
+        if (!data) throw new Error('The volume parsed to nothing');
+        const ref = cell.ref ?? cell.cell?.transform?.ref;
+
+        // external-volume takes a ValueRef: a state ref plus a getter. Passing
+        // the ref alone leaves the theme with no volume and it silently paints
+        // everything its default grey, so the getter is supplied explicitly.
+        const stats = data.grid.stats;
+        await plugin.managers.structure.component.updateRepresentationsTheme(target, {
+          color: 'external-volume',
+          colorParams: {
+            volume: { ref, getValue: () => data },
+            coloring: {
+              name: coloring ?? 'absolute-value',
+              params: {
+                domain: domain
+                  ? { name: 'custom', params: domain }
+                  : { name: 'auto', params: { symmetric: true } },
+                // A ColorList value carries the colours themselves. Passing a
+                // preset *name* with an empty `colors` array leaves the ramp
+                // with nothing to interpolate and paints the whole surface
+                // black — which looks like a render failure, not a bad param.
+                list: {
+                  kind: 'interpolate',
+                  colors: (PALETTES[palette ?? 'red-white-blue'] ?? PALETTES['red-white-blue']),
+                },
+              },
+            },
+          },
+        });
+        return {
+          name,
+          components: target.length,
+          volume_min: stats.min,
+          volume_max: stats.max,
+          domain: domain ?? null,
+        };
       },
     },
 
