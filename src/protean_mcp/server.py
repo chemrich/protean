@@ -398,6 +398,7 @@ async def show(
     handle: str | None = None,
     color: str | None = None,
     size: float | None = None,
+    opacity: float | None = None,
     name: str = "sele",
 ) -> dict[str, Any]:
     """Display a selection, given either a handle or a selection string.
@@ -413,6 +414,8 @@ async def show(
     color: a Mol* colour theme or a literal hex value like "#ff0000".
     size: scales the representation; for spacefill this scales the van der
       Waals radius, so an ion that would hide what it coordinates can be shrunk.
+    opacity: 0 is invisible, 1 is solid. Use it to draw a surface you can see
+      through to whatever is inside; opacity() changes it afterwards.
     """
     if (selection is None) == (handle is None):
         raise ViewerError("Pass exactly one of selection or handle")
@@ -443,6 +446,8 @@ async def show(
         args["color"] = color
     if size is not None:
         args["size"] = size
+    if opacity is not None:
+        args["opacity"] = opacity
     await _call("show", args)
     return {"name": label, "representation": representation, **_summarise(array, indices)}
 
@@ -455,6 +460,44 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
     name: the handle passed to a previous select() or show().
     """
     return await _call("color", {"name": name, "color": color})
+
+
+@mcp.tool()
+async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
+    """Make an already-displayed selection transparent.
+
+    opacity: 0 is invisible, 1 is solid. 0.3 or so is the usual "ghost" surface
+      that lets a cartoon or a ligand show through from inside it.
+    name: the handle passed to a previous show(). A handle that was only
+      select()ed carries no geometry and is refused, because setting opacity on
+      it would change nothing on screen.
+    """
+    return await _call("opacity", {"name": name, "opacity": opacity})
+
+
+@mcp.tool()
+async def background(
+    color: str | None = None, transparent: bool | None = None
+) -> dict[str, Any]:
+    """Set the canvas background colour, or make it transparent.
+
+    color: a literal hex value like "#ffffff". Unlike show(), a colour theme is
+      meaningless here — a canvas has no atoms to take a theme from.
+    transparent: render onto nothing, so a saved figure drops into a document
+      or a slide without a coloured card behind it. This also switches the
+      screenshot pipeline to transparent capture, which is a separate flag in
+      Mol* and would otherwise keep returning opaque PNGs.
+
+    Returns the values read back off the canvas, not the ones passed in.
+    """
+    if color is None and transparent is None:
+        raise ViewerError("Pass at least one of color or transparent")
+    args: dict[str, Any] = {}
+    if color is not None:
+        args["color"] = color
+    if transparent is not None:
+        args["transparent"] = transparent
+    return await _call("background", args)
 
 
 @mcp.tool()

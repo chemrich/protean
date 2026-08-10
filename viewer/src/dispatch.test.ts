@@ -181,11 +181,29 @@ function fakePlugin() {
       structure: {
         parseTrajectory: vi.fn(async () => ({})),
         hierarchy: { applyPreset: vi.fn(async () => {}) },
-        representation: { addRepresentation: vi.fn(async () => {}) },
+        representation: {
+          // The real builder hangs the representation off the component, which
+          // is how the opacity action finds it. A mock that only records the
+          // call would let opacity() "succeed" against zero representations.
+          addRepresentation: vi.fn(async (selector: any, params: any) => {
+            const ref = selector?.ref ?? selector;
+            const owner = componentRefs.find((c) => c.cell.transform.ref === ref);
+            const cell = {
+              transform: {
+                ref: `repr-${ref}`,
+                params: {
+                  type: { name: params.type, params: { ...(params.typeParams ?? {}) } },
+                },
+              },
+            };
+            owner?.representations.push({ cell });
+            return { ref: cell.transform.ref, cell };
+          }),
+        },
         tryCreateComponent: vi.fn(async (_ref: string, params: any) => {
           const ref = `component-${params.label}`;
           const cell = { transform: { ref }, state: { isHidden: false }, obj: { data: structure } };
-          componentRefs.push({ cell });
+          componentRefs.push({ cell, representations: [] });
           return { ref, data: structure, cell };
         }),
       },
@@ -201,10 +219,63 @@ function fakePlugin() {
       setSnapshot: vi.fn(async () => {}),
       data: {
         cells: { get: (ref: string) => componentRefs.find((c) => c.cell.transform.ref === ref)?.cell },
-        build: () => ({ delete: () => ({ commit: async () => {} }) }),
+        build: () => {
+          const builder: any = {
+            delete: () => ({ commit: async () => {} }),
+            // Mol*'s update takes a mutator over the cell's existing params,
+            // so applying it here is what makes an assertion on the resulting
+            // params mean anything.
+            to: (cell: any) => ({
+              update: (mutate: (params: any) => void) => {
+                mutate(cell.transform.params);
+                return builder;
+              },
+            }),
+            commit: async () => {},
+          };
+          return builder;
+        },
       },
     },
   };
+}
+
+/** Add the canvas and screenshot helper that only some actions touch.
+ *
+ * Deliberately not part of fakePlugin: with a canvas3d present every render
+ * action runs the real settle loop against jsdom's requestAnimationFrame, which
+ * turned a 15ms unit suite into a 3.5s one. The tests that need a canvas ask
+ * for it.
+ */
+function withCanvas(plugin: any) {
+  const canvasProps: any = {
+    renderer: { backgroundColor: 0x000000 },
+    transparentBackground: false,
+  };
+  const screenshotValues: any = { transparent: false, format: { name: 'png' } };
+  plugin.canvas3d = {
+    props: canvasProps,
+    setProps: vi.fn((props: any) => {
+      if (props.renderer) Object.assign(canvasProps.renderer, props.renderer);
+      if (props.transparentBackground !== undefined) {
+        canvasProps.transparentBackground = props.transparentBackground;
+      }
+    }),
+    // Settled instantly: these tests are about props, not about timing.
+    commitQueueSize: { value: 0 },
+    reprCount: { value: 0 },
+  };
+  plugin.helpers = {
+    viewportScreenshot: {
+      get values() {
+        return screenshotValues;
+      },
+      behaviors: {
+        values: { next: vi.fn((v: any) => Object.assign(screenshotValues, v)) },
+      },
+    },
+  };
+  return plugin;
 }
 
 describe('createDispatcher', () => {
@@ -455,6 +526,126 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('background and opacity', () => {
+  it('sets the canvas colour and reports what the canvas now holds', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const result: any = await createDispatcher(plugin)('background', {
+      color: '#ff8800',
+    });
+
+    expect(plugin.canvas3d.setProps).toHaveBeenCalledWith({
+      renderer: { backgroundColor: 0xff8800 },
+    });
+    // Read back off the canvas, not echoed from the argument: an echo would
+    // report success for a value Mol* silently discarded.
+    expect(result.background).toBe('#ff8800');
+  });
+
+  it('switches the screenshot pipeline to transparent as well as the canvas', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const result: any = await createDispatcher(plugin)('background', {
+      transparent: true,
+    });
+
+    expect(plugin.canvas3d.props.transparentBackground).toBe(true);
+    // The load-bearing assertion. ViewportScreenshotHelper passes its own
+    // `transparent` value to the image pass as transparentBackground,
+    // overriding the canvas — so setting only the canvas yields a transparent
+    // viewer and an opaque PNG from every single capture.
+    expect(result.screenshot_transparent).toBe(true);
+  });
+
+  it('refuses a colour that is not a hex triplet', async () => {
+    // parseInt('#oops'.slice(1), 16) is NaN, and a NaN background paints black
+    // without complaint — indistinguishable from a broken renderer.
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('background', { color: 'skyblue' })
+    ).rejects.toThrow(/Expected a colour like/);
+  });
+
+  it('passes opacity to the representation when showing', async () => {
+    const plugin: any = fakePlugin();
+    await createDispatcher(plugin)('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+      opacity: 0.3,
+    });
+
+    const params = plugin.builders.structure.representation.addRepresentation.mock.calls
+      .at(-1)[1];
+    expect(params.typeParams).toMatchObject({ alpha: 0.3 });
+  });
+
+  it('keeps size and opacity together rather than one overwriting the other', async () => {
+    const plugin: any = fakePlugin();
+    await createDispatcher(plugin)('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'spacefill',
+      size: 0.5,
+      opacity: 0.4,
+    });
+
+    const params = plugin.builders.structure.representation.addRepresentation.mock.calls
+      .at(-1)[1];
+    expect(params.typeParams).toEqual({ sizeFactor: 0.5, alpha: 0.4 });
+  });
+
+  it('changes opacity on a representation that already exists', async () => {
+    const plugin: any = fakePlugin();
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+
+    const result: any = await dispatch('opacity', { name: 'sele', opacity: 0.25 });
+
+    expect(result).toMatchObject({ name: 'sele', opacity: 0.25, representations: 1 });
+    const repr = plugin.componentRefs[0].representations[0];
+    expect(repr.cell.transform.params.type.params.alpha).toBe(0.25);
+  });
+
+  it('refuses to set opacity on a handle that was never shown', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await dispatch('select', { name: 'sele', expression: '(sel.atom.all)' });
+
+    // A selection component carries no geometry. Committing an empty update
+    // would report success and change nothing on screen, which is exactly how
+    // the recolouring bug behaved.
+    await expect(dispatch('opacity', { name: 'sele', opacity: 0.5 })).rejects.toThrow(
+      /no representation to make transparent/
+    );
+  });
+
+  it.each([1.5, -0.2, NaN, 50])('refuses an out-of-range opacity (%s)', async (value) => {
+    // Mol* clamps silently, so 50 would land as 1 — solid, the exact opposite
+    // of what someone passing 50 meant by it.
+    await expect(
+      createDispatcher(fakePlugin())('show', {
+        name: 'sele',
+        expression: '(sel.atom.all)',
+        representation: 'cartoon',
+        opacity: value,
+      })
+    ).rejects.toThrow(/Opacity must be between 0 and 1/);
+  });
+
+  it('refuses an out-of-range opacity on an existing representation too', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    await expect(dispatch('opacity', { name: 'sele', opacity: 50 })).rejects.toThrow(
+      /Opacity must be between 0 and 1/
+    );
   });
 });
 
