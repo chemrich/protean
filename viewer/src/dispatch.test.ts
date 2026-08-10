@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { colorParams, createDispatcher, lociOf, summarise } from './dispatch';
 
@@ -209,7 +209,9 @@ function fakePlugin() {
 
 describe('createDispatcher', () => {
   beforeEach(() => {
-    // jsdom reports 'visible', so render actions take the un-pumped path.
+    // jsdom reports 'visible', so render actions settle without spinning the
+    // turbo pump — and settling is a no-op here because fakePlugin has no
+    // canvas3d. The 'settling a visible tab' block below supplies one.
     window.__protean = { setTurbo: vi.fn() };
   });
 
@@ -453,5 +455,98 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+/** A visible tab still has to wait for the renderer.
+ *
+ * Mol* commits geometry on the render loop after the state transaction has
+ * already resolved, so an action that replies immediately is describing a
+ * scene that has not been built. It costs nothing when the answer is a count
+ * and everything when it is a picture: CI screenshotted a molecule that had
+ * loaded successfully and got a blank canvas, twice, on a runner slow enough
+ * for the gap to open.
+ */
+describe('settling a visible tab', () => {
+  beforeEach(() => {
+    // Explicitly visible. An earlier test mocks visibilityState to 'hidden'
+    // and vitest does not restore it between tests, so without this these
+    // tests take the *hidden* path — which has always settled, and would pass
+    // just as happily with the visible path deleted. They did, until this line.
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** A plugin whose commit loop drains one unit of work per frame. */
+  function withCommitLoop(queued: number) {
+    const plugin: any = fakePlugin();
+    const state = { queued, drawn: 0 };
+    plugin.canvas3d = {
+      commitQueueSize: {
+        get value() {
+          return state.queued;
+        },
+      },
+      reprCount: {
+        get value() {
+          return state.drawn;
+        },
+      },
+    };
+    const raf = vi.fn((cb: FrameRequestCallback) => {
+      if (state.queued > 0) {
+        state.queued--;
+        state.drawn++;
+      }
+      cb(0);
+      return 0;
+    });
+    vi.stubGlobal('requestAnimationFrame', raf);
+    return { plugin, state, raf };
+  }
+
+  it('does not return until the commit queue has drained', async () => {
+    const { plugin, state, raf } = withCommitLoop(5);
+    window.__protean = { setTurbo: vi.fn() };
+
+    await createDispatcher(plugin)('select', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+    });
+
+    expect(state.queued).toBe(0);
+    expect(raf.mock.calls.length).toBeGreaterThan(5);
+  });
+
+  it('lets the work start before reading stillness as completion', async () => {
+    // The specific bug: sampling an untouched queue finds 0 and calls it
+    // drained. Nothing is pending here at all, and it must *still* give the
+    // commit loop a few frames to queue the work the transaction implied.
+    const { plugin, raf } = withCommitLoop(0);
+    window.__protean = { setTurbo: vi.fn() };
+
+    await createDispatcher(plugin)('select', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+    });
+
+    // Three frames of stillness alone would be three calls. More than that
+    // means it waited before it started counting them.
+    expect(raf.mock.calls.length).toBeGreaterThan(3);
+  });
+
+  it('still skips the pump for actions that draw nothing', async () => {
+    const { plugin, raf } = withCommitLoop(5);
+    const setTurbo = vi.fn();
+    window.__protean = { setTurbo };
+
+    await createDispatcher(plugin)('list_selections', {});
+
+    expect(setTurbo).not.toHaveBeenCalled();
+    expect(raf).not.toHaveBeenCalled();
   });
 });

@@ -77,6 +77,10 @@ const PALETTES: Record<string, number[]> = {
 
 /** Must stay below the bridge's own request timeout so our error wins the race. */
 const HIDDEN_TIMEOUT_MS = 30_000;
+/** Settling budget for a visible tab, where rAF runs and the work is real but
+ * not instant. Shorter than the hidden budget: nothing is paused here, so a
+ * wait this long means the commit loop is stuck rather than merely slow. */
+const VISIBLE_TIMEOUT_MS = 10_000;
 const DEFAULT_RESIDUE_LIMIT = 200;
 /** Camera moves are tweened; this bounds the wait for one to land. */
 const CAMERA_TIMEOUT_MS = 3_000;
@@ -96,11 +100,20 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   const sample = () =>
     `${canvas3d.commitQueueSize?.value ?? 0}/${canvas3d.reprCount?.value ?? 0}`;
 
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
   const start = performance.now();
+
+  // Let the work start before stillness is read as completion. A state
+  // transaction resolves before canvas3d has queued the geometry it implies,
+  // so sampling immediately finds an untouched queue and calls it drained —
+  // the same trap settleCamera documents, and the reason CI captured a blank
+  // frame from a molecule that had definitely loaded.
+  for (let i = 0; i < 3; i++) await frame();
+
   let previous = sample();
   let quiet = 0;
   while (quiet < 3 && performance.now() - start < budgetMs) {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await frame();
     const current = sample();
     quiet = current === previous ? quiet + 1 : 0;
     previous = current;
@@ -145,7 +158,17 @@ async function withRenderPump<T>(
   action: string,
   run: () => Promise<T>
 ): Promise<T> {
-  if (!isHidden()) return run();
+  if (!isHidden()) {
+    // A visible tab still has to settle. Mol* commits geometry on the render
+    // loop *after* the state transaction resolves, so replying the moment the
+    // transaction lands describes a scene the renderer has not built yet.
+    // Harmless when the answer is a count; wrong when it is a picture — CI, on
+    // a runner slow enough for the gap to open, screenshotted a molecule that
+    // had loaded successfully and photographed an empty canvas.
+    const result = await run();
+    await settleRender(plugin, VISIBLE_TIMEOUT_MS);
+    return result;
+  }
 
   const setTurbo = window.__protean?.setTurbo;
   setTurbo?.(true);
