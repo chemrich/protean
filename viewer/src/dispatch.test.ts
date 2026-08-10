@@ -251,6 +251,19 @@ function withCanvas(plugin: any) {
   const canvasProps: any = {
     renderer: { backgroundColor: 0x000000 },
     transparentBackground: false,
+    // Mirrors a live canvas, read off one with CDP: occlusion and bloom start
+    // on with full parameter groups, everything else is off and — crucially —
+    // an off mapped static carries `params: {}`. That last detail is the whole
+    // reason effects have to send a complete group when switching on.
+    postprocessing: {
+      occlusion: { name: 'on', params: { samples: 32, radius: 5, bias: 0.8 } },
+      shadow: { name: 'off', params: {} },
+      outline: { name: 'off', params: {} },
+      dof: { name: 'off', params: {} },
+      sharpening: { name: 'off', params: {} },
+      bloom: { name: 'on', params: { strength: 1, mode: 'emissive' } },
+      background: { variant: { name: 'off', params: {} } },
+    },
   };
   const screenshotValues: any = { transparent: false, format: { name: 'png' } };
   plugin.canvas3d = {
@@ -259,6 +272,9 @@ function withCanvas(plugin: any) {
       if (props.renderer) Object.assign(canvasProps.renderer, props.renderer);
       if (props.transparentBackground !== undefined) {
         canvasProps.transparentBackground = props.transparentBackground;
+      }
+      if (props.postprocessing) {
+        Object.assign(canvasProps.postprocessing, props.postprocessing);
       }
     }),
     // Settled instantly: these tests are about props, not about timing.
@@ -372,6 +388,8 @@ describe('createDispatcher', () => {
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
+      shading_styles: ['cel', 'flat', 'normal', 'xray', 'xray-inverted'],
+      gradients: ['off', 'horizontal', 'radial'],
     });
   });
 
@@ -529,6 +547,179 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('effects, shading and gradients', () => {
+  const postOf = (plugin: any) =>
+    plugin.canvas3d.setProps.mock.calls.at(-1)[0].postprocessing;
+
+  it('enables an effect with a complete parameter group', async () => {
+    // The load-bearing detail: a Mol* MappedStatic that is off carries
+    // `params: {}` (verified against a live canvas), so flipping only the name
+    // would switch an effect on with no parameters at all.
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('effects', { outline: true });
+
+    expect(postOf(plugin).outline.name).toBe('on');
+    expect(postOf(plugin).outline.params).toMatchObject({
+      scale: 1,
+      threshold: 0.33,
+      color: 0x000000,
+    });
+  });
+
+  it('leaves unmentioned effects alone so calls compose', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('effects', { outline: true });
+
+    expect(postOf(plugin)).not.toHaveProperty('bloom');
+    expect(postOf(plugin)).not.toHaveProperty('occlusion');
+  });
+
+  it('turns an effect off with an empty group', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('effects', { occlusion: false });
+
+    expect(postOf(plugin).occlusion).toEqual({ name: 'off', params: {} });
+  });
+
+  it('reports the canvas state rather than the arguments', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const result: any = await createDispatcher(plugin)('effects', {
+      outline: true,
+      outline_color: '#ff0000',
+    });
+
+    expect(result).toMatchObject({ outline: true, outline_color: '#ff0000' });
+    // Off effects report their colour as null rather than a stale value.
+    expect(result.shadow).toBe(false);
+  });
+
+  it('refuses to tune an outline that is switched off', async () => {
+    // Mol* would accept the params and draw nothing with them, so the caller
+    // would believe a colour took effect that never will.
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('effects', { outline_color: '#ff0000' })
+    ).rejects.toThrow(/Set outline=true/);
+  });
+
+  it('refuses a call that changes nothing', async () => {
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('effects', {})
+    ).rejects.toThrow(/at least one effect/);
+  });
+
+  it('applies a shading style to an existing representation', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+
+    const result: any = await dispatch('shading', { name: 'sele', style: 'xray' });
+
+    const params = plugin.componentRefs[0].representations[0].cell.transform.params;
+    expect(params.type.params).toMatchObject({ xrayShaded: true, celShaded: false });
+    expect(result).toMatchObject({ style: 'xray', representations: 1 });
+  });
+
+  it("carries xray-inverted's string value rather than coercing it to a boolean", async () => {
+    // Mol* types xrayShaded as `boolean | 'inverted'`. Sending `true` here
+    // would silently give the ordinary ghost look instead.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    await dispatch('shading', { name: 'sele', style: 'xray-inverted' });
+
+    const params = plugin.componentRefs[0].representations[0].cell.transform.params;
+    expect(params.type.params.xrayShaded).toBe('inverted');
+  });
+
+  it('sets cel steps on the renderer, since they are global', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    await dispatch('shading', { name: 'sele', style: 'cel', cel_steps: 4 });
+
+    expect(plugin.canvas3d.props.renderer.celSteps).toBe(4);
+  });
+
+  it('refuses shading a handle that was never shown', async () => {
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    await dispatch('select', { name: 'sele', expression: '(sel.atom.all)' });
+    await expect(dispatch('shading', { name: 'sele', style: 'cel' })).rejects.toThrow(
+      /no representation to shade/
+    );
+  });
+
+  it('refuses an unknown shading style and lists the real ones', async () => {
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    await expect(dispatch('shading', { name: 'sele', style: 'toon' })).rejects.toThrow(
+      /Unknown shading style 'toon'.*cel, flat, normal/s
+    );
+  });
+
+  it('maps a radial gradient onto the stop names Mol* expects', async () => {
+    // Mol* names the stops differently per variant — center/edge here,
+    // top/bottom for the horizontal one. Sending the wrong pair leaves the
+    // gradient at its defaults and looks like the colours were ignored.
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('background', {
+      gradient: 'radial',
+      gradient_from: '#000000',
+      gradient_to: '#ffffff',
+    });
+
+    const variant = postOf(plugin).background.variant;
+    expect(variant.name).toBe('radialGradient');
+    expect(variant.params).toMatchObject({ centerColor: 0x000000, edgeColor: 0xffffff });
+  });
+
+  it('maps a horizontal gradient onto top and bottom', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('background', {
+      gradient: 'horizontal',
+      gradient_from: '#112233',
+      gradient_to: '#445566',
+    });
+
+    const variant = postOf(plugin).background.variant;
+    expect(variant.name).toBe('horizontalGradient');
+    expect(variant.params).toMatchObject({ topColor: 0x112233, bottomColor: 0x445566 });
+  });
+
+  it('turns a gradient back off', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('background', { gradient: 'off' });
+    expect(postOf(plugin).background.variant).toEqual({ name: 'off', params: {} });
+  });
+
+  it('refuses gradient colours with no gradient to put them on', async () => {
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('background', { gradient_from: '#000000' })
+    ).rejects.toThrow(/Pass gradient=/);
+  });
+
+  it('refuses an unknown gradient', async () => {
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('background', { gradient: 'diagonal' })
+    ).rejects.toThrow(/Unknown gradient 'diagonal'/);
   });
 });
 

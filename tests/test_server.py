@@ -27,6 +27,7 @@ from protean_mcp.server import (
     color_by_potential,
     combine,
     conservation,
+    effects,
     electrostatics,
     fetch_structure,
     interface,
@@ -37,6 +38,7 @@ from protean_mcp.server import (
     save_session,
     screenshot,
     select,
+    shading,
     show,
 )
 
@@ -880,7 +882,9 @@ def test_renumbering_makes_ids_unique_and_one_based():
 
 async def test_background_refuses_a_call_that_would_change_nothing():
     """Both arguments omitted is a no-op, and a no-op reporting success is a lie."""
-    with pytest.raises(ViewerError, match="at least one of color or transparent"):
+    with pytest.raises(
+        ViewerError, match="at least one of color, transparent or gradient"
+    ):
         await background()
 
 
@@ -977,3 +981,84 @@ async def test_lighting_passes_its_knobs_through(wired_bridge):
     await task
 
     assert sent == {"rig": "ring", "intensity": 1.5, "ambient": 0.2, "exposure": 1.2}
+
+
+# -- effects, shading and gradients --------------------------------------------
+
+
+async def test_effects_refuses_a_call_that_would_change_nothing():
+    with pytest.raises(ViewerError, match="at least one effect"):
+        await effects()
+
+
+async def test_effects_sends_only_what_was_asked_for(wired_bridge):
+    """Effects compose across calls, so an unmentioned one must not travel.
+
+    Sending `bloom: false` on an outline-only call would switch off an effect
+    the caller never mentioned.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["effects"] = lambda args: sent.update(args) or {"outline": True}
+    task = wired_bridge.serve(1)
+    await effects(outline=True)
+    await task
+
+    assert sent == {"outline": True}
+
+
+async def test_effects_carries_a_false_through_rather_than_dropping_it(wired_bridge):
+    """False is a value here, not an omission — the guard against `if value:`."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["effects"] = lambda args: sent.update(args) or {"bloom": False}
+    task = wired_bridge.serve(1)
+    await effects(bloom=False)
+    await task
+
+    assert sent == {"bloom": False}
+
+
+async def test_shading_passes_the_style_and_handle(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["shading"] = lambda args: (
+        sent.update(args) or {"style": args["style"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await shading("xray-inverted", name="surf")
+    await task
+
+    assert sent == {"name": "surf", "style": "xray-inverted"}
+
+
+async def test_shading_carries_cel_steps_when_given(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["shading"] = lambda args: sent.update(args) or {"style": "cel"}
+    task = wired_bridge.serve(1)
+    await shading("cel", cel_steps=4)
+    await task
+
+    assert sent["cel_steps"] == 4
+
+
+async def test_background_gradient_colours_need_a_gradient_to_sit_on():
+    with pytest.raises(ViewerError, match="Pass gradient="):
+        await background(gradient_from="#ff0000")
+
+
+async def test_background_sends_the_gradient_and_its_stops(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"gradient": "radialGradient"}
+    )
+    task = wired_bridge.serve(1)
+    out = await background(
+        gradient="radial", gradient_from="#000000", gradient_to="#ffffff"
+    )
+    await task
+
+    assert sent == {
+        "gradient": "radial",
+        "gradient_from": "#000000",
+        "gradient_to": "#ffffff",
+    }
+    # Mol*'s own variant name comes back, so a mapping slip is visible here.
+    assert out["gradient"] == "radialGradient"

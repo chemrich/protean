@@ -18,6 +18,7 @@ from PIL import Image
 
 from .pixels import (
     background,
+    close,
     color_fraction,
     corners,
     coverage,
@@ -315,3 +316,12 @@ def test_difference_refuses_to_compare_different_sizes():
 def test_mean_distance_is_zero_on_an_empty_frame():
     """No drawn pixels must not become a division by zero."""
     assert mean_distance_from(decode(png(solid(10, 10, BLACK))), BLACK) == 0.0
+
+
+def test_close_allows_backend_noise_but_not_a_different_colour():
+    """The comparison two gradient tests should have used in the first place."""
+    assert close((255, 0, 1, 255), (255, 1, 1, 255))
+    assert close(RED, RED)
+    assert not close(RED, (255, 40, 0, 255))
+    # Alpha counts too: an opaque and a transparent red are not the same colour.
+    assert not close(RED, (255, 0, 0, 0))
