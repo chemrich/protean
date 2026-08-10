@@ -997,3 +997,55 @@ async def test_the_molecule_survives_an_image_background(imaged):
 
 async def test_turning_the_background_off_restores_the_plain_canvas(imaged):
     assert difference(imaged["plain"], imaged["off"]) == 0.0
+
+
+# -- turntable -----------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+async def turned(tmp_path_factory) -> dict[str, Any]:
+    """A short turn, plus the view before and after the whole sequence."""
+    out = tmp_path_factory.mktemp("turntable")
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        before = await _shot(session)
+        result = await server_mod.turntable(str(out / "turn"), frames=6, width=400)
+        after = await _shot(session)
+    return {"result": result, "before": before, "after": after}
+
+
+async def test_a_turntable_writes_every_frame(turned):
+    frames = sorted(Path(turned["result"]["directory"]).glob("frame_*.png"))
+    assert len(frames) == 6
+    assert turned["result"]["step_degrees"] == 60.0
+    assert all(frame.stat().st_size > 0 for frame in frames)
+
+
+async def test_each_frame_sees_the_molecule_from_somewhere_new(turned):
+    """The camera actually moved, rather than six captures of one view.
+
+    Compared against its immediate predecessor: a rotation this large repaints
+    most of the molecule, and identical neighbours would mean the orbit never
+    reached the camera.
+    """
+    frames = sorted(Path(turned["result"]["directory"]).glob("frame_*.png"))
+    renders = [decode(frame.read_bytes()) for frame in frames]
+    for index in range(1, len(renders)):
+        assert difference(renders[index - 1], renders[index]) > 0.005
+
+
+async def test_every_frame_still_draws_the_molecule(turned):
+    """A turn that rotated the structure out of frame would pass the test above."""
+    frames = sorted(Path(turned["result"]["directory"]).glob("frame_*.png"))
+    for frame in frames:
+        assert coverage(decode(frame.read_bytes())) > 0.005
+
+
+async def test_a_full_turn_comes_back_exactly(turned):
+    """The property that makes a sequence loop, and that drift would break.
+
+    Six steps of sixty degrees, then a final sixty to close it: the view has to
+    land back where it started, bit for bit. Asserting equality rather than
+    similarity is what makes accumulated rounding visible — it would show up
+    here long before it showed up as a jump at the seam of a movie.
+    """
+    assert difference(turned["before"], turned["after"]) == 0.0

@@ -47,6 +47,8 @@ from protean_mcp.server import (
     shading,
     show,
     snapshot,
+    spin,
+    turntable,
 )
 
 # 1x1 transparent PNG
@@ -1543,3 +1545,135 @@ async def test_a_truncated_image_is_refused(tmp_path):
 
     with pytest.raises(ViewerError, match="not an image Pillow can read"):
         await background(image=str(truncated))
+
+
+# -- turntable and spin --------------------------------------------------------
+
+
+def _frame_handlers(viewer, calls: list[tuple[str, dict[str, Any]]], size=(8, 6)) -> None:
+    def on_orbit(args):
+        calls.append(("orbit", args))
+        return {"degrees": args["degrees"]}
+
+    def on_snapshot(args):
+        calls.append(("snapshot", args))
+        buffer = io.BytesIO()
+        PILImage.new("RGBA", size, (5, 6, 7, 255)).save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {"data_uri": f"data:image/png;base64,{encoded}", "transparent": False}
+
+    viewer.handlers["orbit"] = on_orbit
+    viewer.handlers["snapshot"] = on_snapshot
+
+
+async def test_a_turntable_writes_numbered_frames(wired_bridge, tmp_path):
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    out = await turntable(str(tmp_path / "turn"), frames=4, width=320)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    written = sorted(Path(out["directory"]).glob("frame_*.png"))
+    assert [f.name for f in written] == [
+        "frame_0000.png",
+        "frame_0001.png",
+        "frame_0002.png",
+        "frame_0003.png",
+    ]
+    assert out["frames"] == 4
+    assert out["step_degrees"] == 90.0
+
+
+async def test_the_first_frame_is_captured_before_any_rotation(wired_bridge, tmp_path):
+    """Otherwise the sequence starts one step past where the camera was left."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    await turntable(str(tmp_path / "turn"), frames=3)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert calls[0][0] == "snapshot"
+
+
+async def test_a_turntable_returns_the_camera_to_where_it_started(wired_bridge, tmp_path):
+    """A sequence that leaves the camera turned is a trap for whatever runs next.
+
+    Three frames over 360 degrees means steps of 120: two rotations during the
+    sequence and a final 120 to close the loop.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    await turntable(str(tmp_path / "turn"), frames=3, degrees=360.0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    turns = [args["degrees"] for action, args in calls if action == "orbit"]
+    assert turns == pytest.approx([120.0, 120.0, 120.0])
+    assert sum(turns) == pytest.approx(360.0)
+
+
+async def test_a_half_turn_also_comes_back(wired_bridge, tmp_path):
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    await turntable(str(tmp_path / "turn"), frames=4, degrees=180.0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    turns = [args["degrees"] for action, args in calls if action == "orbit"]
+    assert sum(turns) == pytest.approx(180.0)
+
+
+async def test_a_turntable_refuses_a_sequence_that_is_not_one():
+    with pytest.raises(ViewerError, match="at least 2 frames"):
+        await turntable("/tmp/turn", frames=1)
+
+
+async def test_a_turntable_refuses_a_runaway_frame_count():
+    with pytest.raises(ViewerError, match="beyond the 720"):
+        await turntable("/tmp/turn", frames=5000)
+
+
+async def test_a_turntable_refuses_an_incomplete_frame(wired_bridge, tmp_path):
+    """The same guard snapshot() makes, per frame.
+
+    A sequence is where this matters most: one bad frame in thirty-six is a
+    flicker nobody notices until the movie is assembled.
+    """
+
+    def on_snapshot(args):
+        buffer = io.BytesIO()
+        # A frame with a hole in it, as a renderer out of room produces.
+        image = PILImage.new("RGBA", (8, 6), (5, 6, 7, 255))
+        image.putpixel((0, 0), (0, 0, 0, 0))
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {"data_uri": f"data:image/png;base64,{encoded}", "transparent": False}
+
+    wired_bridge.handlers["orbit"] = lambda args: {"degrees": args["degrees"]}
+    wired_bridge.handlers["snapshot"] = on_snapshot
+    task = wired_bridge.serve(40)
+    with pytest.raises(ViewerError, match="Frame 0 came back incomplete"):
+        await turntable(str(tmp_path / "turn"), frames=3)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_spin_passes_its_mode_through(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["spin"] = lambda args: (
+        sent.update(args) or {"mode": args["mode"]}
+    )
+    task = wired_bridge.serve(1)
+    await spin(mode="rock", angle=25)
+    await task
+
+    assert sent == {"mode": "rock", "angle": 25}

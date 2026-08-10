@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { colorParams, createDispatcher, lociOf, summarise } from './dispatch';
+import { colorParams, createDispatcher, lociOf, rotateAbout, summarise } from './dispatch';
 
 /** A structure shaped like Mol*'s, with the table layout the real one uses:
  *  comp_id on the atom table, seq/ins_code on the residue table. */
@@ -560,6 +560,117 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('rotateAbout', () => {
+  const close = (a: number[], b: number[]) =>
+    a.every((value, i) => Math.abs(value - b[i]) < 1e-9);
+
+  it('is the identity for a full turn', () => {
+    // The property the whole turntable rests on: 36 steps of 10 degrees have
+    // to come home, or a looping sequence jumps at the seam.
+    let v = [3, 0, 4];
+    for (let i = 0; i < 36; i++) v = rotateAbout(v, [0, 1, 0], (10 * Math.PI) / 180);
+    expect(close(v, [3, 0, 4])).toBe(true);
+  });
+
+  it('rotates a quarter turn about the up axis', () => {
+    const turned = rotateAbout([1, 0, 0], [0, 1, 0], Math.PI / 2);
+    expect(close(turned.map((n) => Math.round(n * 1e9) / 1e9), [0, 0, -1])).toBe(true);
+  });
+
+  it('leaves a vector along the axis untouched', () => {
+    expect(close(rotateAbout([0, 5, 0], [0, 1, 0], 1.234), [0, 5, 0])).toBe(true);
+  });
+
+  it('preserves length', () => {
+    const turned = rotateAbout([1, 2, 3], [4, 5, 6], 0.7);
+    expect(Math.hypot(...turned)).toBeCloseTo(Math.hypot(1, 2, 3), 12);
+  });
+
+  it('normalises the axis rather than trusting it', () => {
+    const unit = rotateAbout([1, 0, 0], [0, 1, 0], 0.5);
+    const long = rotateAbout([1, 0, 0], [0, 9, 0], 0.5);
+    expect(close(unit, long)).toBe(true);
+  });
+});
+
+describe('orbit and spin', () => {
+  function orbiting(plugin: any) {
+    withCanvas(plugin);
+    const snapshot: any = { position: [0, 0, 10], target: [0, 0, 0], up: [0, 1, 0] };
+    plugin.canvas3d.camera = {
+      getSnapshot: () => ({ ...snapshot }),
+      setState: vi.fn((next: any) => Object.assign(snapshot, next)),
+      state: snapshot,
+    };
+    plugin.canvas3d.props.trackball = { animate: { name: 'off', params: {} } };
+    const setProps = plugin.canvas3d.setProps;
+    plugin.canvas3d.setProps = vi.fn((props: any) => {
+      setProps(props);
+      if (props.trackball) Object.assign(plugin.canvas3d.props.trackball, props.trackball);
+    });
+    return { plugin, snapshot };
+  }
+
+  it('swings the camera around the target', async () => {
+    const { plugin, snapshot } = orbiting(fakePlugin());
+    await createDispatcher(plugin)('orbit', { degrees: 90 });
+
+    // Started at +Z looking at the origin; a quarter turn about +Y lands on +X.
+    expect(snapshot.position[0]).toBeCloseTo(10, 6);
+    expect(snapshot.position[2]).toBeCloseTo(0, 6);
+    expect(snapshot.target).toEqual([0, 0, 0]);
+  });
+
+  it('keeps the camera the same distance away', async () => {
+    const { plugin, snapshot } = orbiting(fakePlugin());
+    await createDispatcher(plugin)('orbit', { degrees: 37 });
+    expect(Math.hypot(...snapshot.position)).toBeCloseTo(10, 6);
+  });
+
+  it('moves without a tween, so a frame grab gets where it was put', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    await createDispatcher(plugin)('orbit', { degrees: 45 });
+    expect(plugin.canvas3d.camera.setState.mock.calls.at(-1)[1]).toBe(0);
+  });
+
+  it('refuses a degree count that is not a number', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    await expect(
+      createDispatcher(plugin)('orbit', { degrees: Number.NaN })
+    ).rejects.toThrow(/number of degrees/);
+  });
+
+  it('sets a live spin and reports what the canvas took', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    const result: any = await createDispatcher(plugin)('spin', { mode: 'spin', speed: 2 });
+    expect(plugin.canvas3d.props.trackball.animate).toMatchObject({
+      name: 'spin',
+      params: { speed: 2 },
+    });
+    expect(result.mode).toBe('spin');
+  });
+
+  it('gives rock its own defaults and an angle', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    const result: any = await createDispatcher(plugin)('spin', { mode: 'rock' });
+    expect(result.mode).toBe('rock');
+    expect(result.angle).toBe(10);
+  });
+
+  it('stops with an empty parameter group', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    await createDispatcher(plugin)('spin', { mode: 'off' });
+    expect(plugin.canvas3d.props.trackball.animate).toEqual({ name: 'off', params: {} });
+  });
+
+  it('refuses an unknown spin mode', async () => {
+    const { plugin } = orbiting(fakePlugin());
+    await expect(createDispatcher(plugin)('spin', { mode: 'tumble' })).rejects.toThrow(
+      /Unknown spin mode 'tumble'/
+    );
   });
 });
 
