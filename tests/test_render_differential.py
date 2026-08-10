@@ -26,6 +26,7 @@ from .browser import BROWSER_MARKS, viewer_session
 from .pixels import (
     Render,
     background,
+    close,
     color_fraction,
     corners,
     coverage,
@@ -393,7 +394,10 @@ async def test_a_horizontal_gradient_runs_from_the_first_colour_to_the_second(
     found = corners(styled_effects["horizontal"])
     assert found["top-left"][0] > 200 and found["top-left"][2] < 60  # red on top
     assert found["bottom-left"][2] > 200 and found["bottom-left"][0] < 60  # blue below
-    assert found["top-left"] == found["top-right"]
+    # Within tolerance, not bit-exact: these two corners came back one bit
+    # apart in green under CI's SwiftShader while matching exactly locally.
+    assert close(found["top-left"], found["top-right"])
+    assert not close(found["top-left"], found["bottom-left"])
 
 
 async def test_a_radial_gradient_is_symmetric_about_the_centre(styled_effects):
@@ -404,10 +408,15 @@ async def test_a_radial_gradient_is_symmetric_about_the_centre(styled_effects):
     turn halfway.
     """
     found = corners(styled_effects["radial"])
-    assert len({tuple(c) for c in found.values()}) <= 2  # allows 1-bit noise
+    first = found["top-left"]
+    assert all(close(first, c) for c in found.values())
+    # A blend of the two stops actually asked for, not Mol*'s pale grey
+    # defaults: red and blue both present, green absent. Without the green
+    # bound this passes on a grey gradient, which is what a stop name mapped to
+    # the wrong variant leaves behind.
     blend = background(styled_effects["radial"])
-    assert 0 < blend[0] < 255
-    assert 0 < blend[2] < 255
+    assert blend[0] > 20 and blend[2] > 20
+    assert blend[1] < 60
 
 
 async def test_turning_the_gradient_off_restores_the_flat_canvas(styled_effects):

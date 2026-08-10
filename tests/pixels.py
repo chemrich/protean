@@ -173,6 +173,19 @@ def color_fraction(render: Render, color: RGBA, tolerance: int = TOLERANCE) -> f
     return float((difference.max(axis=2) <= tolerance).mean())
 
 
+def close(a: RGBA, b: RGBA, tolerance: int = TOLERANCE) -> bool:
+    """Are two colours the same, allowing for the backend that drew them?
+
+    Exists because comparing two RGBA tuples with `==` is the one place this
+    harness invites a bit-exact assertion, and every other function here takes
+    a tolerance for a reason. Two corners of a gradient came back as
+    (255, 0, 1) and (255, 1, 1) under CI's SwiftShader while being identical on
+    a real GPU — a green channel one bit apart, and a test that passed locally
+    and failed in CI.
+    """
+    return all(abs(int(x) - int(y)) <= tolerance for x, y in zip(a, b, strict=True))
+
+
 def difference(a: Render, b: Render, tolerance: int = TOLERANCE) -> float:
     """Fraction of pixels that differ between two renders of the same scene.
 
