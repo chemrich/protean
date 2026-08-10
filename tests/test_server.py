@@ -33,6 +33,7 @@ from protean_mcp.server import (
     interface,
     lighting,
     load_session,
+    material,
     mcp,
     opacity,
     save_session,
@@ -1062,3 +1063,28 @@ async def test_background_sends_the_gradient_and_its_stops(wired_bridge):
     }
     # Mol*'s own variant name comes back, so a mapping slip is visible here.
     assert out["gradient"] == "radialGradient"
+
+
+async def test_material_sends_the_finish_and_omits_unmentioned_knobs(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": args["finish"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await material(finish="chrome", name="surf")
+    await task
+
+    assert sent == {"name": "surf", "finish": "chrome"}
+
+
+async def test_material_carries_an_emissive_of_zero_rather_than_dropping_it(wired_bridge):
+    """0.0 is a value — it is how you stop something glowing — not an omission."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": "matte"}
+    )
+    task = wired_bridge.serve(1)
+    await material(emissive=0.0)
+    await task
+
+    assert sent["emissive"] == 0.0

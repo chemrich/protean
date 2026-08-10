@@ -66,6 +66,17 @@ interface EffectsArgs {
   sharpening?: boolean;
 }
 
+interface MaterialArgs {
+  name: string;
+  /** A key of MATERIAL_FINISHES. */
+  finish: string;
+  /** Each 0-1, overriding the finish where given. */
+  metalness?: number;
+  roughness?: number;
+  /** Self-illumination. Bloom's default mode only glows where this is > 0. */
+  emissive?: number;
+}
+
 interface ShadingArgs {
   name: string;
   /** A key of SHADING_STYLES. */
@@ -243,6 +254,38 @@ const SHADING_STYLES: Record<string, Record<string, unknown>> = {
   'xray-inverted': { celShaded: false, xrayShaded: 'inverted', ignoreLight: false },
   // Unlit flat colour, for a diagram rather than a picture of an object.
   flat: { celShaded: false, xrayShaded: false, ignoreLight: true },
+};
+
+/** Named surface finishes, as PBR material values.
+ *
+ * Two departures from the obvious, both forced by measuring what actually
+ * changes on screen rather than by what the parameters are called.
+ *
+ * **Mol*'s own presets are not adopted.** `Material.getParam()` ships Matte,
+ * Plastic, Glossy, Metallic — with Plastic at roughness 0.2 and Glossy at 0.6,
+ * so their "glossy" is the duller of the two. Roughness runs 0 (mirror) to 1
+ * (fully diffuse), so a model choosing `glossy` for a highlight would get the
+ * opposite. These names run monotonically from dull to sharp, and avoid reusing
+ * `plastic` with different numbers than Mol* attaches to it.
+ *
+ * **The non-metals carry a little metalness anyway.** The shader computes
+ * `specularColor = mix(vec3(0.04), color.rgb, metalness)`, so a true dielectric
+ * has a 4% specular term and roughness barely moves it: measured on 1UBQ,
+ * roughness 1.0 to 0.2 at metalness 0 repaints 0.0017 of the frame — nothing.
+ * At metalness 0.25 the same sweep separates cleanly. A named finish that does
+ * not change the picture has no business being an enum value, so `satin` and
+ * `glossy` are figure presets tuned to be visibly distinct rather than
+ * physically accurate BRDF parameters. Anyone wanting the physical values can
+ * pass metalness and roughness explicitly.
+ *
+ * `matte` is Mol*'s default material, so it is also the way back.
+ */
+const MATERIAL_FINISHES: Record<string, { metalness: number; roughness: number }> = {
+  matte: { metalness: 0, roughness: 1.0 },
+  satin: { metalness: 0.15, roughness: 0.6 },
+  glossy: { metalness: 0.3, roughness: 0.15 },
+  metallic: { metalness: 1.0, roughness: 0.6 },
+  chrome: { metalness: 1.0, roughness: 0.1 },
 };
 
 /** Gradient background variants, keyed by the name we expose.
@@ -792,6 +835,71 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    material: {
+      render: true,
+      async run({ name, finish, metalness, roughness, emissive }: MaterialArgs) {
+        const base = MATERIAL_FINISHES[finish];
+        if (!base) {
+          throw new Error(
+            `Unknown finish '${finish}'. ` +
+              `Available: ${Object.keys(MATERIAL_FINISHES).sort().join(', ')}`
+          );
+        }
+        const overrides: Array<[string, number | undefined]> = [
+          ['metalness', metalness],
+          ['roughness', roughness],
+        ];
+        // Mol*'s material group also carries bumpiness. It is not exposed —
+        // it does nothing unless bumpFrequency is above 0, and that defaults to
+        // 0 — but the group is sent complete so nothing is left undefined.
+        const material: Record<string, number> = { ...base, bumpiness: 0 };
+        for (const [key, value] of overrides) {
+          if (value === undefined) continue;
+          checkFraction(key, value);
+          material[key] = value;
+        }
+        if (emissive !== undefined) checkFraction('emissive', emissive);
+
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy`);
+        }
+
+        const update = plugin.state.data.build();
+        let changed = 0;
+        for (const c of target) {
+          for (const repr of c.representations ?? []) {
+            update.to(repr.cell).update((old: any) => {
+              old.type.params.material = { ...material };
+              if (emissive !== undefined) old.type.params.emissive = emissive;
+            });
+            changed++;
+          }
+        }
+        if (!changed) {
+          throw new Error(
+            `Selection '${name}' has no representation to give a material to. ` +
+              `Call show() on it first.`
+          );
+        }
+        await update.commit();
+
+        const bloom = plugin.canvas3d?.props?.postprocessing?.bloom;
+        return {
+          name,
+          finish,
+          representations: changed,
+          ...material,
+          ...(emissive !== undefined ? { emissive } : {}),
+          // Bloom defaults to mode 'emissive', so it draws nothing at all until
+          // something has emissive above zero. Saying so here is the difference
+          // between "bloom is broken" and "bloom has nothing to glow".
+          bloom_will_show: emissive !== undefined && emissive > 0 && bloom?.name === 'on',
+        };
+      },
+    },
+
     shading: {
       render: true,
       async run({ name, style, cel_steps }: ShadingArgs) {
@@ -1081,6 +1189,7 @@ export function createDispatcher(plugin: any): Handler {
           lighting_rigs: Object.keys(LIGHTING_RIGS).sort(),
           shading_styles: Object.keys(SHADING_STYLES).sort(),
           gradients: ['off', ...Object.keys(GRADIENTS).sort()],
+          material_finishes: Object.keys(MATERIAL_FINISHES).sort(),
         };
       },
     },
@@ -1334,7 +1443,12 @@ export function effectState(canvas3d: any): Record<string, unknown> {
 /** Opacity is a fraction. Mol* clamps silently, so 50 would become 1 — solid,
  * the exact opposite of what someone typing "50" meant. */
 export function checkOpacity(opacity: number): void {
-  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
-    throw new Error(`Opacity must be between 0 and 1, got ${opacity}`);
+  checkFraction('Opacity', opacity);
+}
+
+/** Every PBR value here runs 0 to 1, and Mol* clamps all of them silently. */
+export function checkFraction(what: string, value: number): void {
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${what} must be between 0 and 1, got ${value}`);
   }
 }
