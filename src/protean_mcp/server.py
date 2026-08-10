@@ -92,6 +92,10 @@ _SNAPSHOT_FORMATS: dict[str, str] = {"png": ".png", "tiff": ".tiff", "jpeg": ".j
 # figure needs nowhere near it: 183 mm at 1200 dpi is 56 megapixels.
 _MAX_SNAPSHOT_PIXELS = 120_000_000
 
+# The viewer's reserved handle for whatever the load preset drew, which is what
+# "the whole scene" means to the display tools.
+_WHOLE_SCENE = "auto"
+
 _DOMAIN_BOUNDS = 2
 # The uncertainty theme ramps over a fixed [0, 100] domain.
 _B_FACTOR_FULL = 100.0
@@ -1011,7 +1015,140 @@ async def capabilities() -> dict[str, Any]:
     Read from Mol*'s live registries, so the list matches the bundled version
     rather than a hardcoded guess.
     """
-    return await _call("capabilities", {})
+    reported = await _call("capabilities", {})
+    # Presets are composed here rather than in the viewer, so the viewer cannot
+    # report them. They belong in the same answer as everything else a caller
+    # can choose from.
+    reported["presets"] = sorted(_PRESETS)
+    return reported
+
+
+# -- presets -------------------------------------------------------------------
+
+
+async def _preset_publication_cartoon(target: str) -> list[str]:
+    """A clean figure: white ground, soft directional light, crevices readable."""
+    await background(color="#ffffff", gradient="off")
+    await lighting(rig="three-point")
+    await effects(occlusion=True, outline=False, bloom=False, depth_of_field=False)
+    await shading(style="normal", name=target)
+    await material(finish="matte", name=target)
+    return [
+        'background(color="#ffffff")',
+        'lighting(rig="three-point")',
+        "effects(occlusion=True, outline=False, bloom=False)",
+        f'shading(style="normal", name="{target}")',
+        f'material(finish="matte", name="{target}")',
+    ]
+
+
+async def _preset_illustrative(target: str) -> list[str]:
+    """The textbook look: flat banded colour with a drawn edge."""
+    await background(color="#ffffff", gradient="off")
+    await lighting(rig="flat")
+    await effects(outline=True, outline_color="#000000", occlusion=False, bloom=False)
+    await shading(style="cel", name=target, cel_steps=4)
+    return [
+        'background(color="#ffffff")',
+        'lighting(rig="flat")',
+        'effects(outline=True, outline_color="#000000", occlusion=False)',
+        f'shading(style="cel", cel_steps=4, name="{target}")',
+    ]
+
+
+async def _preset_ghost_surface(target: str) -> list[str]:
+    """A see-through surface that leaves what is inside it visible.
+
+    The scoping is the point. A surface shown under the *same* handle would
+    replace whatever that handle was already drawing — the component is rebuilt,
+    not layered — so the cartoon you wanted to see inside the ghost would
+    silently disappear. The surface gets its own handle over the same atoms.
+    """
+    array = _require_structure()
+    if target == _WHOLE_SCENE:
+        indices = np.arange(array.array_length())
+        origin = "preset(ghost-surface) over everything"
+    else:
+        try:
+            indices = _handles.get(target).indices
+        except HandleError as exc:
+            raise ViewerError(str(exc)) from exc
+        origin = f"preset(ghost-surface) over {target}"
+
+    ghost = f"{target}_ghost"
+    _register(ghost, indices, origin)
+    await show(representation="molecular-surface", handle=ghost, opacity=0.25)
+    await shading(style="xray", name=ghost)
+    await material(finish="glossy", name=ghost)
+    return [
+        f'show(representation="molecular-surface", handle="{ghost}", opacity=0.25)',
+        f'shading(style="xray", name="{ghost}")',
+        f'material(finish="glossy", name="{ghost}")',
+    ]
+
+
+async def _preset_active_site(target: str) -> list[str]:
+    """Sticks and labels on the site, the rest faded back out of the way."""
+    if target == _WHOLE_SCENE:
+        raise ViewerError(
+            "active-site needs a handle saying which site — from select(), "
+            "interface(), or near()"
+        )
+    await opacity(0.2, name=_WHOLE_SCENE)
+    await show(representation="ball-and-stick", handle=target, color="element-symbol")
+    await label(name=target, level="residue")
+    await focus(name=target)
+    await lighting(rig="studio")
+    await effects(occlusion=True, outline=False)
+    return [
+        f'opacity(0.2, name="{_WHOLE_SCENE}")',
+        f'show(representation="ball-and-stick", handle="{target}")',
+        f'label(name="{target}")',
+        f'focus(name="{target}")',
+        'lighting(rig="studio")',
+    ]
+
+
+_PRESETS = {
+    "publication-cartoon": _preset_publication_cartoon,
+    "illustrative": _preset_illustrative,
+    "ghost-surface": _preset_ghost_surface,
+    "active-site": _preset_active_site,
+}
+
+
+@mcp.tool()
+async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
+    """Apply a named recipe: lighting, effects, shading and materials at once.
+
+    A preset is a composition of the other display tools, so nothing here is
+    reachable only through it — the reply lists the calls it made, and any of
+    them can be adjusted afterwards or run by hand instead.
+
+    name: one of — capabilities() reports the live list.
+
+      publication-cartoon  White ground, three-point light, ambient occlusion
+                           on. The default figure.
+      illustrative         Flat cel shading with a black outline. The textbook
+                           look; pairs well with a simple cartoon.
+      ghost-surface        A see-through surface over the selection, leaving
+                           whatever is inside it visible. Drawn under its own
+                           handle so it layers over the existing representation
+                           rather than replacing it.
+      active-site          Ball-and-stick and residue labels on the given site,
+                           the rest of the structure faded back. Needs a handle.
+
+    handle: which selection the per-selection parts apply to. Omitted means the
+      whole scene, which active-site refuses since a site has to be named.
+    """
+    recipe = _PRESETS.get(name)
+    if recipe is None:
+        raise ViewerError(
+            f"Unknown preset {name!r}. Available: {', '.join(sorted(_PRESETS))}"
+        )
+    _require_viewer()
+    steps = await recipe(handle or _WHOLE_SCENE)
+    return {"preset": name, "applied_to": handle or _WHOLE_SCENE, "steps": steps}
 
 
 SESSION_FORMAT = "protean-session"
