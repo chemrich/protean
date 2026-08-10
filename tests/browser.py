@@ -74,6 +74,25 @@ BROWSER_MARKS = [
 ]
 
 
+# Path tracing needs a real GPU. Under the SwiftShader flags CI uses, all four
+# WebGL extensions the tracer requires are present — so it reports as supported
+# — and a single capture then fails to finish inside 60s. It is gated
+# separately for that reason, and CI does not run it. Locally:
+#
+#     PROTEAN_DIFFERENTIAL=1 PROTEAN_PATHTRACE=1 \
+#     PROTEAN_CHROME_FLAGS="--headless=new --no-sandbox --window-size=800,600" \
+#     uv run pytest tests/test_render_differential.py
+#
+# Note the absence of --use-angle=swiftshader: that is the whole point.
+PATHTRACE_MARKS = [
+    *BROWSER_MARKS,
+    pytest.mark.skipif(
+        os.environ.get("PROTEAN_PATHTRACE") != "1",
+        reason="path tracing needs a real GPU; set PROTEAN_PATHTRACE=1 to run",
+    ),
+]
+
+
 async def cdp_eval(port: int, url: str, expression: str) -> Any:
     """Evaluate JS in the viewer page and return its JSON-decoded result."""
     async with aiohttp.ClientSession() as session:

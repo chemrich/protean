@@ -391,6 +391,7 @@ describe('createDispatcher', () => {
       shading_styles: ['cel', 'flat', 'normal', 'xray', 'xray-inverted'],
       gradients: ['off', 'horizontal', 'radial'],
       material_finishes: ['chrome', 'glossy', 'matte', 'metallic', 'satin'],
+      path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
     });
   });
 
@@ -548,6 +549,110 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('path tracing', () => {
+  /** A canvas with the four WebGL extensions IlluminationPass needs. */
+  function tracing(plugin: any, extensions?: Record<string, boolean>) {
+    withCanvas(plugin);
+    plugin.canvas3d.webgl = {
+      extensions: extensions ?? {
+        textureFloat: true,
+        colorBufferFloat: true,
+        depthTexture: true,
+        drawBuffers: true,
+      },
+    };
+    plugin.canvas3d.props.illumination = { enabled: false, maxIterations: 5, bounces: 4 };
+    const setProps = plugin.canvas3d.setProps;
+    plugin.canvas3d.setProps = vi.fn((props: any) => {
+      setProps(props);
+      if (props.illumination) Object.assign(plugin.canvas3d.props.illumination, props.illumination);
+    });
+    return plugin;
+  }
+
+  it('translates quality into an iteration count and reports the samples', async () => {
+    // Mol* counts iterations as a power of two, so asking for 128 samples
+    // directly would mean computing a logarithm at the call site.
+    const plugin: any = tracing(fakePlugin());
+    const result: any = await createDispatcher(plugin)('path_trace', { quality: 'high' });
+
+    expect(plugin.canvas3d.props.illumination.maxIterations).toBe(7);
+    expect(result.samples).toBe(128);
+    expect(result.enabled).toBe(true);
+  });
+
+  it('refuses to enable tracing the browser cannot do', async () => {
+    // The whole reason this check exists: IlluminationPass does not throw when
+    // its extensions are missing. Its constructor returns early and leaves the
+    // pass permanently unsupported, so Mol* would render an ordinary raster
+    // image and report success.
+    const plugin: any = tracing(fakePlugin(), {
+      textureFloat: true,
+      colorBufferFloat: false,
+      depthTexture: true,
+      drawBuffers: false,
+    });
+
+    await expect(
+      createDispatcher(plugin)('path_trace', { enabled: true })
+    ).rejects.toThrow(/cannot path trace.*colorBufferFloat, drawBuffers/s);
+  });
+
+  it('still lets tracing be switched off on a browser that cannot do it', async () => {
+    // Refusing here would strand anyone who enabled it before a context loss.
+    const plugin: any = tracing(fakePlugin(), { textureFloat: false });
+    const result: any = await createDispatcher(plugin)('path_trace', { enabled: false });
+    expect(result.enabled).toBe(false);
+  });
+
+  it('reads enabled back off the canvas rather than echoing the argument', async () => {
+    const plugin: any = tracing(fakePlugin());
+    // A canvas that refuses the pass leaves the flag false.
+    plugin.canvas3d.setProps = vi.fn();
+    const result: any = await createDispatcher(plugin)('path_trace', { enabled: true });
+    expect(result.enabled).toBe(false);
+  });
+
+  it('carries bounces, shadows and denoise when given', async () => {
+    const plugin: any = tracing(fakePlugin());
+    await createDispatcher(plugin)('path_trace', {
+      quality: 'draft',
+      bounces: 8,
+      shadows: false,
+      denoise: false,
+    });
+
+    const sent = plugin.canvas3d.setProps.mock.calls.at(-1)[0].illumination;
+    expect(sent).toMatchObject({
+      enabled: true,
+      maxIterations: 3,
+      bounces: 8,
+      shadowEnable: false,
+      denoise: false,
+    });
+  });
+
+  it('leaves bounces alone when not mentioned', async () => {
+    const plugin: any = tracing(fakePlugin());
+    await createDispatcher(plugin)('path_trace', {});
+    expect(plugin.canvas3d.setProps.mock.calls.at(-1)[0].illumination).not.toHaveProperty(
+      'bounces'
+    );
+  });
+
+  it('refuses an unknown quality and lists the real ones', async () => {
+    await expect(
+      createDispatcher(tracing(fakePlugin()))('path_trace', { quality: 'cinema' })
+    ).rejects.toThrow(/Unknown path-trace quality 'cinema'.*draft, high/s);
+  });
+
+  it('refuses an out-of-range bounce count', async () => {
+    await expect(
+      createDispatcher(tracing(fakePlugin()))('path_trace', { bounces: 99 })
+    ).rejects.toThrow(/bounces must be a whole number from 1 to 16/);
   });
 });
 
