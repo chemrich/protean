@@ -54,6 +54,26 @@ interface ShowArgs extends SelectArgs {
   opacity?: number;
 }
 
+interface EffectsArgs {
+  outline?: boolean;
+  /** Literal hex. Only meaningful with the outline on. */
+  outline_color?: string;
+  outline_scale?: number;
+  occlusion?: boolean;
+  shadow?: boolean;
+  depth_of_field?: boolean;
+  bloom?: boolean;
+  sharpening?: boolean;
+}
+
+interface ShadingArgs {
+  name: string;
+  /** A key of SHADING_STYLES. */
+  style: string;
+  /** Cel band count, 2-16. Global, so it affects every cel-shaded thing. */
+  cel_steps?: number;
+}
+
 interface LightingArgs {
   /** A key of LIGHTING_RIGS. */
   rig?: string;
@@ -70,6 +90,12 @@ interface BackgroundArgs {
   color?: string;
   /** Render onto nothing, so a figure drops into a document without a card. */
   transparent?: boolean;
+  /** 'off', or a key of GRADIENTS. */
+  gradient?: string;
+  /** Top (horizontal) or centre (radial). */
+  gradient_from?: string;
+  /** Bottom (horizontal) or edge (radial). */
+  gradient_to?: string;
 }
 
 declare global {
@@ -163,6 +189,76 @@ export const LIGHTING_RIGS: Record<
       { inclination: 50, azimuth: 200, color: WHITE, intensity: 0.4 },
     ],
   },
+};
+
+/** Complete parameter groups for the postprocessing effects we can switch on.
+ *
+ * Spelled out rather than toggled, because a Mol* MappedStatic that is `off`
+ * carries `params: {}` — verified against a live canvas. Flipping only the name
+ * would enable an effect with no parameters at all, which is the kind of input
+ * Mol* accepts and then renders something arbitrary from.
+ *
+ * Values are Mol* 4.18's own defaults, from mol-canvas3d/passes/*.
+ */
+const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
+  outline: { scale: 1, threshold: 0.33, color: 0x000000, includeTransparent: true },
+  occlusion: {
+    samples: 32,
+    multiScale: { name: 'off', params: {} },
+    radius: 5,
+    bias: 0.8,
+    blurKernelSize: 15,
+    blurDepthBias: 0.5,
+    resolutionScale: 1,
+    color: 0x000000,
+    transparentThreshold: 0.4,
+  },
+  shadow: { steps: 1, maxDistance: 3, tolerance: 1.0 },
+  dof: {
+    blurSize: 9,
+    blurSpread: 1.0,
+    inFocus: 0.0,
+    PPM: 20.0,
+    center: 'camera-target',
+    mode: 'plane',
+  },
+  bloom: { strength: 1, radius: 0, threshold: 0, mode: 'emissive' },
+  sharpening: { sharpness: 0.5, denoise: true },
+};
+
+/** Per-representation shading modes.
+ *
+ * Each is a Mol* representation parameter rather than a postprocessing pass,
+ * so they travel the same route as `alpha` — and, like opacity, they apply to
+ * a representation and not to a bare selection component.
+ */
+const SHADING_STYLES: Record<string, Record<string, unknown>> = {
+  // Mol*'s own shading. Also the way back from any of the others.
+  normal: { celShaded: false, xrayShaded: false, ignoreLight: false },
+  // Banded, cartoon-like. Band count is renderer.celSteps, which is global.
+  cel: { celShaded: true, xrayShaded: false, ignoreLight: false },
+  // The ghost look: see-through with edges picked out.
+  xray: { celShaded: false, xrayShaded: true, ignoreLight: false },
+  // Inverts which parts fade, so the facing surface goes and the rim stays.
+  'xray-inverted': { celShaded: false, xrayShaded: 'inverted', ignoreLight: false },
+  // Unlit flat colour, for a diagram rather than a picture of an object.
+  flat: { celShaded: false, xrayShaded: false, ignoreLight: true },
+};
+
+/** Gradient background variants, keyed by the name we expose.
+ *
+ * Mol* names the two stops differently per variant — top/bottom for the
+ * horizontal one, center/edge for the radial — so the mapping is spelled out
+ * and both are exposed as a single from/to pair, which reads the same way
+ * whichever is chosen.
+ */
+const GRADIENTS: Record<string, { variant: string; from: string; to: string }> = {
+  horizontal: {
+    variant: 'horizontalGradient',
+    from: 'topColor',
+    to: 'bottomColor',
+  },
+  radial: { variant: 'radialGradient', from: 'centerColor', to: 'edgeColor' },
 };
 
 /** Must stay below the bridge's own request timeout so our error wins the race. */
@@ -645,6 +741,108 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    effects: {
+      render: true,
+      async run(args: EffectsArgs) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const toggles: Array<[keyof EffectsArgs, string]> = [
+          ['outline', 'outline'],
+          ['occlusion', 'occlusion'],
+          ['shadow', 'shadow'],
+          ['depth_of_field', 'dof'],
+          ['bloom', 'bloom'],
+          ['sharpening', 'sharpening'],
+        ];
+
+        const post: Record<string, unknown> = {};
+        for (const [arg, key] of toggles) {
+          const wanted = args[arg];
+          if (wanted === undefined) continue;
+          post[key] = wanted
+            ? { name: 'on', params: { ...EFFECT_PARAMS[key] } }
+            : { name: 'off', params: {} };
+        }
+
+        if (args.outline_color !== undefined || args.outline_scale !== undefined) {
+          // Tuning an outline that is off would be silently ignored, so say so
+          // rather than let the caller believe it took.
+          const enabled = args.outline ?? canvas3d.props?.postprocessing?.outline?.name === 'on';
+          if (!enabled) {
+            throw new Error('Set outline=true before adjusting its colour or scale');
+          }
+          const params: Record<string, unknown> = {
+            ...EFFECT_PARAMS.outline,
+            ...(canvas3d.props?.postprocessing?.outline?.params ?? {}),
+          };
+          if (args.outline_color !== undefined) {
+            params.color = parseHexColor(args.outline_color);
+          }
+          if (args.outline_scale !== undefined) params.scale = args.outline_scale;
+          post.outline = { name: 'on', params };
+        }
+
+        if (!Object.keys(post).length) {
+          throw new Error('Pass at least one effect to change');
+        }
+        canvas3d.setProps({ postprocessing: post });
+
+        return effectState(canvas3d);
+      },
+    },
+
+    shading: {
+      render: true,
+      async run({ name, style, cel_steps }: ShadingArgs) {
+        const params = SHADING_STYLES[style];
+        if (!params) {
+          throw new Error(
+            `Unknown shading style '${style}'. ` +
+              `Available: ${Object.keys(SHADING_STYLES).sort().join(', ')}`
+          );
+        }
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy`);
+        }
+
+        // celSteps is a renderer property, so it is global rather than
+        // per-representation. Setting it here is the honest place for it —
+        // it only means anything once something is cel shaded.
+        if (cel_steps !== undefined) {
+          if (!Number.isInteger(cel_steps) || cel_steps < 2 || cel_steps > 16) {
+            throw new Error(`cel_steps must be a whole number from 2 to 16, got ${cel_steps}`);
+          }
+          plugin.canvas3d?.setProps({ renderer: { celSteps: cel_steps } });
+        }
+
+        const update = plugin.state.data.build();
+        let changed = 0;
+        for (const c of target) {
+          for (const repr of c.representations ?? []) {
+            update.to(repr.cell).update((old: any) => {
+              Object.assign(old.type.params, params);
+            });
+            changed++;
+          }
+        }
+        if (!changed) {
+          throw new Error(
+            `Selection '${name}' has no representation to shade. Call show() on it first.`
+          );
+        }
+        await update.commit();
+        return {
+          name,
+          style,
+          representations: changed,
+          cel_steps: plugin.canvas3d?.props?.renderer?.celSteps ?? null,
+        };
+      },
+    },
+
     lighting: {
       render: true,
       async run({ rig, intensity, ambient, exposure }: LightingArgs) {
@@ -691,7 +889,7 @@ export function createDispatcher(plugin: any): Handler {
 
     background: {
       render: true,
-      async run({ color, transparent }: BackgroundArgs) {
+      async run({ color, transparent, gradient, gradient_from, gradient_to }: BackgroundArgs) {
         const canvas3d = plugin.canvas3d;
         if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
 
@@ -700,6 +898,39 @@ export function createDispatcher(plugin: any): Handler {
           props.renderer = { backgroundColor: parseHexColor(color) };
         }
         if (transparent !== undefined) props.transparentBackground = transparent;
+
+        if (gradient !== undefined) {
+          if (gradient === 'off') {
+            props.postprocessing = { background: { variant: { name: 'off', params: {} } } };
+          } else {
+            const spec = GRADIENTS[gradient];
+            if (!spec) {
+              throw new Error(
+                `Unknown gradient '${gradient}'. ` +
+                  `Available: off, ${Object.keys(GRADIENTS).sort().join(', ')}`
+              );
+            }
+            props.postprocessing = {
+              background: {
+                variant: {
+                  name: spec.variant,
+                  params: {
+                    [spec.from]: parseHexColor(gradient_from ?? '#dddddd'),
+                    [spec.to]: parseHexColor(gradient_to ?? '#eeeeee'),
+                    ratio: 0.5,
+                    // 'canvas' would key the gradient to the whole element
+                    // rather than the rendered viewport, so a captured figure
+                    // would show a different slice of it than the screen did.
+                    coverage: 'viewport',
+                  },
+                },
+              },
+            };
+          }
+        } else if (gradient_from !== undefined || gradient_to !== undefined) {
+          throw new Error('Pass gradient= as well, to say which gradient the colours are for');
+        }
+
         canvas3d.setProps(props);
 
         // The screenshot helper carries its *own* transparency flag and passes
@@ -714,10 +945,14 @@ export function createDispatcher(plugin: any): Handler {
 
         // Read back rather than echo: this is the only evidence that the props
         // were accepted, and Mol* accepts bad input without complaint.
+        const variant = canvas3d.props?.postprocessing?.background?.variant?.name ?? null;
         return {
           background: toHex(canvas3d.props?.renderer?.backgroundColor),
           transparent: canvas3d.props?.transparentBackground ?? null,
           screenshot_transparent: helper ? helper.values.transparent : null,
+          // Mol*'s own variant name, not ours, so a mapping mistake shows up
+          // here rather than being hidden by echoing the argument back.
+          gradient: variant,
         };
       },
     },
@@ -844,6 +1079,8 @@ export function createDispatcher(plugin: any): Handler {
           // Named styles belong here for the same reason the two lists above
           // do: a model can only pick from what it can see at the point of use.
           lighting_rigs: Object.keys(LIGHTING_RIGS).sort(),
+          shading_styles: Object.keys(SHADING_STYLES).sort(),
+          gradients: ['off', ...Object.keys(GRADIENTS).sort()],
         };
       },
     },
@@ -1072,6 +1309,26 @@ export function parseHexColor(color: string): number {
 export function toHex(value: unknown): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return `#${(value & 0xffffff).toString(16).padStart(6, '0')}`;
+}
+
+/** What the canvas is actually doing, read back rather than echoed.
+ *
+ * Reported as on/off per effect plus the outline's own settings, because the
+ * whole question a caller has after switching an effect on is whether it took.
+ */
+export function effectState(canvas3d: any): Record<string, unknown> {
+  const post = canvas3d.props?.postprocessing ?? {};
+  const on = (key: string) => post[key]?.name === 'on';
+  return {
+    outline: on('outline'),
+    outline_color: on('outline') ? toHex(post.outline?.params?.color) : null,
+    outline_scale: on('outline') ? (post.outline?.params?.scale ?? null) : null,
+    occlusion: on('occlusion'),
+    shadow: on('shadow'),
+    depth_of_field: on('dof'),
+    bloom: on('bloom'),
+    sharpening: on('sharpening'),
+  };
 }
 
 /** Opacity is a fraction. Mol* clamps silently, so 50 would become 1 — solid,

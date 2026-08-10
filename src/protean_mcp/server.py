@@ -476,6 +476,84 @@ async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
 
 
 @mcp.tool()
+async def effects(
+    outline: bool | None = None,
+    outline_color: str | None = None,
+    outline_scale: float | None = None,
+    occlusion: bool | None = None,
+    shadow: bool | None = None,
+    depth_of_field: bool | None = None,
+    bloom: bool | None = None,
+    sharpening: bool | None = None,
+) -> dict[str, Any]:
+    """Switch screen-space effects on or off.
+
+    Anything omitted is left exactly as it is, so these compose across calls.
+    The reply is read back off the canvas rather than echoed.
+
+    outline: draw a line around the silhouette and interior edges. The
+      illustrative, textbook look; pairs with shading(style="cel").
+    outline_color / outline_scale: only meaningful with the outline on, and
+      refused when it is off rather than quietly ignored.
+    occlusion: ambient occlusion — darkens crevices, so pockets and clefts
+      read as recessed. On by default in Mol*, and the single biggest gain in
+      legibility for a surface.
+    shadow: cast shadows. Cheap and blunt; occlusion usually reads better.
+    depth_of_field: blur what is not at the camera's focus, to push background
+      chains back.
+    bloom: glow around bright things. On by default, and only visible on
+      emissive material.
+    sharpening: contrast-adaptive sharpening, worth a little at high DPI.
+    """
+    args: dict[str, Any] = {}
+    for key, value in (
+        ("outline", outline),
+        ("outline_color", outline_color),
+        ("outline_scale", outline_scale),
+        ("occlusion", occlusion),
+        ("shadow", shadow),
+        ("depth_of_field", depth_of_field),
+        ("bloom", bloom),
+        ("sharpening", sharpening),
+    ):
+        if value is not None:
+            args[key] = value
+    if not args:
+        raise ViewerError("Pass at least one effect to change")
+    return await _call("effects", args)
+
+
+@mcp.tool()
+async def shading(
+    style: str, name: str = "sele", cel_steps: int | None = None
+) -> dict[str, Any]:
+    """Change how a displayed selection is shaded.
+
+    style: one of — capabilities() reports the live list.
+
+      normal         Mol*'s own shading. Also the way back.
+      cel            Banded, cartoon-like. Pair with effects(outline=True) for
+                     the illustrative look.
+      xray           The ghost look: see-through with the edges picked out.
+                     Cheaper and cleaner than opacity for showing what is
+                     inside a surface.
+      xray-inverted  Inverts which parts fade — the facing surface goes and the
+                     rim stays.
+      flat           Unlit flat colour, for a diagram rather than a picture of
+                     an object.
+
+    name: the handle passed to a previous show(). A select()-only handle
+      carries no geometry and is refused.
+    cel_steps: number of bands, 2 to 16. Global to the renderer, so it affects
+      everything cel shaded, not just this selection.
+    """
+    args: dict[str, Any] = {"name": name, "style": style}
+    if cel_steps is not None:
+        args["cel_steps"] = cel_steps
+    return await _call("shading", args)
+
+
+@mcp.tool()
 async def lighting(
     rig: str = "standard",
     intensity: float | None = None,
@@ -514,9 +592,13 @@ async def lighting(
 
 @mcp.tool()
 async def background(
-    color: str | None = None, transparent: bool | None = None
+    color: str | None = None,
+    transparent: bool | None = None,
+    gradient: str | None = None,
+    gradient_from: str | None = None,
+    gradient_to: str | None = None,
 ) -> dict[str, Any]:
-    """Set the canvas background colour, or make it transparent.
+    """Set the canvas background: a flat colour, a gradient, or nothing at all.
 
     color: a literal hex value like "#ffffff". Unlike show(), a colour theme is
       meaningless here — a canvas has no atoms to take a theme from.
@@ -524,16 +606,29 @@ async def background(
       or a slide without a coloured card behind it. This also switches the
       screenshot pipeline to transparent capture, which is a separate flag in
       Mol* and would otherwise keep returning opaque PNGs.
+    gradient: "off", "horizontal" (top to bottom) or "radial" (centre to edge).
+      A gradient sits in front of the flat colour rather than replacing it.
+    gradient_from / gradient_to: the two stops — top and bottom for horizontal,
+      centre and edge for radial. Both default to Mol*'s pale grey pair.
 
     Returns the values read back off the canvas, not the ones passed in.
     """
-    if color is None and transparent is None:
-        raise ViewerError("Pass at least one of color or transparent")
+    if color is None and transparent is None and gradient is None:
+        if gradient_from is not None or gradient_to is not None:
+            raise ViewerError(
+                "Pass gradient= as well, to say which gradient the colours are for"
+            )
+        raise ViewerError("Pass at least one of color, transparent or gradient")
     args: dict[str, Any] = {}
-    if color is not None:
-        args["color"] = color
-    if transparent is not None:
-        args["transparent"] = transparent
+    for key, value in (
+        ("color", color),
+        ("transparent", transparent),
+        ("gradient", gradient),
+        ("gradient_from", gradient_from),
+        ("gradient_to", gradient_to),
+    ):
+        if value is not None:
+            args[key] = value
     return await _call("background", args)
 
 

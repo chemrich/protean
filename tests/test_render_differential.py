@@ -26,6 +26,7 @@ from .browser import BROWSER_MARKS, viewer_session
 from .pixels import (
     Render,
     background,
+    color_fraction,
     corners,
     coverage,
     decode,
@@ -249,6 +250,169 @@ async def test_returning_to_standard_restores_the_original_lighting(lit):
     """
     frames: dict[str, Render] = lit["frames"]
     assert difference(frames["standard"], lit["restored"]) == 0.0
+
+
+# -- effects, shading and gradients --------------------------------------------
+
+# Measured on 1UBQ at 170x357 against a molecule covering 0.0463 of the frame.
+# Fraction of the whole frame that changes:
+#
+#   outline 0.0514   xray 0.0445   xray-inverted 0.0404   cel 0.0335
+#   flat 0.0306      occlusion 0.0139   shadow 0.0042
+#
+# Shadow is the floor by a wide margin — Mol*'s defaults are one step at a
+# maximum distance of 3, which is deliberately subtle. The thresholds are set
+# per group rather than globally so the loosest effect does not set the bar for
+# all the others.
+SHADED = 0.01
+SUBTLE = 0.002
+# The outline is drawn in a colour nothing else in the scene uses, so counting
+# it measures the effect directly. It covers 0.00124 of the frame; the baseline
+# is exactly 0.0.
+OUTLINED = 0.0005
+
+OUTLINE_GREEN = (0, 255, 0, 255)
+
+
+@pytest.fixture(scope="module")
+async def styled_effects() -> dict[str, Any]:
+    """One session walking every effect, restoring the default after each.
+
+    Restoring matters: these are canvas-wide and would otherwise accumulate, so
+    a later frame would be measuring the sum of everything before it.
+    """
+    out: dict[str, Any] = {}
+    async with viewer_session(FIXTURE) as session:
+        out["base"] = await _shot(session)
+
+        await session.request("effects", {"outline": True, "outline_color": "#00ff00"})
+        out["outline"] = await _shot(session)
+        await session.request("effects", {"outline": False})
+
+        await session.request("effects", {"occlusion": False})
+        out["no_occlusion"] = await _shot(session)
+        await session.request("effects", {"occlusion": True})
+
+        await session.request("effects", {"shadow": True})
+        out["shadow"] = await _shot(session)
+        out["shadow_reply"] = await session.request("effects", {"shadow": False})
+
+        for style in ("cel", "xray", "xray-inverted", "flat"):
+            await session.request("shading", {"name": "auto", "style": style})
+            out[style] = await _shot(session)
+        await session.request("shading", {"name": "auto", "style": "normal"})
+        out["unshaded"] = await _shot(session)
+
+        await session.request(
+            "background",
+            {
+                "gradient": "horizontal",
+                "gradient_from": "#ff0000",
+                "gradient_to": "#0000ff",
+            },
+        )
+        out["horizontal"] = await _shot(session)
+        await session.request(
+            "background",
+            {"gradient": "radial", "gradient_from": "#ff0000", "gradient_to": "#0000ff"},
+        )
+        out["radial"] = await _shot(session)
+        await session.request("background", {"gradient": "off"})
+        out["no_gradient"] = await _shot(session)
+    return out
+
+
+async def test_the_outline_is_drawn_in_the_colour_it_was_given(styled_effects):
+    """Colour is what makes this measurable rather than inferred.
+
+    Given a green nothing else in the scene uses, counting green pixels says
+    the outline pass ran *and* that it took the colour — two claims a
+    silhouette comparison could not separate.
+    """
+    assert color_fraction(styled_effects["base"], OUTLINE_GREEN) == 0.0
+    assert color_fraction(styled_effects["outline"], OUTLINE_GREEN) > OUTLINED
+
+
+async def test_the_outline_adds_to_the_silhouette(styled_effects):
+    """An outline draws around the molecule, so unlike shading it grows it.
+
+    The opposite of the lighting invariant, and worth pinning as its own claim:
+    it is the one effect here that is not purely a repaint.
+    """
+    reference = background(styled_effects["base"])
+    assert coverage(styled_effects["outline"], of=reference) > coverage(
+        styled_effects["base"], of=reference
+    )
+
+
+async def test_occlusion_changes_the_shading(styled_effects):
+    """Occlusion is on by default, so this switches it off and looks for the gap."""
+    assert difference(styled_effects["base"], styled_effects["no_occlusion"]) > SUBTLE
+
+
+async def test_shadow_reaches_the_render_even_though_it_is_subtle(styled_effects):
+    """Mol*'s shadow defaults are quiet — one step, distance 3.
+
+    Pinned anyway, and with its own low threshold, because "subtle" and "never
+    applied" look identical in a reply and differ by 0.0042 of the frame here.
+    """
+    assert difference(styled_effects["base"], styled_effects["shadow"]) > SUBTLE
+    # And the reply reports it back off, since that call turned it off again.
+    assert styled_effects["shadow_reply"]["shadow"] is False
+
+
+@pytest.mark.parametrize("style", ["cel", "xray", "xray-inverted", "flat"])
+async def test_each_shading_style_changes_the_surface(styled_effects, style):
+    assert difference(styled_effects["base"], styled_effects[style]) > SHADED
+
+
+async def test_xray_inverted_is_not_the_same_as_xray(styled_effects):
+    """The one that would silently degrade.
+
+    Mol* types xrayShaded as `boolean | 'inverted'`. Sending `true` for the
+    inverted style would give the ordinary ghost look and report success, and
+    no comparison against the *default* shading would notice — both differ from
+    it. Only comparing the two against each other does.
+    """
+    assert difference(styled_effects["xray"], styled_effects["xray-inverted"]) > SHADED
+
+
+async def test_shading_returns_to_normal(styled_effects):
+    """Styles are a setting, not an accumulation."""
+    assert difference(styled_effects["base"], styled_effects["unshaded"]) == 0.0
+
+
+async def test_a_horizontal_gradient_runs_from_the_first_colour_to_the_second(
+    styled_effects,
+):
+    """Mol* names the stops per variant, so the mapping is where this breaks.
+
+    Sending the radial pair to a horizontal gradient leaves it at its pale grey
+    defaults — a background that looks deliberate and is not the one asked for.
+    """
+    found = corners(styled_effects["horizontal"])
+    assert found["top-left"][0] > 200 and found["top-left"][2] < 60  # red on top
+    assert found["bottom-left"][2] > 200 and found["bottom-left"][0] < 60  # blue below
+    assert found["top-left"] == found["top-right"]
+
+
+async def test_a_radial_gradient_is_symmetric_about_the_centre(styled_effects):
+    """Which is what makes it radial rather than horizontal.
+
+    All four corners are the same distance from the middle, so they land on the
+    same blend — and that blend is neither stop, because the ratio puts the
+    turn halfway.
+    """
+    found = corners(styled_effects["radial"])
+    assert len({tuple(c) for c in found.values()}) <= 2  # allows 1-bit noise
+    blend = background(styled_effects["radial"])
+    assert 0 < blend[0] < 255
+    assert 0 < blend[2] < 255
+
+
+async def test_turning_the_gradient_off_restores_the_flat_canvas(styled_effects):
+    assert difference(styled_effects["base"], styled_effects["no_gradient"]) == 0.0
+    assert background(styled_effects["no_gradient"]) == background(styled_effects["base"])
 
 
 # -- background and opacity ----------------------------------------------------
