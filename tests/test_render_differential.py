@@ -18,6 +18,8 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from .browser import BROWSER_MARKS, viewer_session
@@ -27,6 +29,7 @@ from .pixels import (
     corners,
     coverage,
     decode,
+    difference,
     mean_distance_from,
     opaque,
     transparent_fraction,
@@ -116,6 +119,136 @@ async def test_unhiding_puts_it_back(frames):
     test above perfectly.
     """
     assert coverage(frames["restored"]) > DRAWN
+
+
+# -- capture stability ---------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+async def repeated() -> list[Render]:
+    """Three captures of one unchanged scene."""
+    async with viewer_session(FIXTURE) as session:
+        return [await _shot(session) for _ in range(3)]
+
+
+async def test_the_first_capture_is_as_good_as_the_second(repeated):
+    """Regression: the first screenshot of a session used to be the worst one.
+
+    Mol* creates the ImagePass lazily, and a capture taken through a freshly
+    built pass came back measurably different from every identical capture
+    after it — 2.1% of the frame on 1UBQ, slightly less antialiased. For a tool
+    whose product is a figure that is a real defect, and an invisible one: both
+    files open fine and byte size barely moves. The screenshot action now
+    builds the pass before capturing.
+
+    Asserting equality rather than similarity is deliberate. Renders here are
+    deterministic once the pass exists, so any drift at all is a finding.
+    """
+    assert difference(repeated[0], repeated[1]) == 0.0
+
+
+async def test_captures_stay_identical_while_nothing_changes(repeated):
+    """Guards the test above: two identical captures prove nothing if every
+    capture is identical because the harness is reading a cached image."""
+    assert difference(repeated[1], repeated[2]) == 0.0
+    assert coverage(repeated[0]) > DRAWN
+
+
+# -- lighting rigs -------------------------------------------------------------
+
+# Every rig lights the same geometry, so what separates them is which pixels
+# changed, not how many are drawn. Measured on 1UBQ at 170x357, where the
+# molecule covers 0.0463 of the frame, this is the fraction of the whole frame
+# each rig repaints relative to `standard`:
+#
+#   three-point 0.0167   studio 0.0223   flat 0.0307   ring 0.0312   rim 0.0376
+#
+# three-point is the floor because it *is* standard plus a fill and a back
+# light, so the key still dominates much of the surface — and it still repaints
+# 36% of the molecule. The threshold sits 1.7x below it.
+#
+# An earlier version of this constant was calibrated against a contaminated
+# baseline: before the ImagePass fix the first capture of a session differed
+# from all the others, which inflated every measured difference.
+RELIT = 0.01
+
+
+@pytest.fixture(scope="module")
+async def lit() -> dict[str, object]:
+    """One frame per rig, plus the light counts the viewer reported."""
+    frames: dict[str, Render] = {}
+    replies: dict[str, object] = {}
+    async with viewer_session(FIXTURE) as session:
+        for rig in ("standard", "flat", "three-point", "rim", "ring", "studio"):
+            replies[rig] = await session.request("lighting", {"rig": rig})
+            frames[rig] = await _shot(session)
+        # Scale the rig twice on the way back, so `restored` also answers
+        # whether intensity compounds. Mol* holds the light list by reference,
+        # and a rig scaled in place would come home 9x brighter.
+        await session.request("lighting", {"rig": "standard", "intensity": 3})
+        await session.request("lighting", {"rig": "standard", "intensity": 3})
+        await session.request("lighting", {"rig": "standard"})
+        restored = await _shot(session)
+    return {"frames": frames, "replies": replies, "restored": restored}
+
+
+@pytest.mark.parametrize("rig", ["flat", "three-point", "rim", "ring", "studio"])
+async def test_each_rig_relights_the_molecule(lit, rig):
+    """The pixels move, which is the only evidence a light list was applied.
+
+    Mol* accepts a light array without complaint; a rig that never reached the
+    renderer would leave the scene exactly as it was and report success.
+    """
+    frames: dict[str, Render] = lit["frames"]
+    assert difference(frames["standard"], frames[rig]) > RELIT
+
+
+@pytest.mark.parametrize("rig", ["flat", "three-point", "rim", "ring", "studio"])
+async def test_relighting_does_not_redraw_the_molecule(lit, rig):
+    """Different pixels, same silhouette — the signature of a shading change.
+
+    Without this, a "rig" that hid the structure or moved the camera would
+    score brilliantly on the test above.
+    """
+    frames: dict[str, Render] = lit["frames"]
+    reference = background(frames["standard"])
+    assert coverage(frames[rig], of=reference) == pytest.approx(
+        coverage(frames["standard"], of=reference), abs=0.01
+    )
+
+
+@pytest.mark.parametrize(
+    ("rig", "lights", "ambient"),
+    [
+        ("standard", 1, 0.4),
+        ("flat", 0, 1.0),
+        ("rim", 2, 0.25),
+        ("three-point", 3, 0.3),
+        ("ring", 6, 0.25),
+    ],
+)
+async def test_the_rig_reports_what_the_canvas_took(lit, rig, lights, ambient):
+    """Read back off the canvas, so a rejected value cannot report as applied.
+
+    flat is the interesting one twice over: zero directional lights is valid in
+    Mol*'s shader and means purely ambient, so 0 is a real answer rather than a
+    missing one — and it is the only rig whose look depends entirely on the
+    ambient level rather than on the light list.
+    """
+    replies: dict[str, Any] = lit["replies"]
+    assert replies[rig]["lights"] == lights
+    assert replies[rig]["ambient"] == pytest.approx(ambient)
+
+
+async def test_returning_to_standard_restores_the_original_lighting(lit):
+    """Rigs are a setting, not an accumulation.
+
+    Mol* holds the light list by reference, so a rig that scaled a shared
+    preset in place would drift a little further every time it was applied and
+    never come home.
+    """
+    frames: dict[str, Render] = lit["frames"]
+    assert difference(frames["standard"], lit["restored"]) == 0.0
 
 
 # -- background and opacity ----------------------------------------------------

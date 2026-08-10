@@ -54,6 +54,17 @@ interface ShowArgs extends SelectArgs {
   opacity?: number;
 }
 
+interface LightingArgs {
+  /** A key of LIGHTING_RIGS. */
+  rig?: string;
+  /** Scales every light in the rig; 1 leaves it as designed. */
+  intensity?: number;
+  /** Overrides the rig's ambient level. */
+  ambient?: number;
+  /** Mol*'s overall exposure, 0-3. */
+  exposure?: number;
+}
+
 interface BackgroundArgs {
   /** Literal hex, e.g. "#ffffff". A canvas has no theme to look a name up in. */
   color?: string;
@@ -82,6 +93,76 @@ const PALETTES: Record<string, number[]> = {
   'blue-white-red': [0x2c7bb6, 0xffffff, 0xd7191c],
   viridis: [0x440154, 0x21918c, 0xfde725],
   'white-red': [0xffffff, 0xd7191c],
+};
+
+/** Named lighting rigs, as generated light lists.
+ *
+ * Mol*'s `renderer.light` is an ObjectList of
+ * `{inclination, azimuth, color, intensity}`, so a rig is data rather than a
+ * feature — which is the whole reason there is an enum here instead of five
+ * separate knobs. Angles follow Mol*'s own convention: inclination 0-180,
+ * azimuth 0-360, and its single default light sits at 150/320.
+ *
+ * Intensities across rigs are kept roughly comparable so that switching one
+ * does not silently double the exposure and read as a broken render.
+ *
+ * `ambient` is the ambient intensity that goes with the rig; Mol*'s default
+ * is 0.4 against a single 0.6 light.
+ */
+const WHITE = 0xffffff;
+
+function ring(count: number, inclination: number, intensity: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    inclination,
+    azimuth: Math.round((360 / count) * i),
+    color: WHITE,
+    intensity,
+  }));
+}
+
+export const LIGHTING_RIGS: Record<
+  string,
+  { ambient: number; lights: Array<Record<string, number>> }
+> = {
+  // Mol*'s own defaults, so this is also the way back.
+  standard: {
+    ambient: 0.4,
+    lights: [{ inclination: 150, azimuth: 320, color: WHITE, intensity: 0.6 }],
+  },
+  // No directional light at all — dLightCount 0 is valid and shaded purely by
+  // ambient. Even and shadowless, which is what a schematic figure wants.
+  flat: { ambient: 1.0, lights: [] },
+  // Key, fill, back. The classic portrait rig: form from the key, shadows
+  // opened by the fill, separation from the back light.
+  'three-point': {
+    ambient: 0.3,
+    lights: [
+      { inclination: 150, azimuth: 320, color: WHITE, intensity: 0.6 },
+      { inclination: 120, azimuth: 60, color: WHITE, intensity: 0.25 },
+      { inclination: 60, azimuth: 180, color: WHITE, intensity: 0.35 },
+    ],
+  },
+  // Silhouette first: a weak key and a strong back light, so the edge reads
+  // against the background. Good for showing a shape, poor for reading detail.
+  rim: {
+    ambient: 0.25,
+    lights: [
+      { inclination: 150, azimuth: 320, color: WHITE, intensity: 0.25 },
+      { inclination: 60, azimuth: 180, color: WHITE, intensity: 0.9 },
+    ],
+  },
+  // Six lights on a circle: soft and nearly shadowless, which suits a surface
+  // whose curvature would otherwise disappear into one hard highlight.
+  ring: { ambient: 0.25, lights: ring(6, 110, 0.18) },
+  // Warm key against a cool fill, low contrast. The photographic look.
+  studio: {
+    ambient: 0.35,
+    lights: [
+      { inclination: 150, azimuth: 320, color: 0xfff4e6, intensity: 0.55 },
+      { inclination: 120, azimuth: 140, color: 0xe6f0ff, intensity: 0.3 },
+      { inclination: 50, azimuth: 200, color: WHITE, intensity: 0.4 },
+    ],
+  },
 };
 
 /** Must stay below the bridge's own request timeout so our error wins the race. */
@@ -564,6 +645,50 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    lighting: {
+      render: true,
+      async run({ rig, intensity, ambient, exposure }: LightingArgs) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const chosen = rig ?? 'standard';
+        const preset = LIGHTING_RIGS[chosen];
+        if (!preset) {
+          throw new Error(
+            `Unknown lighting rig '${chosen}'. ` +
+              `Available: ${Object.keys(LIGHTING_RIGS).sort().join(', ')}`
+          );
+        }
+        if (intensity !== undefined && (!Number.isFinite(intensity) || intensity < 0)) {
+          throw new Error(`Lighting intensity must be 0 or more, got ${intensity}`);
+        }
+
+        const scale = intensity ?? 1;
+        const renderer: Record<string, unknown> = {
+          // A fresh array every call: Mol* holds this list by reference, and
+          // mutating a shared preset would leave the next caller with whatever
+          // the last one scaled it to.
+          light: preset.lights.map((light) => ({
+            ...light,
+            intensity: light.intensity * scale,
+          })),
+          ambientIntensity: ambient ?? preset.ambient,
+        };
+        if (exposure !== undefined) renderer.exposure = exposure;
+        canvas3d.setProps({ renderer });
+
+        const applied = canvas3d.props?.renderer;
+        return {
+          rig: chosen,
+          // Read back, because a rejected light list leaves the previous one in
+          // place and the scene simply looks unchanged.
+          lights: applied?.light?.length ?? null,
+          ambient: applied?.ambientIntensity ?? null,
+          exposure: applied?.exposure ?? null,
+        };
+      },
+    },
+
     background: {
       render: true,
       async run({ color, transparent }: BackgroundArgs) {
@@ -716,6 +841,9 @@ export function createDispatcher(plugin: any): Handler {
         return {
           representations: representationTypes().sort(),
           color_themes: colorThemeNames().sort(),
+          // Named styles belong here for the same reason the two lists above
+          // do: a model can only pick from what it can see at the point of use.
+          lighting_rigs: Object.keys(LIGHTING_RIGS).sort(),
         };
       },
     },
@@ -859,6 +987,15 @@ export function createDispatcher(plugin: any): Handler {
       async run() {
         const helper = plugin.helpers?.viewportScreenshot;
         if (helper?.getImageDataUri) {
+          // Build the image pass before capturing, rather than letting
+          // getImageDataUri create it on the way past. Measured: a capture
+          // taken through a freshly created pass differs from every identical
+          // capture after it — 2.1% of the frame on 1UBQ, and slightly less
+          // antialiased. For a tool whose product is a figure, that made the
+          // first export quietly the worst one. Reading the getter is what
+          // constructs and caches it.
+          const pass = helper.imagePass;
+          if (!pass) throw new Error('Mol* built no image pass for the screenshot');
           return { data_uri: await helper.getImageDataUri() };
         }
         // Fallback: read the 3D canvas directly.

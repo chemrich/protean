@@ -173,6 +173,24 @@ def color_fraction(render: Render, color: RGBA, tolerance: int = TOLERANCE) -> f
     return float((difference.max(axis=2) <= tolerance).mean())
 
 
+def difference(a: Render, b: Render, tolerance: int = TOLERANCE) -> float:
+    """Fraction of pixels that differ between two renders of the same scene.
+
+    The measure for anything that changes how a molecule is *lit* or shaded
+    rather than what is drawn. A lighting rig moves colour across the whole
+    surface while leaving the silhouette exactly where it was, so `coverage`
+    barely moves and only a direct comparison shows the change.
+
+    Pairs with `coverage`: different pixels but the same coverage is the
+    signature of a shading change, and distinguishes it from having drawn
+    something else entirely.
+    """
+    if a.size != b.size:
+        raise ValueError(f"Renders are different sizes: {a.size} vs {b.size}")
+    gap = np.abs(a.pixels.astype(np.int16) - b.pixels.astype(np.int16))
+    return float((gap.max(axis=2) > tolerance).mean())
+
+
 def mean_distance_from(render: Render, color: RGBA, tolerance: int = TOLERANCE) -> float:
     """Mean RGB distance from *color*, over the pixels that differ from it.
 

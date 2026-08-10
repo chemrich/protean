@@ -476,6 +476,43 @@ async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
 
 
 @mcp.tool()
+async def lighting(
+    rig: str = "standard",
+    intensity: float | None = None,
+    ambient: float | None = None,
+    exposure: float | None = None,
+) -> dict[str, Any]:
+    """Light the scene with a named rig.
+
+    rig: one of — capabilities() reports the live list, and an unknown name is
+      refused with it rather than quietly leaving the lighting unchanged.
+
+      standard     Mol*'s own single key light. Also the way back.
+      flat         No directional light; purely ambient. Even and shadowless,
+                   which is what a schematic figure wants.
+      three-point  Key, fill and back light. Form from the key, shadows opened
+                   by the fill, separation from the back.
+      rim          Weak key, strong back light. Silhouette first — good for
+                   showing a shape, poor for reading surface detail.
+      ring         Six lights on a circle. Soft and nearly shadowless; suits a
+                   surface whose curvature would vanish into one hard highlight.
+      studio       Warm key against a cool fill, low contrast. Photographic.
+
+    intensity: scales every light in the rig. 1 leaves it as designed.
+    ambient: overrides the rig's ambient level, 0 to 2.
+    exposure: overall exposure, 0 to 3. Left untouched when omitted.
+    """
+    args: dict[str, Any] = {"rig": rig}
+    if intensity is not None:
+        args["intensity"] = intensity
+    if ambient is not None:
+        args["ambient"] = ambient
+    if exposure is not None:
+        args["exposure"] = exposure
+    return await _call("lighting", args)
+
+
+@mcp.tool()
 async def background(
     color: str | None = None, transparent: bool | None = None
 ) -> dict[str, Any]:

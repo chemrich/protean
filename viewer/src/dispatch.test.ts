@@ -369,6 +369,9 @@ describe('createDispatcher', () => {
     await expect(dispatch('capabilities', {})).resolves.toEqual({
       representations: ['cartoon', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
+      // Named styles are reported for the same reason the registries are: a
+      // model can only choose from what it can see at the point of use.
+      lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
     });
   });
 
@@ -526,6 +529,98 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('lighting rigs', () => {
+  it('applies a rig as a light list and reports what the canvas took', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const result: any = await createDispatcher(plugin)('lighting', { rig: 'three-point' });
+
+    const renderer = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer;
+    expect(renderer.light).toHaveLength(3);
+    expect(renderer.ambientIntensity).toBe(0.3);
+    // Read back off the canvas: a rejected light list leaves the previous one
+    // in place and the scene just looks unchanged.
+    expect(result).toMatchObject({ rig: 'three-point', lights: 3, ambient: 0.3 });
+  });
+
+  it('builds the ring rig by generating evenly spaced azimuths', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('lighting', { rig: 'ring' });
+
+    const lights = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer.light;
+    expect(lights.map((l: any) => l.azimuth)).toEqual([0, 60, 120, 180, 240, 300]);
+  });
+
+  it('sends no directional light at all for the flat rig', async () => {
+    // dLightCount 0 is valid in Mol*'s shader and means purely ambient. Worth
+    // pinning: an empty array is easy to mistake for "nothing was applied".
+    const plugin: any = withCanvas(fakePlugin());
+    const result: any = await createDispatcher(plugin)('lighting', { rig: 'flat' });
+
+    expect(plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer.light).toEqual([]);
+    expect(result.lights).toBe(0);
+    expect(result.ambient).toBe(1);
+  });
+
+  it('scales every light in the rig by intensity', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('lighting', { rig: 'three-point', intensity: 2 });
+
+    const lights = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer.light;
+    expect(lights.map((l: any) => l.intensity)).toEqual([1.2, 0.5, 0.7]);
+  });
+
+  it('does not let a scaled call mutate the rig for the next one', async () => {
+    // Mol* holds the light list by reference. Scaling a shared preset in place
+    // would compound every call: 'standard' at intensity 2 twice would be 4x,
+    // and nothing in the reply would say so.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+
+    await dispatch('lighting', { rig: 'standard', intensity: 3 });
+    await dispatch('lighting', { rig: 'standard' });
+
+    const lights = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer.light;
+    expect(lights[0].intensity).toBe(0.6);
+  });
+
+  it('lets ambient and exposure be overridden without leaving the rig', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('lighting', {
+      rig: 'studio',
+      ambient: 0.1,
+      exposure: 1.5,
+    });
+
+    const renderer = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer;
+    expect(renderer.ambientIntensity).toBe(0.1);
+    expect(renderer.exposure).toBe(1.5);
+    expect(renderer.light).toHaveLength(3);
+  });
+
+  it('leaves exposure alone when it was not mentioned', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    await createDispatcher(plugin)('lighting', { rig: 'standard' });
+
+    const renderer = plugin.canvas3d.setProps.mock.calls.at(-1)[0].renderer;
+    expect(renderer).not.toHaveProperty('exposure');
+  });
+
+  it('refuses an unknown rig and lists the real ones', async () => {
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('lighting', { rig: 'cinematic' })
+    ).rejects.toThrow(/Unknown lighting rig 'cinematic'.*flat, rim, ring/s);
+  });
+
+  it('refuses a negative intensity', async () => {
+    await expect(
+      createDispatcher(withCanvas(fakePlugin()))('lighting', {
+        rig: 'standard',
+        intensity: -1,
+      })
+    ).rejects.toThrow(/must be 0 or more/);
   });
 });
 
