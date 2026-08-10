@@ -265,7 +265,15 @@ function withCanvas(plugin: any) {
       background: { variant: { name: 'off', params: {} } },
     },
   };
-  const screenshotValues: any = { transparent: false, format: { name: 'png' } };
+  // The real helper's value set, read off a live one: axes, format,
+  // illumination, resolution, transparent.
+  let screenshotValues: any = {
+    transparent: false,
+    format: { name: 'png' },
+    resolution: { name: 'viewport', params: {} },
+    axes: { name: 'off', params: {} },
+    illumination: { extraIterations: 0, targetIterationTimeMs: 100 },
+  };
   plugin.canvas3d = {
     props: canvasProps,
     setProps: vi.fn((props: any) => {
@@ -287,7 +295,10 @@ function withCanvas(plugin: any) {
         return screenshotValues;
       },
       behaviors: {
-        values: { next: vi.fn((v: any) => Object.assign(screenshotValues, v)) },
+        // BehaviorSubject.next *replaces* the value; merging here would make
+        // restoring a previous snapshot of it silently leave keys behind, and
+        // the test for that would pass against a bug.
+        values: { next: vi.fn((v: any) => (screenshotValues = v)) },
       },
     },
   };
@@ -549,6 +560,114 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('snapshot', () => {
+  /** A screenshot helper that records what it was told and what it returned. */
+  function withHelper(plugin: any) {
+    withCanvas(plugin);
+    const helper = plugin.helpers.viewportScreenshot;
+    const captured: any[] = [];
+    helper.getSizeAndViewport = () => ({ width: 800, height: 600 });
+    helper.getImageDataUri = vi.fn(async () => {
+      captured.push(JSON.parse(JSON.stringify(helper.values)));
+      return 'data:image/png;base64,AAAA';
+    });
+    helper.imagePass = {};
+    helper.autocrop = vi.fn();
+    helper.resetCrop = vi.fn();
+    helper.cropParams = { auto: false, relativePadding: 0 };
+    helper.behaviors.cropParams = { next: vi.fn((v: any) => (helper.cropParams = v)) };
+    return { plugin, helper, captured };
+  }
+
+  it('captures at the requested width, keeping the viewport aspect', async () => {
+    const { plugin, captured } = withHelper(fakePlugin());
+    const result: any = await createDispatcher(plugin)('snapshot', { width: 4323 });
+
+    // 800x600 viewport, so 4323 wide implies 3242 tall rather than a square.
+    expect(captured[0].resolution).toEqual({
+      name: 'custom',
+      params: { width: 4323, height: 3242 },
+    });
+    expect(result.requested_height).toBe(3242);
+  });
+
+  it('honours an explicit height', async () => {
+    const { plugin, captured } = withHelper(fakePlugin());
+    await createDispatcher(plugin)('snapshot', { width: 1000, height: 1000 });
+    expect(captured[0].resolution.params).toEqual({ width: 1000, height: 1000 });
+  });
+
+  it('always asks Mol* for PNG, whatever the file will end up as', async () => {
+    // PNG is lossless and the only format here with an alpha channel; Python
+    // converts onward. Capturing JPEG would bake compression artefacts into a
+    // TIFF that is meant to be lossless.
+    const { plugin, captured } = withHelper(fakePlugin());
+    await createDispatcher(plugin)('snapshot', { width: 500 });
+    expect(captured[0].format).toEqual({ name: 'png', params: {} });
+  });
+
+  it('puts the helper back exactly as it found it', async () => {
+    // The load-bearing one. These values persist on the helper, so without
+    // restoring them the next ordinary screenshot silently comes back at
+    // figure resolution — and nothing about it would look wrong.
+    const { plugin, helper } = withHelper(fakePlugin());
+    const before = JSON.parse(JSON.stringify(helper.values));
+
+    await createDispatcher(plugin)('snapshot', { width: 4000, transparent: true });
+
+    expect(helper.values).toEqual(before);
+  });
+
+  it('puts the helper back even when the capture fails', async () => {
+    const { plugin, helper } = withHelper(fakePlugin());
+    const before = JSON.parse(JSON.stringify(helper.values));
+    helper.getImageDataUri = vi.fn(async () => {
+      throw new Error('GL context lost');
+    });
+
+    await expect(
+      createDispatcher(plugin)('snapshot', { width: 4000 })
+    ).rejects.toThrow(/GL context lost/);
+    expect(helper.values).toEqual(before);
+  });
+
+  it('crops only when asked, and says which it did', async () => {
+    const { plugin, helper } = withHelper(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+
+    const plain: any = await dispatch('snapshot', { width: 500 });
+    expect(helper.resetCrop).toHaveBeenCalled();
+    expect(helper.autocrop).not.toHaveBeenCalled();
+    expect(plain.cropped).toBe(false);
+
+    const cropped: any = await dispatch('snapshot', { width: 500, crop: true });
+    expect(helper.autocrop).toHaveBeenCalled();
+    expect(cropped.cropped).toBe(true);
+  });
+
+  it('applies transparency for this capture only', async () => {
+    const { plugin, captured, helper } = withHelper(fakePlugin());
+    await createDispatcher(plugin)('snapshot', { width: 500, transparent: true });
+
+    expect(captured[0].transparent).toBe(true);
+    expect(helper.values.transparent).toBe(false);
+  });
+
+  it('reports the time a traced capture cost', async () => {
+    const { plugin } = withHelper(fakePlugin());
+    plugin.canvas3d.props.illumination = { enabled: true };
+    const result: any = await createDispatcher(plugin)('snapshot', { width: 500 });
+    expect(result).toHaveProperty('traced_ms');
+  });
+
+  it('refuses a width that is not a whole number of pixels', async () => {
+    const { plugin } = withHelper(fakePlugin());
+    await expect(
+      createDispatcher(plugin)('snapshot', { width: 0 })
+    ).rejects.toThrow(/whole number of pixels/);
   });
 });
 

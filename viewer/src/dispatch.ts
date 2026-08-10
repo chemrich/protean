@@ -66,6 +66,16 @@ interface EffectsArgs {
   sharpening?: boolean;
 }
 
+interface SnapshotArgs {
+  /** Output width in pixels, computed by the Python side from mm and DPI. */
+  width: number;
+  /** Omitted means "keep the viewport's aspect". */
+  height?: number;
+  transparent?: boolean;
+  /** Trim to the molecule's bounds, which changes the output dimensions. */
+  crop?: boolean;
+}
+
 interface PathTraceArgs {
   /** Defaults to true; pass false to go back to ordinary rendering. */
   enabled?: boolean;
@@ -879,6 +889,72 @@ export function createDispatcher(plugin: any): Handler {
         canvas3d.setProps({ postprocessing: post });
 
         return effectState(canvas3d);
+      },
+    },
+
+    snapshot: {
+      render: true,
+      async run({ width, height, transparent, crop }: SnapshotArgs) {
+        const helper = plugin.helpers?.viewportScreenshot;
+        if (!helper?.getImageDataUri) {
+          throw new Error('This Mol* build has no viewport screenshot helper');
+        }
+        if (!Number.isInteger(width) || width < 1) {
+          throw new Error(`Snapshot width must be a whole number of pixels, got ${width}`);
+        }
+
+        // Keep the figure proportioned like what is on screen unless a height
+        // was given, rather than defaulting to a square nobody asked for.
+        const viewport = helper.getSizeAndViewport?.() ?? {};
+        const aspect =
+          viewport.height && viewport.width ? viewport.height / viewport.width : 0.75;
+        const tall = height ?? Math.max(1, Math.round(width * aspect));
+
+        // Everything the helper is about to be told, so it can be put back.
+        // These values persist on the helper: without restoring them, the next
+        // ordinary screenshot would come back at figure resolution.
+        const previousValues = { ...helper.values };
+        const previousCrop = { ...helper.cropParams };
+
+        try {
+          helper.behaviors.values.next({
+            ...helper.values,
+            resolution: { name: 'custom', params: { width, height: tall } },
+            // Always PNG out of Mol*: lossless, and the only format here that
+            // carries an alpha channel. Python converts onward from that.
+            format: { name: 'png', params: {} },
+            ...(transparent !== undefined ? { transparent } : {}),
+          });
+          if (crop) helper.autocrop(0.05);
+          else helper.resetCrop();
+
+          // Build the pass before capturing, as `screenshot` does — a capture
+          // through a freshly created pass differs from the ones after it.
+          const pass = helper.imagePass;
+          if (!pass) throw new Error('Mol* built no image pass for the snapshot');
+
+          const traced = !!plugin.canvas3d?.props?.illumination?.enabled;
+          const started = performance.now();
+          const data_uri = await helper.getImageDataUri();
+          const elapsed = Math.round(performance.now() - started);
+
+          return {
+            data_uri,
+            // What was asked for. The decoded image is the authority on what
+            // arrived, and cropping deliberately changes it.
+            requested_width: width,
+            requested_height: tall,
+            cropped: !!crop,
+            // Whether this capture was actually transparent, so the Python side
+            // knows whether empty pixels in the result are expected or evidence
+            // that the render never finished.
+            transparent: !!helper.values.transparent,
+            ...(traced ? { traced_ms: elapsed } : { elapsed_ms: elapsed }),
+          };
+        } finally {
+          helper.behaviors.values.next(previousValues);
+          helper.behaviors.cropParams.next(previousCrop);
+        }
       },
     },
 
