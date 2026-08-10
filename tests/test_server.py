@@ -21,6 +21,7 @@ from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
 from protean_mcp.selections_numpy import load_structure, select_mask
 from protean_mcp.server import (
+    background,
     clear_viewer,
     color_by_conservation,
     color_by_potential,
@@ -31,9 +32,11 @@ from protean_mcp.server import (
     interface,
     load_session,
     mcp,
+    opacity,
     save_session,
     screenshot,
     select,
+    show,
 )
 
 # 1x1 transparent PNG
@@ -869,3 +872,83 @@ def test_renumbering_makes_ids_unique_and_one_based():
     array = atom_array(atoms)
     server_mod._renumber_for_viewer(array)
     assert array.atom_id.tolist() == [1, 2, 3, 4, 5]
+
+
+# -- background and opacity ----------------------------------------------------
+
+
+async def test_background_refuses_a_call_that_would_change_nothing():
+    """Both arguments omitted is a no-op, and a no-op reporting success is a lie."""
+    with pytest.raises(ViewerError, match="at least one of color or transparent"):
+        await background()
+
+
+async def test_background_sends_only_what_was_asked_for(wired_bridge):
+    """An unmentioned argument must not travel as an explicit default.
+
+    Sending `transparent: false` on a colour-only call would silently undo a
+    transparent background someone set a moment earlier.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"background": "#ff0000", "transparent": False}
+    )
+    task = wired_bridge.serve(1)
+    await background(color="#ff0000")
+    await task
+
+    assert sent == {"color": "#ff0000"}
+
+
+async def test_background_passes_transparency_through(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"screenshot_transparent": True}
+    )
+    task = wired_bridge.serve(1)
+    out = await background(transparent=True)
+    await task
+
+    assert sent == {"transparent": True}
+    # The reply is the viewer's read-back, returned to the caller unaltered.
+    assert out["screenshot_transparent"] is True
+
+
+async def test_opacity_reaches_the_viewer(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["opacity"] = lambda args: (
+        sent.update(args) or {"representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await opacity(0.3, name="surf")
+    await task
+
+    assert sent == {"name": "surf", "opacity": 0.3}
+
+
+async def test_show_carries_opacity_alongside_the_representation(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["show"] = lambda args: (
+        sent.update(args) or {"name": "sele", "representation": "molecular-surface"}
+    )
+    task = wired_bridge.serve(1)
+    await show(representation="molecular-surface", selection="all", opacity=0.25)
+    await task
+
+    assert sent["opacity"] == 0.25
+    assert sent["representation"] == "molecular-surface"
+
+
+async def test_show_omits_opacity_when_it_was_not_asked_for(wired_bridge, tmp_path):
+    """So a plain show() cannot quietly pin alpha to a default of its own."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["show"] = lambda args: (
+        sent.update(args) or {"name": "sele", "representation": "cartoon"}
+    )
+    task = wired_bridge.serve(1)
+    await show(selection="all")
+    await task
+
+    assert "opacity" not in sent

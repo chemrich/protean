@@ -50,6 +50,15 @@ interface ShowArgs extends SelectArgs {
   color?: string;
   /** Scales the representation; for spacefill this scales the vdW radius. */
   size?: number;
+  /** 0 invisible, 1 solid. Mol* calls this `alpha`. */
+  opacity?: number;
+}
+
+interface BackgroundArgs {
+  /** Literal hex, e.g. "#ffffff". A canvas has no theme to look a name up in. */
+  color?: string;
+  /** Render onto nothing, so a figure drops into a document without a card. */
+  transparent?: boolean;
 }
 
 declare global {
@@ -464,7 +473,15 @@ export function createDispatcher(plugin: any): Handler {
 
     show: {
       render: true,
-      async run({ name, expression, representation, color, size, limit }: ShowArgs) {
+      async run({
+        name,
+        expression,
+        representation,
+        color,
+        size,
+        opacity,
+        limit,
+      }: ShowArgs) {
         checkName('representation', representation, representationTypes());
         if (color && !color.startsWith('#')) {
           checkName('colour theme', color, colorThemeNames());
@@ -480,6 +497,15 @@ export function createDispatcher(plugin: any): Handler {
             );
           }
         }
+        let opacityValidated: boolean | undefined;
+        if (opacity !== undefined) {
+          checkOpacity(opacity);
+          const accepted = representationParams(representation);
+          opacityValidated = accepted !== null;
+          if (accepted && !accepted.includes('alpha')) {
+            throw new Error(`Representation '${representation}' has no opacity control.`);
+          }
+        }
         const selector = await component(name, expression);
         const structure = dataOf(selector);
         if (!structure || structure.elementCount === 0) {
@@ -487,13 +513,86 @@ export function createDispatcher(plugin: any): Handler {
         }
         const params: Record<string, unknown> = { type: representation };
         if (color) Object.assign(params, colorParams(color));
-        if (size !== undefined) params.typeParams = { sizeFactor: size };
+        const typeParams: Record<string, unknown> = {};
+        if (size !== undefined) typeParams.sizeFactor = size;
+        if (opacity !== undefined) typeParams.alpha = opacity;
+        if (Object.keys(typeParams).length) params.typeParams = typeParams;
         await plugin.builders.structure.representation.addRepresentation(selector, params);
         return {
           name,
           representation,
           ...(size !== undefined ? { size, size_validated: sizeValidated } : {}),
+          ...(opacity !== undefined
+            ? { opacity, opacity_validated: opacityValidated }
+            : {}),
           ...summarise(structure, limit ?? DEFAULT_RESIDUE_LIMIT),
+        };
+      },
+    },
+
+    opacity: {
+      render: true,
+      async run({ name, opacity }: { name: string; opacity: number }) {
+        checkOpacity(opacity);
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy`);
+        }
+        // Opacity lives on the representation, not on the component. Updating a
+        // bare handle would commit an empty transaction and report success
+        // while nothing on screen changed — the same shape as the recolouring
+        // bug, so this refuses instead.
+        const update = plugin.state.data.build();
+        let changed = 0;
+        for (const c of target) {
+          for (const repr of c.representations ?? []) {
+            update.to(repr.cell).update((old: any) => {
+              old.type.params.alpha = opacity;
+            });
+            changed++;
+          }
+        }
+        if (!changed) {
+          throw new Error(
+            `Selection '${name}' has no representation to make transparent. ` +
+              `Call show() on it first.`
+          );
+        }
+        await update.commit();
+        return { name, opacity, representations: changed };
+      },
+    },
+
+    background: {
+      render: true,
+      async run({ color, transparent }: BackgroundArgs) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const props: Record<string, unknown> = {};
+        if (color !== undefined) {
+          props.renderer = { backgroundColor: parseHexColor(color) };
+        }
+        if (transparent !== undefined) props.transparentBackground = transparent;
+        canvas3d.setProps(props);
+
+        // The screenshot helper carries its *own* transparency flag and passes
+        // it to the image pass as `transparentBackground`, overriding whatever
+        // the canvas holds. Setting only the canvas gives a transparent viewer
+        // and an opaque PNG from every capture — a success reply and the wrong
+        // file. See viewport-screenshot.js, which reads `this.values.transparent`.
+        const helper = plugin.helpers?.viewportScreenshot;
+        if (transparent !== undefined && helper) {
+          helper.behaviors.values.next({ ...helper.values, transparent });
+        }
+
+        // Read back rather than echo: this is the only evidence that the props
+        // were accepted, and Mol* accepts bad input without complaint.
+        return {
+          background: toHex(canvas3d.props?.renderer?.backgroundColor),
+          transparent: canvas3d.props?.transparentBackground ?? null,
+          screenshot_transparent: helper ? helper.values.transparent : null,
         };
       },
     },
@@ -817,4 +916,31 @@ export function colorParams(color: string): Record<string, unknown> {
     return { color: 'uniform', colorParams: { value: parseInt(color.slice(1), 16) } };
   }
   return { color };
+}
+
+/** Parse "#rrggbb" into the packed integer Mol* calls a Color.
+ *
+ * Strict on purpose. `parseInt('#oops'.slice(1), 16)` is NaN, and a NaN
+ * background paints black without complaint, which reads as a render failure
+ * rather than as a bad argument.
+ */
+export function parseHexColor(color: string): number {
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
+    throw new Error(`Expected a colour like "#ff8800", got '${color}'`);
+  }
+  return parseInt(color.slice(1), 16);
+}
+
+/** The inverse, for reading a colour back out of the canvas. */
+export function toHex(value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return `#${(value & 0xffffff).toString(16).padStart(6, '0')}`;
+}
+
+/** Opacity is a fraction. Mol* clamps silently, so 50 would become 1 — solid,
+ * the exact opposite of what someone typing "50" meant. */
+export function checkOpacity(opacity: number): void {
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+    throw new Error(`Opacity must be between 0 and 1, got ${opacity}`);
+  }
 }

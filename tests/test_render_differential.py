@@ -21,7 +21,16 @@ from __future__ import annotations
 import pytest
 
 from .browser import BROWSER_MARKS, viewer_session
-from .pixels import Render, background, coverage, decode, opaque
+from .pixels import (
+    Render,
+    background,
+    corners,
+    coverage,
+    decode,
+    mean_distance_from,
+    opaque,
+    transparent_fraction,
+)
 
 pytestmark = BROWSER_MARKS
 
@@ -107,6 +116,99 @@ async def test_unhiding_puts_it_back(frames):
     test above perfectly.
     """
     assert coverage(frames["restored"]) > DRAWN
+
+
+# -- background and opacity ----------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+async def styled() -> dict[str, object]:
+    """One session walking the two features this PR adds.
+
+    Sequenced so each frame differs from the last in exactly one respect, and
+    the replies are kept alongside the pixels: the tool claims something about
+    the canvas, and the picture is where that claim is checked.
+    """
+    async with viewer_session(FIXTURE) as session:
+        solid = await _shot(session)
+
+        await session.request("opacity", {"name": "auto", "opacity": 0.25})
+        faint = await _shot(session)
+        await session.request("opacity", {"name": "auto", "opacity": 1.0})
+
+        red_reply = await session.request("background", {"color": "#ff0000"})
+        red = await _shot(session)
+
+        clear_reply = await session.request("background", {"transparent": True})
+        clear = await _shot(session)
+
+    return {
+        "solid": solid,
+        "faint": faint,
+        "red": red,
+        "clear": clear,
+        "red_reply": red_reply,
+        "clear_reply": clear_reply,
+    }
+
+
+async def test_background_colour_reaches_the_pixels(styled):
+    """Not the reply — the corners of the actual image."""
+    assert styled["red_reply"]["background"] == "#ff0000"
+    assert background(styled["red"]) == (255, 0, 0, 255)
+
+
+async def test_a_transparent_background_really_has_no_pixels_in_it(styled):
+    """The trap this feature is built around.
+
+    ViewportScreenshotHelper passes its *own* `transparent` value to the image
+    pass, overriding whatever the canvas holds. Setting only
+    canvas3d.transparentBackground gives a transparent viewer and an opaque PNG
+    from every capture — a success reply and a wrong file. This asserts on the
+    capture, which is the half that was going to be wrong.
+    """
+    clear = styled["clear"]
+    assert styled["clear_reply"]["screenshot_transparent"] is True
+    assert not opaque(clear)
+    # Every corner is empty, and most of the frame with it.
+    assert all(pixel[3] == 0 for pixel in corners(clear).values())
+    assert transparent_fraction(clear) > 0.5
+
+
+async def test_the_molecule_survives_a_transparent_background(styled):
+    """A blank frame would satisfy the transparency test perfectly."""
+    assert coverage(styled["clear"]) > DRAWN
+
+
+async def test_opacity_moves_the_drawn_pixels_toward_the_background(styled):
+    """Opacity is a colour shift, not an alpha change — see tests/pixels.py.
+
+    Over an opaque canvas Mol* composites the representation at render time, so
+    the output stays fully opaque and only moves toward the background. The
+    measure is the distance, and `transparent_fraction` would read 0.0 for both
+    frames and look like a passing test on a feature that never worked.
+    """
+    solid, faint = styled["solid"], styled["faint"]
+    assert opaque(solid)
+    assert opaque(faint)
+
+    reference = background(solid)
+    solid_distance = mean_distance_from(solid, reference)
+    faint_distance = mean_distance_from(faint, reference)
+
+    assert faint_distance < solid_distance * 0.9
+    assert faint_distance > 0
+
+
+async def test_a_transparent_representation_is_still_drawn(styled):
+    """Distinguishes 'faded' from 'gone'.
+
+    Without this, `opacity` deleting the representation outright would pass the
+    test above with the best score it could possibly get.
+    """
+    solid, faint = styled["solid"], styled["faint"]
+    reference = background(solid)
+    assert coverage(faint, of=reference) > coverage(solid, of=reference) * 0.5
 
 
 async def test_todays_renders_carry_no_dpi(frames):
