@@ -96,6 +96,13 @@ _MAX_SNAPSHOT_PIXELS = 120_000_000
 # "the whole scene" means to the display tools.
 _WHOLE_SCENE = "auto"
 
+# Background imagery travels as data URIs through the bridge, which accepts 64 MB
+# messages. Six skybox faces share that budget, so each one is capped well below
+# it — a face this large is already far more than a figure needs.
+_MAX_BACKGROUND_IMAGE_BYTES = 8 * 1024 * 1024
+_SKYBOX_FACES = ("nx", "ny", "nz", "px", "py", "pz")
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
 _DOMAIN_BOUNDS = 2
 # The uncertainty theme ramps over a fixed [0, 100] domain.
 _B_FACTOR_FULL = 100.0
@@ -568,6 +575,67 @@ def _open_snapshot(png: bytes) -> Any:
         PILImage.MAX_IMAGE_PIXELS = previous
 
 
+def _background_image_uri(source: str) -> str:
+    """Turn a local image into a data URI, or pass a real URL through.
+
+    Opened with Pillow rather than trusted by extension. Mol* takes a URL and
+    draws nothing when it fails to load — no error, no reply field, just a
+    background that stays as it was — so a file that is not an image has to be
+    refused here or it becomes a silent no-op.
+    """
+    if source.startswith(("http://", "https://", "data:")):
+        return source
+
+    path = Path(source).expanduser()
+    if not path.is_file():
+        raise ViewerError(f"No image at {source!r}")
+    raw = path.read_bytes()
+    if len(raw) > _MAX_BACKGROUND_IMAGE_BYTES:
+        raise ViewerError(
+            f"{path.name} is {len(raw) // 1024} kB, beyond the "
+            f"{_MAX_BACKGROUND_IMAGE_BYTES // 1024 // 1024} MB a background image "
+            "can travel as. Downscale it."
+        )
+    try:
+        with PILImage.open(io.BytesIO(raw)) as probe:
+            probe.verify()
+            fmt = (probe.format or "").lower()
+    except Exception as exc:
+        raise ViewerError(f"{path.name} is not an image Pillow can read: {exc}") from exc
+
+    mime = "jpeg" if fmt in {"jpeg", "jpg"} else fmt
+    return f"data:image/{mime};base64,{base64.b64encode(raw).decode()}"
+
+
+def _skybox_faces(directory: str) -> dict[str, str]:
+    """Find the six cube faces in *directory*, named nx/ny/nz/px/py/pz.
+
+    A cube map is six files that have to agree, so naming them by convention
+    beats six arguments a caller has to keep in the right order.
+    """
+    folder = Path(directory).expanduser()
+    if not folder.is_dir():
+        raise ViewerError(f"No directory at {directory!r} to read skybox faces from")
+
+    found: dict[str, str] = {}
+    missing: list[str] = []
+    for face in _SKYBOX_FACES:
+        for suffix in _IMAGE_SUFFIXES:
+            candidate = folder / f"{face}{suffix}"
+            if candidate.is_file():
+                found[face] = _background_image_uri(str(candidate))
+                break
+        else:
+            missing.append(face)
+    if missing:
+        raise ViewerError(
+            f"{folder} is missing skybox faces: {', '.join(missing)}. "
+            f"All six are needed, named {'/'.join(_SKYBOX_FACES)} "
+            f"with one of {', '.join(_IMAGE_SUFFIXES)}."
+        )
+    return found
+
+
 def _incomplete_capture(image: Any) -> bool:
     """Did part of this capture never get rendered?
 
@@ -895,6 +963,9 @@ async def background(
     gradient: str | None = None,
     gradient_from: str | None = None,
     gradient_to: str | None = None,
+    image: str | None = None,
+    skybox: str | None = None,
+    blur: float | None = None,
 ) -> dict[str, Any]:
     """Set the canvas background: a flat colour, a gradient, or nothing at all.
 
@@ -908,15 +979,37 @@ async def background(
       A gradient sits in front of the flat colour rather than replacing it.
     gradient_from / gradient_to: the two stops — top and bottom for horizontal,
       centre and edge for radial. Both default to Mol*'s pale grey pair.
+    image: a flat picture behind the scene — a local file path, or an http(s)
+      URL. A local file is read and sent inline, so nothing has to still be
+      reachable when the figure is captured.
+    skybox: a directory holding the six cube faces, named nx, ny, nz, px, py
+      and pz (.png, .jpg, .jpeg or .webp). Unlike a flat image this surrounds
+      the scene, so it also shows in reflections off a metallic material.
+    blur: softens the image or skybox, 0 to 1 — useful for pushing a
+      photographic background behind the molecule.
 
-    Returns the values read back off the canvas, not the ones passed in.
+    gradient, image and skybox are the same slot in Mol*, so at most one of
+    them applies at a time. Returns the values read back off the canvas, not
+    the ones passed in.
     """
-    if color is None and transparent is None and gradient is None:
+    chosen = [
+        name
+        for name, value in (("gradient", gradient), ("image", image), ("skybox", skybox))
+        if value is not None
+    ]
+    if len(chosen) > 1:
+        raise ViewerError(
+            f"Pass at most one of gradient, image or skybox — got {', '.join(chosen)}. "
+            "They are the same background slot in Mol*."
+        )
+    if color is None and transparent is None and not chosen:
         if gradient_from is not None or gradient_to is not None:
             raise ViewerError(
                 "Pass gradient= as well, to say which gradient the colours are for"
             )
-        raise ViewerError("Pass at least one of color, transparent or gradient")
+        raise ViewerError(
+            "Pass at least one of color, transparent, gradient, image or skybox"
+        )
     args: dict[str, Any] = {}
     for key, value in (
         ("color", color),
@@ -924,9 +1017,15 @@ async def background(
         ("gradient", gradient),
         ("gradient_from", gradient_from),
         ("gradient_to", gradient_to),
+        ("blur", blur),
     ):
         if value is not None:
             args[key] = value
+    # Read and encoded here rather than in the viewer, which has no filesystem.
+    if image is not None:
+        args["image"] = _background_image_uri(image)
+    if skybox is not None:
+        args["skybox"] = _skybox_faces(skybox)
     return await _call("background", args)
 
 

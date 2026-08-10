@@ -128,6 +128,12 @@ interface BackgroundArgs {
   gradient_from?: string;
   /** Bottom (horizontal) or edge (radial). */
   gradient_to?: string;
+  /** A URL or data URI for a flat image behind the scene. */
+  image?: string;
+  /** Six URLs or data URIs, keyed nx/ny/nz/px/py/pz. */
+  skybox?: Record<string, string>;
+  /** Softens whichever of the two is in use, 0-1. */
+  blur?: number;
 }
 
 declare global {
@@ -1181,7 +1187,16 @@ export function createDispatcher(plugin: any): Handler {
 
     background: {
       render: true,
-      async run({ color, transparent, gradient, gradient_from, gradient_to }: BackgroundArgs) {
+      async run({
+        color,
+        transparent,
+        gradient,
+        gradient_from,
+        gradient_to,
+        image,
+        skybox,
+        blur,
+      }: BackgroundArgs) {
         const canvas3d = plugin.canvas3d;
         if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
 
@@ -1221,6 +1236,53 @@ export function createDispatcher(plugin: any): Handler {
           }
         } else if (gradient_from !== undefined || gradient_to !== undefined) {
           throw new Error('Pass gradient= as well, to say which gradient the colours are for');
+        }
+
+        // Mol* takes both of these as plain URL strings, and a data URI is a
+        // URL — so an image never has to go through its File params, and the
+        // Python side can send a local file without the bridge growing a
+        // route to serve it from.
+        if (image !== undefined) {
+          props.postprocessing = {
+            background: {
+              variant: {
+                name: 'image',
+                params: {
+                  source: { name: 'url', params: image },
+                  blur: blur ?? 0,
+                  opacity: 1,
+                  saturation: 0,
+                  lightness: 0,
+                  // 'viewport' keys the image to the rendered area, so a
+                  // capture frames the same part of it that the screen did.
+                  coverage: 'viewport',
+                },
+              },
+            },
+          };
+        }
+
+        if (skybox !== undefined) {
+          const faces = ['nx', 'ny', 'nz', 'px', 'py', 'pz'];
+          const missing = faces.filter((face) => !skybox[face]);
+          if (missing.length) {
+            throw new Error(`Skybox is missing ${missing.join(', ')}; all six faces are needed`);
+          }
+          props.postprocessing = {
+            background: {
+              variant: {
+                name: 'skybox',
+                params: {
+                  faces: { name: 'urls', params: { ...skybox } },
+                  blur: blur ?? 0,
+                  rotation: { x: 0, y: 0, z: 0 },
+                  opacity: 1,
+                  saturation: 0,
+                  lightness: 0,
+                },
+              },
+            },
+          };
         }
 
         canvas3d.setProps(props);
