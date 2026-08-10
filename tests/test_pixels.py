@@ -22,6 +22,7 @@ from .pixels import (
     corners,
     coverage,
     decode,
+    difference,
     mean_distance_from,
     opaque,
     transparent_fraction,
@@ -277,6 +278,38 @@ def test_mean_distance_ignores_how_much_of_the_frame_is_filled():
     assert mean_distance_from(decode(png(small)), BLACK) == pytest.approx(
         mean_distance_from(decode(png(large)), BLACK)
     )
+
+
+def test_difference_is_zero_for_a_frame_against_itself():
+    pixels = solid(10, 10, BLACK)
+    pixels[3:6, :] = RED
+    render = decode(png(pixels))
+    assert difference(render, render) == 0.0
+
+
+def test_difference_counts_only_the_pixels_that_moved():
+    """A shading change repaints part of the frame and leaves the rest alone."""
+    before = solid(10, 10, BLACK)
+    before[3:6, :] = RED
+    after = before.copy()
+    after[3:5, :] = (200, 0, 0, 255)  # two of the ten rows re-lit
+
+    assert difference(decode(png(before)), decode(png(after))) == pytest.approx(0.2)
+
+
+def test_difference_ignores_backend_noise():
+    """Two captures of an unchanged scene are not bit-identical."""
+    before = solid(10, 10, (100, 100, 100, 255))
+    after = before.copy()
+    after[0, 0] = (104, 97, 100, 255)
+
+    assert difference(decode(png(before)), decode(png(after))) == 0.0
+
+
+def test_difference_refuses_to_compare_different_sizes():
+    """Otherwise a resized capture would broadcast or crash somewhere unhelpful."""
+    with pytest.raises(ValueError, match="different sizes"):
+        difference(decode(png(solid(10, 10, RED))), decode(png(solid(8, 10, RED))))
 
 
 def test_mean_distance_is_zero_on_an_empty_frame():

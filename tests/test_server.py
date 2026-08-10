@@ -30,6 +30,7 @@ from protean_mcp.server import (
     electrostatics,
     fetch_structure,
     interface,
+    lighting,
     load_session,
     mcp,
     opacity,
@@ -952,3 +953,27 @@ async def test_show_omits_opacity_when_it_was_not_asked_for(wired_bridge, tmp_pa
     await task
 
     assert "opacity" not in sent
+
+
+async def test_lighting_sends_the_rig_and_omits_unmentioned_knobs(wired_bridge):
+    """An unmentioned knob must not travel as a default and overwrite a setting."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["lighting"] = lambda args: (
+        sent.update(args) or {"rig": args["rig"], "lights": 3}
+    )
+    task = wired_bridge.serve(1)
+    out = await lighting(rig="three-point")
+    await task
+
+    assert sent == {"rig": "three-point"}
+    assert out["lights"] == 3
+
+
+async def test_lighting_passes_its_knobs_through(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["lighting"] = lambda args: sent.update(args) or {"rig": "ring"}
+    task = wired_bridge.serve(1)
+    await lighting(rig="ring", intensity=1.5, ambient=0.2, exposure=1.2)
+    await task
+
+    assert sent == {"rig": "ring", "intensity": 1.5, "ambient": 0.2, "exposure": 1.2}
