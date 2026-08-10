@@ -18,6 +18,7 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,8 @@ from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.connection import ViewerError
+from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections_numpy import load_structure
 
 from .browser import BROWSER_MARKS, PATHTRACE_MARKS, viewer_session
 from .pixels import (
@@ -829,3 +832,105 @@ async def test_a_real_journal_figure_reaches_disk(tmp_path, fmt, suffix, mode):
     # The physical width the file actually claims, derived from its own pixels.
     assert result["width_mm"] == pytest.approx(183.0, abs=0.1)
     assert written.stat().st_size == result["bytes"] > 0
+
+
+# -- presets -------------------------------------------------------------------
+
+# A preset that does not change the picture is worse than no preset: it reports
+# success and the figure comes out identical. Threshold well below the smallest
+# measured effect of any single style change this suite already covers.
+STYLED = 0.008
+
+
+@contextlib.asynccontextmanager
+async def _as_server(session, load: bool = False):
+    """Point the server module's tools at this browser session.
+
+    `load` fills in the server's own copy of the structure, which
+    `viewer_session` does not: it loads straight into the viewer, so anything
+    that resolves atom indices — the ghost-surface preset, for one — finds
+    nothing loaded.
+
+    Filled in directly rather than by calling `fetch_structure()`, which would
+    reload the viewer too and reframe its camera, so every before/after
+    comparison in the test would be measuring the camera move instead of the
+    preset. Same file and same assembly the session used, so both halves still
+    describe one molecule.
+    """
+    previous = server_mod._bridge
+    server_mod._bridge = session.bridge
+    saved = (server_mod._structure, server_mod._structure_identifier)
+    try:
+        if load:
+            fetched = await fetch_structure_data(FIXTURE)
+            server_mod._structure = load_structure(
+                fetched.data, fetched.format, "asymmetric"
+            ).array
+            server_mod._structure_identifier = FIXTURE
+        yield
+    finally:
+        server_mod._bridge = previous
+        server_mod._structure, server_mod._structure_identifier = saved
+
+
+async def _apply(session, *args, **kwargs) -> dict[str, Any]:
+    async with _as_server(session):
+        result: dict[str, Any] = await server_mod.preset(*args, **kwargs)
+        return result
+
+
+@pytest.fixture(scope="module")
+async def presets() -> dict[str, Any]:
+    """One frame per scene-wide preset, from a common baseline."""
+    frames: dict[str, Render] = {}
+    async with viewer_session(FIXTURE) as session:
+        frames["plain"] = await _shot(session)
+        for name in ("publication-cartoon", "illustrative"):
+            await _apply(session, name)
+            frames[name] = await _shot(session)
+    return {"frames": frames}
+
+
+@pytest.mark.parametrize("name", ["publication-cartoon", "illustrative"])
+async def test_a_preset_changes_the_picture(presets, name):
+    frames: dict[str, Render] = presets["frames"]
+    assert difference(frames["plain"], frames[name]) > STYLED
+
+
+async def test_the_presets_differ_from_each_other(presets):
+    """Two recipes that composed to the same thing would both 'work'."""
+    frames: dict[str, Render] = presets["frames"]
+    assert difference(frames["publication-cartoon"], frames["illustrative"]) > STYLED
+
+
+async def test_illustrative_draws_the_outline_it_promises(presets):
+    """Named for a look, so the look is what gets checked.
+
+    The outline is black on a white ground, which nothing else in this scene
+    produces, so counting near-black pixels separates "the recipe ran" from
+    "the recipe produced the thing it is named after".
+    """
+    frames: dict[str, Render] = presets["frames"]
+    black = color_fraction(frames["illustrative"], (0, 0, 0, 255), tolerance=40)
+    assert black > color_fraction(frames["plain"], (0, 0, 0, 255), tolerance=40)
+
+
+async def test_ghost_surface_layers_over_what_is_already_drawn():
+    """The scoping claim, checked on screen rather than in the call log.
+
+    A surface shown under the same handle rebuilds that component, so the
+    cartoon inside would disappear and the frame would show only a surface.
+    Here the ghost is its own component, so the drawn area *grows* — the
+    surface is wider than the cartoon it wraps — and the scene keeps everything
+    it had.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        before = await _shot(session)
+        result = await server_mod.preset("ghost-surface")
+        after = await _shot(session)
+
+    reference = background(before)
+    assert result["applied_to"] == "auto"
+    assert difference(before, after) > STYLED
+    # A molecular surface encloses the cartoon, so it covers strictly more.
+    assert coverage(after, of=reference) > coverage(before, of=reference)

@@ -24,6 +24,7 @@ from protean_mcp.handles import summarise
 from protean_mcp.selections_numpy import load_structure, select_mask
 from protean_mcp.server import (
     background,
+    capabilities,
     clear_viewer,
     color_by_conservation,
     color_by_potential,
@@ -39,6 +40,7 @@ from protean_mcp.server import (
     mcp,
     opacity,
     path_trace,
+    preset,
     save_session,
     screenshot,
     select,
@@ -1286,3 +1288,125 @@ async def test_the_reported_width_follows_the_pixels_that_came_back(
     assert out["requested_width_mm"] == 183.0
     assert out["width_mm"] == pytest.approx(1000 / 300 * 25.4, abs=0.01)
     assert out["width_mm"] < out["requested_width_mm"]
+
+
+# -- presets -------------------------------------------------------------------
+
+
+def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
+    """Answer every display action, remembering the order they arrived in."""
+    for action in (
+        "background",
+        "lighting",
+        "effects",
+        "shading",
+        "material",
+        "opacity",
+        "show",
+        "label",
+        "focus",
+        "select",
+    ):
+
+        def handle(args, action=action):
+            calls.append((action, args))
+            return {"ok": True, "name": args.get("name", ""), "representations": 1}
+
+        viewer.handlers[action] = handle
+
+
+async def test_unknown_preset_is_refused_with_the_real_list(wired_bridge):
+    with pytest.raises(ViewerError, match=r"Unknown preset 'cinematic'.*active-site"):
+        await preset("cinematic")
+
+
+async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
+    """A preset is a composition, not a black box.
+
+    Listing the calls is what makes it adjustable afterwards rather than an
+    all-or-nothing style someone has to accept whole.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+    task = wired_bridge.serve(20)
+    out = await preset("publication-cartoon")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert out["preset"] == "publication-cartoon"
+    assert [action for action, _ in calls] == [
+        "background",
+        "lighting",
+        "effects",
+        "shading",
+        "material",
+    ]
+    assert len(out["steps"]) == len(calls)
+
+
+async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
+    """The scoping this preset exists to get right.
+
+    Showing a surface under the *same* handle rebuilds that component, so the
+    cartoon meant to be visible inside the ghost would silently vanish. The
+    surface has to be its own component over the same atoms.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    task = wired_bridge.serve(20)
+    await select("all", name="site")
+    out = await preset("ghost-surface", handle="site")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    shown = [args for action, args in calls if action == "show"]
+    assert shown, "the preset never drew a surface"
+    assert shown[0]["name"] == "site_ghost"
+    assert shown[0]["name"] != "site"
+    assert shown[0]["representation"] == "molecular-surface"
+    assert shown[0]["opacity"] == 0.25
+    # And the original handle still exists, pointing at the same atoms.
+    assert out["applied_to"] == "site"
+
+
+async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _record(wired_bridge, [])
+    task = wired_bridge.serve(20)
+    await select("name CA", name="site")
+    await preset("ghost-surface", handle="site")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    source = server_mod._handles.get("site")
+    ghost = server_mod._handles.get("site_ghost")
+    assert ghost.indices.tolist() == source.indices.tolist()
+
+
+async def test_ghost_surface_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="No selection named 'nope'"):
+        await preset("ghost-surface", handle="nope")
+
+
+async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_path):
+    """A site preset applied to everything is not a site preset."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="needs a handle"):
+        await preset("active-site")
+
+
+async def test_capabilities_reports_the_presets(wired_bridge):
+    wired_bridge.handlers["capabilities"] = lambda args: {"representations": ["cartoon"]}
+    task = wired_bridge.serve(1)
+    out = await capabilities()
+    await task
+
+    assert "ghost-surface" in out["presets"]
+    assert out["presets"] == sorted(out["presets"])
