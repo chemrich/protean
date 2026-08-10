@@ -66,6 +66,20 @@ interface EffectsArgs {
   sharpening?: boolean;
 }
 
+interface OrbitArgs {
+  /** Degrees to swing the camera around the up axis, through the target. */
+  degrees: number;
+}
+
+interface SpinArgs {
+  /** 'spin', 'rock' or 'off'. */
+  mode: string;
+  /** Radians per second; Mol*'s own default is 1. */
+  speed?: number;
+  /** Rock only: how far it swings either side, in degrees. */
+  angle?: number;
+}
+
 interface SnapshotArgs {
   /** Output width in pixels, computed by the Python side from mm and DPI. */
   width: number;
@@ -898,6 +912,78 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    orbit: {
+      render: true,
+      async run({ degrees }: OrbitArgs) {
+        const camera = plugin.canvas3d?.camera;
+        if (!camera) throw new Error('No 3D canvas yet — load a structure first.');
+        if (!Number.isFinite(degrees)) {
+          throw new Error(`Orbit needs a number of degrees, got ${degrees}`);
+        }
+
+        // Rotate the camera about the up axis, through the point it is looking
+        // at, rather than driving Mol*'s spin animation and sampling it. A
+        // frame sequence has to be reproducible: sampling a live animation
+        // makes each frame depend on when it was taken.
+        const snapshot = camera.getSnapshot();
+        const target = Array.from(snapshot.target as ArrayLike<number>);
+        const position = Array.from(snapshot.position as ArrayLike<number>);
+        const up = Array.from(snapshot.up as ArrayLike<number>);
+
+        const moved = rotateAbout(
+          [position[0] - target[0], position[1] - target[1], position[2] - target[2]],
+          up,
+          (degrees * Math.PI) / 180
+        );
+        camera.setState(
+          {
+            ...snapshot,
+            position: [target[0] + moved[0], target[1] + moved[1], target[2] + moved[2]],
+          },
+          // No tween: a frame grab wants the camera where it was put, now.
+          0
+        );
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
+
+        const now = camera.getSnapshot();
+        return {
+          degrees,
+          position: Array.from(now.position as ArrayLike<number>),
+          target: Array.from(now.target as ArrayLike<number>),
+        };
+      },
+    },
+
+    spin: {
+      render: true,
+      async run({ mode, speed, angle }: SpinArgs) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+        const modes = ['off', 'spin', 'rock'];
+        if (!modes.includes(mode)) {
+          throw new Error(`Unknown spin mode '${mode}'. Available: ${modes.join(', ')}`);
+        }
+        if (speed !== undefined && (!Number.isFinite(speed) || speed <= 0)) {
+          throw new Error(`Spin speed must be above 0, got ${speed}`);
+        }
+
+        const params: Record<string, unknown> =
+          mode === 'rock'
+            ? { speed: speed ?? 0.3, angle: angle ?? 10 }
+            : mode === 'spin'
+              ? { speed: speed ?? 1 }
+              : {};
+        canvas3d.setProps({ trackball: { animate: { name: mode, params } } });
+
+        const applied = canvas3d.props?.trackball?.animate;
+        return {
+          mode: applied?.name ?? null,
+          speed: applied?.params?.speed ?? null,
+          angle: applied?.params?.angle ?? null,
+        };
+      },
+    },
+
     snapshot: {
       render: true,
       async run({ width, height, transparent, crop }: SnapshotArgs) {
@@ -1645,6 +1731,29 @@ export function lociOf(root: any, component: any) {
     if (indices.length) elements.push({ unit, indices: Int32Array.from(indices) });
   }
   return { kind: 'element-loci', structure: root, elements };
+}
+
+/** Rotate *v* about *axis* by *radians*, by Rodrigues' formula.
+ *
+ * Written out because the prebuilt Mol* global exposes about a dozen names and
+ * its Vec3 helpers are not among them.
+ */
+export function rotateAbout(v: number[], axis: number[], radians: number): number[] {
+  const length = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+  const [kx, ky, kz] = [axis[0] / length, axis[1] / length, axis[2] / length];
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dot = kx * v[0] + ky * v[1] + kz * v[2];
+  const cross = [
+    ky * v[2] - kz * v[1],
+    kz * v[0] - kx * v[2],
+    kx * v[1] - ky * v[0],
+  ];
+  return [
+    v[0] * cos + cross[0] * sin + kx * dot * (1 - cos),
+    v[1] * cos + cross[1] * sin + ky * dot * (1 - cos),
+    v[2] * cos + cross[2] * sin + kz * dot * (1 - cos),
+  ];
 }
 
 /** A leading '#' means a literal colour; anything else is a Mol* colour theme. */

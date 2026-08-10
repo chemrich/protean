@@ -100,6 +100,11 @@ _WHOLE_SCENE = "auto"
 # messages. Six skybox faces share that budget, so each one is capped well below
 # it — a face this large is already far more than a figure needs.
 _MAX_BACKGROUND_IMAGE_BYTES = 8 * 1024 * 1024
+# A turntable writes one file per frame and re-renders the scene each time, so
+# a runaway frame count is a long wait and a full disk rather than an error.
+_MAX_TURNTABLE_FRAMES = 720
+# Two frames is the least that is a sequence rather than a picture.
+_MIN_TURNTABLE_FRAMES = 2
 _SKYBOX_FACES = ("nx", "ny", "nz", "px", "py", "pz")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
@@ -796,6 +801,114 @@ async def snapshot(
         "cropped": bool(result.get("cropped")),
         "bytes": out.stat().st_size,
         **({"traced_ms": result["traced_ms"]} if "traced_ms" in result else {}),
+    }
+
+
+@mcp.tool()
+async def spin(
+    mode: str = "spin", speed: float | None = None, angle: float | None = None
+) -> dict[str, Any]:
+    """Set the viewer turning on its own, for looking rather than capturing.
+
+    This is a live animation in the browser: it makes a structure easier to
+    read on screen, and it does not produce frames. turntable() is the one that
+    writes a sequence.
+
+    mode: "spin" turns continuously, "rock" swings back and forth, "off" stops.
+    speed: radians per second. Mol*'s defaults are 1 spinning, 0.3 rocking.
+    angle: rock only — how far it swings either side, in degrees.
+    """
+    args: dict[str, Any] = {"mode": mode}
+    if speed is not None:
+        args["speed"] = speed
+    if angle is not None:
+        args["angle"] = angle
+    return await _call("spin", args)
+
+
+@mcp.tool()
+async def turntable(
+    directory: str,
+    frames: int = 36,
+    width: int = 1200,
+    degrees: float = 360.0,
+    transparent: bool | None = None,
+) -> dict[str, Any]:
+    """Capture a numbered frame sequence orbiting the structure.
+
+    The camera is moved a fixed step and captured, frame by frame, rather than
+    a live animation being sampled — so the sequence is reproducible and the
+    step is exact. A full 360 turn ends where it started, which is what makes
+    the sequence loop cleanly.
+
+    Sizes are in pixels here, not millimetres: a movie has a frame size, not a
+    physical width. snapshot() is the one that thinks in millimetres and DPI.
+
+    directory: where the frames are written, as frame_0000.png upward. Created
+      if it does not exist; existing frames with the same names are replaced.
+    frames: how many captures make up the turn. 36 gives a 10-degree step.
+    degrees: total rotation across the sequence. 360 loops; 180 gives a
+      half-turn that reverses cleanly for a ping-pong.
+    transparent: capture onto nothing, for compositing.
+
+    Encoding to MP4 or GIF is Phase 5 — this writes the frames that step needs.
+    """
+    if frames < _MIN_TURNTABLE_FRAMES:
+        raise ViewerError(f"A turntable needs at least 2 frames, got {frames}")
+    if frames > _MAX_TURNTABLE_FRAMES:
+        raise ViewerError(
+            f"{frames} frames is beyond the {_MAX_TURNTABLE_FRAMES} this writes in one "
+            "call. Capture a shorter turn, or run it twice."
+        )
+    if width < 1:
+        raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
+
+    out = Path(directory).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    bridge = _require_viewer()
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    step = degrees / frames
+    args: dict[str, Any] = {"width": width, "crop": False}
+    if transparent is not None:
+        args["transparent"] = transparent
+
+    written: list[str] = []
+    for index in range(frames):
+        if index:
+            await bridge.request("orbit", {"degrees": step}, timeout=_SNAPSHOT_TIMEOUT)
+        result = await bridge.request("snapshot", args, timeout=timeout)
+        data_uri: str = result["data_uri"]
+        header, _, payload = data_uri.partition(",")
+        if "base64" not in header:
+            raise ViewerError(f"Unexpected frame encoding: {header}")
+        png = base64.b64decode(payload)
+        image = _open_snapshot(png)
+        if not result.get("transparent") and _incomplete_capture(image):
+            raise ViewerError(
+                f"Frame {index} came back incomplete: parts of the "
+                f"{image.width}x{image.height} image were never rendered. "
+                "Lower the width, or capture on a machine with a GPU."
+            )
+        frame = out / f"frame_{index:04d}.png"
+        frame.write_bytes(png)
+        written.append(str(frame))
+
+    # Put the camera back where the sequence started, so a turntable is not a
+    # one-way trip that leaves every later capture facing somewhere else.
+    await bridge.request(
+        "orbit", {"degrees": degrees - step * (frames - 1)}, timeout=_SNAPSHOT_TIMEOUT
+    )
+
+    return {
+        "directory": str(out),
+        "frames": len(written),
+        "degrees": degrees,
+        "step_degrees": round(step, 4),
+        "width": width,
+        "first": written[0],
+        "last": written[-1],
+        "bytes": sum(Path(f).stat().st_size for f in written),
     }
 
 
