@@ -66,6 +66,17 @@ interface EffectsArgs {
   sharpening?: boolean;
 }
 
+interface PathTraceArgs {
+  /** Defaults to true; pass false to go back to ordinary rendering. */
+  enabled?: boolean;
+  /** A key of TRACE_QUALITY. */
+  quality?: string;
+  /** Light bounces, 1-16. Mol*'s default is 4. */
+  bounces?: number;
+  shadows?: boolean;
+  denoise?: boolean;
+}
+
 interface MaterialArgs {
   name: string;
   /** A key of MATERIAL_FINISHES. */
@@ -256,6 +267,26 @@ const SHADING_STYLES: Record<string, Record<string, unknown>> = {
   flat: { celShaded: false, xrayShaded: false, ignoreLight: true },
 };
 
+/** Path-trace quality, as sample counts.
+ *
+ * Mol*'s `illumination.maxIterations` is a power of two, so a caller working in
+ * samples would have to compute a logarithm to ask for 128 of them. These names
+ * carry the exponent and the reply reports the sample count it works out to.
+ *
+ * Measured on 1UBQ at 800x600 on an Apple GPU, per capture:
+ *
+ *   draft 1.2s (8 samples)   standard 4.1s (32)   high 15.8s (128)
+ *
+ * Cost is roughly 4x per step and scales with pixel count, so the same ladder
+ * at figure resolution runs into minutes.
+ */
+const TRACE_QUALITY: Record<string, number> = {
+  draft: 3,
+  standard: 5,
+  high: 7,
+  ultra: 9,
+};
+
 /** Named surface finishes, as PBR material values.
  *
  * Two departures from the obvious, both forced by measuring what actually
@@ -310,6 +341,10 @@ const HIDDEN_TIMEOUT_MS = 30_000;
  * not instant. Shorter than the hidden budget: nothing is paused here, so a
  * wait this long means the commit loop is stuck rather than merely slow. */
 const VISIBLE_TIMEOUT_MS = 10_000;
+/** Budget once path tracing is on, where a single capture legitimately takes
+ * minutes. Generous enough not to abort real work, bounded so that software
+ * rendering — where tracing never finishes — still reports rather than hangs. */
+const TRACED_TIMEOUT_MS = 300_000;
 const DEFAULT_RESIDUE_LIMIT = 200;
 /** Camera moves are tweened; this bounds the wait for one to land. */
 const CAMERA_TIMEOUT_MS = 3_000;
@@ -402,24 +437,36 @@ async function withRenderPump<T>(
   const setTurbo = window.__protean?.setTurbo;
   setTurbo?.(true);
 
+  // A path-traced capture takes seconds to minutes, so the ordinary budget
+  // would abort work that was going to succeed. Measured on 1UBQ at 800x600:
+  // 4.1s at standard quality, 15.8s at high, and both scale with pixel count.
+  const traced = !!plugin.canvas3d?.props?.illumination?.enabled;
+  const budget = traced ? TRACED_TIMEOUT_MS : HIDDEN_TIMEOUT_MS;
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       const pump = setTurbo ? 'the hidden-tab render pump is active' : 'no render pump is installed';
       reject(
         new Error(
-          `'${action}' did not finish within ${HIDDEN_TIMEOUT_MS / 1000}s while the ` +
-            `viewer tab was hidden (visibilityState=${document.visibilityState}, ${pump}). ` +
-            `Browsers pause requestAnimationFrame in background tabs, which Mol* needs ` +
-            `to build representations. Bring the protean tab to the front and retry.`
+          `'${action}' did not finish within ${budget / 1000}s while the ` +
+            `viewer tab was hidden (visibilityState=${document.visibilityState}, ${pump}` +
+            `${traced ? ', path tracing is on' : ''}). ` +
+            (traced
+              ? `Path tracing needs a real GPU; under software rendering a single ` +
+                `capture can take longer than this. Lower path_trace(quality=...), ` +
+                `or turn it off.`
+              : `Browsers pause requestAnimationFrame in background tabs, which Mol* ` +
+                `needs to build representations. Bring the protean tab to the front ` +
+                `and retry.`)
         )
       );
-    }, HIDDEN_TIMEOUT_MS);
+    }, budget);
   });
 
   const settled = (async () => {
     const result = await run();
-    await settleRender(plugin, HIDDEN_TIMEOUT_MS);
+    await settleRender(plugin, budget);
     return result;
   })();
 
@@ -835,6 +882,67 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    path_trace: {
+      render: true,
+      async run({ enabled, quality, bounces, shadows, denoise }: PathTraceArgs) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const on = enabled ?? true;
+        const chosen = quality ?? 'standard';
+        const iterations = TRACE_QUALITY[chosen];
+        if (iterations === undefined) {
+          throw new Error(
+            `Unknown path-trace quality '${chosen}'. ` +
+              `Available: ${Object.keys(TRACE_QUALITY).sort().join(', ')}`
+          );
+        }
+        if (bounces !== undefined && (!Number.isInteger(bounces) || bounces < 1 || bounces > 16)) {
+          throw new Error(`bounces must be a whole number from 1 to 16, got ${bounces}`);
+        }
+
+        // The four extensions IlluminationPass requires. It does not throw when
+        // they are missing — the constructor returns early and leaves the pass
+        // permanently unsupported — so an unchecked enable would render an
+        // ordinary raster image and report success.
+        const extensions = canvas3d.webgl?.extensions ?? {};
+        const required = ['textureFloat', 'colorBufferFloat', 'depthTexture', 'drawBuffers'];
+        const missing = required.filter((name) => !extensions[name]);
+        if (on && missing.length) {
+          throw new Error(
+            `This browser cannot path trace: WebGL is missing ${missing.join(', ')}. ` +
+              `Mol* would silently fall back to ordinary rendering.`
+          );
+        }
+
+        const illumination: Record<string, unknown> = { enabled: on, maxIterations: iterations };
+        if (bounces !== undefined) illumination.bounces = bounces;
+        if (shadows !== undefined) illumination.shadowEnable = shadows;
+        if (denoise !== undefined) illumination.denoise = denoise;
+        canvas3d.setProps({ illumination });
+
+        const applied = canvas3d.props?.illumination ?? {};
+        return {
+          // Read back: enabling a pass Mol* cannot build leaves this false.
+          enabled: applied.enabled ?? null,
+          quality: chosen,
+          // Also read back rather than computed from the argument. Reporting
+          // 2**iterations would state the sample count that was *asked for*,
+          // which stays right even when the canvas took something else — the
+          // mutation that pinned maxIterations to a constant passed the whole
+          // suite until this line stopped echoing.
+          samples: applied.maxIterations !== undefined ? 2 ** applied.maxIterations : null,
+          bounces: applied.bounces ?? null,
+          shadows: applied.shadowEnable ?? null,
+          denoise: applied.denoise ?? null,
+          // The headline cost. Every capture from here on runs the tracer.
+          note: on
+            ? 'Every screenshot now path traces, which takes seconds to minutes.'
+            : 'Back to ordinary rendering.',
+        };
+      },
+    },
+
     material: {
       render: true,
       async run({ name, finish, metalness, roughness, emissive }: MaterialArgs) {
@@ -1190,6 +1298,7 @@ export function createDispatcher(plugin: any): Handler {
           shading_styles: Object.keys(SHADING_STYLES).sort(),
           gradients: ['off', ...Object.keys(GRADIENTS).sort()],
           material_finishes: Object.keys(MATERIAL_FINISHES).sort(),
+          path_trace_quality: Object.keys(TRACE_QUALITY).sort(),
         };
       },
     },
@@ -1342,7 +1451,14 @@ export function createDispatcher(plugin: any): Handler {
           // constructs and caches it.
           const pass = helper.imagePass;
           if (!pass) throw new Error('Mol* built no image pass for the screenshot');
-          return { data_uri: await helper.getImageDataUri() };
+          const traced = !!plugin.canvas3d?.props?.illumination?.enabled;
+          const started = performance.now();
+          const data_uri = await helper.getImageDataUri();
+          // Only reported when tracing, where the cost is the thing a caller
+          // most needs to know before asking for a bigger one.
+          return traced
+            ? { data_uri, traced_ms: Math.round(performance.now() - started) }
+            : { data_uri };
         }
         // Fallback: read the 3D canvas directly.
         const canvas: HTMLCanvasElement | undefined =

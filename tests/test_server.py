@@ -36,6 +36,7 @@ from protean_mcp.server import (
     material,
     mcp,
     opacity,
+    path_trace,
     save_session,
     screenshot,
     select,
@@ -1088,3 +1089,67 @@ async def test_material_carries_an_emissive_of_zero_rather_than_dropping_it(wire
     await task
 
     assert sent["emissive"] == 0.0
+
+
+# -- path tracing --------------------------------------------------------------
+
+
+async def test_path_trace_sends_quality_and_reports_samples(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["path_trace"] = lambda args: (
+        sent.update(args) or {"enabled": True, "quality": args["quality"], "samples": 128}
+    )
+    task = wired_bridge.serve(1)
+    out = await path_trace(quality="high")
+    await task
+
+    assert sent == {"enabled": True, "quality": "high"}
+    assert out["samples"] == 128
+
+
+async def test_screenshot_waits_longer_once_tracing_is_on(wired_bridge, tmp_path):
+    """The timeout follows the *canvas*, not the argument.
+
+    A traced capture runs the tracer inside the request and takes seconds to
+    minutes. Leaving the ordinary timeout in place would abort work that was
+    going to succeed and report it as a stalled viewer.
+    """
+    wired_bridge.handlers["path_trace"] = lambda args: {"enabled": True}
+    wired_bridge.handlers["screenshot"] = lambda args: {
+        "data_uri": f"data:image/png;base64,{PNG_B64}",
+        "traced_ms": 4100,
+    }
+
+    timeouts: list[float] = []
+    original = server_mod.get_bridge().request
+
+    async def record(action, args=None, timeout=60):
+        timeouts.append(timeout)
+        return await original(action, args, timeout)
+
+    task = wired_bridge.serve(2)
+    await path_trace(enabled=True)
+    server_mod.get_bridge().request = record  # type: ignore[method-assign]
+    try:
+        result = await screenshot(path=str(tmp_path / "traced.png"))
+    finally:
+        server_mod.get_bridge().request = original  # type: ignore[method-assign]
+    await task
+
+    assert timeouts == [server_mod._TRACED_SCREENSHOT_TIMEOUT]
+    # The cost is reported back, since it is what decides whether to ask for more.
+    assert any("path traced in 4.1s" in str(item) for item in result)
+
+
+async def test_a_refused_enable_does_not_leave_screenshots_waiting(wired_bridge):
+    """The viewer's answer wins over the request.
+
+    If the canvas refuses to path trace, every later screenshot is an ordinary
+    one and must not sit on the ten-minute timeout.
+    """
+    wired_bridge.handlers["path_trace"] = lambda args: {"enabled": False}
+    task = wired_bridge.serve(1)
+    await path_trace(enabled=True)
+    await task
+
+    assert server_mod._path_tracing is False

@@ -70,6 +70,15 @@ _handles = HandleRegistry()
 # be coloured without paying for the alignment again.
 _conservation_scores: dict[str, Any] = {}
 
+# Whether the viewer is path tracing, mirrored from the last path_trace() reply
+# so screenshot() knows which timeout to use.
+_path_tracing = False
+
+# An ordinary capture is well under a second; the tracer takes seconds to
+# minutes, and aborting it would report a stall for work that was succeeding.
+_SCREENSHOT_TIMEOUT = 60.0
+_TRACED_SCREENSHOT_TIMEOUT = 600.0
+
 _DOMAIN_BOUNDS = 2
 # The uncertainty theme ramps over a fixed [0, 100] domain.
 _B_FACTOR_FULL = 100.0
@@ -521,6 +530,50 @@ async def effects(
     if not args:
         raise ViewerError("Pass at least one effect to change")
     return await _call("effects", args)
+
+
+@mcp.tool()
+async def path_trace(
+    enabled: bool = True,
+    quality: str = "standard",
+    bounces: int | None = None,
+    shadows: bool | None = None,
+    denoise: bool | None = None,
+) -> dict[str, Any]:
+    """Switch the renderer to Mol*'s progressive path tracer.
+
+    This is the highest-quality mode: real global illumination, soft shadows
+    and light that bounces between surfaces, rather than the screen-space
+    approximations effects() offers. It is also far slower, and it changes
+    every subsequent screenshot rather than being a one-off.
+
+    **Cost.** Measured on a small protein at 800x600 on a real GPU: draft 1.2s,
+    standard 4.1s, high 15.8s per capture — roughly 4x per step, and scaling
+    with pixel count, so figure-resolution captures run into minutes. Under
+    software rendering it does not finish at all, and the call is refused up
+    front if the browser lacks the WebGL extensions the tracer needs.
+
+    quality: draft, standard, high or ultra — 8, 32, 128 or 512 samples. On a
+      simple scene the denoiser converges early and draft already looks like
+      high; the ladder buys most on surfaces and heavy transparency.
+    bounces: how far light carries between surfaces, 1 to 16. Mol*'s default
+      is 4.
+    shadows / denoise: on by default; turning denoise off shows the raw
+      sampling, which is mostly useful for judging whether to spend more.
+    enabled: pass False to go back to ordinary rendering.
+
+    Screenshots report how long the trace took.
+    """
+    global _path_tracing  # noqa: PLW0603 - mirrors viewer state for timeouts
+    args: dict[str, Any] = {"enabled": enabled, "quality": quality}
+    for key, value in (("bounces", bounces), ("shadows", shadows), ("denoise", denoise)):
+        if value is not None:
+            args[key] = value
+    result = await _call("path_trace", args)
+    # Track what the *canvas* reported, not what was asked for, so a refused
+    # enable does not leave screenshots waiting minutes for a raster render.
+    _path_tracing = bool(result.get("enabled"))
+    return result
 
 
 @mcp.tool()
@@ -1603,7 +1656,12 @@ async def screenshot(path: str | None = None) -> list[Any]:
     ~/.cache/protean/screenshots/. Returns the image and the saved path.
     """
     bridge = _require_viewer()
-    result = await bridge.request("screenshot", {})
+    # A path-traced capture runs the tracer inside this request, and takes
+    # seconds to minutes rather than the fraction of a second an ordinary one
+    # does. Leaving the default timeout in place would abort work that was
+    # going to succeed, and report it as a viewer stall.
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SCREENSHOT_TIMEOUT
+    result = await bridge.request("screenshot", {}, timeout=timeout)
     data_uri: str = result["data_uri"]
     header, _, payload = data_uri.partition(",")
     if "base64" not in header:
@@ -1617,7 +1675,10 @@ async def screenshot(path: str | None = None) -> list[Any]:
         out = Path.home() / ".cache" / "protean" / "screenshots" / f"protean-{stamp}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(png)
-    return [Image(data=png, format="png"), f"Saved to {out}"]
+    note = f"Saved to {out}"
+    if "traced_ms" in result:
+        note += f" (path traced in {result['traced_ms'] / 1000:.1f}s)"
+    return [Image(data=png, format="png"), note]
 
 
 def main() -> None:

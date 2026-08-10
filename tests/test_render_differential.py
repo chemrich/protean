@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from .browser import BROWSER_MARKS, viewer_session
+from .browser import BROWSER_MARKS, PATHTRACE_MARKS, viewer_session
 from .pixels import (
     Render,
     background,
@@ -635,3 +635,78 @@ async def test_todays_renders_carry_no_dpi(frames):
     does not have.
     """
     assert frames["drawn"].dpi is None
+
+
+# -- path tracing --------------------------------------------------------------
+
+# Opt-in and not run by CI — see PATHTRACE_MARKS in browser.py for why. Measured
+# on 1UBQ at 800x600 on an Apple GPU: a traced capture repaints 0.0176 of the
+# frame relative to the raster render, and costs draft 1.2s, standard 4.1s,
+# high 15.8s.
+TRACED = 0.008
+
+
+@pytest.fixture(scope="module")
+async def traced() -> dict[str, Any]:
+    """A raster baseline, one frame per quality, and the way back."""
+    frames: dict[str, Render] = {}
+    replies: dict[str, Any] = {}
+    elapsed: dict[str, int] = {}
+    async with viewer_session(FIXTURE) as session:
+        frames["raster"] = await _shot(session)
+        for quality in ("draft", "standard", "high"):
+            replies[quality] = await session.request(
+                "path_trace", {"enabled": True, "quality": quality}
+            )
+            shot = await session.request("screenshot", {}, timeout=600)
+            frames[quality] = decode(shot["data_uri"])
+            elapsed[quality] = shot.get("traced_ms", 0)
+        replies["off"] = await session.request("path_trace", {"enabled": False})
+        frames["off"] = await _shot(session)
+    return {"frames": frames, "replies": replies, "elapsed": elapsed}
+
+
+class TestPathTracing:
+    """Grouped so one set of marks gates them all."""
+
+    pytestmark = PATHTRACE_MARKS
+
+    def test_tracing_changes_the_image(self, traced):
+        frames = traced["frames"]
+        assert difference(frames["raster"], frames["standard"]) > TRACED
+
+    def test_turning_it_off_restores_the_raster_render_exactly(self, traced):
+        """Tracing is a mode, not a one-way door."""
+        frames = traced["frames"]
+        assert difference(frames["raster"], frames["off"]) == 0.0
+        assert traced["replies"]["off"]["enabled"] is False
+
+    def test_the_canvas_confirms_it_is_tracing(self, traced):
+        """Read back, because IlluminationPass fails by going quiet.
+
+        Its constructor returns early when the WebGL extensions are missing and
+        the pass stays unsupported, so an unchecked enable would render an
+        ordinary image and report success.
+        """
+        assert traced["replies"]["standard"]["enabled"] is True
+
+    @pytest.mark.parametrize(
+        ("quality", "samples"), [("draft", 8), ("standard", 32), ("high", 128)]
+    )
+    def test_quality_maps_to_a_sample_count(self, traced, quality, samples):
+        assert traced["replies"][quality]["samples"] == samples
+
+    def test_the_capture_reports_what_it_cost(self, traced):
+        """The number that decides whether a bigger one is worth asking for."""
+        assert traced["elapsed"]["standard"] > 0
+
+    def test_more_samples_cost_more_time(self, traced):
+        """The quality dial does work, even where it does not change the picture.
+
+        On a scene this simple the denoiser converges early: draft, standard and
+        high differ from each other by 0.0001 of the frame, which is nothing. So
+        the honest claim is about cost, not appearance — 1.2s against 15.8s when
+        measured. The ladder buys visible quality on surfaces and heavy
+        transparency, which this fixture does not exercise.
+        """
+        assert traced["elapsed"]["high"] > traced["elapsed"]["draft"]
