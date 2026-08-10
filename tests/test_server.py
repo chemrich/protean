@@ -890,7 +890,7 @@ def test_renumbering_makes_ids_unique_and_one_based():
 async def test_background_refuses_a_call_that_would_change_nothing():
     """Both arguments omitted is a no-op, and a no-op reporting success is a lie."""
     with pytest.raises(
-        ViewerError, match="at least one of color, transparent or gradient"
+        ViewerError, match="at least one of color, transparent, gradient, image or skybox"
     ):
         await background()
 
@@ -1410,3 +1410,136 @@ async def test_capabilities_reports_the_presets(wired_bridge):
 
     assert "ghost-surface" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
+
+
+# -- image and skybox backgrounds ----------------------------------------------
+
+
+def _write_image(path: Path, colour: tuple[int, int, int], size=(16, 16)) -> Path:
+    PILImage.new("RGB", size, colour).save(path)
+    return path
+
+
+async def test_a_local_image_travels_inline(wired_bridge, tmp_path):
+    """Read and encoded here, because the viewer has no filesystem.
+
+    Sending the path would leave Mol* fetching a URL the browser cannot see,
+    which draws nothing and reports no error.
+    """
+    source = _write_image(tmp_path / "bg.png", (10, 20, 30))
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"gradient": "image"}
+    )
+    task = wired_bridge.serve(1)
+    await background(image=str(source))
+    await task
+
+    assert sent["image"].startswith("data:image/png;base64,")
+    assert str(source) not in sent["image"]
+
+
+async def test_a_remote_url_is_passed_through_untouched(wired_bridge):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"gradient": "image"}
+    )
+    task = wired_bridge.serve(1)
+    await background(image="https://example.org/sky.jpg")
+    await task
+
+    assert sent["image"] == "https://example.org/sky.jpg"
+
+
+async def test_a_file_that_is_not_an_image_is_refused(tmp_path):
+    """Mol* draws nothing for a URL it cannot load, and says nothing about it."""
+    fake = tmp_path / "notreally.png"
+    fake.write_text("this is not a PNG")
+    with pytest.raises(ViewerError, match="not an image Pillow can read"):
+        await background(image=str(fake))
+
+
+async def test_a_missing_image_is_refused(tmp_path):
+    with pytest.raises(ViewerError, match="No image at"):
+        await background(image=str(tmp_path / "absent.png"))
+
+
+async def test_an_oversized_image_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "_MAX_BACKGROUND_IMAGE_BYTES", 128)
+    source = _write_image(tmp_path / "big.png", (1, 2, 3), size=(256, 256))
+    with pytest.raises(ViewerError, match="Downscale it"):
+        await background(image=str(source))
+
+
+async def test_a_skybox_collects_all_six_faces(wired_bridge, tmp_path):
+    folder = tmp_path / "sky"
+    folder.mkdir()
+    for index, face in enumerate(("nx", "ny", "nz", "px", "py", "pz")):
+        _write_image(folder / f"{face}.png", (index * 10, 0, 0))
+
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"gradient": "skybox"}
+    )
+    task = wired_bridge.serve(1)
+    await background(skybox=str(folder))
+    await task
+
+    assert sorted(sent["skybox"]) == ["nx", "ny", "nz", "px", "py", "pz"]
+    assert all(uri.startswith("data:image/") for uri in sent["skybox"].values())
+    # Six distinct faces, not the same one six times.
+    assert len(set(sent["skybox"].values())) == 6
+
+
+async def test_a_skybox_missing_faces_says_which(tmp_path):
+    """A cube map with five faces is not a cube map, and the gap is invisible."""
+    folder = tmp_path / "sky"
+    folder.mkdir()
+    for face in ("nx", "ny", "nz", "px"):
+        _write_image(folder / f"{face}.png", (1, 1, 1))
+
+    with pytest.raises(ViewerError, match="missing skybox faces: py, pz"):
+        await background(skybox=str(folder))
+
+
+async def test_a_skybox_accepts_mixed_suffixes(wired_bridge, tmp_path):
+    folder = tmp_path / "sky"
+    folder.mkdir()
+    for face in ("nx", "ny", "nz"):
+        _write_image(folder / f"{face}.png", (2, 2, 2))
+    for face in ("px", "py", "pz"):
+        _write_image(folder / f"{face}.jpg", (3, 3, 3))
+
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["background"] = lambda args: (
+        sent.update(args) or {"gradient": "skybox"}
+    )
+    task = wired_bridge.serve(1)
+    await background(skybox=str(folder))
+    await task
+
+    assert sent["skybox"]["nx"].startswith("data:image/png")
+    assert sent["skybox"]["px"].startswith("data:image/jpeg")
+
+
+async def test_the_three_background_variants_are_mutually_exclusive(tmp_path):
+    """They are one slot in Mol*, so two would mean one silently winning."""
+    source = _write_image(tmp_path / "bg.png", (0, 0, 0))
+    with pytest.raises(ViewerError, match="at most one of gradient, image or skybox"):
+        await background(gradient="radial", image=str(source))
+
+
+async def test_a_truncated_image_is_refused(tmp_path):
+    """The case that makes verify() earn its place.
+
+    Image.open() reads only the header, so a half-written PNG opens cleanly and
+    reports the right format and size — it is verify() that reads the data and
+    finds it short. Mol* would load the URL, fail, and draw nothing about it.
+    """
+    whole = tmp_path / "whole.png"
+    PILImage.new("RGB", (64, 64), (1, 2, 3)).save(whole)
+    truncated = tmp_path / "truncated.png"
+    truncated.write_bytes(whole.read_bytes()[: whole.stat().st_size // 2])
+
+    with pytest.raises(ViewerError, match="not an image Pillow can read"):
+        await background(image=str(truncated))

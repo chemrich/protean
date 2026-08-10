@@ -934,3 +934,66 @@ async def test_ghost_surface_layers_over_what_is_already_drawn():
     assert difference(before, after) > STYLED
     # A molecular surface encloses the cartoon, so it covers strictly more.
     assert coverage(after, of=reference) > coverage(before, of=reference)
+
+
+# -- image and skybox backgrounds ----------------------------------------------
+
+# Colours nothing in a default Mol* scene produces, so finding them in the
+# corners is unambiguous evidence the image reached the renderer.
+IMAGE_COLOUR = (255, 0, 255, 255)
+SKYBOX_COLOUR = (0, 255, 255, 255)
+
+
+def _solid_image(path: Path, colour: tuple[int, int, int]) -> Path:
+    PILImage.new("RGB", (64, 64), colour).save(path)
+    return path
+
+
+@pytest.fixture(scope="module")
+async def imaged(tmp_path_factory) -> dict[str, Render]:
+    """Frames with a flat image behind the scene, and with a cube map around it."""
+    folder = tmp_path_factory.mktemp("backgrounds")
+    flat = _solid_image(folder / "flat.png", IMAGE_COLOUR[:3])
+    sky = folder / "sky"
+    sky.mkdir()
+    for face in ("nx", "ny", "nz", "px", "py", "pz"):
+        _solid_image(sky / f"{face}.png", SKYBOX_COLOUR[:3])
+
+    frames: dict[str, Render] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        frames["plain"] = await _shot(session)
+        await server_mod.background(image=str(flat))
+        frames["image"] = await _shot(session)
+        await server_mod.background(skybox=str(sky))
+        frames["skybox"] = await _shot(session)
+        await server_mod.background(gradient="off")
+        frames["off"] = await _shot(session)
+    return frames
+
+
+async def test_an_image_background_reaches_the_pixels(imaged):
+    """The claim that cannot be made from the reply.
+
+    Mol* takes a URL and draws nothing when it fails to load — no error, no
+    field in the reply, just a background that stays as it was. The only
+    evidence the image arrived is the image being on screen.
+    """
+    assert all(close(pixel, IMAGE_COLOUR) for pixel in corners(imaged["image"]).values())
+    assert not close(background(imaged["plain"]), IMAGE_COLOUR)
+
+
+async def test_a_skybox_reaches_the_pixels(imaged):
+    """Six faces, one colour, so whichever the camera faces proves it loaded."""
+    assert all(
+        close(pixel, SKYBOX_COLOUR) for pixel in corners(imaged["skybox"]).values()
+    )
+
+
+async def test_the_molecule_survives_an_image_background(imaged):
+    """A background that covered everything would pass the test above perfectly."""
+    assert coverage(imaged["image"], of=IMAGE_COLOUR) > 0.005
+    assert coverage(imaged["skybox"], of=SKYBOX_COLOUR) > 0.005
+
+
+async def test_turning_the_background_off_restores_the_plain_canvas(imaged):
+    assert difference(imaged["plain"], imaged["off"]) == 0.0
