@@ -524,6 +524,52 @@ async def effects(
 
 
 @mcp.tool()
+async def material(
+    finish: str = "matte",
+    name: str = "sele",
+    metalness: float | None = None,
+    roughness: float | None = None,
+    emissive: float | None = None,
+) -> dict[str, Any]:
+    """Give a displayed selection a surface finish.
+
+    finish: one of — capabilities() reports the live list. They run from dull to
+      sharp, so a shinier name really is shinier.
+
+      matte      Fully diffuse. Mol*'s default, and the way back.
+      satin      A soft, broad sheen.
+      glossy     A tight highlight — wet or lacquered.
+      metallic   Brushed metal: the highlight takes the surface colour.
+      chrome     Polished metal, close to a mirror.
+
+    metalness / roughness: 0 to 1, overriding the finish where given.
+      Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
+      there is some metalness: a true dielectric has a 4% specular term that
+      roughness barely moves.
+    emissive: 0 to 1, self-illumination. Note that effects(bloom=True) glows
+      only where this is above zero — bloom's default mode is emissive, so on
+      an ordinary material it correctly draws nothing at all. The reply says
+      whether bloom will actually show.
+
+    name: the handle passed to a previous show(). A select()-only handle
+      carries no geometry and is refused.
+
+    Materials need a light to play off: pair a shiny finish with
+    lighting(rig="studio") or "ring" rather than "flat", which has no
+    directional light to reflect.
+    """
+    args: dict[str, Any] = {"name": name, "finish": finish}
+    for key, value in (
+        ("metalness", metalness),
+        ("roughness", roughness),
+        ("emissive", emissive),
+    ):
+        if value is not None:
+            args[key] = value
+    return await _call("material", args)
+
+
+@mcp.tool()
 async def shading(
     style: str, name: str = "sele", cel_steps: int | None = None
 ) -> dict[str, Any]:

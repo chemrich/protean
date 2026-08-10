@@ -253,6 +253,114 @@ async def test_returning_to_standard_restores_the_original_lighting(lit):
     assert difference(frames["standard"], lit["restored"]) == 0.0
 
 
+# -- materials -----------------------------------------------------------------
+
+# Every pair of named finishes, measured on 1UBQ under the studio rig:
+#
+#   matte/satin 0.0180 (closest)   metallic/chrome 0.0234   satin/glossy 0.0282
+#   glossy/metallic 0.0339         matte/glossy 0.0348      matte/chrome 0.0397
+#
+# The threshold sits 2.2x below the closest pair. These numbers are the reason
+# the finishes carry metalness at all: defined as pure dielectrics, matte and
+# satin differed by 0.0001 — a named finish that changed nothing.
+DISTINCT = 0.008
+
+FINISHES = ("matte", "satin", "glossy", "metallic", "chrome")
+
+
+@pytest.fixture(scope="module")
+async def finishes() -> dict[str, Any]:
+    """One frame per finish, under a rig with enough light to show them.
+
+    `studio` rather than the default: a material needs a directional light to
+    play off, and `flat` has none at all, so every finish would look identical
+    and the suite would be measuring nothing.
+    """
+    frames: dict[str, Render] = {}
+    replies: dict[str, Any] = {}
+    async with viewer_session(FIXTURE) as session:
+        await session.request("lighting", {"rig": "studio"})
+        for finish in FINISHES:
+            replies[finish] = await session.request(
+                "material", {"name": "auto", "finish": finish}
+            )
+            frames[finish] = await _shot(session)
+        await session.request("material", {"name": "auto", "finish": "matte"})
+        restored = await _shot(session)
+
+        dull = await session.request(
+            "material", {"name": "auto", "finish": "matte", "emissive": 0.0}
+        )
+        frames["emissive_off"] = await _shot(session)
+        glow = await session.request(
+            "material", {"name": "auto", "finish": "matte", "emissive": 0.8}
+        )
+        frames["emissive_on"] = await _shot(session)
+        await session.request("effects", {"bloom": False})
+        frames["bloom_off"] = await _shot(session)
+        await session.request("effects", {"bloom": True})
+    return {
+        "frames": frames,
+        "replies": replies,
+        "restored": restored,
+        "dull": dull,
+        "glow": glow,
+    }
+
+
+@pytest.mark.parametrize(
+    ("a", "b"), [(a, b) for i, a in enumerate(FINISHES) for b in FINISHES[i + 1 :]]
+)
+async def test_every_finish_looks_different_from_every_other(finishes, a, b):
+    """The invariant that stops an enum from being decorative.
+
+    A named finish that does not change the picture is worse than no finish at
+    all: it reports success and the figure comes out identical. Defined as
+    physically correct dielectrics, matte and satin differed by 0.0001 — this
+    test is why they carry metalness now.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames[a], frames[b]) > DISTINCT
+
+
+async def test_finishes_run_from_dull_to_sharp(finishes):
+    """Mol*'s own preset labels have Glossy duller than Plastic.
+
+    Roughness is 0 for a mirror and 1 for fully diffuse, so this pins that our
+    names mean what they say — the reported roughness falls as the finish gets
+    sharper.
+    """
+    replies: dict[str, Any] = finishes["replies"]
+    sharpening = [replies[f]["roughness"] for f in ("matte", "satin", "glossy")]
+    assert sharpening == sorted(sharpening, reverse=True)
+    assert replies["chrome"]["roughness"] < replies["metallic"]["roughness"]
+
+
+async def test_returning_to_matte_restores_the_original_surface(finishes):
+    assert difference(finishes["frames"]["matte"], finishes["restored"]) == 0.0
+
+
+async def test_emissive_makes_the_molecule_glow(finishes):
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames["emissive_off"], frames["emissive_on"]) > DISTINCT
+
+
+async def test_bloom_only_shows_where_something_is_emissive(finishes):
+    """Why bloom looks broken out of the box, pinned as behaviour.
+
+    Bloom is on by default and its default mode is `emissive`, while emissive
+    itself defaults to 0 — so bloom correctly draws nothing until a material
+    asks for it. The reply says which of those two states you are in, and this
+    checks the reply against what the renderer actually did.
+    """
+    assert finishes["dull"]["bloom_will_show"] is False
+    assert finishes["glow"]["bloom_will_show"] is True
+
+    frames: dict[str, Render] = finishes["frames"]
+    # With something emissive on screen, switching bloom off has to change it.
+    assert difference(frames["emissive_on"], frames["bloom_off"]) > DISTINCT
+
+
 # -- effects, shading and gradients --------------------------------------------
 
 # Measured on 1UBQ at 170x357 against a molecule covering 0.0463 of the frame.

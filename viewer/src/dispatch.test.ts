@@ -390,6 +390,7 @@ describe('createDispatcher', () => {
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
       shading_styles: ['cel', 'flat', 'normal', 'xray', 'xray-inverted'],
       gradients: ['off', 'horizontal', 'radial'],
+      material_finishes: ['chrome', 'glossy', 'matte', 'metallic', 'satin'],
     });
   });
 
@@ -547,6 +548,137 @@ describe('createDispatcher', () => {
     await expect(
       dispatch('color_by_volume', { name: 'ghost', volume: 'x' })
     ).rejects.toThrow(/No selection named/);
+  });
+});
+
+describe('materials', () => {
+  async function shown(plugin: any) {
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    return dispatch;
+  }
+
+  const materialOf = (plugin: any) =>
+    plugin.componentRefs[0].representations[0].cell.transform.params.type.params;
+
+  it('applies a finish as PBR values', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'chrome' });
+
+    expect(materialOf(plugin).material).toEqual({
+      metalness: 1.0,
+      roughness: 0.1,
+      bumpiness: 0,
+    });
+    expect(materialOf(plugin).material.bumpiness).toBe(0);
+  });
+
+  it('runs from dull to sharp, unlike Mol*s own preset labels', async () => {
+    // Mol* ships Plastic at roughness 0.2 and Glossy at 0.6, so its "glossy" is
+    // the duller of the two. Roughness is 0 for a mirror and 1 for fully
+    // diffuse, so a model asking for `glossy` would get the opposite of what it
+    // wanted. This pins the ordering rather than the numbers.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+
+    const roughness: number[] = [];
+    for (const finish of ['matte', 'satin', 'glossy', 'chrome']) {
+      await dispatch('material', { name: 'sele', finish });
+      roughness.push(materialOf(plugin).material.roughness);
+    }
+
+    expect(roughness).toEqual([...roughness].sort((a, b) => b - a));
+    expect(new Set(roughness).size).toBe(roughness.length);
+  });
+
+  it('lets an explicit value override the finish it came from', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'matte', roughness: 0.05 });
+
+    expect(materialOf(plugin).material).toMatchObject({ roughness: 0.05, metalness: 0 });
+  });
+
+  it('sets emissive separately from the material group', async () => {
+    // emissive is a sibling of `material` in Mol*'s params, not a member of it.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'matte', emissive: 0.7 });
+
+    expect(materialOf(plugin).emissive).toBe(0.7);
+    expect(materialOf(plugin).material).not.toHaveProperty('emissive');
+  });
+
+  it('leaves emissive alone when it was not mentioned', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'matte', emissive: 0.7 });
+    await dispatch('material', { name: 'sele', finish: 'glossy' });
+
+    expect(materialOf(plugin).emissive).toBe(0.7);
+  });
+
+  it('says whether bloom will actually show anything', async () => {
+    // Bloom defaults to mode 'emissive' and emissive defaults to 0, so bloom is
+    // on out of the box and correctly draws nothing. Reporting that is the
+    // difference between "bloom is broken" and "bloom has nothing to glow".
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+
+    const dark: any = await dispatch('material', { name: 'sele', finish: 'matte' });
+    expect(dark.bloom_will_show).toBe(false);
+
+    const lit: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      emissive: 0.8,
+    });
+    expect(lit.bloom_will_show).toBe(true);
+  });
+
+  it('reports bloom as not showing when bloom itself is off', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('effects', { bloom: false });
+
+    const result: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      emissive: 0.8,
+    });
+    expect(result.bloom_will_show).toBe(false);
+  });
+
+  it('refuses an unknown finish and lists the real ones', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'velvet' })
+    ).rejects.toThrow(/Unknown finish 'velvet'.*chrome, glossy/s);
+  });
+
+  it.each(['metalness', 'roughness', 'emissive'])(
+    'refuses an out-of-range %s',
+    async (key) => {
+      const plugin: any = withCanvas(fakePlugin());
+      const dispatch = await shown(plugin);
+      await expect(
+        dispatch('material', { name: 'sele', finish: 'matte', [key]: 5 })
+      ).rejects.toThrow(/must be between 0 and 1/);
+    }
+  );
+
+  it('refuses a handle that was never shown', async () => {
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    await dispatch('select', { name: 'sele', expression: '(sel.atom.all)' });
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'matte' })
+    ).rejects.toThrow(/no representation to give a material to/);
   });
 });
 
