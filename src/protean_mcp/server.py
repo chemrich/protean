@@ -17,6 +17,7 @@ import numpy as np
 from biotite.structure import filter_amino_acids
 from biotite.structure.io.pdbx import CIFFile, set_structure
 from mcp.server.fastmcp import FastMCP, Image
+from PIL import Image as PILImage
 
 from .analysis.conservation import ConservationError
 from .analysis.conservation import chain_sequence as _chain_sequence
@@ -78,6 +79,18 @@ _path_tracing = False
 # minutes, and aborting it would report a stall for work that was succeeding.
 _SCREENSHOT_TIMEOUT = 60.0
 _TRACED_SCREENSHOT_TIMEOUT = 600.0
+# A figure-resolution capture is a real render, not a viewport grab: 4323x3242
+# takes about 2.5s and 12000x9000 about 20s on a real GPU.
+_SNAPSHOT_TIMEOUT = 300.0
+
+# Nature's column widths, which most journals sit close to. Anything else goes
+# through width_mm rather than being invented here.
+_COLUMN_WIDTHS_MM: dict[str, float] = {"single": 89.0, "double": 183.0}
+_SNAPSHOT_FORMATS: dict[str, str] = {"png": ".png", "tiff": ".tiff", "jpeg": ".jpg"}
+# Mol* renders correctly well past this — 12000x9000 was verified — but a
+# capture that large costs 20s and half a gigabyte in this process, and a
+# figure needs nowhere near it: 183 mm at 1200 dpi is 56 megapixels.
+_MAX_SNAPSHOT_PIXELS = 120_000_000
 
 _DOMAIN_BOUNDS = 2
 # The uncertainty theme ramps over a fixed [0, 100] domain.
@@ -530,6 +543,188 @@ async def effects(
     if not args:
         raise ViewerError("Pass at least one effect to change")
     return await _call("effects", args)
+
+
+def _open_snapshot(png: bytes) -> Any:
+    """Decode a capture we produced ourselves.
+
+    Pillow refuses images beyond MAX_IMAGE_PIXELS (~89 MP) as possible
+    decompression bombs. That guard is for untrusted input; this PNG came from
+    our own viewer moments ago, and a legitimate 12000x9000 figure trips it. The
+    limit is raised for this decode only, and the real ceiling is enforced
+    separately against the requested size.
+    """
+    previous = PILImage.MAX_IMAGE_PIXELS
+    PILImage.MAX_IMAGE_PIXELS = _MAX_SNAPSHOT_PIXELS
+    try:
+        image = PILImage.open(io.BytesIO(png))
+        image.load()
+        return image
+    finally:
+        PILImage.MAX_IMAGE_PIXELS = previous
+
+
+def _incomplete_capture(image: Any) -> bool:
+    """Did part of this capture never get rendered?
+
+    A large capture can come back with the right dimensions and most of the
+    frame simply unwritten — fully transparent rather than background-coloured.
+    Measured under software rendering: at 4323 px wide, three of the four
+    corners were empty and 79% of the frame was blank, and nothing in the reply
+    said so. On an opaque canvas a transparent pixel cannot be legitimate, so
+    it is the signal.
+
+    Reads the alpha channel's range rather than the pixels, which stays cheap
+    on a 14-megapixel image.
+    """
+    if image.mode != "RGBA":
+        return False
+    lowest, _ = image.getchannel("A").getextrema()
+    return bool(lowest == 0)
+
+
+def _snapshot_pixels(
+    column: str | None, width_mm: float | None, dpi: int
+) -> tuple[int, float]:
+    """Turn a physical width into pixels, refusing anything unprintable.
+
+    The arithmetic is here rather than at the call site because a model asked
+    for "600 dpi" and left to multiply would produce a 900-pixel figure that
+    claims 600 dpi — a wrong answer that looks entirely right, and that no
+    return value would catch.
+    """
+    if (column is None) == (width_mm is None):
+        raise ViewerError(
+            "Pass exactly one of column "
+            f"({', '.join(sorted(_COLUMN_WIDTHS_MM))}) or width_mm"
+        )
+    if column is not None:
+        if column not in _COLUMN_WIDTHS_MM:
+            raise ViewerError(
+                f"Unknown column {column!r}. Available: "
+                f"{', '.join(sorted(_COLUMN_WIDTHS_MM))}, or pass width_mm"
+            )
+        millimetres = _COLUMN_WIDTHS_MM[column]
+    else:
+        assert width_mm is not None
+        millimetres = width_mm
+    if millimetres <= 0:
+        raise ViewerError(f"Figure width must be positive, got {millimetres} mm")
+    if dpi <= 0:
+        raise ViewerError(f"DPI must be positive, got {dpi}")
+
+    pixels = round(millimetres / 25.4 * dpi)
+    if pixels < 1:
+        raise ViewerError(f"{millimetres} mm at {dpi} dpi rounds to no pixels at all")
+    # Checked against width squared rather than the exact area, because the
+    # height follows the viewport's aspect and is not known until the viewer
+    # answers. Refusing up front beats discovering it after a long render.
+    if pixels * pixels > _MAX_SNAPSHOT_PIXELS:
+        raise ViewerError(
+            f"{millimetres} mm at {dpi} dpi is {pixels} pixels wide, which is beyond "
+            f"what can be captured ({_MAX_SNAPSHOT_PIXELS // 1_000_000} megapixels). "
+            f"Lower the dpi or the width."
+        )
+    return pixels, millimetres
+
+
+@mcp.tool()
+async def snapshot(
+    path: str,
+    column: str | None = None,
+    width_mm: float | None = None,
+    dpi: int = 300,
+    format: str = "png",
+    transparent: bool | None = None,
+    crop: bool = False,
+) -> dict[str, Any]:
+    """Save a publication-resolution figure at a real physical size.
+
+    Unlike screenshot(), which captures the viewport as it is, this renders at
+    whatever pixel count the requested size and DPI imply, and writes the
+    resolution into the file so it survives outside this reply.
+
+    column: "single" (89 mm) or "double" (183 mm) — Nature's column widths, and
+      close enough to most journals to be a sane default. Pass width_mm instead
+      for anything else. Exactly one of the two.
+    dpi: 300 is the usual journal minimum, 600 is common for line art. The
+      pixel count follows from this and the width, so you never compute it.
+    format: png, tiff or jpeg. PNG and TIFF keep transparency and are lossless;
+      JPEG has no alpha channel at all and is refused with transparency on.
+    transparent: overrides the canvas setting for this one capture.
+    crop: trim to the molecule's bounds. This changes the output dimensions, so
+      the reply reports the physical width the result actually corresponds to.
+
+    Returns the path, the pixel dimensions, the DPI written into the file, and
+    the size on disk. Height follows the viewport's aspect ratio.
+    """
+    chosen = format.lower()
+    if chosen not in _SNAPSHOT_FORMATS:
+        raise ViewerError(
+            f"Unknown format {format!r}. "
+            f"Available: {', '.join(sorted(_SNAPSHOT_FORMATS))}"
+        )
+    width, millimetres = _snapshot_pixels(column, width_mm, dpi)
+
+    # Refused here rather than in the viewer: the capture is fine, it is the
+    # file we would be asked to write that cannot hold an alpha channel.
+    if chosen == "jpeg" and transparent:
+        raise ViewerError(
+            "JPEG has no alpha channel, so it cannot hold a transparent "
+            "background. Use png or tiff, or pass transparent=False."
+        )
+
+    args: dict[str, Any] = {"width": width, "crop": crop}
+    if transparent is not None:
+        args["transparent"] = transparent
+
+    bridge = _require_viewer()
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    result = await bridge.request("snapshot", args, timeout=timeout)
+
+    data_uri: str = result["data_uri"]
+    header, _, payload = data_uri.partition(",")
+    if "base64" not in header:
+        raise ViewerError(f"Unexpected snapshot encoding: {header}")
+    png = base64.b64decode(payload)
+
+    out = Path(path).expanduser()
+    if not out.suffix:
+        out = out.with_suffix(_SNAPSHOT_FORMATS[chosen])
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    image = _open_snapshot(png)
+    if not result.get("transparent") and _incomplete_capture(image):
+        raise ViewerError(
+            "The capture came back incomplete: parts of the "
+            f"{image.width}x{image.height} image were never rendered. "
+            "Renderers run out of room at large sizes, and software rendering "
+            "does so well before a real GPU does. Lower the dpi or the width, "
+            "or capture on a machine with a GPU."
+        )
+    saved_dpi = float(dpi)
+    save: dict[str, Any] = {"dpi": (dpi, dpi)}
+    if chosen == "jpeg":
+        # Already refused when transparency was asked for; this handles a
+        # canvas that happens to be transparent anyway.
+        image = image.convert("RGB")
+        save["quality"] = 95
+    image.save(out, format=chosen.upper(), **save)
+
+    return {
+        "path": str(out),
+        "format": chosen,
+        "pixels": [image.width, image.height],
+        "dpi": saved_dpi,
+        # What the result is actually the width of. Cropping trims the frame,
+        # so the requested millimetres stop being true and saying so beats
+        # repeating the request back.
+        "width_mm": round(image.width / dpi * 25.4, 2),
+        "requested_width_mm": millimetres,
+        "cropped": bool(result.get("cropped")),
+        "bytes": out.stat().st_size,
+        **({"traced_ms": result["traced_ms"]} if "traced_ms" in result else {}),
+    }
 
 
 @mcp.tool()

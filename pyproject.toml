@@ -13,6 +13,10 @@ dependencies = [
     "httpx>=0.27",
     "biotite>=1.6.0",
     "pdb2pqr>=3.7",
+    # snapshot() writes TIFF and JPEG, and stamps the DPI into the file — none
+    # of which Mol* can do. Promoted from the dev group by decision 11, in the
+    # PR that first needs it at runtime.
+    "pillow>=11.0",
 ]
 
 [project.scripts]
@@ -21,11 +25,6 @@ protean-mcp = "protean_mcp.server:main"
 [dependency-groups]
 dev = [
     "mypy>=2.3.0",
-    # Decodes renders for the pixel harness (tests/pixels.py). Decision 11 also
-    # commits Pillow as a *runtime* dependency, for snapshot()'s TIFF output and
-    # DPI metadata; it moves to `dependencies` in the PR that adds those, rather
-    # than shipping to users ahead of the feature that needs it.
-    "pillow>=11.0",
     "pre-commit>=4.6.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

@@ -18,9 +18,14 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image as PILImage
+
+import protean_mcp.server as server_mod
+from protean_mcp.connection import ViewerError
 
 from .browser import BROWSER_MARKS, PATHTRACE_MARKS, viewer_session
 from .pixels import (
@@ -710,3 +715,117 @@ class TestPathTracing:
         transparency, which this fixture does not exercise.
         """
         assert traced["elapsed"]["high"] > traced["elapsed"]["draft"]
+
+
+# -- snapshot ------------------------------------------------------------------
+
+# Nature's double column at 600 dpi. Chosen because it is a figure someone
+# would actually submit, and because it is large enough that a broken capture
+# path shows up: 4323x3242 is 14 megapixels and takes about 2.5s on a real GPU.
+FIGURE_PIXELS = 4323
+# A size every renderer manages, including CI's software one, so the parts of
+# snapshot() that are not about sheer size — dimensions, content, and putting
+# the helper back — are verified everywhere rather than skipped where it counts.
+MODEST_PIXELS = 1200
+
+
+async def _figure_or_skip(session, path: str, **kwargs) -> dict[str, Any]:
+    """Take a journal-sized snapshot, or skip if this renderer cannot.
+
+    Software rendering runs out of room well before a GPU does: at 4323 px it
+    returns an image of exactly the right dimensions with three of its four
+    corners never written. `snapshot()` detects that and refuses, which is the
+    behaviour worth having — so a skip here still means the tool did the right
+    thing and only the environment was short.
+    """
+    previous = server_mod._bridge
+    server_mod._bridge = session.bridge
+    try:
+        result: dict[str, Any] = await server_mod.snapshot(path, **kwargs)
+        return result
+    except ViewerError as exc:
+        if "came back incomplete" in str(exc):
+            pytest.skip(f"this renderer cannot capture at {FIGURE_PIXELS}px: {exc}")
+        raise
+    finally:
+        server_mod._bridge = previous
+
+
+@pytest.fixture(scope="module")
+async def figure(tmp_path_factory) -> dict[str, Any]:
+    """A real journal-sized figure, plus what the viewer did around it."""
+    out = tmp_path_factory.mktemp("snapshots")
+    async with viewer_session(FIXTURE) as session:
+        before = await _shot(session)
+        result = await _figure_or_skip(
+            session, str(out / "figure.png"), width_mm=101.6, dpi=300
+        )
+        # The capture that matters: an ordinary screenshot *after* a snapshot,
+        # which is where a helper left at figure resolution would show up.
+        after = await _shot(session)
+    return {"result": result, "before": before, "after": after, "dir": out}
+
+
+async def test_a_snapshot_comes_back_at_the_size_it_was_asked_for(figure):
+    # 101.6 mm is exactly 4 inches, so 300 dpi is exactly 1200 pixels.
+    assert figure["result"]["pixels"][0] == MODEST_PIXELS
+
+
+async def test_a_scaled_up_capture_still_draws_the_molecule(figure):
+    """Right dimensions and wrong content is the failure to rule out.
+
+    Coverage is a fraction of the frame, so it stays roughly constant as the
+    pixel count grows — measured 0.0147 at 1000px and 0.0133 at 4323px on a
+    GPU. A truncated capture collapses it, which is exactly what software
+    rendering produces at journal size; `snapshot()` refuses those outright, so
+    anything that gets here is expected to be whole.
+    """
+    written = Path(figure["result"]["path"])
+    render = decode(written.read_bytes())
+    assert render.width == MODEST_PIXELS
+    assert coverage(render) > 0.005
+
+
+async def test_a_snapshot_does_not_leave_the_viewer_at_figure_resolution(figure):
+    """The trap this feature carries.
+
+    The screenshot helper's settings persist, so a snapshot that failed to put
+    them back would leave every later screenshot rendering a 14-megapixel image
+    — slower, larger, and indistinguishable from correct in the reply.
+    """
+    assert figure["after"].size == figure["before"].size
+    assert difference(figure["before"], figure["after"]) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("fmt", "suffix", "mode"),
+    [("png", ".png", "RGBA"), ("tiff", ".tiff", "RGBA"), ("jpeg", ".jpg", "RGB")],
+)
+async def test_a_real_journal_figure_reaches_disk(tmp_path, fmt, suffix, mode):
+    """Phase 4's exit criterion, end to end and through the real tool.
+
+    A double-column figure at 600 dpi, written by snapshot() itself rather than
+    by the bridge, then reopened and asked what it is. The DPI assertion is the
+    point: Mol* cannot write physical resolution at all, so a figure that is
+    "600 dpi" only in the tool's reply would satisfy every other test here.
+
+    Approximate for PNG because it stores pixels per *metre* as an integer, so
+    600 dpi round-trips as 11811 ppm and back to 599.9988.
+    """
+    async with viewer_session(FIXTURE) as session:
+        result = await _figure_or_skip(
+            session, str(tmp_path / "figure"), column="double", dpi=600, format=fmt
+        )
+
+    written = Path(result["path"])
+    assert written.suffix == suffix
+    assert result["pixels"][0] == FIGURE_PIXELS  # 183 mm at 600 dpi
+
+    with PILImage.open(written) as reopened:
+        assert reopened.size == tuple(result["pixels"])
+        assert reopened.mode == mode
+        assert reopened.info["dpi"][0] == pytest.approx(600, rel=1e-3)
+
+    # The physical width the file actually claims, derived from its own pixels.
+    assert result["width_mm"] == pytest.approx(183.0, abs=0.1)
+    assert written.stat().st_size == result["bytes"] > 0

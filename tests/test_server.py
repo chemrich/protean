@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import gzip
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 from biotite.structure import Atom
 from biotite.structure import array as atom_array
+from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
@@ -42,6 +44,7 @@ from protean_mcp.server import (
     select,
     shading,
     show,
+    snapshot,
 )
 
 # 1x1 transparent PNG
@@ -1153,3 +1156,133 @@ async def test_a_refused_enable_does_not_leave_screenshots_waiting(wired_bridge)
     await task
 
     assert server_mod._path_tracing is False
+
+
+# -- snapshot ------------------------------------------------------------------
+
+
+def _snapshot_handler(sent: dict[str, Any], width: int, height: int):
+    """A viewer that returns a real PNG of the size it was asked for."""
+
+    def handle(args):
+        sent.update(args)
+        buffer = io.BytesIO()
+        PILImage.new("RGBA", (width, height), (10, 20, 30, 255)).save(
+            buffer, format="PNG"
+        )
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {
+            "data_uri": f"data:image/png;base64,{encoded}",
+            "requested_width": args["width"],
+            "cropped": args.get("crop", False),
+        }
+
+    return handle
+
+
+@pytest.mark.parametrize(
+    ("column", "dpi", "pixels"),
+    [
+        ("single", 300, 1051),  # 89 mm
+        ("single", 600, 2102),
+        ("double", 300, 2161),  # 183 mm
+        ("double", 600, 4323),
+    ],
+)
+async def test_column_and_dpi_decide_the_pixel_count(
+    wired_bridge, tmp_path, column, dpi, pixels
+):
+    """The arithmetic a model must never be asked to do itself.
+
+    A "600 dpi" figure that is 900 pixels wide is a wrong answer that looks
+    entirely right, and nothing downstream would catch it.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, pixels, 800)
+    task = wired_bridge.serve(1)
+    out = await snapshot(str(tmp_path / "fig"), column=column, dpi=dpi)
+    await task
+
+    assert sent["width"] == pixels
+    assert out["pixels"] == [pixels, 800]
+
+
+async def test_width_mm_is_the_escape_hatch(wired_bridge, tmp_path):
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, 1181, 900)
+    task = wired_bridge.serve(1)
+    await snapshot(str(tmp_path / "fig"), width_mm=100.0, dpi=300)
+    await task
+
+    assert sent["width"] == 1181  # 100 mm at 300 dpi
+
+
+async def test_snapshot_needs_exactly_one_width():
+    with pytest.raises(ViewerError, match="exactly one of column"):
+        await snapshot("/tmp/x.png")
+    with pytest.raises(ViewerError, match="exactly one of column"):
+        await snapshot("/tmp/x.png", column="single", width_mm=100.0)
+
+
+async def test_snapshot_refuses_a_size_beyond_what_can_be_captured():
+    with pytest.raises(ViewerError, match="megapixels"):
+        await snapshot("/tmp/x.png", column="double", dpi=4800)
+
+
+async def test_jpeg_and_transparency_are_refused_together():
+    """JPEG has no alpha channel; flattening silently would lose the request."""
+    with pytest.raises(ViewerError, match="JPEG has no alpha channel"):
+        await snapshot("/tmp/x.jpg", column="single", format="jpeg", transparent=True)
+
+
+async def test_unknown_format_is_refused():
+    with pytest.raises(ViewerError, match="Unknown format 'bmp'"):
+        await snapshot("/tmp/x", column="single", format="bmp")
+
+
+@pytest.mark.parametrize(
+    ("fmt", "suffix", "mode"),
+    [("png", ".png", "RGBA"), ("tiff", ".tiff", "RGBA"), ("jpeg", ".jpg", "RGB")],
+)
+async def test_every_format_is_written_with_its_dpi(
+    wired_bridge, tmp_path, fmt, suffix, mode
+):
+    """The DPI has to survive in the *file*, not just in the reply.
+
+    A figure that is 600 dpi only in the prose around it is exactly the failure
+    this tool exists to prevent, so the file is reopened and asked.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, 400, 300)
+    task = wired_bridge.serve(1)
+    out = await snapshot(str(tmp_path / "fig"), column="single", dpi=600, format=fmt)
+    await task
+
+    written = Path(out["path"])
+    assert written.suffix == suffix
+    with PILImage.open(written) as reopened:
+        assert reopened.mode == mode
+        assert reopened.info["dpi"][0] == pytest.approx(600, rel=1e-3)
+    assert out["dpi"] == 600.0
+    assert out["bytes"] == written.stat().st_size
+
+
+async def test_the_reported_width_follows_the_pixels_that_came_back(
+    wired_bridge, tmp_path
+):
+    """Cropping trims the frame, so the requested millimetres stop being true.
+
+    Repeating the request back would state a physical width the file does not
+    have.
+    """
+    sent: dict[str, Any] = {}
+    # Asked for 2161 px (183 mm at 300 dpi); a crop returns fewer.
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, 1000, 800)
+    task = wired_bridge.serve(1)
+    out = await snapshot(str(tmp_path / "fig"), column="double", dpi=300, crop=True)
+    await task
+
+    assert sent["crop"] is True
+    assert out["requested_width_mm"] == 183.0
+    assert out["width_mm"] == pytest.approx(1000 / 300 * 25.4, abs=0.01)
+    assert out["width_mm"] < out["requested_width_mm"]
