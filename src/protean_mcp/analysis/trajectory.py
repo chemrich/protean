@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from biotite.structure import rmsd as _rmsd
 from biotite.structure import stack as atom_stack
+from biotite.structure import superimpose
 
 
 class TrajectoryError(Exception):
@@ -98,6 +100,27 @@ def _as_stack(template: Any, coordinates: Any) -> Any:
     for frame, coord in zip(frames, coordinates, strict=True):
         frame.coord = coord
     return atom_stack(frames)
+
+
+def superpose_frames(stack: Any, reference: int = 0) -> Any:
+    """Superpose every frame onto one of them, so motion is internal.
+
+    Without this a molecule that merely drifted across the box reads as
+    enormous fluctuation everywhere, which is a confident wrong answer rather
+    than an obviously broken one.
+    """
+    if not 0 <= reference < stack.stack_depth():
+        raise TrajectoryError(
+            f"Reference frame {reference} is outside 0..{stack.stack_depth() - 1}"
+        )
+    fitted, _ = superimpose(stack[reference], stack)
+    return fitted
+
+
+def rmsd_series(stack: Any, reference: int = 0) -> Any:
+    """RMSD of each frame against *reference*, after superposing onto it."""
+    fitted = superpose_frames(stack, reference)
+    return np.asarray(_rmsd(fitted[reference], fitted), dtype=float)
 
 
 def rmsf(stack: Any) -> Any:

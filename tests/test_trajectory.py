@@ -18,7 +18,14 @@ from biotite.structure import array as atom_array
 from biotite.structure.io.dcd import DCDFile
 from biotite.structure.io.xtc import XTCFile
 
-from protean_mcp.analysis.trajectory import TrajectoryError, read, rmsf, supported_formats
+from protean_mcp.analysis.trajectory import (
+    TrajectoryError,
+    read,
+    rmsd_series,
+    rmsf,
+    superpose_frames,
+    supported_formats,
+)
 
 
 def _template(atoms: int) -> Any:
@@ -172,3 +179,73 @@ def test_rmsf_is_measured_about_the_mean_position(tmp_path):
     values = rmsf(read(str(path), template))
     assert values[0] == pytest.approx(0.0, abs=1e-4)
     assert values[1] == pytest.approx(1.0, abs=1e-3)
+
+
+# -- superposition and RMSD ----------------------------------------------------
+
+
+def test_superposing_removes_bulk_drift(tmp_path):
+    """The correction that decides whether RMSF means anything.
+
+    A molecule that merely slid across the box has moved enormously and
+    fluctuated not at all. Measured without superposing, every atom reads as
+    highly mobile — a confident wrong answer rather than an obviously broken
+    one.
+    """
+    template = _template(6)
+    slide = np.array([0.0, 10.0, 0.0])
+    drifted = np.stack([template.coord + slide * step for step in range(5)])
+    path = _write(tmp_path / "drift.xtc", drifted)
+    stack = read(str(path), template)
+
+    raw = rmsf(stack)
+    corrected = rmsf(superpose_frames(stack))
+
+    assert raw.max() > 5.0
+    assert corrected.max() == pytest.approx(0.0, abs=1e-3)
+
+
+def test_rmsd_is_zero_against_an_unchanging_frame(tmp_path):
+    still = np.stack([_template(4).coord] * 4)
+    path = _write(tmp_path / "still.xtc", still)
+    assert rmsd_series(read(str(path), _template(4))) == pytest.approx(
+        np.zeros(4), abs=1e-4
+    )
+
+
+def test_rmsd_grows_as_the_structure_departs(tmp_path):
+    """Rigid drift superposes away, so the departure has to be a real change."""
+    template = _template(6)
+    frames = []
+    for step in range(5):
+        coord = template.coord.copy()
+        coord[3:] += [0.0, float(step), 0.0]  # half the atoms move, half stay
+        frames.append(coord)
+    path = _write(tmp_path / "open.xtc", np.stack(frames))
+
+    series = rmsd_series(read(str(path), template))
+    assert series[0] == pytest.approx(0.0, abs=1e-4)
+    assert list(series) == sorted(series)
+    assert series[4] > series[1]
+
+
+def test_a_reference_frame_outside_the_run_is_refused(tmp_path):
+    path = _write(tmp_path / "run.xtc", _drifting(4, 3))
+    with pytest.raises(TrajectoryError, match=r"outside 0\.\.2"):
+        rmsd_series(read(str(path), _template(4)), reference=7)
+
+
+def test_rmsd_can_be_measured_against_any_frame(tmp_path):
+    """The last frame as reference puts the largest departure at the start."""
+    template = _template(6)
+    frames = []
+    for step in range(4):
+        coord = template.coord.copy()
+        coord[3:] += [0.0, float(step), 0.0]
+        frames.append(coord)
+    path = _write(tmp_path / "open.xtc", np.stack(frames))
+    stack = read(str(path), template)
+
+    series = rmsd_series(stack, reference=3)
+    assert series[3] == pytest.approx(0.0, abs=1e-4)
+    assert series[0] > series[2]

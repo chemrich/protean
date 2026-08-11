@@ -1146,3 +1146,85 @@ async def test_a_trajectory_file_loads_and_animates(tmp_path):
     assert moved["frames"] == 6
     assert difference(first, last) > 0.005
     assert coverage(last) > 0.005
+
+
+async def test_colouring_by_rmsf_paints_mobile_and_rigid_differently(tmp_path):
+    """The measurement made visible, checked as pixels rather than as a reply.
+
+    The trajectory is built so half the molecule is pinned and half swings, so
+    a correct ramp puts two clearly different colours on screen. A B-factor
+    column that never reached the viewer, or a theme that never applied, would
+    leave one flat colour and report success either way.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        template = server_mod._require_structure()
+        base = np.asarray(template.coord, dtype=np.float32)
+        half = base.shape[0] // 2
+        frames = []
+        for step in range(8):
+            coord = base.copy()
+            coord[half:, 1] += step * 0.4  # one half moves, the other is pinned
+            frames.append(coord)
+
+        handle = XTCFile()
+        handle.set_coord(np.stack(frames))
+        path = tmp_path / "hinge.xtc"
+        handle.write(str(path))
+
+        await server_mod.load_trajectory(str(path))
+        plain = await _shot(session)
+        measured = await server_mod.rmsf()
+        painted = await server_mod.color_by_rmsf()
+        after = await _shot(session)
+
+    # The measurement itself separates the two halves.
+    assert measured["max"] > measured["min"]
+    assert painted["rmsf_max"] > painted["rmsf_min"]
+    assert painted["reloaded"] is True
+
+    # And the picture changed, with the molecule still drawn.
+    assert difference(plain, after) > 0.005
+    assert coverage(after) > 0.005
+
+
+async def test_the_rmsf_ramp_depends_on_the_motion_it_measures(tmp_path):
+    """Two runs, same molecule, same representation — only the ramp differs.
+
+    A rigid run gives every atom the same fluctuation and therefore one flat
+    colour; a hinge gives a spread and therefore a ramp. Comparing the two
+    painted frames is what separates "a ramp was drawn" from "a colour was
+    applied": a constant written into the B-factor column would paint both
+    identically and satisfy any single-frame check.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        template = server_mod._require_structure()
+        base = np.asarray(template.coord, dtype=np.float32)
+        half = base.shape[0] // 2
+
+        def write(name: str, hinge: bool) -> str:
+            frames = []
+            for step in range(8):
+                coord = base.copy()
+                if hinge:
+                    coord[half:, 1] += step * 0.4
+                else:
+                    coord[:, 1] += step * 0.4  # the whole thing slides
+                frames.append(coord)
+            handle = XTCFile()
+            handle.set_coord(np.stack(frames))
+            path = tmp_path / name
+            handle.write(str(path))
+            return str(path)
+
+        await server_mod.load_trajectory(write("rigid.xtc", hinge=False))
+        rigid_reply = await server_mod.color_by_rmsf()
+        rigid = await _shot(session)
+
+        await server_mod.load_trajectory(write("hinge.xtc", hinge=True))
+        hinge_reply = await server_mod.color_by_rmsf()
+        hinged = await _shot(session)
+
+    # A rigid slide superposes away to no fluctuation at all; a hinge does not.
+    assert rigid_reply["rmsf_max"] == pytest.approx(0.0, abs=1e-2)
+    assert hinge_reply["rmsf_max"] > 0.5
+    assert difference(rigid, hinged) > 0.005
