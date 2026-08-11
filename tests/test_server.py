@@ -22,7 +22,7 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
-from protean_mcp.selections_numpy import load_structure, select_mask
+from protean_mcp.selections_numpy import LoadedStructure, load_structure, select_mask
 from protean_mcp.server import (
     background,
     capabilities,
@@ -118,6 +118,74 @@ async def test_screenshot_tool(wired_bridge, tmp_path):
     await task
     assert out.read_bytes() == base64.b64decode(PNG_B64)
     assert any("Saved to" in str(item) for item in result)
+
+
+# -- the viewer/analysis atom-count invariant ----------------------------------
+
+
+def _loaded(atoms: int, surplus: int = 0) -> LoadedStructure:
+    """A LoadedStructure of *atoms* atoms carrying *surplus* hidden conformers."""
+    array = atom_array(
+        [
+            Atom(
+                [float(i), 0.0, 0.0],
+                chain_id="A",
+                res_id=1,
+                ins_code="",
+                res_name="GLY",
+                atom_name="CA",
+                element="C",
+                hetero=False,
+                b_factor=0.0,
+                occupancy=1.0,
+                atom_id=i,
+            )
+            for i in range(atoms)
+        ]
+    )
+    return LoadedStructure(
+        array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+    )
+
+
+def test_matching_counts_are_reported_as_agreement():
+    note = server_mod._assembly_note(_loaded(100), {"atom_count": 100})
+    assert "100 atoms in both viewer and analysis" in note
+    assert "MISMATCH" not in note
+
+
+def test_a_difference_that_is_all_conformers_is_explained_not_alarmed():
+    """5FJI's 217 atoms: the same molecule counted two defensible ways.
+
+    Calling this a mismatch told the caller to distrust every number in the
+    session over a difference that is fully accounted for.
+    """
+    note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 15929})
+    assert "MISMATCH" not in note
+    assert "unreliable" not in note
+    assert "217" in note
+    assert "alternate conformers" in note
+
+
+def test_a_difference_larger_than_the_conformers_is_still_a_mismatch():
+    """The invariant has to survive being given something to explain with."""
+    note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 16000})
+    assert "MISMATCH" in note
+    assert "unreliable" in note
+    assert "217 of the difference is alternate conformers" in note
+
+
+def test_a_difference_with_no_conformers_to_explain_it_is_a_mismatch():
+    note = server_mod._assembly_note(_loaded(2396), {"atom_count": 4792})
+    assert "MISMATCH" in note
+    assert "unreliable" in note
+    assert "alternate conformers" not in note
+
+
+def test_a_viewer_that_reports_no_count_is_not_called_agreement():
+    note = server_mod._assembly_note(_loaded(100, 5), {})
+    assert "the viewer reported no count" in note
+    assert "MISMATCH" not in note
 
 
 # -- sessions ----------------------------------------------------------------
