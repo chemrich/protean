@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from biotite.structure import Atom
 from biotite.structure import array as atom_array
+from biotite.structure import stack as atom_stack
 from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
@@ -41,6 +42,8 @@ from protean_mcp.server import (
     opacity,
     path_trace,
     preset,
+    rmsd_series,
+    rmsf,
     save_session,
     screenshot,
     select,
@@ -1677,3 +1680,116 @@ async def test_spin_passes_its_mode_through(wired_bridge):
     await task
 
     assert sent == {"mode": "rock", "angle": 25}
+
+
+# -- trajectory measurements ---------------------------------------------------
+
+
+async def test_rmsf_needs_a_trajectory_first():
+    with pytest.raises(ViewerError, match="No trajectory loaded"):
+        await rmsf()
+
+
+async def test_rmsd_series_needs_a_trajectory_first():
+    with pytest.raises(ViewerError, match="No trajectory loaded"):
+        await rmsd_series()
+
+
+async def test_rmsf_groups_by_residue_and_ranks_by_motion(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """Structured numbers, ranked — the form the plan asks for rather than a plot."""
+    template = _peptide_array()
+    frames = np.stack(
+        [
+            template.coord
+            + np.linspace(0, step, template.array_length())[:, None] * [0, 1.0, 0]
+            for step in range(6)
+        ]
+    )
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, frames))
+
+    out = await rmsf(per="residue")
+    assert out["frames"] == 6
+    assert out["count"] == len(set(template.res_id.tolist()))
+    ranked = [entry["rmsf"] for entry in out["most_mobile"]]
+    assert ranked == sorted(ranked, reverse=True)
+    assert out["max"] >= out["mean"] >= out["min"]
+
+
+async def test_rmsf_per_atom_reports_every_atom(wired_bridge, monkeypatch):
+    template = _peptide_array()
+    frames = np.stack([template.coord] * 3)
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, frames))
+
+    out = await rmsf(per="atom")
+    assert out["count"] == template.array_length()
+
+
+async def test_rmsf_refuses_an_unknown_grouping(wired_bridge, monkeypatch):
+    template = _peptide_array()
+    monkeypatch.setattr(
+        server_mod, "_trajectory", _stack_from(template, np.stack([template.coord] * 2))
+    )
+    with pytest.raises(ViewerError, match="Unknown grouping"):
+        await rmsf(per="chain")
+
+
+async def test_rmsd_series_reports_one_value_per_frame(wired_bridge, monkeypatch):
+    template = _peptide_array()
+    frames = np.stack([template.coord] * 4)
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, frames))
+
+    out = await rmsd_series()
+    assert out["frames"] == 4
+    assert len(out["rmsd"]) == 4
+    assert out["rmsd"][0] == pytest.approx(0.0, abs=1e-4)
+
+
+def _peptide_array() -> Any:
+    """Three residues of two atoms each, as a template for coordinate frames."""
+    atoms: list[Any] = []
+    for residue in range(3):
+        for name in ("N", "CA"):
+            atoms.append(
+                Atom(
+                    [float(residue), 0.0, 0.0],
+                    chain_id="A",
+                    res_id=residue + 1,
+                    ins_code="",
+                    res_name="ALA",
+                    atom_name=name,
+                    element="C",
+                    hetero=False,
+                    b_factor=0.0,
+                    occupancy=1.0,
+                    atom_id=len(atoms) + 1,
+                )
+            )
+    return atom_array(atoms)
+
+
+def _stack_from(template: Any, frames: Any) -> Any:
+    built = []
+    for coord in frames:
+        copy = template.copy()
+        copy.coord = coord.astype(np.float32)
+        built.append(copy)
+    return atom_stack(built)
+
+
+async def test_rmsf_reports_internal_motion_not_bulk_drift(wired_bridge, monkeypatch):
+    """The tool superposes, not just the module underneath it.
+
+    A molecule that slid across the box rigidly has fluctuated not at all.
+    Measured on raw frames it reads as hugely mobile everywhere — a confident
+    wrong answer — so this pins the correction at the tool boundary rather than
+    trusting that whoever wired it up called the right helper.
+    """
+    template = _peptide_array()
+    slide = np.array([0.0, 12.0, 0.0])
+    drifted = np.stack([template.coord + slide * step for step in range(5)])
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, drifted))
+
+    out = await rmsf(per="atom")
+    assert out["max"] == pytest.approx(0.0, abs=1e-2)

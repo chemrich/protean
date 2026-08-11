@@ -34,6 +34,12 @@ from .analysis.electrostatics import sample as _sample_grid
 from .analysis.electrostatics import write_dx as _write_dx
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
+from .analysis.trajectory import TrajectoryError
+from .analysis.trajectory import read as _read_trajectory
+from .analysis.trajectory import rmsd_series as _rmsd_series
+from .analysis.trajectory import rmsf as _rmsf
+from .analysis.trajectory import superpose_frames as _superpose_frames
+from .analysis.trajectory import supported_formats as _trajectory_formats
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, default_cache_dir, fetch_structure_data
 from .handles import HandleError, HandleRegistry
@@ -67,6 +73,10 @@ _structure: Any = None
 _structure_error: str | None = None
 _structure_identifier: str | None = None
 _handles = HandleRegistry()
+# The coordinate stack from the last load_trajectory(), kept because the
+# analysis copy is only ever one frame of it.
+_trajectory: Any = None
+
 # Conservation scores from the last conservation() call, per chain, so they can
 # be coloured without paying for the alignment again.
 _conservation_scores: dict[str, Any] = {}
@@ -802,6 +812,251 @@ async def snapshot(
         "bytes": out.stat().st_size,
         **({"traced_ms": result["traced_ms"]} if "traced_ms" in result else {}),
     }
+
+
+@mcp.tool()
+async def load_trajectory(
+    path: str, stride: int = 1, max_frames: int = 100
+) -> dict[str, Any]:
+    """Lay a coordinate trajectory onto the structure already loaded.
+
+    A trajectory file carries coordinates and nothing else — no atom names, no
+    chains — so it has to be read onto a structure that says what the atoms
+    are. Load that first with fetch_structure, then this. The atom counts must
+    match exactly, and a mismatch is refused rather than animated: the wrong
+    pairing parses cleanly and describes nothing.
+
+    path: an .xtc, .trr, .dcd or .nc file.
+    stride: take every nth frame. The payload is atoms times frames, so this is
+      how a long run is made viewable rather than by hoping.
+    max_frames: stop after this many kept frames, as a floor under the same
+      problem. Both are reported back so a truncated view is never silent.
+
+    Afterwards, frame(index) steps through it and turntable()/snapshot()
+    capture it.
+    """
+    global _structure, _structure_error, _structure_identifier, _trajectory  # noqa: PLW0603 - session state
+    template = _require_structure()
+    if max_frames < 1:
+        raise ViewerError(f"max_frames must be at least 1, got {max_frames}")
+
+    try:
+        stack = _read_trajectory(path, template, stride=stride, limit=max_frames)
+    except TrajectoryError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    available = stack.stack_depth()
+    # The same renumbering every path that re-sends a structure has to do, or
+    # handles built afterwards name different atoms than they resolve to.
+    _renumber_for_viewer(stack)
+    reply = await _send_structure(stack, Path(path).stem)
+
+    # The analysis copy becomes the first frame, so selections keep working and
+    # describe the same molecule the viewer is showing.
+    _structure, _structure_error = stack[0], None
+    _structure_identifier = str(Path(path).expanduser())
+    _trajectory = stack
+    _handles.clear()
+
+    return {
+        "trajectory": str(Path(path).expanduser()),
+        "frames": available,
+        "stride": stride,
+        "atoms": int(stack.array_length()),
+        "viewer_atoms": reply.get("atom_count"),
+        "formats": _trajectory_formats(),
+    }
+
+
+def _require_trajectory() -> Any:
+    if _trajectory is None:
+        raise ViewerError("No trajectory loaded — call load_trajectory first.")
+    return _trajectory
+
+
+@mcp.tool()
+async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
+    """Per-atom fluctuation across the trajectory, as numbers.
+
+    Frames are superposed onto the first before measuring, so what comes back
+    is internal motion rather than the molecule drifting across the box — that
+    drift would otherwise read as enormous fluctuation everywhere, which is a
+    confident wrong answer rather than an obviously broken one.
+
+    per: "residue" averages over each residue's atoms, which is what a figure
+      or a table usually wants; "atom" gives every value.
+    limit: how many of the most mobile entries to list. The summary counts and
+      the extremes are always exact; only the listing is capped.
+
+    color_by_rmsf() draws the same numbers on the structure.
+    """
+    if per not in ("residue", "atom"):
+        raise ViewerError(f"Unknown grouping {per!r} (residue, atom)")
+    stack = _require_trajectory()
+    try:
+        values = _rmsf(_superpose_frames(stack))
+    except TrajectoryError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    array = stack[0]
+    entries: list[dict[str, Any]]
+    if per == "atom":
+        entries = [
+            {
+                "chain": str(array.chain_id[i]),
+                "seq": int(array.res_id[i]),
+                "atom": str(array.atom_name[i]),
+                "rmsf": round(float(values[i]), 3),
+            }
+            for i in range(array.array_length())
+        ]
+    else:
+        grouped: dict[tuple[str, int, str], list[float]] = {}
+        names: dict[tuple[str, int, str], str] = {}
+        for i in range(array.array_length()):
+            key = (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
+            grouped.setdefault(key, []).append(float(values[i]))
+            names[key] = str(array.res_name[i])
+        entries = [
+            {
+                "chain": chain,
+                "seq": seq,
+                "comp": names[(chain, seq, ins)],
+                "rmsf": round(float(np.mean(group)), 3),
+            }
+            for (chain, seq, ins), group in grouped.items()
+        ]
+
+    ranked = sorted(entries, key=lambda e: float(e["rmsf"]), reverse=True)
+    magnitudes = [float(e["rmsf"]) for e in entries]
+    return {
+        "per": per,
+        "frames": int(stack.stack_depth()),
+        "count": len(entries),
+        "mean": round(float(np.mean(magnitudes)), 3),
+        "max": round(float(np.max(magnitudes)), 3),
+        "min": round(float(np.min(magnitudes)), 3),
+        "most_mobile": ranked[:limit],
+        "truncated": len(ranked) > limit,
+    }
+
+
+@mcp.tool()
+async def color_by_rmsf(
+    representation: str = "cartoon",
+    scale: str = "relative",
+    hide_others: bool = True,
+) -> dict[str, Any]:
+    """Colour the structure by how much each atom moves across the trajectory.
+
+    The same numbers rmsf() returns, drawn on the molecule: rigid core one
+    colour, mobile loops and termini the other. Carried into the viewer in the
+    B-factor column and drawn with Mol*'s uncertainty theme, which is the one
+    per-atom numeric field it will ramp over — so this re-sends the structure,
+    and the reply says so.
+
+    Only the viewer's copy has its B-factors overwritten. The analysis copy
+    keeps its crystallographic values, because a B-factor that quietly means
+    something else is exactly what gets read as temperature later.
+
+    scale: "relative" stretches the ramp over this trajectory's own range,
+      which is what makes a rigid core stand out; "absolute" pins 0 to the low
+      end so two runs can be compared.
+    """
+    if scale not in ("relative", "absolute"):
+        raise ViewerError(f"Unknown scale {scale!r} (relative, absolute)")
+    stack = _require_trajectory()
+    try:
+        values = _rmsf(_superpose_frames(stack))
+    except TrajectoryError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    lowest, highest = float(values.min()), float(values.max())
+    span = highest - lowest
+    # The uncertainty theme's domain is [0, 100], so values arrive already
+    # stretched into it; the theme takes no domain from us.
+    if scale == "relative" and span > 0:
+        scaled = (values - lowest) / span * _B_FACTOR_FULL
+    else:
+        ceiling = highest if highest > 0 else 1.0
+        scaled = np.clip(values / ceiling, 0.0, 1.0) * _B_FACTOR_FULL
+
+    array = stack[0].copy()
+    _renumber_for_viewer(array)
+    display = array.copy()
+    display.b_factor = np.asarray(scaled, dtype=float)
+
+    await _send_structure(display, "rmsf")
+    if hide_others:
+        with contextlib.suppress(ViewerError):
+            await _call("hide", {"name": "auto"})
+
+    name = "rmsf"
+    await _call(
+        "show",
+        {
+            "name": name,
+            "expression": _indices_to_molscript(array, np.arange(array.array_length())),
+            "representation": representation,
+            "color": "uncertainty",
+            "limit": 0,
+        },
+    )
+
+    # Handles are Python-side atom indices and the atom order is untouched, so
+    # they survive the reload; their components do not, so redraw them.
+    restored = 0
+    for handle in _handles.names():
+        await _display(handle, _handles.get(handle).indices)
+        restored += 1
+
+    return {
+        "name": name,
+        "representation": representation,
+        "scale": scale,
+        "frames": int(stack.stack_depth()),
+        "rmsf_min": round(lowest, 3),
+        "rmsf_max": round(highest, 3),
+        "reloaded": True,
+        "b_factors_overwritten": "viewer copy only",
+        "handles_redrawn": restored,
+    }
+
+
+@mcp.tool()
+async def rmsd_series(reference: int = 0) -> dict[str, Any]:
+    """RMSD of every frame against one of them, after superposing onto it.
+
+    The usual read on whether a simulation has settled: a series that climbs
+    and then flattens has equilibrated, one still climbing at the end has not.
+
+    reference: which frame to measure against, usually the first.
+    """
+    stack = _require_trajectory()
+    try:
+        series = _rmsd_series(stack, reference)
+    except TrajectoryError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    values = [round(float(v), 3) for v in series]
+    return {
+        "reference": reference,
+        "frames": len(values),
+        "rmsd": values,
+        "mean": round(float(np.mean(values)), 3),
+        "max": round(float(np.max(values)), 3),
+        "final": values[-1],
+    }
+
+
+@mcp.tool()
+async def frame(index: int) -> dict[str, Any]:
+    """Show one frame of the loaded trajectory.
+
+    index: 0 to frames-1, as reported by load_trajectory. Out of range is
+      refused rather than clamped, so a loop that runs off the end says so.
+    """
+    return await _call("frame", {"index": index})
 
 
 @mcp.tool()

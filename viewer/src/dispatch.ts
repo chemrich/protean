@@ -912,6 +912,42 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    frame: {
+      render: true,
+      async run({ index }: { index: number }) {
+        const current = plugin.managers.structure.hierarchy.current;
+        const model = current.models?.[0];
+        if (!model) throw new Error('No structure loaded — call fetch_structure first.');
+
+        // frameCount lives on the trajectory, not the model: the model is one
+        // frame of it, selected by modelIndex.
+        const trajectory = current.trajectories?.[0];
+        const frames = trajectory?.cell?.obj?.data?.frameCount ?? 1;
+        if (frames < 2) {
+          throw new Error(
+            'This structure has a single frame. Load a trajectory onto it first.'
+          );
+        }
+        if (!Number.isInteger(index) || index < 0 || index >= frames) {
+          throw new Error(`Frame ${index} is outside 0..${frames - 1}`);
+        }
+
+        await plugin.state.data
+          .build()
+          .to(model.cell.transform.ref)
+          .update({ ...model.cell.transform.params, modelIndex: index })
+          .commit();
+
+        // Read back off the rebuilt cell rather than echoing: a refused update
+        // leaves the previous frame in place and the scene simply looks stale.
+        const now = plugin.managers.structure.hierarchy.current.models?.[0];
+        return {
+          index: now?.cell?.transform?.params?.modelIndex ?? null,
+          frames,
+        };
+      },
+    },
+
     orbit: {
       render: true,
       async run({ degrees }: OrbitArgs) {
