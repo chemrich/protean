@@ -46,9 +46,36 @@ Until it is understood, analysis on glycoproteins is unreliable. Worth
 diagnosing before anything else here, because it is the one finding that makes
 numbers wrong rather than missing.
 
+### 3. `elem` accepts an element symbol that does not exist
+
+```
+select("elem Zz")  ->  0 atoms, no complaint
+```
+
+Element symbols are a closed set, so `Zz` is a typo, not a query — and 0 atoms
+reads as "this structure has none of those" rather than "you misspelled it".
+protean already refuses an unknown representation and an unknown colour theme
+by checking against the live registry; `elem` has the same shape and no check.
+
+`resi 999999999999` and `chain \x00` behave the same way. Those are weaker
+cases — a residue number out of range legitimately matches nothing — but the
+element one is a straightforward typo the tool could catch.
+
+### 4. `near` accepts a radius of zero or less
+
+```
+near(handle, -1.0)  ->  0 atoms, no complaint
+near(handle,  0.0)  ->  0 atoms, no complaint
+```
+
+A non-positive radius is not a question anyone means to ask, and the empty
+answer looks like a legitimate result. Every other numeric argument in the
+project is bounds-checked — opacity, metalness, cel steps, bounces, dpi, frame
+counts — so this is an omission rather than a decision.
+
 ## Gaps — the answer is unavailable
 
-### 3. No structural-alignment mode for `superpose`
+### 5. No structural-alignment mode for `superpose`
 
 The benchmark's clearest loss. On 1AKE/4AKE, PyMOL's `cealign` finds the rigid
 core and reports **3.460 Å over 112 residues**; protean aligns by sequence and
@@ -60,7 +87,7 @@ than trusting the sequence alignment — iterative outlier rejection over the
 sequence-aligned pairs would get most of the way, and biotite has the
 superposition primitives already.
 
-### 4. Secondary structure cannot be selected
+### 6. Secondary structure cannot be selected
 
 `ss H` and `ss S` work in PyMOL and are refused here, because secondary
 structure is never assigned. Colouring *by* it works, since Mol\* assigns its
@@ -71,7 +98,7 @@ Fix: assign secondary structure on load — Mol\*'s computable
 analysis copy is another. This is the most visible hole in the selection
 grammar.
 
-### 5. A handle cannot address one symmetry copy
+### 7. A handle cannot address one symmetry copy
 
 Decision 9's unsolved limitation, now visible in a published comparison:
 `interface("A", "B")` on 1HHO reports the whole tetramer's A–B interface
@@ -82,25 +109,52 @@ currently be asked for the second.
 Needs new handle transport — atom-id ranges cannot distinguish copies that
 share ids. Hardest item here.
 
-### 6. Selection keywords still unsupported
+### 8. Selection keywords still unsupported
 
 `extend`, `bymolecule`, `rank`, `bound_to` all raise. `alt` cannot work as
 things stand, because biotite resolves altlocs at parse time and no altloc
 field survives. Each refusal names its reason, which is the right failure — but
 the grammar is a subset of PyMOL's and the benchmark says so.
 
+## Not bugs, but worth knowing
+
+Found by the corpus, expected to be refused, and correct as they stand:
+
+- **`lighting(intensity=0)` is accepted.** Zero directional light is a real
+  request — it is what `rig="flat"` does — so scaling to nothing is meaningful
+  rather than nonsense.
+- **`select()` after `clear_viewer()` is refused** with "No structure loaded".
+  `clear_viewer` clears the analysis copy as well as the scene, which is what
+  "clear" should mean; the corpus expected the Python side to survive.
+
 ## Verified working
 
-Recorded so the corpus is not re-run to rediscover them. All of the following
-behaved correctly across B-DNA, a glycoprotein, a 58,870-atom GroEL/GroES
-complex and a 38-model NMR ensemble:
+Recorded so the corpus is not re-run to rediscover them. From 499 probes across
+two personalities — 398 expected successes, 101 expected refusals, 7 surprises
+— over B-DNA, a glycoprotein, haemoglobin, carbonic anhydrase, a 38-model NMR
+ensemble and ubiquitin:
 
 - Structure loading, polymer selection and chain enumeration at every size
   tried, including 21 chains and 8,015 residues.
 - Distance, angle and dihedral measurement; `combine`, `near` and `invert`.
 - Session save and load, with all nine handles restored and none dropped.
-- Every error case refused loudly with a reason and, where relevant, the list
-  of valid alternatives: unknown representation, unknown colour theme, missing
-  handle, malformed selection syntax, `frame()` with no trajectory, an
-  interface against a chain that is not there, and `snapshot()` given two
-  conflicting widths.
+- Every enum refused rubbish with the valid list attached: representations,
+  colour themes, lighting rigs, shading styles, material finishes, presets,
+  path-trace quality, gradients, measurement kinds, label levels, snapshot
+  columns and formats, movie containers and spin modes.
+- Every numeric bound held where one exists: opacity, metalness, cel steps,
+  lighting intensity below zero, dpi, snapshot size, turntable frame counts.
+- Every operation on a handle that does not exist was refused, by name, with
+  the known handles listed — across show, color, opacity, material, shading,
+  focus, label, remove, measure, combine, near and invert.
+- Every trajectory and movie operation attempted with nothing loaded was
+  refused: `frame`, `rmsf`, `rmsd_series`, `record_trajectory`,
+  `record_timeline`, `movie`, and `load_trajectory` on a missing file and on a
+  file that is not a trajectory.
+- 27 malformed selections were refused, including empty strings, unbalanced
+  parentheses, dangling operators, and keywords protean does not support.
+- Awkward-but-legal handle names were accepted: spaces, slashes, dots, digits,
+  300 characters, and an emoji.
+- Structures loaded and selected correctly at every size tried, including 21
+  chains and 8,015 residues; measurements and set operations were exact;
+  sessions restored every handle with none dropped.

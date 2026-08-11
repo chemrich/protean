@@ -79,6 +79,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# The benchmark and corpus scripts are written the way someone probing the tool
+# would write them, and are quoted in docs/. A long flat list of probes is what
+# the corpus is meant to be; restructuring it into functions would hide the one
+# thing it is for, which is being read straight through.
+"docs/benchmark/*" = ["E501", "E702", "PLR2004", "T201", "INP001", "PLR0915", "PLR0912"]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = [
