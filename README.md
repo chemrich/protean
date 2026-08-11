@@ -89,6 +89,13 @@ path-trace quality, and whether ffmpeg is installed.
 | Capture | `screenshot`, `snapshot`, `turntable`, `record_trajectory`, `record_timeline`, `movie` |
 | Trajectories | `load_trajectory`, `frame`, `rmsf`, `rmsd_series` |
 
+## Known gaps
+
+[docs/backlog.md](docs/backlog.md) lists what a corpus of structures and failure
+modes turned up — including two wrong answers worth knowing about before
+trusting a number: `sidechain` returns the whole molecule on nucleic acids, and
+the viewer and analysis disagree by 217 atoms on one glycoprotein.
+
 ## Development
 
 ```bash
