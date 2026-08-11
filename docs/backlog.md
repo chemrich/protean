@@ -246,9 +246,38 @@ protean -SSSSS----SSSSSSS-----HHHHHHHHHHH-------SSSS-------------------SSSSSSSSS
 ```
 
 Both numbers are asserted in the differential suite, so this cannot drift
-silently. Closing it means implementing the Kabsch-Sander hydrogen-bond
-criterion in Python — biotite ships only a wrapper around an external `mkdssp`
-binary, which is not a dependency worth taking for this.
+silently.
+
+**A from-scratch Kabsch-Sander implementation was tried and abandoned.** About
+250 lines: amide hydrogens placed from the preceding carbonyl, the published
+energy term, n-turns, bridges and ladders. It was measured rather than assumed,
+and the numbers did not justify shipping it:
+
+| on 1UBQ | agreement with PyMOL | `ss H` | `ss S` |
+|---|---|---|---|
+| P-SEA (current) | 82% | 89 | 217 |
+| the attempt | 82% | 148 | 217 |
+| PyMOL / Mol\* | — | 132 | 274 |
+
+Helix improved; strand did not move at all. On 1L2Y it did beat P-SEA (80%
+against 65%), so the idea is not wrong — the implementation is. Two concrete
+defects were found and are worth knowing before anyone tries again:
+
+- the residue index space included waters, so "residue i+4" could be a solvent
+  molecule rather than the fourth residue along — and every turn and bridge
+  rule is expressed in exactly that adjacency;
+- only 54 backbone hydrogen bonds were detected where DSSP finds 60-70 on this
+  structure, so the bridge and ladder rules were being starved of input.
+
+It was dropped rather than fixed because a half-right assignment is worse than
+a documented divergence. P-SEA is at least a published algorithm whose
+disagreement is characterised above; a home-grown one matching neither
+reference would be a third answer with nothing behind it.
+
+Closing this properly means either taking `mkdssp` as a real dependency —
+biotite only wraps it — or porting DSSP against a trusted reference assignment
+so each rule can be validated as it goes. Both are larger decisions than the
+selector that prompted them.
 
 ## Not bugs, but worth knowing
 
