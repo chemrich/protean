@@ -28,6 +28,7 @@ from biotite.structure.io.xtc import XTCFile
 from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
+from protean_mcp.analysis.encode import ffmpeg_binary
 from protean_mcp.connection import ViewerError
 from protean_mcp.fetch import fetch_structure_data
 from protean_mcp.selections_numpy import load_structure
@@ -1228,3 +1229,57 @@ async def test_the_rmsf_ramp_depends_on_the_motion_it_measures(tmp_path):
     assert rigid_reply["rmsf_max"] == pytest.approx(0.0, abs=1e-2)
     assert hinge_reply["rmsf_max"] > 0.5
     assert difference(rigid, hinged) > 0.005
+
+
+# -- recording and encoding ----------------------------------------------------
+
+
+async def test_a_trajectory_becomes_a_movie(tmp_path):
+    """Phase 5's exit criterion, end to end and through the real tools.
+
+    Load a trajectory, measure it, capture every frame, encode. The frames are
+    checked for actually differing before the encode, because a movie made from
+    one repeated frame is a valid file that plays and shows nothing — and its
+    byte size would not say so.
+    """
+    if ffmpeg_binary() is None:
+        pytest.skip("ffmpeg is not installed")
+
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        template = server_mod._require_structure()
+        base = np.asarray(template.coord, dtype=np.float32)
+        half = base.shape[0] // 2
+        built = []
+        for step in range(10):
+            coord = base.copy()
+            coord[half:, 1] += step * 0.5
+            built.append(coord)
+
+        handle = XTCFile()
+        handle.set_coord(np.stack(built))
+        path = tmp_path / "run.xtc"
+        handle.write(str(path))
+
+        loaded = await server_mod.load_trajectory(str(path))
+        measured = await server_mod.rmsd_series()
+        recorded = await server_mod.record_trajectory(str(tmp_path / "frames"), width=320)
+        encoded = await server_mod.movie(
+            recorded["directory"], str(tmp_path / "run.mp4"), fps=10
+        )
+        # The viewer is left on the first frame, not part-way through the run.
+        settled = await session.request("frame", {"index": 0})
+
+    assert loaded["frames"] == 10
+    # The structure departs from where it started, which is what a movie shows.
+    assert measured["final"] > measured["rmsd"][0]
+
+    frames = sorted(Path(recorded["directory"]).glob("frame_*.png"))
+    assert len(frames) == 10
+    renders = [decode(frame.read_bytes()) for frame in (frames[0], frames[-1])]
+    assert difference(renders[0], renders[1]) > 0.005
+    assert coverage(renders[-1]) > 0.005
+
+    assert Path(encoded["path"]).stat().st_size > 0
+    assert encoded["frames"] == 10
+    assert encoded["seconds"] == pytest.approx(1.0)
+    assert settled["index"] == 0

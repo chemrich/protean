@@ -32,6 +32,9 @@ from .analysis.electrostatics import prepare as _prepare_charges
 from .analysis.electrostatics import run_apbs as _run_apbs
 from .analysis.electrostatics import sample as _sample_grid
 from .analysis.electrostatics import write_dx as _write_dx
+from .analysis.encode import EncodeError
+from .analysis.encode import encode as _encode_movie
+from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.trajectory import TrajectoryError
@@ -1060,6 +1063,95 @@ async def frame(index: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+async def record_trajectory(
+    directory: str, width: int = 1200, stride: int = 1, transparent: bool | None = None
+) -> dict[str, Any]:
+    """Capture one image per trajectory frame, ready to encode.
+
+    The trajectory equivalent of turntable(): where that orbits a still
+    structure, this steps through the motion with the camera held still. Both
+    write frame_0000.png upward, which is what movie() reads.
+
+    directory: where the frames go. Created if missing.
+    width: frame width in pixels; the height follows the viewport's aspect.
+    stride: capture every nth frame, for a long run or a shorter movie.
+    transparent: capture onto nothing, for compositing.
+
+    The viewer is left showing the frame it started on.
+    """
+    if stride < 1:
+        raise ViewerError(f"Stride must be 1 or more, got {stride}")
+    if width < 1:
+        raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
+    stack = _require_trajectory()
+    total = int(stack.stack_depth())
+
+    out = Path(directory).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    bridge = _require_viewer()
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    args: dict[str, Any] = {"width": width, "crop": False}
+    if transparent is not None:
+        args["transparent"] = transparent
+
+    indices = list(range(0, total, stride))
+    written: list[str] = []
+    for position, index in enumerate(indices):
+        await bridge.request("frame", {"index": index}, timeout=_SNAPSHOT_TIMEOUT)
+        result = await bridge.request("snapshot", args, timeout=timeout)
+        data_uri: str = result["data_uri"]
+        header, _, payload = data_uri.partition(",")
+        if "base64" not in header:
+            raise ViewerError(f"Unexpected frame encoding: {header}")
+        png = base64.b64decode(payload)
+        image = _open_snapshot(png)
+        if not result.get("transparent") and _incomplete_capture(image):
+            raise ViewerError(
+                f"Frame {index} came back incomplete: parts of the "
+                f"{image.width}x{image.height} image were never rendered. "
+                "Lower the width, or capture on a machine with a GPU."
+            )
+        frame_path = out / f"frame_{position:04d}.png"
+        frame_path.write_bytes(png)
+        written.append(str(frame_path))
+
+    # Back to where the run started, so the viewer is not left mid-trajectory.
+    await bridge.request("frame", {"index": 0}, timeout=_SNAPSHOT_TIMEOUT)
+
+    return {
+        "directory": str(out),
+        "frames": len(written),
+        "of": total,
+        "stride": stride,
+        "width": width,
+        "bytes": sum(Path(f).stat().st_size for f in written),
+    }
+
+
+@mcp.tool()
+async def movie(directory: str, path: str, fps: int = 30) -> dict[str, Any]:
+    """Encode a directory of captured frames into a movie.
+
+    Reads frame_0000.png upward — what turntable() and record_trajectory()
+    write — and hands them to ffmpeg.
+
+    path: the output file. The extension chooses the container: .mp4 plays
+      everywhere, .gif drops into a slide or an issue, .webm keeps
+      transparency. MP4 cannot hold an alpha channel at all.
+    fps: frames per second. The reply reports the duration this works out to,
+      which is usually what you actually wanted to control.
+
+    ffmpeg has to be installed; it is checked before anything is written, and
+    the frames are ordinary PNGs if you would rather encode them elsewhere.
+    """
+    try:
+        return dict(_encode_movie(directory, path, fps))
+    except EncodeError as exc:
+        raise ViewerError(str(exc)) from exc
+
+
+@mcp.tool()
 async def spin(
     mode: str = "spin", speed: float | None = None, angle: float | None = None
 ) -> dict[str, Any]:
@@ -1487,6 +1579,9 @@ async def capabilities() -> dict[str, Any]:
     # report them. They belong in the same answer as everything else a caller
     # can choose from.
     reported["presets"] = sorted(_PRESETS)
+    # Whether a movie can actually be written, rather than finding out at
+    # the end of a long capture.
+    reported["ffmpeg"] = _ffmpeg_binary() is not None
     return reported
 
 
