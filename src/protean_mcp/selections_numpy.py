@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass
+from difflib import get_close_matches
 from typing import Any
 
 import numpy as np
@@ -56,6 +57,18 @@ _METAL_SYMBOLS = (
 _METALS = frozenset(_METAL_SYMBOLS.split())
 _BACKBONE = frozenset({"N", "CA", "C", "O"})
 _HYDROGEN = frozenset({"H", "D"})
+
+# Elements 1-118, plus the hydrogen isotopes that carry their own symbol in
+# neutron structures. Unlike a chain id or a residue number this is a closed
+# set, so a symbol outside it is a typo rather than a question about a molecule.
+_ELEMENT_SYMBOLS = (
+    "H HE LI BE B C N O F NE NA MG AL SI P S CL AR K CA SC TI V CR MN FE CO NI "
+    "CU ZN GA GE AS SE BR KR RB SR Y ZR NB MO TC RU RH PD AG CD IN SN SB TE I "
+    "XE CS BA LA CE PR ND PM SM EU GD TB DY HO ER TM YB LU HF TA W RE OS IR PT "
+    "AU HG TL PB BI PO AT RN FR RA AC TH PA U NP PU AM CM BK CF ES FM MD NO LR "
+    "RF DB SG BH HS MT DS RG CN NH FL MC LV TS OG D T"
+)
+_ELEMENTS = frozenset(_ELEMENT_SYMBOLS.split())
 
 
 @dataclass
@@ -260,15 +273,47 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
             [v.upper() for v in node.values],
         )
     if prop == "elem":
-        return np.isin(
-            np.char.upper(array.element.astype(str)),
-            [v.upper() for v in node.values],
-        )
+        present = np.char.upper(array.element.astype(str))
+        wanted = [v.upper() for v in node.values]
+        _check_elements(wanted, present)
+        return np.isin(present, wanted)
     if prop == "resi":
         return _numeric_terms(array.res_id, node.values, array, insertion=True)
     if prop == "index":
         return _numeric_terms(_field(array, "atom_id"), node.values, array)
     raise SelectionError(f"Property {prop!r} is not supported by the Python evaluator")
+
+
+def _check_elements(wanted: list[str], present: Mask) -> None:
+    """Refuse an element symbol that does not exist.
+
+    ``elem Zz`` used to return 0 atoms and no complaint, which reads as "this
+    structure has none of those" rather than "you misspelled it".
+
+    A symbol is only refused when it is neither a real element nor present in
+    this structure. Checking the structure too means the refusal can never
+    swallow a selection that would have matched something — a file carrying a
+    symbol this table has never heard of still answers rather than raising —
+    and a real element that is simply absent still answers 0, because that is
+    a true statement about the molecule rather than a mistake.
+    """
+    unknown = [
+        symbol
+        for symbol in wanted
+        if symbol not in _ELEMENTS and not bool(np.isin(present, [symbol]).any())
+    ]
+    if not unknown:
+        return
+    known = sorted(set(present.tolist()) | _ELEMENTS)
+    suggestions = [
+        close for symbol in unknown for close in get_close_matches(symbol, known, n=1)
+    ]
+    hint = f" Did you mean {suggestions[0]!r}?" if suggestions else ""
+    listed = ", ".join(repr(symbol) for symbol in unknown)
+    raise SelectionError(
+        f"No such element: {listed}.{hint} Element symbols are a closed set, so "
+        "this would have matched nothing whatever the structure held"
+    )
 
 
 def _numeric_terms(

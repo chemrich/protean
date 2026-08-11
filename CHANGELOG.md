@@ -66,3 +66,8 @@ nothing is released yet, so everything below is unreleased.
   written.
 - `superpose()` applies its transform and displays the pair.
 - The viewer and the analysis load the same assembly, and say so.
+- `elem` refuses a symbol that is not an element, with a suggested correction:
+  `elem Zz` used to return 0 atoms and no complaint, which reads as "this
+  structure has none of those" rather than "you misspelled it". A symbol is
+  refused only if it is neither a real element nor present in the file, so a
+  real element that is simply absent still answers 0.

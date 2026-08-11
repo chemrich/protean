@@ -250,9 +250,15 @@ def test_every_keyword_is_evaluable(keyword, tiny_structure):
     select_mask(keyword, tiny_structure)
 
 
+# A value each property will accept. Most take free text, so a placeholder is
+# fine; `resi` and `index` need a number, and `elem` is the one property whose
+# vocabulary is closed, where a placeholder is now correctly refused.
+_PROBE_VALUES = {"resi": "1", "index": "1", "elem": "C"}
+
+
 @pytest.mark.parametrize("prop", sorted(PROPERTIES))
 def test_every_property_is_evaluable(prop, tiny_structure):
-    select_mask(f"{prop} 1" if prop in ("resi", "index") else f"{prop} X", tiny_structure)
+    select_mask(f"{prop} {_PROBE_VALUES.get(prop, 'X')}", tiny_structure)
 
 
 @pytest.mark.parametrize("prop", sorted(COMPARABLE))

@@ -46,20 +46,27 @@ Until it is understood, analysis on glycoproteins is unreliable. Worth
 diagnosing before anything else here, because it is the one finding that makes
 numbers wrong rather than missing.
 
-### 3. `elem` accepts an element symbol that does not exist
+### 3. `elem` accepts an element symbol that does not exist — fixed
 
 ```
-select("elem Zz")  ->  0 atoms, no complaint
+select("elem Zz")   ->  No such element: 'ZZ'. Element symbols are a closed
+                        set, so this would have matched nothing whatever the
+                        structure held
+select("elem Znn")  ->  ... Did you mean 'ZN'? ...
 ```
 
-Element symbols are a closed set, so `Zz` is a typo, not a query — and 0 atoms
-reads as "this structure has none of those" rather than "you misspelled it".
-protean already refuses an unknown representation and an unknown colour theme
-by checking against the live registry; `elem` has the same shape and no check.
+A symbol is refused only when it is **neither a real element nor present in
+the structure**. Both halves matter:
 
-`resi 999999999999` and `chain \x00` behave the same way. Those are weaker
-cases — a residue number out of range legitimately matches nothing — but the
-element one is a straightforward typo the tool could catch.
+- checking the periodic table alone would refuse a file that legitimately
+  carries a symbol the table has never heard of, turning a real match into an
+  error;
+- checking the structure alone would refuse `elem Fe` on a structure with no
+  iron, which is a true answer about the molecule rather than a mistake.
+
+`resi 999999999999` and `chain \x00` still behave the old way, and should: a
+residue number out of range legitimately matches nothing, and neither
+vocabulary is closed.
 
 ### 4. `near` accepts a radius of zero or less
 
