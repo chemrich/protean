@@ -39,6 +39,11 @@ nothing is released yet, so everything below is unreleased.
 
 - `interface()` reports buried area per side and classified contacts;
   `superpose()` aligns by sequence and applies the transform.
+- `superpose(mode="structural")` matches residues by the shape of their local
+  backbone rather than by sequence, for proteins too diverged for a sequence
+  alignment to mean anything. On haemoglobin's alpha and beta chains it
+  superposes 139 residues of the shared fold where sequence mode anchors 64.
+  The reply now names the mode that produced it.
 - `conservation()` scores an MMseqs2 alignment; `electrostatics()` computes a
   screened Coulomb potential, or runs APBS when it is installed.
 - Scalar colouring for potential and conservation, as a gradient or as bands.
