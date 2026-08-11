@@ -22,7 +22,9 @@ import contextlib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
+from biotite.structure.io.xtc import XTCFile
 from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
@@ -1049,3 +1051,98 @@ async def test_a_full_turn_comes_back_exactly(turned):
     here long before it showed up as a jump at the seam of a movie.
     """
     assert difference(turned["before"], turned["after"]) == 0.0
+
+
+# -- trajectory frames ---------------------------------------------------------
+
+# 1L2Y is Trp-cage: 38 NMR models, so a real multi-frame structure that needs no
+# trajectory file to exercise frame stepping.
+MULTI_MODEL = "1l2y"
+
+
+@pytest.fixture(scope="module")
+async def stepped() -> dict[str, Any]:
+    """Three frames of a multi-model structure, and the reply for each."""
+    frames: dict[int, Render] = {}
+    replies: dict[int, Any] = {}
+    async with viewer_session(MULTI_MODEL) as session:
+        for index in (0, 18, 37):
+            replies[index] = await session.request("frame", {"index": index})
+            frames[index] = await _shot(session)
+        back = await session.request("frame", {"index": 0})
+        frames[-1] = await _shot(session)
+    return {"frames": frames, "replies": replies, "back": back}
+
+
+async def test_the_viewer_finds_every_frame(stepped):
+    """Read off the trajectory, not the model: the model is one frame of it."""
+    assert stepped["replies"][0]["frames"] == 38
+
+
+async def test_stepping_frames_changes_what_is_drawn(stepped):
+    """The whole claim. A frame index that never reached the state tree would
+    leave the scene exactly as it was and report success."""
+    frames: dict[int, Render] = stepped["frames"]
+    assert difference(frames[0], frames[18]) > 0.005
+    assert difference(frames[18], frames[37]) > 0.005
+
+
+async def test_every_trajectory_frame_still_draws_the_molecule(stepped):
+    """A frame index past the end could empty the scene and pass the test above."""
+    for index in (0, 18, 37):
+        assert coverage(stepped["frames"][index]) > 0.005
+
+
+async def test_a_frame_index_is_read_back_off_the_state_tree(stepped):
+    assert stepped["replies"][18]["index"] == 18
+    assert stepped["back"]["index"] == 0
+
+
+async def test_going_back_to_a_frame_reproduces_it_exactly(stepped):
+    """Frames are a setting, not a walk: returning to one shows the same thing."""
+    assert difference(stepped["frames"][0], stepped["frames"][-1]) == 0.0
+
+
+async def test_a_frame_outside_the_trajectory_is_refused():
+    """Clamping would quietly show the wrong frame and report success."""
+    async with viewer_session(MULTI_MODEL) as session:
+        with pytest.raises(ViewerError, match=r"outside 0\.\.37"):
+            await session.request("frame", {"index": 38})
+
+
+async def test_a_single_frame_structure_says_so():
+    """1UBQ is one model, so there is nothing to step through."""
+    async with viewer_session(FIXTURE) as session:
+        with pytest.raises(ViewerError, match="single frame"):
+            await session.request("frame", {"index": 1})
+
+
+async def test_a_trajectory_file_loads_and_animates(tmp_path):
+    """End to end, through the tools: structure, then coordinates onto it.
+
+    Built rather than downloaded, so the motion is known: every atom slides a
+    little further each frame, which has to show as a changing picture and as a
+    frame count the viewer agrees with.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        template = server_mod._require_structure()
+        base = np.asarray(template.coord, dtype=np.float32)
+        shift = np.array([0.0, 0.6, 0.0], dtype=np.float32)
+        frames = np.stack([base + shift * step for step in range(6)])
+
+        handle = XTCFile()
+        handle.set_coord(frames)
+        path = tmp_path / "run.xtc"
+        handle.write(str(path))
+
+        loaded = await server_mod.load_trajectory(str(path))
+        first = await _shot(session)
+        moved = await server_mod.frame(5)
+        last = await _shot(session)
+
+    assert loaded["frames"] == 6
+    # Both halves agree on the molecule, which is the invariant decision 9 set.
+    assert loaded["atoms"] == loaded["viewer_atoms"]
+    assert moved["frames"] == 6
+    assert difference(first, last) > 0.005
+    assert coverage(last) > 0.005

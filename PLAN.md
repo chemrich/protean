@@ -70,7 +70,7 @@ High-resolution snapshot pipeline, a render-style surface, and presets. Scoped i
 
 ### Phase 5 — Trajectories + animation (v0.4)
 
-MDAnalysis-backed loading (XTC/DCD/TRR + topology), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera + representation states with smooth interpolation; ffmpeg encoding to MP4/GIF. Phase 4 lands turntable and rocking capture ahead of this (decision 13), so the frame-capture loop already exists and this phase adds keyframes, trajectories and encoding rather than starting from nothing. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
+Trajectory loading (XTC/TRR/DCD/NetCDF — biotite rather than MDAnalysis, see decision 14), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera + representation states with smooth interpolation; ffmpeg encoding to MP4/GIF. Phase 4 lands turntable and rocking capture ahead of this (decision 13), so the frame-capture loop already exists and this phase adds keyframes, trajectories and encoding rather than starting from nothing. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
 
 ### Phase 6 — Polish and publish (v1.0)
 
@@ -369,3 +369,32 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
     The Blender bridge is dropped rather than deferred. It was already marked
     optional, proteinblend-mcp does it better, and with a path tracer in the
     viewer nothing in this phase needs it.
+
+## Decisions (2026-08-11) — trajectories
+
+14. **Trajectories are read with biotite, not MDAnalysis.** Amends Phase 5's
+    first line.
+
+    PLAN named MDAnalysis before anyone checked what was already here. biotite
+    is already a dependency and already reads XTC, TRR, DCD and NetCDF —
+    verified by writing and reading both XTC and DCD and getting the
+    coordinates back exactly. MDAnalysis would be a large addition, with a
+    correspondingly large transitive tree, for formats this project has no
+    call for.
+
+    What it would have brought and we give up: Amber PRMTOP and GROMACS TPR
+    topology parsing, the LAMMPS formats, and its analysis library. The first
+    two matter least here because a trajectory in protean is laid onto a
+    structure that is already loaded, so the topology comes from the mmCIF or
+    PDB that structure came from. The third is RMSD, which Phase 3 already
+    computes, and RMSF, which is three lines of numpy over a coordinate stack.
+
+    The loader keeps its formats in one table, so an optional MDAnalysis
+    backend can be added behind it if a format ever actually turns up.
+
+    **The check this design makes necessary.** A trajectory file carries
+    coordinates and nothing else — no atom names, no chains. Pairing one with
+    the wrong structure produces a file that parses cleanly and animates
+    smoothly and describes nothing, and the only evidence available is the
+    atom count. So the counts must match exactly and a mismatch is refused,
+    naming both numbers, rather than warned about.

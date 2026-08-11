@@ -34,6 +34,9 @@ from .analysis.electrostatics import sample as _sample_grid
 from .analysis.electrostatics import write_dx as _write_dx
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
+from .analysis.trajectory import TrajectoryError
+from .analysis.trajectory import read as _read_trajectory
+from .analysis.trajectory import supported_formats as _trajectory_formats
 from .connection import ViewerBridge, ViewerError
 from .fetch import FetchError, default_cache_dir, fetch_structure_data
 from .handles import HandleError, HandleRegistry
@@ -802,6 +805,69 @@ async def snapshot(
         "bytes": out.stat().st_size,
         **({"traced_ms": result["traced_ms"]} if "traced_ms" in result else {}),
     }
+
+
+@mcp.tool()
+async def load_trajectory(
+    path: str, stride: int = 1, max_frames: int = 100
+) -> dict[str, Any]:
+    """Lay a coordinate trajectory onto the structure already loaded.
+
+    A trajectory file carries coordinates and nothing else — no atom names, no
+    chains — so it has to be read onto a structure that says what the atoms
+    are. Load that first with fetch_structure, then this. The atom counts must
+    match exactly, and a mismatch is refused rather than animated: the wrong
+    pairing parses cleanly and describes nothing.
+
+    path: an .xtc, .trr, .dcd or .nc file.
+    stride: take every nth frame. The payload is atoms times frames, so this is
+      how a long run is made viewable rather than by hoping.
+    max_frames: stop after this many kept frames, as a floor under the same
+      problem. Both are reported back so a truncated view is never silent.
+
+    Afterwards, frame(index) steps through it and turntable()/snapshot()
+    capture it.
+    """
+    global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
+    template = _require_structure()
+    if max_frames < 1:
+        raise ViewerError(f"max_frames must be at least 1, got {max_frames}")
+
+    try:
+        stack = _read_trajectory(path, template, stride=stride, limit=max_frames)
+    except TrajectoryError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    available = stack.stack_depth()
+    # The same renumbering every path that re-sends a structure has to do, or
+    # handles built afterwards name different atoms than they resolve to.
+    _renumber_for_viewer(stack)
+    reply = await _send_structure(stack, Path(path).stem)
+
+    # The analysis copy becomes the first frame, so selections keep working and
+    # describe the same molecule the viewer is showing.
+    _structure, _structure_error = stack[0], None
+    _structure_identifier = str(Path(path).expanduser())
+    _handles.clear()
+
+    return {
+        "trajectory": str(Path(path).expanduser()),
+        "frames": available,
+        "stride": stride,
+        "atoms": int(stack.array_length()),
+        "viewer_atoms": reply.get("atom_count"),
+        "formats": _trajectory_formats(),
+    }
+
+
+@mcp.tool()
+async def frame(index: int) -> dict[str, Any]:
+    """Show one frame of the loaded trajectory.
+
+    index: 0 to frames-1, as reported by load_trajectory. Out of range is
+      refused rather than clamped, so a loop that runs off the end says so.
+    """
+    return await _call("frame", {"index": index})
 
 
 @mcp.tool()
