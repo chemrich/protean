@@ -100,24 +100,46 @@ in decision 9 and still unsolved.
 and per-residue buried area in the same call, and on stating its criterion. It
 **loses** on not being able to ask about one copy.
 
-## 3. Superposition — PyMOL wins
+## 3. Superposition — a draw, and the first table asked the wrong question
 
-1AKE against 4AKE, adenylate kinase's hinge motion:
+1AKE against 4AKE, adenylate kinase's hinge motion. Both are dimers, and the
+original table superposed them whole:
 
-| | RMSD | Over |
+| both chains | RMSD | Over |
 |---|---|---|
 | PyMOL `align` | 18.491 Å | 428 residues |
-| **PyMOL `cealign`** | **3.460 Å** | **112 residues** |
+| PyMOL `super` | 18.515 Å | 427 residues |
 | protean `superpose` | 17.706 Å | 414 residues |
+| **PyMOL `cealign`** | **3.460 Å** | **112 residues** |
 
-protean aligns by sequence and superposes everything it matched, which for a
-hinge motion is the wrong thing: the two lobes cannot be fitted at once, and
-17.7 Å is the honest number for trying. `cealign` finds the rigid core
-structurally and reports 3.46 Å over the 112 residues that actually superpose —
-which is the answer a structural biologist wants.
+Read again, that table says something other than what it was first taken to
+say. protean is being compared against `cealign`, but its like-for-like
+counterparts are `align` and `super` — and it beats both. Asking a single
+rigid transform to satisfy two chains that have moved relative to each other
+has no good answer, and all three sequence-based tools correctly report that
+it has none. `cealign` scores well by answering a different question — *find a
+common substructure* — which is free to keep one lobe and discard the rest.
 
-**PyMOL wins.** protean has no structural-alignment mode, only sequence-based.
-That is a real gap, not a presentation difference.
+Point them all at a single chain and the comparison inverts:
+
+| chain A only | RMSD | Over |
+|---|---|---|
+| PyMOL `align` | 2.069 Å | 214 residues |
+| PyMOL `cealign` | 3.460 Å | 112 residues |
+| **protean `superpose`** | **1.083 Å** | **112 residues** |
+
+Over the same 112 residues `cealign` keeps, protean fits three times tighter.
+
+**A draw.** The gap was never "no rigid core" — biotite's sequence mode already
+discards outliers, which is where that 1.083 Å comes from. It was the absence
+of a *structure-based* correspondence for proteins too diverged for a sequence
+alignment to mean anything. `superpose(mode="structural")` now provides one: on
+haemoglobin's alpha and beta chains it superposes 139 residues of the shared
+fold where sequence mode anchors only 64.
+
+The durable lesson is about the benchmark rather than the code. A table
+comparing one tool's default against another tool's *different algorithm*
+reports a loss regardless of which is better.
 
 ## 4. Publication figure at 600 dpi — protean wins, narrowly
 
@@ -189,17 +211,18 @@ for leaf predicates for exactly that reason (decision 6).
 |---|---|
 | 1. Catalytic site | Even |
 | 2. Interface buried area | protean (with a symmetry caveat) |
-| 3. Superposition | **PyMOL** |
+| 3. Superposition | Even (was recorded as PyMOL) |
 | 4. Publication figure | protean, narrowly |
 | 5. Selection grammar | **PyMOL** |
 
 The pattern is consistent with what protean set out to be. It wins where the
 answer needs to arrive as **structured data a model can compose** — a table of
 contacts with handles attached, a figure with its DPI in the file. It loses
-where the field has 25 years of accumulated capability: a structural aligner
-that finds a rigid core, and a selection grammar with no gaps.
+where the field has 25 years of accumulated capability, most clearly in a
+selection grammar with no gaps.
 
-Two of these losses are fixable and are worth recording as such: a
-structural-alignment mode for `superpose`, and secondary-structure assignment so
-`ss` becomes selectable. The symmetry-copy limitation in task 2 needs new
-handle transport and is harder.
+Task 3 was recorded as a loss and re-measured as a draw; the note there is
+worth reading, because the error was in the comparison rather than the code.
+`superpose` has since gained the structural mode it was missing. The remaining
+recorded gap is secondary-structure assignment, so `ss` becomes selectable. The
+symmetry-copy limitation in task 2 needs new handle transport and is harder.

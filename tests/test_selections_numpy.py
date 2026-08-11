@@ -97,6 +97,163 @@ def test_leaf_selectors(mixed, selection, expected):
     assert count(selection, mixed) == expected
 
 
+# -- the nucleic backbone ------------------------------------------------------
+
+
+@pytest.fixture
+def dna() -> AtomArray[Any]:
+    """One deoxyguanosine: phosphate, full sugar ring, and a slice of the base.
+
+    Named as a real nucleotide is, because the whole classification is by atom
+    name — a fixture with invented names would agree with anything.
+    """
+    backbone = [
+        ("P", "P"),
+        ("OP1", "O"),
+        ("OP2", "O"),
+        ("O5'", "O"),
+        ("C5'", "C"),
+        ("C4'", "C"),
+        ("O4'", "O"),
+        ("C3'", "C"),
+        ("O3'", "O"),
+        ("C2'", "C"),
+        ("C1'", "C"),
+    ]
+    base = [("N9", "N"), ("C8", "C"), ("N7", "N"), ("C5", "C"), ("O6", "O")]
+    atoms = [
+        _atom("A", 1, "DG", name, element, [float(i), 0.0, 0.0])
+        for i, (name, element) in enumerate(backbone + base)
+    ]
+    return atom_array(atoms)
+
+
+def test_nucleic_backbone_is_the_sugar_phosphate(dna):
+    """11 backbone atoms: phosphate plus the whole ribose, base excluded."""
+    assert count("backbone", dna) == 11
+
+
+def test_nucleic_sidechain_is_the_base_not_the_whole_molecule(dna):
+    """The bug this fixture exists for.
+
+    `sidechain` was "polymer and not protein-backbone", so on a nucleic acid
+    it returned every atom and read as a real answer.
+    """
+    assert count("sidechain", dna) == 5
+    assert count("sidechain", dna) != count("polymer", dna)
+
+
+def test_backbone_and_sidechain_partition_the_nucleic_polymer(dna):
+    """Neither overlapping nor leaving atoms unclaimed."""
+    assert count("backbone", dna) + count("sidechain", dna) == count("polymer", dna)
+    assert count("backbone and sidechain", dna) == 0
+
+
+def test_legacy_atom_name_spellings_are_still_backbone():
+    """Pre-remediation files write primes as asterisks and OP1/OP2 as O1P/O2P.
+
+    A file old enough to use them parses fine and would otherwise have its
+    entire backbone classified as base.
+    """
+    names = [("O1P", "O"), ("O2P", "O"), ("O5*", "O"), ("C5*", "C"), ("C1*", "C")]
+    array = atom_array(
+        [
+            _atom("A", 1, "DG", name, element, [float(i), 0.0, 0.0])
+            for i, (name, element) in enumerate(names)
+        ]
+    )
+    assert count("backbone", array) == len(names)
+    assert count("sidechain", array) == 0
+
+
+def test_the_two_name_sets_do_not_leak_into_each_other():
+    """Each polymer's backbone is judged only by its own names.
+
+    A single merged set of names would classify this serine's P and O3' as
+    backbone and this nucleotide's CA as backbone, both wrongly. Neither atom
+    name is realistic — that is the point: only the residue decides which
+    vocabulary applies.
+    """
+    array = atom_array(
+        [
+            _atom("A", 1, "SER", "N", "N", [0.0, 0.0, 0.0]),
+            _atom("A", 1, "SER", "P", "P", [1.0, 0.0, 0.0]),
+            _atom("A", 1, "SER", "O3'", "O", [2.0, 0.0, 0.0]),
+            _atom("B", 2, "DG", "P", "P", [3.0, 0.0, 0.0]),
+            _atom("B", 2, "DG", "CA", "C", [4.0, 0.0, 0.0]),
+        ]
+    )
+    assert count("backbone", array) == 2  # the serine N and the DG phosphate
+    assert count("sidechain", array) == 3
+
+
+def test_protein_backbone_is_unchanged(mixed):
+    """The protein answer must not move: it is pinned to hand-checked counts."""
+    assert count("backbone", mixed) == 5
+    assert count("sidechain", mixed) == 2
+
+
+# -- element symbols are a closed set ------------------------------------------
+
+
+def test_an_element_that_does_not_exist_is_refused(mixed):
+    """`elem Zz` used to be 0 atoms and no complaint.
+
+    Which reads as "this structure has none of those" rather than "you
+    misspelled it".
+    """
+    with pytest.raises(SelectionError, match="No such element"):
+        count("elem Zz", mixed)
+
+
+def test_the_refusal_names_the_symbol_it_rejected(mixed):
+    with pytest.raises(SelectionError, match="'QQ'"):
+        count("elem Qq", mixed)
+
+
+def test_a_near_miss_is_offered_a_correction(mixed):
+    with pytest.raises(SelectionError, match="Did you mean 'ZN'"):
+        count("elem Znn", mixed)
+
+
+def test_one_bad_symbol_refuses_the_whole_list(mixed):
+    """`elem C+Zz` cannot quietly answer with just the carbons."""
+    with pytest.raises(SelectionError, match="'ZZ'"):
+        count("elem C+Zz", mixed)
+
+
+def test_a_real_element_that_is_absent_still_answers_zero(mixed):
+    """ "This structure has no iron" is a true statement, not a mistake.
+
+    The check must separate a symbol that cannot exist from one that merely
+    is not here, or it turns every honest empty answer into an error.
+    """
+    assert count("elem Fe", mixed) == 0
+    assert count("elem He", mixed) == 0
+
+
+def test_element_matching_stays_case_insensitive(mixed):
+    assert count("elem zn", mixed) == count("elem ZN", mixed) == 1
+
+
+def test_a_symbol_the_table_has_never_heard_of_is_kept_if_the_file_uses_it():
+    """The escape hatch: a refusal must never swallow a real match.
+
+    Files do carry symbols outside the periodic table. Validating against the
+    structure as well as the table means such a file still answers, and only a
+    symbol that is neither real nor present is refused.
+    """
+    array = atom_array(
+        [
+            _atom("A", 1, "UNK", "X1", "XX", [0.0, 0.0, 0.0], hetero=True),
+            _atom("A", 1, "UNK", "C1", "C", [1.0, 0.0, 0.0], hetero=True),
+        ]
+    )
+    assert count("elem XX", array) == 1
+    with pytest.raises(SelectionError, match="No such element"):
+        count("elem YY", array)
+
+
 def test_boolean_operators(mixed):
     assert count("chain A and name CA", mixed) == 2
     assert count("chain A or chain B", mixed) == 9
@@ -330,3 +487,156 @@ def test_asymmetric_pdb_load_carries_no_note():
         "END\n"
     )
     assert load_structure(text, "pdb", "asymmetric").note == ""
+
+
+# -- alternate conformers ------------------------------------------------------
+
+_CIF_COLUMNS = [
+    "group_PDB",
+    "id",
+    "type_symbol",
+    "label_atom_id",
+    "label_alt_id",
+    "label_comp_id",
+    "label_asym_id",
+    "label_entity_id",
+    "label_seq_id",
+    "pdbx_PDB_ins_code",
+    "Cartn_x",
+    "Cartn_y",
+    "Cartn_z",
+    "occupancy",
+    "B_iso_or_equiv",
+    "auth_seq_id",
+    "auth_asym_id",
+    "auth_comp_id",
+    "auth_atom_id",
+    "pdbx_PDB_model_num",
+]
+
+
+def _cif(rows: list[tuple[str, str, str, int, int]]) -> str:
+    """A minimal mmCIF from (element, atom name, altloc, residue, model) rows."""
+    header = "data_test\nloop_\n" + "".join(
+        f"_atom_site.{column}\n" for column in _CIF_COLUMNS
+    )
+    lines = [
+        f"ATOM {i} {element} {name} {alt} GLY A 1 {res} ? "
+        f"{float(i)} 0.0 0.0 1.00 10.0 {res} A GLY {name} {model}"
+        for i, (element, name, alt, res, model) in enumerate(rows, start=1)
+    ]
+    return header + "\n".join(lines) + "\n"
+
+
+# One residue whose CB has two conformers and one whose OG has three: five rows
+# in the file, two of them surplus, three atoms once resolved.
+_TWO_AND_THREE = [
+    ("N", "N", ".", 1, 1),
+    ("C", "CB", "A", 1, 1),
+    ("C", "CB", "B", 1, 1),
+    ("O", "OG", "A", 2, 1),
+    ("O", "OG", "B", 2, 1),
+    ("O", "OG", "C", 2, 1),
+]
+
+
+def test_altloc_surplus_counts_the_conformers_analysis_drops():
+    """The count the viewer holds and the analysis does not.
+
+    Stated as the invariant that matters: what biotite parsed plus the surplus
+    is every row in the file, which is what Mol* draws.
+    """
+    loaded = load_structure(_cif(_TWO_AND_THREE), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 3
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+
+
+def test_altloc_surplus_is_zero_when_every_atom_has_one_conformer():
+    rows = [("N", "N", ".", 1, 1), ("C", "CA", ".", 1, 1)]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 0
+    assert loaded.array.array_length() == len(rows)
+
+
+def test_altloc_surplus_ignores_models_after_the_first():
+    """Only model 1 is parsed, so only model 1's conformers may be counted.
+
+    An NMR ensemble repeats every atom per model; counting all of them would
+    invent a surplus many times the real one and explain away a genuine
+    mismatch.
+    """
+    rows = _TWO_AND_THREE + [(e, n, a, r, 2) for e, n, a, r, _ in _TWO_AND_THREE]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 3
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+
+
+def test_altloc_surplus_separates_atoms_that_share_a_conformer_letter():
+    """Two residues' CB, both labelled A, are not conformers of each other.
+
+    Same atom name, same letter, different residue — so a site identity that
+    leaves the residue out folds them together and invents a surplus.
+    """
+    rows = [("C", "CB", "A", 1, 1), ("C", "CB", "A", 2, 1)]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 0
+    assert loaded.array.array_length() == 2
+
+
+def test_altloc_surplus_reads_pdb_columns():
+    """Two conformers of residue 1's CB, and one unambiguous CB in residue 2.
+
+    Residue 2 repeats both the atom name and the conformer letter, so a site
+    identity that reads only the name folds it into residue 1 and counts a
+    conformer that does not exist.
+    """
+    text = (
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "ATOM      2  CB AMET A   1      12.104   6.134  -6.504  0.50  0.00           C\n"
+        "ATOM      3  CB BMET A   1      12.204   6.134  -6.504  0.50  0.00           C\n"
+        "ATOM      4  CB ASER A   2      15.104   6.134  -6.504  1.00  0.00           C\n"
+        "END\n"
+    )
+    loaded = load_structure(text, "pdb", "asymmetric")
+    assert loaded.altloc_surplus == 1
+    assert loaded.array.array_length() + loaded.altloc_surplus == 4
+
+
+_ASSEMBLY_OF_TWO = """
+loop_
+_pdbx_struct_assembly_gen.assembly_id
+_pdbx_struct_assembly_gen.oper_expression
+_pdbx_struct_assembly_gen.asym_id_list
+1 '(1,2)' A
+loop_
+_pdbx_struct_oper_list.id
+_pdbx_struct_oper_list.type
+_pdbx_struct_oper_list.matrix[1][1]
+_pdbx_struct_oper_list.matrix[1][2]
+_pdbx_struct_oper_list.matrix[1][3]
+_pdbx_struct_oper_list.matrix[2][1]
+_pdbx_struct_oper_list.matrix[2][2]
+_pdbx_struct_oper_list.matrix[2][3]
+_pdbx_struct_oper_list.matrix[3][1]
+_pdbx_struct_oper_list.matrix[3][2]
+_pdbx_struct_oper_list.matrix[3][3]
+_pdbx_struct_oper_list.vector[1]
+_pdbx_struct_oper_list.vector[2]
+_pdbx_struct_oper_list.vector[3]
+1 'identity operation' 1 0 0 0 1 0 0 0 1 0 0 0
+2 'point symmetry operation' 1 0 0 0 1 0 0 0 1 30 0 0
+"""
+
+
+def test_altloc_surplus_scales_with_the_assembly():
+    """Each symmetry copy carries the file's conformers again.
+
+    The viewer expands the assembly from the same rows, so a surplus counted
+    once explains only half a two-copy assembly and the rest reads as a
+    mismatch that is not there.
+    """
+    rows = [("N", "N", ".", 1, 1), ("C", "CB", "A", 1, 1), ("C", "CB", "B", 1, 1)]
+    loaded = load_structure(_cif(rows) + _ASSEMBLY_OF_TWO, "mmcif", "biological")
+    assert loaded.copies == 2
+    assert loaded.altloc_surplus == 2
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(rows) * 2

@@ -9,83 +9,137 @@ Ordered by how wrong the answer is, not by effort.
 
 ## Bugs — a wrong answer that looks right
 
-### 1. `sidechain` returns the entire molecule on nucleic acids
+### 1. `sidechain` returns the entire molecule on nucleic acids — fixed
 
-On 1BNA (B-DNA dodecamer, 486 polymer atoms):
-
-```
-backbone   ->   0 atoms
-sidechain  -> 486 atoms   <- the whole thing
-```
-
-`backbone` is defined as protein N/CA/C/O, so it correctly finds nothing in
-DNA — visibly nothing, which is survivable. `sidechain` is defined as *not
-backbone*, so it returns every nucleic atom and looks like a real answer.
-Anyone colouring or measuring "sidechains" of a nucleic acid gets the whole
-molecule and no indication.
-
-Fix: either define nucleic backbone (P, OP1/OP2, O5', C5', C4', C3', O3') and
-let sidechain be the bases, or refuse both on non-protein polymers with a
-reason. The differential suite already asserts `backbone` is zero on 1BNA; it
-does not test `sidechain`, which is why this survived.
-
-### 2. Viewer and analysis disagree by 217 atoms on 5FJI
+`backbone` is now the sugar-phosphate backbone as well as protein N/CA/C/O, so
+`sidechain` is the nucleobase — the variable part that decides which residue
+this is, exactly as a protein sidechain does. On 1BNA:
 
 ```
-Loaded 5fji ... MISMATCH: 15712 atoms here but 15929 in the viewer.
+backbone   -> 258 atoms   (was 0)
+sidechain  -> 228 atoms   (was 486, the whole thing)
 ```
 
-Decision 9's invariant is doing its job — the divergence is reported loudly and
-the reply says to treat counts, buried areas and potentials as unreliable. But
-the divergence itself is a bug: on a glycoprotein, biotite and Mol\* build
-different numbers of atoms from the same file, and 5FJI is in the test corpus
-precisely because branched glycan entities are handled differently from other
-het groups.
+The sugar is included: the whole ribose ring, not just the phosphodiester
+atoms the backlog originally listed. "Sugar-phosphate backbone" is what the
+thing is called, and putting C1'/C2'/O4' in `sidechain` would mean the base
+plus half its own sugar.
 
-Until it is understood, analysis on glycoproteins is unreliable. Worth
-diagnosing before anything else here, because it is the one finding that makes
-numbers wrong rather than missing.
+258 and 228 are also what PyMOL 3.1.0 and Mol\*'s bundled transpiler give for
+the same file, so the differential suite now pins three independent
+implementations rather than one, on top of exact offline counts. Legacy atom
+naming is handled too — O1P/O2P and asterisks for primes.
 
-### 3. `elem` accepts an element symbol that does not exist
+### 2. Viewer and analysis disagree by 217 atoms on 5FJI — fixed
 
-```
-select("elem Zz")  ->  0 atoms, no complaint
-```
+It was not glycans. 5FJI has 206 atom sites with two conformers and 11 with a
+third: 423 alternate-location rows over 206 sites, so 217 rows more than there
+are atoms. biotite resolves conformers at parse time and keeps one per site;
+Mol\* draws all of them. Both are right, about the same molecule.
 
-Element symbols are a closed set, so `Zz` is a typo, not a query — and 0 atoms
-reads as "this structure has none of those" rather than "you misspelled it".
-protean already refuses an unknown representation and an unknown colour theme
-by checking against the live registry; `elem` has the same shape and no check.
-
-`resi 999999999999` and `chain \x00` behave the same way. Those are weaker
-cases — a residue number out of range legitimately matches nothing — but the
-element one is a straightforward typo the tool could catch.
-
-### 4. `near` accepts a radius of zero or less
+The invariant now measures that surplus from the file — independently of either
+builder, since a difference computed by differencing the two explains any bug
+along with itself — and subtracts it before calling anything a mismatch:
 
 ```
-near(handle, -1.0)  ->  0 atoms, no complaint
-near(handle,  0.0)  ->  0 atoms, no complaint
+Loaded 5fji ... [asymmetric assembly, 15712 atoms here and 15929 in the
+viewer; the 217 extra are alternate conformers, which analysis resolves to one
+per site and the viewer draws all of]
 ```
 
-A non-positive radius is not a question anyone means to ask, and the empty
-answer looks like a legitimate result. Every other numeric argument in the
-project is bounds-checked — opacity, metalness, cel steps, bounces, dpi, frame
-counts — so this is an omission rather than a decision.
+A difference the conformers do not fully account for is still a loud mismatch,
+and says how much of it they explain. Verified against a real Mol\* in the
+differential suite; 1AKE has 12 such rows and was the second case.
+
+### 3. `elem` accepts an element symbol that does not exist — fixed
+
+```
+select("elem Zz")   ->  No such element: 'ZZ'. Element symbols are a closed
+                        set, so this would have matched nothing whatever the
+                        structure held
+select("elem Znn")  ->  ... Did you mean 'ZN'? ...
+```
+
+A symbol is refused only when it is **neither a real element nor present in
+the structure**. Both halves matter:
+
+- checking the periodic table alone would refuse a file that legitimately
+  carries a symbol the table has never heard of, turning a real match into an
+  error;
+- checking the structure alone would refuse `elem Fe` on a structure with no
+  iron, which is a true answer about the molecule rather than a mistake.
+
+`resi 999999999999` and `chain \x00` still behave the old way, and should: a
+residue number out of range legitimately matches nothing, and neither
+vocabulary is closed.
+
+### 4. `near` accepts a radius of zero or less — fixed
+
+`near()` was the entry point the corpus found, but the grammar had the same
+hole in all three of its spatial operators:
+
+```
+near(handle, -1)             ->  0 atoms, no complaint
+"polymer within 0 of ..."    ->  0 atoms, no complaint
+"resn ZN expand -3"          ->  the source unchanged, no complaint
+```
+
+All four now refuse, naming the operator and the value. The bound lives in a
+distance-specific helper rather than in the shared number parser, because a
+b-factor comparison may legitimately be zero or negative and a distance may
+not.
+
+`nan` and `inf` are refused too. `nan` slips past a bare `<= 0`, and an
+infinite radius does not merely answer wrongly — with the guard removed,
+`near()` on an infinite radius took six minutes to return in the cell list
+rather than answering at all.
+
+### 9. `OXT` is classified as a sidechain atom
+
+Found while fixing item 1, by taking PyMOL's opinion on the same structures.
+On 4HHB:
+
+```
+protean   backbone -> 2296     PyMOL   backbone -> 2300
+```
+
+The four atoms are the C-terminal `OXT`, one per chain. It is the second oxygen
+of the terminal carboxylate — backbone by any chemical reading — and it
+currently falls into `sidechain` instead.
+
+Unlike item 1 this is not a clear win, which is why it was left alone: Mol\*'s
+bundled transpiler *also* says 2296, so two independent implementations agree
+with protean and only PyMOL differs. Changing it would move a hand-checked
+ground-truth count and break agreement with the transpiler, so it wants a
+deliberate decision rather than a drive-by fix. Four atoms per structure.
 
 ## Gaps — the answer is unavailable
 
-### 5. No structural-alignment mode for `superpose`
+### 5. No structural-alignment mode for `superpose` — added, and the
+diagnosis was wrong
 
-The benchmark's clearest loss. On 1AKE/4AKE, PyMOL's `cealign` finds the rigid
-core and reports **3.460 Å over 112 residues**; protean aligns by sequence and
-superposes everything it matched, giving **17.706 Å over 414**. Both numbers are
-honest, but only one answers the question a structural biologist asked.
+`superpose(mode="structural")` matches residues by the shape of their local
+backbone instead of by sequence, using biotite's TM-align-inspired
+`superimpose_structural_homologs`. On haemoglobin's alpha and beta chains it
+superposes **139 residues of the shared fold where sequence mode anchors only
+64** — the remote-homolog case, which is what this class of algorithm is for.
 
-Fix: add a structural mode that finds the largest well-fitting subset rather
-than trusting the sequence alignment — iterative outlier rejection over the
-sequence-aligned pairs would get most of the way, and biotite has the
-superposition primitives already.
+The proposed fix here — iterative outlier rejection over the sequence-aligned
+pairs — was tried first and does not work, for two reasons worth recording:
+
+1. **biotite already does it.** `superimpose_homologs` removes outliers
+   internally. That is why chain A of 1AKE/4AKE gives 112 residues at 1.083 Å,
+   which is *better* than `cealign`'s 3.460 Å over its 112.
+2. **On the case that motivated it, rejection has nothing to find.** Superposing
+   the two dimers whole, RMSD falls smoothly from 17.7 Å with no knee, and the
+   largest sub-2 Å core is 18 residues. The correspondence across two chains
+   that have moved relative to each other is the problem, not the subset.
+
+The 17.706 Å figure was also compared against the wrong baseline. PyMOL's
+`align` gives 18.491 Å and `super` 18.515 Å on that same whole-dimer task, so
+protean was already winning the like-for-like comparison and losing only to a
+different class of algorithm. See [benchmark.md](benchmark.md), which has been
+corrected.
 
 ### 6. Secondary structure cannot be selected — added, with a caveat
 
@@ -161,6 +215,16 @@ Found by the corpus, expected to be refused, and correct as they stand:
 - **`select()` after `clear_viewer()` is refused** with "No structure loaded".
   `clear_viewer` clears the analysis copy as well as the scene, which is what
   "clear" should mean; the corpus expected the Python side to survive.
+- **Mol\*'s transpiler counts a smaller polymer in tRNA.** On 1EHZ it reports
+  `polymer` as 1329 atoms where protean and PyMOL say 1652. 1EHZ is dense with
+  modified nucleotides (2MG, H2U, PSU, 5MC, 7MG, 1MA), and they appear to be
+  falling outside their polymer test. protean counting them is the right
+  answer — they are in the chain — so this is recorded rather than chased. It
+  is why 1BNA, not 1EHZ, is the fixture the nucleic backbone counts are pinned
+  to.
+- **Mol\*'s transpiler finds nothing for `nucleic`.** It returns 0 on 1BNA,
+  which is nothing but DNA. Now asserted both ways in the differential suite,
+  alongside the other divergences, so an upstream fix retires the claim.
 
 ## Verified working
 

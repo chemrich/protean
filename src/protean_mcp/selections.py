@@ -23,14 +23,17 @@ Grammar (loosest to tightest binding, matching PyMOL):
     and_expr  := unary (('and' | '&') unary)*
     unary     := ('not' | '!') unary | modifier unary | postfix
     postfix   := primary (spatial_op)*
-    spatial_op:= 'within' NUM 'of' primary
-               | 'around' NUM
-               | 'expand' NUM
+    spatial_op:= 'within' DIST 'of' primary
+               | 'around' DIST
+               | 'expand' DIST
+
+    DIST is a distance in angstroms and must be greater than zero.
     primary   := '(' or_expr ')' | property_sel | keyword_sel
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -303,19 +306,19 @@ class _Parser:
         while True:
             if self.at_word("within"):
                 self.next()
-                radius = self._number()
+                radius = self._radius("within")
                 if not self.at_word("of"):
                     raise SelectionError("Expected 'of' after 'within <radius>'")
                 self.next()
                 node = Within(node, radius, self.primary())
             elif self.at_word("around"):
                 self.next()
-                radius = self._number()
+                radius = self._radius("around")
                 # PyMOL's `around` excludes the source atoms; `expand` keeps them.
                 node = Within(Keyword("all"), radius, node, exclude_self=True)
             elif self.at_word("expand"):
                 self.next()
-                node = Expand(node, self._number())
+                node = Expand(node, self._radius("expand"))
             elif self.at_word("extend"):
                 raise SelectionError(
                     f"'extend' is not supported: {_UNSUPPORTED['extend']}"
@@ -375,6 +378,24 @@ class _Parser:
             return float(value)
         except ValueError:
             raise SelectionError(f"Expected a number, got {value!r}") from None
+
+    def _radius(self, keyword: str) -> float:
+        """A distance, which has to be a positive real number.
+
+        Kept separate from :meth:`_number` because a b-factor comparison may
+        legitimately be zero or negative; a distance may not. A non-positive
+        radius used to answer with an empty set, and `expand 0` with the source
+        unchanged — both of which read as results rather than as the rejected
+        questions they are.
+        """
+        radius = self._number()
+        if not math.isfinite(radius) or radius <= 0:
+            raise SelectionError(
+                f"'{keyword}' needs a radius greater than 0, got {radius:g}. "
+                "A non-positive radius matches nothing, which would look like "
+                "an answer"
+            )
+        return radius
 
     def _value_list(self) -> tuple[str, ...]:
         token = self.peek()

@@ -220,6 +220,58 @@ def test_non_numeric_comparison_raises():
         parse("b > high")
 
 
+# -- distances have to be positive --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "polymer within 0 of resn ZN",
+        "polymer within -3 of resn ZN",
+        "resn ZN around 0",
+        "resn ZN around -3",
+        "resn ZN expand 0",
+        "resn ZN expand -3",
+        "resn ZN expand nan",
+        "resn ZN expand inf",
+    ],
+)
+def test_a_non_positive_radius_is_refused(selection):
+    """All three spatial operators, not just the one the backlog named.
+
+    `within 0` and `within -3` answered with an empty set and `expand 0` with
+    the source unchanged, both of which read as results rather than as the
+    rejected questions they are. `nan` slips past a bare `<= 0`.
+    """
+    with pytest.raises(SelectionError, match="radius greater than 0"):
+        parse(selection)
+
+
+def test_the_refusal_names_the_operator_and_the_value():
+    with pytest.raises(SelectionError, match="'expand' needs a radius greater than 0"):
+        parse("resn ZN expand -3")
+    with pytest.raises(SelectionError, match="got -3"):
+        parse("resn ZN expand -3")
+
+
+def test_a_positive_radius_still_parses():
+    """Guards the tests above: refusing everything would satisfy them."""
+    assert isinstance(parse("polymer within 5 of resn ZN"), Within)
+    assert isinstance(parse("resn ZN around 0.5"), Within)
+    assert parse("resn ZN expand 4") is not None
+
+
+def test_a_comparison_may_still_be_zero_or_negative(tiny_structure):
+    """The bound belongs to distances, not to every number in the grammar.
+
+    A b-factor of zero is real data, and putting the check in the shared
+    number parser would have refused it.
+    """
+    assert parse("b > 0") == Compare("b", ">", 0.0)
+    assert parse("b > -5") == Compare("b", ">", -5.0)
+    select_mask("b > 0", tiny_structure)
+
+
 def test_non_integer_resi_raises(tiny_structure):
     """Caught when the value is used, since the grammar accepts any value list.
 
@@ -259,9 +311,9 @@ def test_every_keyword_is_evaluable(keyword, tiny_structure):
 
 
 # A value each property will accept. Most take free text, so a placeholder is
-# fine; `resi` and `index` need a number, and `ss` has a closed vocabulary where
-# a placeholder is correctly refused.
-_PROBE_VALUES = {"resi": "1", "index": "1", "ss": "H"}
+# fine; `resi` and `index` need a number, and `elem` and `ss` have closed
+# vocabularies where a placeholder is correctly refused.
+_PROBE_VALUES = {"resi": "1", "index": "1", "elem": "C", "ss": "H"}
 
 
 @pytest.mark.parametrize("prop", sorted(PROPERTIES))

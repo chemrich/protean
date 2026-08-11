@@ -9,6 +9,7 @@ import gzip
 import io
 import json
 import logging
+import math
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -344,13 +345,26 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
         parts.append(f", {loaded.copies} symmetry copies")
     ours = int(loaded.array.array_length())
     theirs = viewer_result.get("atom_count") if isinstance(viewer_result, dict) else None
+    surplus = loaded.altloc_surplus
     if theirs is None:
         parts.append(f", {ours} atoms here; the viewer reported no count")
     elif int(theirs) == ours:
         parts.append(f", {ours} atoms in both viewer and analysis")
-    else:
+    elif surplus and int(theirs) - ours == surplus:
+        # The same molecule described two defensible ways, not two molecules.
+        # Saying so beats declaring every number unreliable over a difference
+        # that is fully accounted for.
         parts.append(
-            f", MISMATCH: {ours} atoms here but {theirs} in the viewer. "
+            f", {ours} atoms here and {theirs} in the viewer; the {surplus} "
+            "extra are alternate conformers, which analysis resolves to one "
+            "per site and the viewer draws all of"
+        )
+    else:
+        explained = (
+            f" ({surplus} of the difference is alternate conformers)" if surplus else ""
+        )
+        parts.append(
+            f", MISMATCH: {ours} atoms here but {theirs} in the viewer{explained}. "
             "Analysis and the picture are different molecules; treat counts, "
             "buried areas and potentials as unreliable"
         )
@@ -418,11 +432,19 @@ async def near(
 ) -> dict[str, Any]:
     """Atoms within a distance of an existing handle.
 
+    radius: in angstroms, greater than zero.
     whole_residues: widen to complete residues, which is usually what a figure
       or a contact list wants.
     exclude_self: leave out the atoms of `of` itself.
     """
     array = _require_structure()
+    if not math.isfinite(radius) or radius <= 0:
+        # An empty set is the one answer that looks like a real result, so the
+        # request that can only produce one is refused rather than served.
+        raise ViewerError(
+            f"radius must be greater than 0, got {radius:g}. A non-positive "
+            "radius matches nothing, which would look like an answer"
+        )
     try:
         source = _handles.get(of)
     except HandleError as exc:
@@ -1904,6 +1926,7 @@ async def superpose(
     target: str,
     mobile_chain: str | None = None,
     target_chain: str | None = None,
+    mode: str = "sequence",
     show: bool = True,
     mobile_suffix: str = "_2",
 ) -> dict[str, Any]:
@@ -1912,12 +1935,25 @@ async def superpose(
     mobile, target: PDB IDs, UniProt accessions or local files, as fetch_structure takes.
     mobile_chain, target_chain: restrict to one chain each; otherwise all
       protein chains are used, which requires them to correspond in order.
+      Naming a chain matters more than it looks: superposing two multi-chain
+      structures asks a single rigid transform to satisfy every chain at once,
+      which none can do once the chains have moved relative to each other, and
+      the honest answer is then a large RMSD.
+    mode: how residues are put into correspondence, which is the whole question
+      — the fitting itself is settled maths.
+      "sequence" (default) aligns the two sequences and superposes the residues
+      that align, discarding outliers. Right whenever the two are the same
+      protein.
+      "structural" ignores the sequence and matches residues by the shape of
+      their local backbone, so it finds a common substructure between proteins
+      too diverged for a sequence alignment to mean anything. Slower and more
+      permissive: it maximises how much it superposes, so expect more residues
+      at a worse RMSD.
 
-    Correspondence comes from a sequence alignment, so the two structures need
-    not share residue numbering. Returns the RMSD, how many residues were
-    aligned, the sequence identity over those residues, the 4x4 transform, and
-    the worst-fitting residues — an RMSD alone hides whether the disagreement is
-    spread out or concentrated in one loop.
+    Returns the RMSD, how many residues were aligned, the sequence identity
+    over those residues, the 4x4 transform, and the worst-fitting residues — an
+    RMSD alone hides whether the disagreement is spread out or concentrated in
+    one loop.
 
     show: load the superposed pair into the viewer as one structure, with the
       mobile coordinates already moved into the target's frame. This replaces
@@ -1938,6 +1974,7 @@ async def superpose(
             second.format,
             mobile_chain=mobile_chain,
             target_chain=target_chain,
+            mode=mode,
         )
     except SuperpositionError as exc:
         raise ViewerError(str(exc)) from exc

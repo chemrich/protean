@@ -39,6 +39,11 @@ nothing is released yet, so everything below is unreleased.
 
 - `interface()` reports buried area per side and classified contacts;
   `superpose()` aligns by sequence and applies the transform.
+- `superpose(mode="structural")` matches residues by the shape of their local
+  backbone rather than by sequence, for proteins too diverged for a sequence
+  alignment to mean anything. On haemoglobin's alpha and beta chains it
+  superposes 139 residues of the shared fold where sequence mode anchors 64.
+  The reply now names the mode that produced it.
 - `conservation()` scores an MMseqs2 alignment; `electrostatics()` computes a
   screened Coulomb potential, or runs APBS when it is installed.
 - Scalar colouring for potential and conservation, as a gradient or as bands.
@@ -72,3 +77,25 @@ nothing is released yet, so everything below is unreleased.
   written.
 - `superpose()` applies its transform and displays the pair.
 - The viewer and the analysis load the same assembly, and say so.
+- A structure with alternate conformers is no longer reported as a mismatch.
+  The analysis keeps one conformer per atom site and the viewer draws all of
+  them, which on 5FJI is a 217-atom difference between two descriptions of the
+  same molecule; the load reply now says so instead of declaring every count,
+  buried area and potential in the session unreliable. A difference the
+  conformers do not fully account for is still a mismatch.
+- A distance must be greater than zero, in `near()` and in the grammar's
+  `within`, `around` and `expand`. A non-positive radius used to answer with an
+  empty set — or, for `expand`, the source unchanged — both of which read as
+  results rather than as the rejected questions they are. `nan` and `inf` are
+  refused with them.
+- `backbone` and `sidechain` understand nucleic acids. `backbone` was protein
+  N/CA/C/O only, so it found nothing in DNA and `sidechain` — "polymer and not
+  backbone" — returned every atom of the molecule as though that were an
+  answer. `backbone` is now the sugar-phosphate backbone as well, which leaves
+  `sidechain` meaning the nucleobase: 258 and 228 atoms on 1BNA, matching both
+  PyMOL and Mol\*'s transpiler.
+- `elem` refuses a symbol that is not an element, with a suggested correction:
+  `elem Zz` used to return 0 atoms and no complaint, which reads as "this
+  structure has none of those" rather than "you misspelled it". A symbol is
+  refused only if it is neither a real element nor present in the file, so a
+  real element that is simply absent still answers 0.
