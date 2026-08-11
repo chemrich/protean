@@ -84,12 +84,19 @@ class LoadedStructure:
     present. It is reported rather than inferred because it is the number that
     decides whether an atom count here means the same thing as an atom count
     in the viewer.
+
+    ``altloc_surplus`` is how many atoms the viewer holds that this array does
+    not, purely because biotite resolves alternate conformers at parse time and
+    Mol\\* draws all of them. It is a knowable difference rather than evidence
+    the two are holding different molecules, so it is measured and subtracted
+    before anything is called a mismatch.
     """
 
     array: AtomArray[Any]
     assembly: str
     copies: int
     note: str = ""
+    altloc_surplus: int = 0
 
 
 # A whole viral capsid is 60 copies of its asymmetric unit; expanding one
@@ -104,6 +111,82 @@ def assembly_multiplicity(text: str) -> int:
         return len(block["pdbx_struct_oper_list"]["id"].as_array())
     except Exception:
         return 1
+
+
+# The columns that, together, name one physical atom site. Two rows agreeing on
+# all of them are alternate conformers of the same atom, not two atoms. Both
+# sequence numberings are included because label_seq_id is "." for anything that
+# is not a polymer residue, which would fold every het atom of a chain together.
+_SITE_COLUMNS = (
+    "label_asym_id",
+    "label_seq_id",
+    "auth_seq_id",
+    "label_comp_id",
+    "label_atom_id",
+    "pdbx_PDB_ins_code",
+)
+
+
+def altloc_surplus(text: str, fmt: str) -> int:
+    """How many atoms the viewer will hold that the analysis will not.
+
+    biotite keeps one conformer per atom site; Mol\\* draws every conformer in
+    the file. On a structure with alternate conformations the two therefore
+    disagree about the atom count while describing the same molecule — 217
+    atoms apart on 5FJI, which read as a mismatch for a whole phase.
+
+    Counted from the file rather than by differencing the two builders, because
+    a difference that explains itself explains any bug along with it.
+    """
+    if fmt == "pdb":
+        return _pdb_altloc_surplus(text)
+    try:
+        site = CIFFile.read(io.StringIO(text)).block["atom_site"]
+    except Exception:
+        return 0
+    columns = set(site.keys())
+    if "label_alt_id" not in columns:
+        return 0
+
+    rows = np.ones(len(site["label_alt_id"].as_array()), dtype=bool)
+    if "pdbx_PDB_model_num" in columns:
+        models = site["pdbx_PDB_model_num"].as_array()
+        rows = models == models[0]
+
+    alternate = rows & (site["label_alt_id"].as_array() != ".")
+    if not alternate.any():
+        return 0
+    keys = [
+        site[name].as_array()[alternate].tolist()
+        for name in _SITE_COLUMNS
+        if name in columns
+    ]
+    return int(alternate.sum()) - len(set(zip(*keys, strict=True)))
+
+
+# The insertion code is the last column a site identity reads, at index 26, so
+# a record shorter than this cannot be one.
+_PDB_SITE_WIDTH = 27
+
+
+def _pdb_altloc_surplus(text: str) -> int:
+    """The same count over fixed-column PDB records.
+
+    Only the first model is counted, matching what ``get_structure`` parses.
+    """
+    sites: set[tuple[str, ...]] = set()
+    alternate = 0
+    for line in text.splitlines():
+        if line.startswith("ENDMDL"):
+            break
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < _PDB_SITE_WIDTH:
+            continue
+        if line[16] == " ":
+            continue
+        alternate += 1
+        # name, resName, chainID, resSeq, iCode — every field but altLoc.
+        sites.add((line[12:16], line[17:20], line[21], line[22:26], line[26]))
+    return alternate - len(sites)
 
 
 def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedStructure:
@@ -138,13 +221,22 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                 "PDB input carries its assembly in REMARK 350, which is not "
                 "parsed; the asymmetric unit was loaded instead"
             )
-        return LoadedStructure(array=array, assembly="asymmetric", copies=1, note=note)
+        return LoadedStructure(
+            array=array,
+            assembly="asymmetric",
+            copies=1,
+            note=note,
+            altloc_surplus=altloc_surplus(text, fmt),
+        )
 
+    surplus = altloc_surplus(text, fmt)
     try:
         handle = CIFFile.read(io.StringIO(text))
         if assembly == "asymmetric":
             array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
-            return LoadedStructure(array=array, assembly="asymmetric", copies=1)
+            return LoadedStructure(
+                array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+            )
 
         copies = assembly_multiplicity(text)
         if copies > MAX_ASSEMBLY_COPIES:
@@ -158,6 +250,7 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                     f"limit of {MAX_ASSEMBLY_COPIES}; the asymmetric unit was "
                     "loaded instead and the viewer will show more than this"
                 ),
+                altloc_surplus=surplus,
             )
         array = get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS)
     except SelectionError:
@@ -166,7 +259,14 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
         raise SelectionError(f"Could not parse mmcif coordinates: {exc}") from exc
 
     present = int(np.unique(np.asarray(array.sym_id)).size) if _has_sym(array) else 1
-    return LoadedStructure(array=array, assembly="biological", copies=present)
+    # Every copy carries the same alternate conformers, so the excess scales
+    # with the expansion the same way the atom count does.
+    return LoadedStructure(
+        array=array,
+        assembly="biological",
+        copies=present,
+        altloc_surplus=surplus * present,
+    )
 
 
 def _has_sym(array: AtomArray[Any]) -> bool:

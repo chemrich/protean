@@ -356,6 +356,50 @@ async def test_the_two_settings_are_actually_different(assembly_counts):
     )
 
 
+# -- alternate conformers ------------------------------------------------------
+
+# 5FJI carries 206 atom sites with two conformers and 11 with a third. biotite
+# keeps one per site and Mol* draws all of them, so the two disagree by 217
+# atoms while describing the same molecule. That difference read as a mismatch
+# — and as "treat every number as unreliable" — until it was measured.
+CONFORMER_FIXTURE = "5fji"
+CONFORMER_EXPECTED = {"python": 15712, "molstar": 15929, "surplus": 217}
+
+
+@pytest.fixture(scope="module")
+async def conformer_counts() -> dict[str, int]:
+    structure = await fetch_structure_data(CONFORMER_FIXTURE)
+    loaded = load_structure(structure.data, structure.format, "asymmetric")
+    viewer = await _evaluate(
+        CONFORMER_FIXTURE, [["all::", "mol-script", "(sel.atom.all)"]]
+    )
+    return {
+        "python": int(loaded.array.array_length()),
+        "molstar": _count(viewer, "all", ""),
+        "surplus": loaded.altloc_surplus,
+    }
+
+
+async def test_the_conformer_surplus_accounts_for_the_whole_difference(
+    conformer_counts,
+):
+    """The claim the explained-difference branch rests on.
+
+    Measured against a real Mol* rather than against the file's row count,
+    because what matters is what the viewer actually built.
+    """
+    assert (
+        conformer_counts["python"] + conformer_counts["surplus"]
+        == conformer_counts["molstar"]
+    )
+
+
+async def test_the_conformer_counts_are_the_expected_ones(conformer_counts):
+    """Guards the test above: 0 + 0 == 0 would satisfy it otherwise."""
+    assert conformer_counts == CONFORMER_EXPECTED
+    assert conformer_counts["python"] != conformer_counts["molstar"]
+
+
 # -- the nucleic backbone ------------------------------------------------------
 
 # `backbone` used to be protein N/CA/C/O only, so on B-DNA it found nothing and

@@ -13,13 +13,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from biotite.structure import AtomArray, filter_amino_acids, superimpose_homologs
+from biotite.structure import (
+    AtomArray,
+    filter_amino_acids,
+    superimpose_homologs,
+    superimpose_structural_homologs,
+)
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
 _SINGLE_MATRIX_DIMS = 2
+
+MODES = ("sequence", "structural")
 
 
 class SuperpositionError(ValueError):
@@ -53,9 +60,11 @@ class SuperpositionResult:
     mobile_chains: list[str]
     target_chains: list[str]
     outliers: list[ResidueDeviation]
+    mode: str = "sequence"
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "mode": self.mode,
             "rmsd": round(self.rmsd, 3),
             "aligned_residues": self.aligned_residues,
             "sequence_identity": round(self.sequence_identity, 3),
@@ -109,13 +118,26 @@ def superpose(
     mobile_chain: str | None = None,
     target_chain: str | None = None,
     outlier_limit: int = 20,
+    mode: str = "sequence",
 ) -> SuperpositionResult:
     """Superpose *mobile* onto *target*, reporting the fit rather than just doing it.
 
-    Correspondence comes from a sequence alignment of the two chains, so the
-    structures need not have matching numbering — which is the usual case when
-    comparing a mutant, a different species, or two crystal forms.
+    ``mode`` chooses how the two structures are put into correspondence, which
+    is the whole question — the fitting itself is settled maths.
+
+    "sequence" aligns the residue sequences and superposes the residues that
+    align, discarding outliers. The structures need not share numbering, which
+    is the usual case when comparing a mutant, a different species, or two
+    crystal forms. It is the right choice whenever the two are the same protein.
+
+    "structural" ignores the sequence and matches residues by the shape of
+    their local backbone, so it finds a common substructure between proteins
+    whose sequences have diverged past the point where aligning them means
+    anything. It is the slower and more permissive of the two: it maximises how
+    much it can superpose, so it will report more residues at a worse RMSD.
     """
+    if mode not in MODES:
+        raise SuperpositionError(f"Unknown mode {mode!r} ({', '.join(MODES)})")
     mobile = protein_atoms(
         parse_structure(mobile_text, mobile_format), mobile_chain, "mobile"
     )
@@ -128,12 +150,13 @@ def superpose(
     transform: Any
     target_anchors: Any
     mobile_anchors: Any
+    align = (
+        superimpose_homologs if mode == "sequence" else superimpose_structural_homologs
+    )
     try:
-        fitted, transform, target_anchors, mobile_anchors = superimpose_homologs(
-            target, mobile
-        )
+        fitted, transform, target_anchors, mobile_anchors = align(target, mobile)
     except Exception as exc:  # biotite raises several types for unalignable input
-        raise SuperpositionError(f"Could not superpose: {exc}") from exc
+        raise SuperpositionError(f"Could not superpose ({mode} mode): {exc}") from exc
 
     if len(target_anchors) == 0:
         raise SuperpositionError(
@@ -173,4 +196,5 @@ def superpose(
         mobile_chains=sorted({str(c) for c in mobile.chain_id}),
         target_chains=sorted({str(c) for c in target.chain_id}),
         outliers=outliers,
+        mode=mode,
     )

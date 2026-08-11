@@ -22,7 +22,7 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
-from protean_mcp.selections_numpy import load_structure, select_mask
+from protean_mcp.selections_numpy import LoadedStructure, load_structure, select_mask
 from protean_mcp.server import (
     background,
     capabilities,
@@ -39,6 +39,7 @@ from protean_mcp.server import (
     load_session,
     material,
     mcp,
+    near,
     opacity,
     path_trace,
     preset,
@@ -117,6 +118,74 @@ async def test_screenshot_tool(wired_bridge, tmp_path):
     await task
     assert out.read_bytes() == base64.b64decode(PNG_B64)
     assert any("Saved to" in str(item) for item in result)
+
+
+# -- the viewer/analysis atom-count invariant ----------------------------------
+
+
+def _loaded(atoms: int, surplus: int = 0) -> LoadedStructure:
+    """A LoadedStructure of *atoms* atoms carrying *surplus* hidden conformers."""
+    array = atom_array(
+        [
+            Atom(
+                [float(i), 0.0, 0.0],
+                chain_id="A",
+                res_id=1,
+                ins_code="",
+                res_name="GLY",
+                atom_name="CA",
+                element="C",
+                hetero=False,
+                b_factor=0.0,
+                occupancy=1.0,
+                atom_id=i,
+            )
+            for i in range(atoms)
+        ]
+    )
+    return LoadedStructure(
+        array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+    )
+
+
+def test_matching_counts_are_reported_as_agreement():
+    note = server_mod._assembly_note(_loaded(100), {"atom_count": 100})
+    assert "100 atoms in both viewer and analysis" in note
+    assert "MISMATCH" not in note
+
+
+def test_a_difference_that_is_all_conformers_is_explained_not_alarmed():
+    """5FJI's 217 atoms: the same molecule counted two defensible ways.
+
+    Calling this a mismatch told the caller to distrust every number in the
+    session over a difference that is fully accounted for.
+    """
+    note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 15929})
+    assert "MISMATCH" not in note
+    assert "unreliable" not in note
+    assert "217" in note
+    assert "alternate conformers" in note
+
+
+def test_a_difference_larger_than_the_conformers_is_still_a_mismatch():
+    """The invariant has to survive being given something to explain with."""
+    note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 16000})
+    assert "MISMATCH" in note
+    assert "unreliable" in note
+    assert "217 of the difference is alternate conformers" in note
+
+
+def test_a_difference_with_no_conformers_to_explain_it_is_a_mismatch():
+    note = server_mod._assembly_note(_loaded(2396), {"atom_count": 4792})
+    assert "MISMATCH" in note
+    assert "unreliable" in note
+    assert "alternate conformers" not in note
+
+
+def test_a_viewer_that_reports_no_count_is_not_called_agreement():
+    note = server_mod._assembly_note(_loaded(100, 5), {})
+    assert "the viewer reported no count" in note
+    assert "MISMATCH" not in note
 
 
 # -- sessions ----------------------------------------------------------------
@@ -254,6 +323,48 @@ async def _load(wired_bridge, path: Path) -> None:
     task = wired_bridge.serve(1)
     await fetch_structure(str(path))
     await task
+
+
+# -- near() and its radius -----------------------------------------------------
+
+
+async def _load_with_handle(wired_bridge, tmp_path) -> None:
+    """A loaded structure with one handle, `sele`, holding chain A."""
+    await _load(wired_bridge, _two_chain_pdb(tmp_path / "pair.pdb"))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("chain A", name="sele")
+    await task
+
+
+@pytest.mark.parametrize("radius", [0.0, -1.0, -0.001, float("nan"), float("inf")])
+async def test_near_refuses_a_non_positive_radius(wired_bridge, tmp_path, radius):
+    """It used to answer 0 atoms and no complaint.
+
+    An empty set is the one answer that looks like a real result, so the
+    request that can only produce one is refused rather than served. `nan`
+    slips past a bare `<= 0`, and `inf` is not a question either.
+    """
+    await _load_with_handle(wired_bridge, tmp_path)
+    with pytest.raises(ViewerError, match="radius must be greater than 0"):
+        await near("sele", radius=radius)
+
+
+async def test_near_still_answers_a_real_radius(wired_bridge, tmp_path):
+    """Guards the test above: refusing every radius would satisfy it."""
+    await _load_with_handle(wired_bridge, tmp_path)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    summary = await near("sele", radius=5.0, name="shell")
+    await task
+    assert summary["atom_count"] > 0
+    assert "shell" in server_mod._handles.names()
+
+
+async def test_near_names_the_radius_it_rejected(wired_bridge, tmp_path):
+    await _load_with_handle(wired_bridge, tmp_path)
+    with pytest.raises(ViewerError, match=r"got -2\.5"):
+        await near("sele", radius=-2.5)
 
 
 async def test_interface_registers_handles_on_the_loaded_structure(
