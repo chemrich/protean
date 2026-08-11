@@ -42,6 +42,7 @@ from protean_mcp.server import (
     opacity,
     path_trace,
     preset,
+    record_trajectory,
     rmsd_series,
     rmsf,
     save_session,
@@ -1793,3 +1794,30 @@ async def test_rmsf_reports_internal_motion_not_bulk_drift(wired_bridge, monkeyp
 
     out = await rmsf(per="atom")
     assert out["max"] == pytest.approx(0.0, abs=1e-2)
+
+
+async def test_record_trajectory_honours_stride(wired_bridge, tmp_path, monkeypatch):
+    """Every nth frame, which is how a long run becomes a short movie."""
+    template = _peptide_array()
+    frames = np.stack([template.coord] * 10)
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, frames))
+
+    seen: list[int] = []
+
+    def on_frame(args):
+        seen.append(args["index"])
+        return {"index": args["index"], "frames": 10}
+
+    wired_bridge.handlers["frame"] = on_frame
+    wired_bridge.handlers["snapshot"] = _snapshot_handler({}, 32, 24)
+    task = wired_bridge.serve(60)
+    out = await record_trajectory(str(tmp_path / "frames"), width=32, stride=3)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert out["frames"] == 4
+    assert out["of"] == 10
+    # 0, 3, 6, 9 captured, then back to 0.
+    assert seen == [0, 3, 6, 9, 0]
+    assert len(sorted(Path(out["directory"]).glob("frame_*.png"))) == 4
