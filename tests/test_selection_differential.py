@@ -102,6 +102,11 @@ EXPECTED: dict[str, int] = {
     "chain A and not backbone": 604,
     "byres (chain A within 4 of chain B)": 130,
     "(chain A or chain B) and resi 1-50 and polymer": 782,
+    # Bond topology. Both counts confirmed against PyMOL 3.1.0 on this file:
+    # residue 50's CA in four chains, three bonded partners each; and every
+    # CA plus its bonded neighbours.
+    "neighbor (resi 50 and name CA)": 12,
+    "name CA extend 1": 2256,
 }
 
 # Selections where the bundled transpiler is wrong. Value is the correct count;
@@ -124,6 +129,14 @@ DIVERGENCES: dict[str, int] = {
     "byres (polymer within 4 of resn HEM) and sidechain": 295,
     # ...and when you write that other question explicitly, they return 0.
     "byres ((polymer within 4 of resn HEM) and sidechain)": 502,
+    # Silently 0 for them, both of them. PyMOL agrees with our answers.
+    "bymolecule resn HEM": 172,
+    "rank 5": 1,
+    # Not silence but a different definition: their `bound_to` keeps the source
+    # atoms, so they return 16 where PyMOL and we return the 12 partners. PyMOL
+    # treats `bound_to` and `neighbor` as synonyms and so do we; they do not,
+    # and only their `neighbor` matches.
+    "bound_to (resi 50 and name CA)": 12,
 }
 
 # Cross-checked against the transpiler but without an independently derived
@@ -463,6 +476,32 @@ async def test_we_beat_the_transpiler_on_nucleic():
     viewer = await _evaluate(NUCLEIC_FIXTURE, [["theirs::nucleic", "pymol", "nucleic"]])
     assert int(select_mask("nucleic", array).sum()) == NUCLEIC_EXPECTED["polymer"]
     assert _count(viewer, "theirs", "nucleic") == 0
+
+
+# -- what counts as a bond -----------------------------------------------------
+
+
+async def test_the_two_engines_disagree_about_metal_coordination():
+    """Not a bug on either side: a real question with two defensible answers.
+
+    Extending one bond from the hemes returns the hemes unchanged for us and
+    for PyMOL, because a residue template gives iron no bond to the protein.
+    Mol* models the Fe-NE2 coordination bond and so reaches the proximal
+    histidine, four atoms further.
+
+    Recorded rather than resolved, and asserted from both sides so that either
+    engine changing its bond model shows up here. It is why `resn HEM extend 1`
+    is not in the agreement table.
+    """
+    structure = await fetch_structure_data(FIXTURE)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
+    viewer = await _evaluate(
+        FIXTURE, [["theirs::resn HEM extend 1", "pymol", "resn HEM extend 1"]]
+    )
+    ours = int(select_mask("resn HEM extend 1", array).sum())
+    theirs = _count(viewer, "theirs", "resn HEM extend 1")
+    assert ours == 172, "the hemes alone, which is PyMOL's answer too"
+    assert theirs == ours + 4, "one proximal histidine nitrogen per heme"
 
 
 # -- secondary structure -------------------------------------------------------
