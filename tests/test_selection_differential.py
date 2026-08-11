@@ -463,3 +463,50 @@ async def test_we_beat_the_transpiler_on_nucleic():
     viewer = await _evaluate(NUCLEIC_FIXTURE, [["theirs::nucleic", "pymol", "nucleic"]])
     assert int(select_mask("nucleic", array).sum()) == NUCLEIC_EXPECTED["polymer"]
     assert _count(viewer, "theirs", "nucleic") == 0
+
+
+# -- secondary structure -------------------------------------------------------
+
+# `ss` was refused entirely until secondary structure was assigned here. It is
+# assigned with P-SEA, which works off backbone geometry; PyMOL and Mol* both
+# use a DSSP-style hydrogen-bond criterion, and the three do not agree.
+#
+# On 1UBQ, PyMOL 3.1.0 and Mol*'s transpiler both say 132 helix atoms and 274
+# strand; P-SEA says 89 and 217. Per residue the two agree 82% of the time, and
+# the disagreements are all of one kind: P-SEA trims one or two residues from
+# the ends of each element and misses the shortest ones. The elements
+# themselves are in the same places.
+#
+# This is asserted rather than hidden, both ways. If the assignment is ever
+# moved onto a DSSP-style criterion, this test fails and says so instead of
+# quietly changing every `ss` answer in the project.
+SS_FIXTURE = "1ubq"
+SS_OURS = {"ss H": 89, "ss S": 217}
+SS_THEIRS = {"ss H": 132, "ss S": 274}
+
+
+@pytest.fixture(scope="module")
+async def ss_counts() -> dict[str, dict[str, int]]:
+    structure = await fetch_structure_data(SS_FIXTURE)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
+    viewer = await _evaluate(SS_FIXTURE, [[f"theirs::{s}", "pymol", s] for s in SS_OURS])
+    return {
+        "python": {s: int(select_mask(s, array).sum()) for s in SS_OURS},
+        "molstar": {s: _count(viewer, "theirs", s) for s in SS_OURS},
+    }
+
+
+@pytest.mark.parametrize("selection", sorted(SS_OURS))
+async def test_secondary_structure_matches_our_assignment(ss_counts, selection):
+    assert ss_counts["python"][selection] == SS_OURS[selection]
+
+
+@pytest.mark.parametrize("selection", sorted(SS_THEIRS))
+async def test_the_transpiler_still_disagrees_by_the_known_amount(ss_counts, selection):
+    """A recorded divergence, not a passing grade.
+
+    Asserted from both sides so that upstream changing its mind, or us moving
+    to a DSSP-style criterion, retires the claim rather than leaving it stale.
+    """
+    assert ss_counts["molstar"][selection] == SS_THEIRS[selection]
+    assert ss_counts["python"][selection] < ss_counts["molstar"][selection]

@@ -168,7 +168,6 @@ def test_around_excludes_source():
 @pytest.mark.parametrize(
     "selection",
     [
-        "ss H",
         "bymolecule resi 50",
         "last chain A",
         "bound_to resn HEM",
@@ -180,6 +179,15 @@ def test_unsupported_constructs_raise(selection):
     """The core contract: never answer an unsupported construct with silence."""
     with pytest.raises(SelectionError, match="not supported"):
         parse(selection)
+
+
+def test_secondary_structure_is_no_longer_refused():
+    """`ss` moved from the unsupported table into the grammar.
+
+    Parsing it is only half the claim; that it resolves to real helices is
+    asserted against coordinates in test_selections_numpy.py.
+    """
+    assert parse("ss H") == Property("ss", ("H",))
 
 
 def test_unknown_keyword_lists_alternatives():
@@ -303,9 +311,9 @@ def test_every_keyword_is_evaluable(keyword, tiny_structure):
 
 
 # A value each property will accept. Most take free text, so a placeholder is
-# fine; `resi` and `index` need a number, and `elem` is the one property whose
-# vocabulary is closed, where a placeholder is now correctly refused.
-_PROBE_VALUES = {"resi": "1", "index": "1", "elem": "C"}
+# fine; `resi` and `index` need a number, and `elem` and `ss` have closed
+# vocabularies where a placeholder is correctly refused.
+_PROBE_VALUES = {"resi": "1", "index": "1", "elem": "C", "ss": "H"}
 
 
 @pytest.mark.parametrize("prop", sorted(PROPERTIES))

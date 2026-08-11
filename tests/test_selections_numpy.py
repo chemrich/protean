@@ -311,7 +311,81 @@ def test_expand_keeps_the_source(mixed):
 
 def test_unsupported_constructs_still_raise(mixed):
     with pytest.raises(SelectionError, match="not supported"):
-        select_mask("ss H", mixed)
+        select_mask("bymolecule resi 1", mixed)
+
+
+# -- secondary structure -------------------------------------------------------
+
+
+@pytest.fixture
+def ideal_helix() -> AtomArray[Any]:
+    """16 residues on an ideal alpha-helical path.
+
+    Real geometry rather than invented coordinates: secondary structure is
+    assigned from backbone shape, so a fixture that was not helix-shaped would
+    agree with any implementation, right or wrong.
+    """
+    lines, serial = [], 1
+    for i in range(16):
+        angle = np.deg2rad(100.0 * i)
+        for name, element, radius, offset in (
+            ("N", "N", 1.5, -0.4),
+            ("CA", "C", 2.3, 0.0),
+            ("C", "C", 1.9, 0.4),
+            ("O", "O", 2.0, 0.6),
+        ):
+            turn = angle + offset
+            x, y = radius * np.cos(turn), radius * np.sin(turn)
+            z = 1.5 * i + offset * 1.5
+            lines.append(
+                f"ATOM  {serial:5d}  {name:<3s} ALA A{i + 1:4d}    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {element}"
+            )
+            serial += 1
+    return load_structure("\n".join(lines) + "\nEND\n", "pdb", "asymmetric").array
+
+
+def test_a_helix_is_selectable_as_one(ideal_helix):
+    """`ss H` used to be refused outright."""
+    assert count("ss H", ideal_helix) > 0
+    assert count("ss S", ideal_helix) == 0
+
+
+def test_the_classes_do_not_overlap_or_leak(ideal_helix):
+    """Every residue is helix, strand or loop, and none is two of them."""
+    total = ideal_helix.array_length()
+    assert count("ss H", ideal_helix) + count("ss L", ideal_helix) == total
+    assert count("ss H and ss L", ideal_helix) == 0
+
+
+def test_the_long_names_mean_the_same_as_the_letters(ideal_helix):
+    """A model writing `ss helix` should not be told that is a typo."""
+    assert count("ss helix", ideal_helix) == count("ss H", ideal_helix)
+    assert count("ss h", ideal_helix) == count("ss H", ideal_helix)
+    assert count("ss strand", ideal_helix) == count("ss S", ideal_helix)
+
+
+def test_several_classes_can_be_asked_for_at_once(ideal_helix):
+    assert count("ss H+L", ideal_helix) == count("ss H", ideal_helix) + count(
+        "ss L", ideal_helix
+    )
+
+
+def test_an_unknown_class_is_refused(ideal_helix):
+    """Like `elem`, the vocabulary is closed, so a typo is not a query."""
+    with pytest.raises(SelectionError, match="Unknown secondary structure"):
+        count("ss Q", ideal_helix)
+
+
+def test_secondary_structure_is_empty_on_a_molecule_that_has_none(mixed):
+    """Two residues and an ion: nothing long enough to be an element."""
+    assert count("ss H", mixed) == 0
+    assert count("ss S", mixed) == 0
+
+
+def test_secondary_structure_composes_with_other_selectors(ideal_helix):
+    assert count("ss H and chain A", ideal_helix) == count("ss H", ideal_helix)
+    assert count("ss H and chain Z", ideal_helix) == 0
 
 
 def test_unknown_keyword_raises(mixed):

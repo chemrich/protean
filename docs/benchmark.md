@@ -179,8 +179,8 @@ Every one of these works in PyMOL and is refused by protean:
 
 | Selection | PyMOL | protean |
 |---|---|---|
-| `ss H` | 132 atoms | refused — secondary structure is not assigned by the evaluator |
-| `ss S` | 274 atoms | refused |
+| `ss H` | 132 atoms | **89 atoms** — assigned, but by a different algorithm |
+| `ss S` | 274 atoms | **217 atoms** — as above |
 | `byres (name CA extend 1)` | 602 atoms | refused — `extend` unsupported |
 | `bymolecule (resi 10)` | 602 atoms | refused — connected-molecule grouping unsupported |
 | `rank 5` | 1 atom | refused — per-object atom rank is not tracked |
@@ -190,6 +190,13 @@ Every one of these works in PyMOL and is refused by protean:
 **PyMOL wins.** Its grammar is complete and protean's is a subset. The one thing
 protean does better here is *how* it loses: each refusal names the reason rather
 than returning zero atoms, which is the failure mode that costs the most time.
+
+`ss` has since been implemented and no longer refuses, but it is a partial win
+at best. protean assigns secondary structure with P-SEA where PyMOL and Mol\*
+both use a DSSP-style criterion, and the three do not agree: the two of them
+say 132 and 274, protean says 89 and 217. Per residue the assignments agree
+82%, with P-SEA consistently trimming the ends of elements and missing short
+ones. Recorded as item 10 in [the backlog](backlog.md).
 
 There is a second PyMOL advantage no table shows: **a model already knows PyMOL**.
 It writes `byres (chain A within 4 of chain B)` correctly with no tool schema at

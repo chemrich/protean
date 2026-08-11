@@ -383,6 +383,12 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
       string, so there is no operator precedence to get wrong.
     name: the handle. Pass it to show(), color(), measure(), combine() and so on.
 
+    `ss H`, `ss S` and `ss L` select helix, strand and loop. Secondary
+    structure is computed from backbone geometry with P-SEA rather than read
+    from the file, so it answers the same way for a predicted model as for a
+    deposited one — but it is not the DSSP-style criterion PyMOL and Mol* use,
+    and it assigns slightly smaller elements than either.
+
     Resolved in Python, so it works with no viewer open. Returns atom and
     residue counts, the chains touched, and the residue list.
     """

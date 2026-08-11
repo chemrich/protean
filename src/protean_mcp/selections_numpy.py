@@ -21,11 +21,13 @@ import numpy as np
 from biotite.structure import (
     AtomArray,
     CellList,
+    annotate_sse,
     filter_amino_acids,
     filter_carbohydrates,
     filter_monoatomic_ions,
     filter_nucleotides,
     filter_solvent,
+    spread_residue_wise,
 )
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_assembly, get_structure
@@ -411,6 +413,12 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         wanted = [v.upper() for v in node.values]
         _check_elements(wanted, present)
         return np.isin(present, wanted)
+        return np.isin(
+            np.char.upper(array.element.astype(str)),
+            [v.upper() for v in node.values],
+        )
+    if prop == "ss":
+        return _secondary_structure(array, node.values)
     if prop == "resi":
         return _numeric_terms(array.res_id, node.values, array, insertion=True)
     if prop == "index":
@@ -448,6 +456,50 @@ def _check_elements(wanted: list[str], present: Mask) -> None:
         f"No such element: {listed}.{hint} Element symbols are a closed set, so "
         "this would have matched nothing whatever the structure held"
     )
+
+
+# PyMOL's letters on the left, biotite's on the right. Written out rather than
+# taken from PyMOL wholesale: PyMOL also accepts the long names, and a model
+# writing `ss helix` should not be told that is a typo.
+_SS_CODES = {
+    "H": "a",
+    "HELIX": "a",
+    "S": "b",
+    "E": "b",  # DSSP writes strands as E; PyMOL takes S
+    "SHEET": "b",
+    "STRAND": "b",
+    "L": "c",
+    "C": "c",
+    "LOOP": "c",
+    "COIL": "c",
+}
+
+
+def _secondary_structure(array: AtomArray[Any], values: tuple[str, ...]) -> Mask:
+    """Atoms whose residue is helix, strand or coil.
+
+    Assigned here rather than read from the file. A deposited HELIX/SHEET
+    record is the depositor's opinion and is missing altogether from anything
+    predicted or minimised, so computing it means `ss` answers the same way for
+    every structure. biotite's P-SEA runs off backbone geometry.
+
+    Like `elem`, the vocabulary is closed, so an unrecognised value is refused
+    rather than quietly matching nothing.
+    """
+    wanted: set[str] = set()
+    for value in values:
+        code = _SS_CODES.get(value.upper())
+        if code is None:
+            raise SelectionError(
+                f"Unknown secondary structure {value!r}. Expected H (helix), "
+                "S (strand) or L (loop)"
+            )
+        wanted.add(code)
+    # One code per residue, in residue order; '' for anything with no CA, which
+    # is every non-amino-acid and so never matches.
+    per_residue: Mask = np.asarray(annotate_sse(array))
+    per_atom: Mask = np.asarray(spread_residue_wise(array, per_residue))
+    return np.isin(per_atom, list(wanted))
 
 
 def _numeric_terms(
