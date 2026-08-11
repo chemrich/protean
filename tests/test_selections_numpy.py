@@ -193,6 +193,67 @@ def test_protein_backbone_is_unchanged(mixed):
     assert count("sidechain", mixed) == 2
 
 
+# -- element symbols are a closed set ------------------------------------------
+
+
+def test_an_element_that_does_not_exist_is_refused(mixed):
+    """`elem Zz` used to be 0 atoms and no complaint.
+
+    Which reads as "this structure has none of those" rather than "you
+    misspelled it".
+    """
+    with pytest.raises(SelectionError, match="No such element"):
+        count("elem Zz", mixed)
+
+
+def test_the_refusal_names_the_symbol_it_rejected(mixed):
+    with pytest.raises(SelectionError, match="'QQ'"):
+        count("elem Qq", mixed)
+
+
+def test_a_near_miss_is_offered_a_correction(mixed):
+    with pytest.raises(SelectionError, match="Did you mean 'ZN'"):
+        count("elem Znn", mixed)
+
+
+def test_one_bad_symbol_refuses_the_whole_list(mixed):
+    """`elem C+Zz` cannot quietly answer with just the carbons."""
+    with pytest.raises(SelectionError, match="'ZZ'"):
+        count("elem C+Zz", mixed)
+
+
+def test_a_real_element_that_is_absent_still_answers_zero(mixed):
+    """ "This structure has no iron" is a true statement, not a mistake.
+
+    The check must separate a symbol that cannot exist from one that merely
+    is not here, or it turns every honest empty answer into an error.
+    """
+    assert count("elem Fe", mixed) == 0
+    assert count("elem He", mixed) == 0
+
+
+def test_element_matching_stays_case_insensitive(mixed):
+    assert count("elem zn", mixed) == count("elem ZN", mixed) == 1
+
+
+def test_a_symbol_the_table_has_never_heard_of_is_kept_if_the_file_uses_it():
+    """The escape hatch: a refusal must never swallow a real match.
+
+    Files do carry symbols outside the periodic table. Validating against the
+    structure as well as the table means such a file still answers, and only a
+    symbol that is neither real nor present is refused.
+    """
+    array = atom_array(
+        [
+            _atom("A", 1, "UNK", "X1", "XX", [0.0, 0.0, 0.0], hetero=True),
+            _atom("A", 1, "UNK", "C1", "C", [1.0, 0.0, 0.0], hetero=True),
+        ]
+    )
+    assert count("elem XX", array) == 1
+    with pytest.raises(SelectionError, match="No such element"):
+        count("elem YY", array)
+
+
 def test_boolean_operators(mixed):
     assert count("chain A and name CA", mixed) == 2
     assert count("chain A or chain B", mixed) == 9

@@ -88,3 +88,8 @@ nothing is released yet, so everything below is unreleased.
   answer. `backbone` is now the sugar-phosphate backbone as well, which leaves
   `sidechain` meaning the nucleobase: 258 and 228 atoms on 1BNA, matching both
   PyMOL and Mol\*'s transpiler.
+- `elem` refuses a symbol that is not an element, with a suggested correction:
+  `elem Zz` used to return 0 atoms and no complaint, which reads as "this
+  structure has none of those" rather than "you misspelled it". A symbol is
+  refused only if it is neither a real element nor present in the file, so a
+  real element that is simply absent still answers 0.
