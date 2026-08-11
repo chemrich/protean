@@ -9,6 +9,7 @@ import gzip
 import io
 import json
 import logging
+import math
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -412,11 +413,19 @@ async def near(
 ) -> dict[str, Any]:
     """Atoms within a distance of an existing handle.
 
+    radius: in angstroms, greater than zero.
     whole_residues: widen to complete residues, which is usually what a figure
       or a contact list wants.
     exclude_self: leave out the atoms of `of` itself.
     """
     array = _require_structure()
+    if not math.isfinite(radius) or radius <= 0:
+        # An empty set is the one answer that looks like a real result, so the
+        # request that can only produce one is refused rather than served.
+        raise ViewerError(
+            f"radius must be greater than 0, got {radius:g}. A non-positive "
+            "radius matches nothing, which would look like an answer"
+        )
     try:
         source = _handles.get(of)
     except HandleError as exc:

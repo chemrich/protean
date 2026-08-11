@@ -66,3 +66,8 @@ nothing is released yet, so everything below is unreleased.
   written.
 - `superpose()` applies its transform and displays the pair.
 - The viewer and the analysis load the same assembly, and say so.
+- A distance must be greater than zero, in `near()` and in the grammar's
+  `within`, `around` and `expand`. A non-positive radius used to answer with an
+  empty set — or, for `expand`, the source unchanged — both of which read as
+  results rather than as the rejected questions they are. `nan` and `inf` are
+  refused with them.
