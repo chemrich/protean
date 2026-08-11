@@ -66,6 +66,12 @@ interface EffectsArgs {
   sharpening?: boolean;
 }
 
+interface SetCameraArgs {
+  position?: number[];
+  target?: number[];
+  up?: number[];
+}
+
 interface OrbitArgs {
   /** Degrees to swing the camera around the up axis, through the target. */
   degrees: number;
@@ -944,6 +950,58 @@ export function createDispatcher(plugin: any): Handler {
         return {
           index: now?.cell?.transform?.params?.modelIndex ?? null,
           frames,
+        };
+      },
+    },
+
+    camera_state: {
+      async run() {
+        const camera = plugin.canvas3d?.camera;
+        if (!camera) throw new Error('No 3D canvas yet — load a structure first.');
+        const snapshot = camera.getSnapshot();
+        return {
+          position: Array.from(snapshot.position as ArrayLike<number>),
+          target: Array.from(snapshot.target as ArrayLike<number>),
+          up: Array.from(snapshot.up as ArrayLike<number>),
+          radius: snapshot.radius ?? null,
+        };
+      },
+    },
+
+    set_camera: {
+      render: true,
+      async run({ position, target, up }: SetCameraArgs) {
+        const camera = plugin.canvas3d?.camera;
+        if (!camera) throw new Error('No 3D canvas yet — load a structure first.');
+        for (const [name, value] of [
+          ['position', position],
+          ['target', target],
+          ['up', up],
+        ] as Array<[string, number[] | undefined]>) {
+          if (value !== undefined && (value.length !== 3 || value.some((n) => !Number.isFinite(n)))) {
+            throw new Error(`Camera ${name} must be three finite numbers, got ${JSON.stringify(value)}`);
+          }
+        }
+
+        const snapshot = camera.getSnapshot();
+        camera.setState(
+          {
+            ...snapshot,
+            ...(position !== undefined ? { position } : {}),
+            ...(target !== undefined ? { target } : {}),
+            ...(up !== undefined ? { up } : {}),
+          },
+          // No tween: a frame of a timeline wants the camera exactly where the
+          // interpolation put it, not somewhere on the way there.
+          0
+        );
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
+
+        const now = camera.getSnapshot();
+        return {
+          position: Array.from(now.position as ArrayLike<number>),
+          target: Array.from(now.target as ArrayLike<number>),
+          up: Array.from(now.up as ArrayLike<number>),
         };
       },
     },

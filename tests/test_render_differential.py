@@ -1283,3 +1283,64 @@ async def test_a_trajectory_becomes_a_movie(tmp_path):
     assert encoded["frames"] == 10
     assert encoded["seconds"] == pytest.approx(1.0)
     assert settled["index"] == 0
+
+
+# -- keyframed timeline --------------------------------------------------------
+
+
+async def test_a_timeline_swings_the_camera_between_saved_views(tmp_path):
+    """The camera move, checked as frames rather than as arithmetic.
+
+    Two keyframes a quarter turn apart. Every frame has to keep the molecule on
+    screen and roughly the same size — which is the whole reason the path goes
+    around the target rather than straight between the two positions — and
+    consecutive frames have to differ, or the camera never moved.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        server_mod._keyframes.clear()
+        await server_mod.keyframe("start")
+        await session.request("orbit", {"degrees": 90})
+        await server_mod.keyframe("side")
+
+        recorded = await server_mod.record_timeline(
+            str(tmp_path / "move"), frames=8, width=320
+        )
+
+    frames = sorted(Path(recorded["directory"]).glob("frame_*.png"))
+    assert len(frames) == 8
+    assert recorded["keyframes"] == ["start", "side"]
+
+    renders = [decode(frame.read_bytes()) for frame in frames]
+    covers = [coverage(render) for render in renders]
+
+    # The subject stays framed throughout: nothing empties, nothing fills.
+    assert all(cover > 0.005 for cover in covers)
+    # And roughly the same size — a straight line between the two positions
+    # would pass closer and swell the molecule on the way.
+    assert max(covers) < min(covers) * 2.5
+    # The camera actually moved, frame to frame.
+    for index in range(1, len(renders)):
+        assert difference(renders[index - 1], renders[index]) > 0.001
+
+
+async def test_a_timeline_ends_on_its_last_keyframe(tmp_path):
+    """So a still taken afterwards matches the frame the movie ends on."""
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        server_mod._keyframes.clear()
+        await server_mod.keyframe("start")
+        await session.request("orbit", {"degrees": 60})
+        await server_mod.keyframe("end")
+        expected = await _shot(session)
+
+        await server_mod.record_timeline(str(tmp_path / "move"), frames=6, width=320)
+        landed = await _shot(session)
+
+    assert difference(expected, landed) == 0.0
+
+
+async def test_a_timeline_needs_two_keyframes():
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        server_mod._keyframes.clear()
+        await server_mod.keyframe("only")
+        with pytest.raises(ViewerError, match="at least two keyframes"):
+            await server_mod.record_timeline("/tmp/nowhere", frames=4)
