@@ -4,7 +4,7 @@ version = "0.1.0.dev0"
 description = "Agent-native molecular visualization: an MCP server driving a Mol* viewer"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "Charlie Emrich", email = "emrich@gmail.com" }]
 keywords = ["mcp", "molstar", "pymol", "structural-biology", "visualization"]
 dependencies = [
@@ -18,6 +18,11 @@ dependencies = [
     # PR that first needs it at runtime.
     "pillow>=11.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/chemrich/protean"
+Repository = "https://github.com/chemrich/protean"
+Changelog = "https://github.com/chemrich/protean/blob/main/CHANGELOG.md"
 
 [project.scripts]
 protean-mcp = "protean_mcp.server:main"
@@ -37,6 +42,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/protean_mcp"]
+# The built viewer is gitignored — it is an npm build artifact, not source —
+# and hatchling honours VCS ignores when choosing files. Without this the wheel
+# ships a server whose viewer never loads: `pip install` succeeds, open_viewer
+# reports the app is not built, and nothing else says why.
+artifacts = ["src/protean_mcp/static/**"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

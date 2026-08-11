@@ -74,7 +74,7 @@ Trajectory loading (XTC/TRR/DCD/NetCDF — biotite rather than MDAnalysis, see d
 
 ### Phase 6 — Polish and publish (v1.0)
 
-README (installation for Claude Code / Desktop / uvx, tool tables, example prompts — same structure as MCPymol/proteinblend). CHANGELOG, tagged releases, PyPI publish. Attribution: Mol*, MDAnalysis, biotite, APBS, FastMCP. Benchmark doc: side-by-side PyMOL vs protean on 5 common tasks.
+README (installation for Claude Code / Desktop / uvx, tool tables, example prompts — same structure as MCPymol/proteinblend). CHANGELOG, tagged releases, PyPI publish. Attribution: Mol*, biotite, APBS/pdb2pqr, FastMCP, Pillow, ColabFold, ffmpeg (not MDAnalysis — see decision 14). Benchmark doc: side-by-side PyMOL vs protean on 5 common tasks.
 
 ## Reuse from existing projects
 
