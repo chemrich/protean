@@ -89,12 +89,21 @@ path-trace quality, and whether ffmpeg is installed.
 | Capture | `screenshot`, `snapshot`, `turntable`, `record_trajectory`, `record_timeline`, `movie` |
 | Trajectories | `load_trajectory`, `frame`, `rmsf`, `rmsd_series` |
 
+## How it compares to PyMOL
+
+[docs/benchmark.md](docs/benchmark.md) runs five common tasks through both, with
+the real output of each. protean loses two of them — PyMOL's `cealign` finds a
+rigid core that protean's sequence-based `superpose` cannot, and PyMOL's
+selection grammar has no gaps where protean's has several. protean wins where
+the answer needs to arrive as structured data a model can compose.
+
 ## Known gaps
 
-[docs/backlog.md](docs/backlog.md) lists what a corpus of structures and failure
-modes turned up — including two wrong answers worth knowing about before
-trusting a number: `sidechain` returns the whole molecule on nucleic acids, and
-the viewer and analysis disagree by 217 atoms on one glycoprotein.
+[docs/backlog.md](docs/backlog.md) lists what the benchmark and a 499-probe
+corpus of structures and failure modes turned up — including two wrong answers
+worth knowing about before trusting a number: `sidechain` returns the whole
+molecule on nucleic acids, and the viewer and analysis disagree by 217 atoms on
+one glycoprotein.
 
 ## Development
 
