@@ -72,7 +72,7 @@ pytestmark = BROWSER_MARKS
 
 # Ground truth on 4HHB, cross-checked by hand:
 #   4 protein chains + 4 HEM + 221 waters = 4779 atoms
-#   574 residues x 4 backbone atoms = 2296
+#   574 residues x 4 backbone atoms + 4 C-terminal OXT = 2300
 EXPECTED: dict[str, int] = {
     "all": 4779,
     "none": 0,
@@ -94,12 +94,9 @@ EXPECTED: dict[str, int] = {
     "elem Fe": 4,
     "resn HEM": 172,
     "not solvent": 4558,
-    "backbone": 2296,
-    "sidechain": 2088,
     "hydro": 0,
     "b > 50": 271,
     "b < 20": 2284,
-    "chain A and not backbone": 604,
     "byres (chain A within 4 of chain B)": 130,
     "(chain A or chain B) and resi 1-50 and polymer": 782,
     # Bond topology. Both counts confirmed against PyMOL 3.1.0 on this file:
@@ -112,6 +109,14 @@ EXPECTED: dict[str, int] = {
 # Selections where the bundled transpiler is wrong. Value is the correct count;
 # the test asserts we produce it AND that the transpiler does not.
 DIVERGENCES: dict[str, int] = {
+    # Not silence, unlike most of these: OXT. We count the C-terminal
+    # carboxylate's second oxygen as backbone and they do not, so the two
+    # differ by one atom per chain — four in 4HHB. PyMOL agrees with us at
+    # 2300, and OXT hangs off the same carbonyl carbon as O, so calling it a
+    # sidechain atom was the odd position.
+    "backbone": 2300,
+    "sidechain": 2084,
+    "chain A and not backbone": 603,
     "metals": 4,  # their keyword table has a @desc but no implementation
     "chain A and not hydro": 1168,  # their `not` collapses on an empty operand
     "within 5 of resn HEM": 535,  # they require an explicit left operand
@@ -285,7 +290,9 @@ async def test_beats_bundled_transpiler(counts, python_counts, selection):
     )
 
 
-@pytest.mark.parametrize("selection", sorted(EXPECTED) + sorted(AGREEMENT_ONLY))
+@pytest.mark.parametrize(
+    "selection", sorted(EXPECTED) + sorted(AGREEMENT_ONLY) + sorted(DIVERGENCES)
+)
 async def test_handles_survive_the_trip_to_the_viewer(counts, python_counts, selection):
     """The production path: Python resolves it, Mol* has to agree on the set.
 

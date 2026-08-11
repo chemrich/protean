@@ -61,7 +61,10 @@ _METAL_SYMBOLS = (
 _METALS = frozenset(_METAL_SYMBOLS.split())
 _HYDROGEN = frozenset({"H", "D"})
 
-_PROTEIN_BACKBONE = frozenset({"N", "CA", "C", "O"})
+# N/CA/C/O, plus the second oxygen of the C-terminal carboxylate. OXT is main
+# chain by any chemical reading — it hangs off the same carbonyl carbon as O —
+# and leaving it out put it in `sidechain`, where it is certainly not.
+_PROTEIN_BACKBONE = frozenset({"N", "CA", "C", "O", "OXT"})
 
 # The sugar-phosphate backbone: phosphate, then the whole ribose ring. The
 # sugar belongs to the backbone under the name everyone uses for it, which

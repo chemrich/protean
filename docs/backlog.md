@@ -94,24 +94,32 @@ infinite radius does not merely answer wrongly — with the guard removed,
 `near()` on an infinite radius took six minutes to return in the cell list
 rather than answering at all.
 
-### 9. `OXT` is classified as a sidechain atom
+### 9. `OXT` is classified as a sidechain atom — fixed
 
-Found while fixing item 1, by taking PyMOL's opinion on the same structures.
-On 4HHB:
+`backbone` is now N/CA/C/O **plus OXT**, the second oxygen of the C-terminal
+carboxylate. It hangs off the same carbonyl carbon as O, so calling it a
+sidechain atom was the odd position; four atoms per structure, one per
+modelled C-terminus.
 
 ```
-protean   backbone -> 2296     PyMOL   backbone -> 2300
+                before   after    PyMOL
+backbone         2296     2300     2300
+sidechain        2088     2084     2084
 ```
 
-The four atoms are the C-terminal `OXT`, one per chain. It is the second oxygen
-of the terminal carboxylate — backbone by any chemical reading — and it
-currently falls into `sidechain` instead.
+This was recorded as wanting a decision rather than a fix, because Mol\*'s
+transpiler agreed with the old answer and two implementations against one is
+usually the wrong side to be on. The tiebreak is that the chemistry is not
+actually in dispute: OXT is main chain, and `sidechain` returning it was
+indefensible whatever any transpiler says.
 
-Unlike item 1 this is not a clear win, which is why it was left alone: Mol\*'s
-bundled transpiler *also* says 2296, so two independent implementations agree
-with protean and only PyMOL differs. Changing it would move a hand-checked
-ground-truth count and break agreement with the transpiler, so it wants a
-deliberate decision rather than a drive-by fix. Four atoms per structure.
+The three affected counts moved out of the differential suite's agreement
+table and into its recorded divergences, so the 4-atom disagreement with Mol\*
+is asserted from both sides rather than dropped. Transport coverage did not
+shrink with them: `test_handles_survive_the_trip_to_the_viewer` now runs over
+the divergences too, which it always should have — whether our atom ids
+survive the trip to the viewer has nothing to do with whether their parser
+agrees about the selection.
 
 ## Gaps — the answer is unavailable
 
