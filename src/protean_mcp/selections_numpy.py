@@ -22,6 +22,7 @@ from biotite.structure import (
     AtomArray,
     CellList,
     annotate_sse,
+    connect_via_residue_names,
     filter_amino_acids,
     filter_carbohydrates,
     filter_monoatomic_ions,
@@ -36,6 +37,7 @@ from .selections import (
     And,
     Compare,
     Expand,
+    Extend,
     Keyword,
     Modifier,
     Not,
@@ -426,6 +428,11 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         return _numeric_terms(array.res_id, node.values, array, insertion=True)
     if prop == "index":
         return _numeric_terms(_field(array, "atom_id"), node.values, array)
+    if prop == "rank":
+        # PyMOL's rank is the atom's 0-based position within the object, which
+        # here is its position in the array. Distinct from `index`, which is
+        # the file's own atom_site id and need not start at 0 or be contiguous.
+        return _numeric_terms(np.arange(array.array_length()), node.values, array)
     raise SelectionError(f"Property {prop!r} is not supported by the Python evaluator")
 
 
@@ -552,6 +559,74 @@ def _compare(node: Compare, array: AtomArray[Any]) -> Mask:
     return np.asarray(values != node.value)
 
 
+def _bond_pairs(array: AtomArray[Any]) -> Mask:
+    """Every bond as a pair of atom indices.
+
+    Computed on demand rather than at load: only four selectors need topology,
+    and it costs 25 ms on a 59,000-atom assembly, which is not worth paying on
+    every load that never asks. Bonds carried by the file are used when
+    present; otherwise they come from residue templates, which gives a het
+    group its real connectivity rather than a distance guess.
+    """
+    bonds = array.bonds
+    if bonds is None:
+        try:
+            bonds = connect_via_residue_names(array)
+        except Exception as exc:
+            raise SelectionError(
+                f"Bond topology could not be derived for this structure: {exc}"
+            ) from exc
+    pairs: Mask = np.asarray(bonds.as_array()[:, :2])
+    return pairs
+
+
+def _bonded_to(array: AtomArray[Any], source: Mask) -> Mask:
+    """Atoms directly bonded to *source*, excluding *source* itself.
+
+    PyMOL's `neighbor` and `bound_to` name the same set; both are this.
+    """
+    pairs = _bond_pairs(array)
+    found = np.zeros(array.array_length(), dtype=bool)
+    if len(pairs) == 0:
+        return found
+    first, second = pairs[:, 0], pairs[:, 1]
+    found[first[source[second]]] = True
+    found[second[source[first]]] = True
+    return found & ~source
+
+
+def _extend(array: AtomArray[Any], source: Mask, depth: int) -> Mask:
+    """*source* plus everything reachable within *depth* bonds, source kept."""
+    grown = source
+    for _ in range(depth):
+        grown = grown | _bonded_to(array, grown)
+    return grown
+
+
+def _molecules(array: AtomArray[Any]) -> Mask:
+    """One component label per atom, so bonded atoms share a label.
+
+    Label propagation with pointer jumping, which settles in rounds
+    proportional to the log of the longest chain rather than its length.
+    Written out rather than taken from scipy, which is present here only as
+    somebody else's transitive dependency and so cannot be relied on.
+    """
+    n = array.array_length()
+    labels = np.arange(n)
+    pairs = _bond_pairs(array)
+    if len(pairs) == 0:
+        return labels
+    first, second = pairs[:, 0], pairs[:, 1]
+    while True:
+        nxt = labels.copy()
+        np.minimum.at(nxt, first, labels[second])
+        np.minimum.at(nxt, second, labels[first])
+        nxt = nxt[nxt]  # jump each atom to its own label's label
+        if np.array_equal(nxt, labels):
+            return labels
+        labels = nxt
+
+
 def _within(array: AtomArray[Any], source: Mask, radius: float) -> Mask:
     """Atoms within *radius* of any atom in *source*."""
     if not source.any():
@@ -559,6 +634,29 @@ def _within(array: AtomArray[Any], source: Mask, radius: float) -> Mask:
     cell_list = CellList(array[source], cell_size=max(radius, 1.0))
     neighbours = cell_list.get_atoms(array.coord, radius=radius)
     return np.asarray((neighbours >= 0).any(axis=-1))
+
+
+def _modifier(node: Modifier, inner: Mask, array: AtomArray[Any]) -> Mask:
+    """A prefix expansion applied to an already-evaluated child."""
+    if node.kind == "first":
+        out = np.zeros(array.array_length(), dtype=bool)
+        hits = np.flatnonzero(inner)
+        if len(hits):
+            out[hits[0]] = True
+        return out
+    # PyMOL treats these two as synonyms, and a caller should not have to guess
+    # which one it wants. Mol*'s transpiler keeps the source atoms in `bound_to`
+    # and drops them from `neighbor`; the differential suite pins that.
+    if node.kind in ("neighbor", "bound_to"):
+        return _bonded_to(array, inner)
+    if node.kind == "bymolecule":
+        return _widen(inner, _molecules(array))
+    # bychain widens over the *same* chain identifier that `chain` selects on.
+    # The MolScript backend widens over Mol*'s chain key, which follows
+    # label_asym_id, so there `chain A` and `bychain` disagree about what a
+    # chain is; here they cannot.
+    keys = _residue_keys(array) if node.kind == "byres" else array.chain_id
+    return _widen(inner, np.asarray(keys))
 
 
 def evaluate(node: object, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
@@ -576,19 +674,7 @@ def evaluate(node: object, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
     if isinstance(node, Or):
         return evaluate(node.left, array) | evaluate(node.right, array)
     if isinstance(node, Modifier):
-        inner = evaluate(node.child, array)
-        if node.kind == "first":
-            out = np.zeros(array.array_length(), dtype=bool)
-            hits = np.flatnonzero(inner)
-            if len(hits):
-                out[hits[0]] = True
-            return out
-        # bychain widens over the *same* chain identifier that `chain` selects
-        # on. The MolScript backend widens over Mol*'s chain key, which follows
-        # label_asym_id, so there `chain A` and `bychain` disagree about what a
-        # chain is; here they cannot.
-        keys = _residue_keys(array) if node.kind == "byres" else array.chain_id
-        return _widen(inner, np.asarray(keys))
+        return _modifier(node, evaluate(node.child, array), array)
     if isinstance(node, Within):
         near = _within(array, evaluate(node.target, array), node.radius)
         selected = near & evaluate(node.child, array)
@@ -598,6 +684,8 @@ def evaluate(node: object, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
     if isinstance(node, Expand):
         inner = evaluate(node.child, array)
         return inner | _within(array, inner, node.radius)
+    if isinstance(node, Extend):
+        return _extend(array, evaluate(node.child, array), node.depth)
     raise SelectionError(f"Cannot evaluate node: {node!r}")
 
 

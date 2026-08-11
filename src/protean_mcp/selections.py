@@ -149,12 +149,27 @@ class Expand:
     whole_residues: bool = False
 
 
+@dataclass(frozen=True)
+class Extend:
+    """``child extend n`` — *child* plus everything within *n* bonds.
+
+    Distinct from :class:`Expand`, which measures in angstroms. Two atoms can
+    be 1.5 A apart and not bonded at all, so the two operators answer different
+    questions and neither substitutes for the other.
+    """
+
+    child: object
+    depth: int
+
+
 # -- vocabulary --------------------------------------------------------------
 
 # Property selectors that take a value list. Which field each one reads, and
 # how case is treated, belongs to the evaluator; the grammar only needs to know
 # the name is real.
-PROPERTIES = frozenset({"chain", "segi", "resi", "resn", "name", "elem", "index", "ss"})
+PROPERTIES = frozenset(
+    {"chain", "segi", "resi", "resn", "name", "elem", "index", "ss", "rank"}
+)
 
 _PROPERTY_ALIASES = {
     "c.": "chain",
@@ -220,15 +235,12 @@ _MODIFIERS = {"byres", "bychain", "bymolecule", "first", "last", "neighbor", "bo
 # match", which is the whole reason this table exists.
 _UNSUPPORTED: dict[str, str] = {
     "alt": (
-        "alternate locations are resolved when coordinates are parsed, so no "
-        "altloc field survives to select on"
+        "coordinates are parsed keeping one conformer per atom site, so no "
+        "altloc field survives to select on. Loading every conformer is "
+        "possible but would make buried areas and potentials be computed over "
+        "atoms that overlap each other"
     ),
-    "bymolecule": "connected-molecule grouping is not implemented",
     "last": "no last-element filter; `first` is available",
-    "neighbor": "bond-topology semantics not yet verified against PyMOL",
-    "bound_to": "bond-topology semantics not yet verified against PyMOL",
-    "extend": "PyMOL extends along bonds; bond topology is not available",
-    "rank": "per-object atom rank is not tracked",
     "pepseq": "sequence-motif matching not yet implemented",
     "like": "not implemented",
     "beyond": "not implemented",
@@ -320,9 +332,8 @@ class _Parser:
                 self.next()
                 node = Expand(node, self._radius("expand"))
             elif self.at_word("extend"):
-                raise SelectionError(
-                    f"'extend' is not supported: {_UNSUPPORTED['extend']}"
-                )
+                self.next()
+                node = Extend(node, self._bond_depth())
             else:
                 return node
 
@@ -378,6 +389,21 @@ class _Parser:
             return float(value)
         except ValueError:
             raise SelectionError(f"Expected a number, got {value!r}") from None
+
+    def _bond_depth(self) -> int:
+        """A count of bonds to walk, which has to be a whole number above zero.
+
+        Half a bond is not a distance, and `extend 0` returns the selection
+        unchanged — the same empty-looking answer a zero radius gives, and
+        refused for the same reason.
+        """
+        raw = self._number()
+        depth = int(raw)
+        if depth != raw or depth < 1:
+            raise SelectionError(
+                f"'extend' needs a whole number of bonds above 0, got {raw:g}"
+            )
+        return depth
 
     def _radius(self, keyword: str) -> float:
         """A distance, which has to be a positive real number.

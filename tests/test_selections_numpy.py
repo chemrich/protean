@@ -331,9 +331,122 @@ def test_expand_keeps_the_source(mixed):
     assert expanded.sum() > zinc.sum()
 
 
+# -- bond topology -------------------------------------------------------------
+
+
+@pytest.fixture
+def dipeptide() -> AtomArray[Any]:
+    """Two bonded residues and a free water, with real atom names.
+
+    Bonds come from residue templates, so the names have to be the ones the
+    templates use — invented names would leave every atom unbonded and make
+    the whole thing agree with a broken implementation.
+    """
+    atoms = [
+        _atom("A", 1, "GLY", "N", "N", [0.0, 0.0, 0.0]),
+        _atom("A", 1, "GLY", "CA", "C", [1.5, 0.0, 0.0]),
+        _atom("A", 1, "GLY", "C", "C", [2.4, 1.2, 0.0]),
+        _atom("A", 1, "GLY", "O", "O", [2.0, 2.3, 0.0]),
+        _atom("A", 2, "ALA", "N", "N", [3.7, 1.0, 0.0]),
+        _atom("A", 2, "ALA", "CA", "C", [4.7, 2.1, 0.0]),
+        _atom("A", 2, "ALA", "CB", "C", [6.1, 1.6, 0.0]),
+        _atom("A", 2, "ALA", "C", "C", [4.5, 3.0, 1.2]),
+        _atom("A", 2, "ALA", "O", "O", [3.5, 3.7, 1.3]),
+        # Same chain as the peptide on purpose: if the water sat in its own
+        # chain, widening over chain id would give the same answer as
+        # widening over connectivity and the test would prove nothing.
+        _atom("A", 3, "HOH", "O", "O", [30.0, 0.0, 0.0], hetero=True),
+    ]
+    for i, atom in enumerate(atoms, start=1):
+        atom.atom_id = i
+    return atom_array(atoms)
+
+
+def test_neighbor_is_the_bonded_atoms_without_the_source(dipeptide):
+    """Glycine's CA is bonded to its own N and C, and to nothing else."""
+    assert count("neighbor (resi 1 and name CA)", dipeptide) == 2
+
+
+def test_neighbor_excludes_the_source_even_when_it_is_bonded_to_itself(dipeptide):
+    """The whole of residue 1 is internally bonded.
+
+    A single atom cannot catch a missing self-exclusion, because no atom is
+    bonded to itself. A whole residue can: without it, every atom of residue 1
+    comes back as its own neighbour.
+    """
+    assert count("neighbor (resi 1)", dipeptide) == 1  # only the next residue's N
+    assert count("neighbor (resi 1) and resi 1", dipeptide) == 0
+
+
+def test_bound_to_names_the_same_set_as_neighbor(dipeptide):
+    """PyMOL treats them as synonyms; a caller should not have to guess."""
+    for selection in ("resi 1 and name CA", "resi 2"):
+        assert count(f"neighbor ({selection})", dipeptide) == count(
+            f"bound_to ({selection})", dipeptide
+        )
+
+
+def test_extend_keeps_the_source_and_grows_by_bonds(dipeptide):
+    """One bond out from CA reaches N and C; two reaches the peptide bond."""
+    assert count("(resi 1 and name CA) extend 1", dipeptide) == 3
+    assert count("(resi 1 and name CA) extend 2", dipeptide) == 5
+
+
+def test_extend_stops_when_the_molecule_runs_out(dipeptide):
+    """It cannot leak across a break: the water is bonded to nothing here."""
+    everything = count("(resi 1 and name CA) extend 50", dipeptide)
+    assert everything == count("polymer", dipeptide)
+    assert count("resn HOH", dipeptide) == 1
+
+
+def test_extend_counts_bonds_not_angstroms(dipeptide):
+    """The water sits 30 A away, so distance and topology cannot be confused.
+
+    A cheap `expand` in disguise would still exclude it; what this pins is
+    that the peptide's own atoms are reached by bond count rather than by
+    being nearby.
+    """
+    by_bonds = select_mask("(resi 1 and name N) extend 3", dipeptide)
+    by_distance = select_mask("(resi 1 and name N) expand 3", dipeptide)
+    assert not np.array_equal(by_bonds, by_distance)
+
+
+def test_bymolecule_takes_the_whole_connected_molecule(dipeptide):
+    """One atom of the peptide pulls in both residues, and not the water."""
+    assert count("bymolecule (resi 1 and name CA)", dipeptide) == count(
+        "polymer", dipeptide
+    )
+    assert count("bymolecule (resi 1 and name CA) and resn HOH", dipeptide) == 0
+
+
+def test_bymolecule_leaves_an_unbonded_atom_alone(dipeptide):
+    """A lone water is its own molecule, not part of the nearest one."""
+    assert count("bymolecule resn HOH", dipeptide) == 1
+
+
+def test_rank_is_the_position_in_the_array(dipeptide):
+    """Distinct from `index`, which is the file's own atom id."""
+    assert count("rank 0", dipeptide) == 1
+    assert dipeptide[select_mask("rank 0", dipeptide)].atom_name[0] == "N"
+    assert count("rank 0-2", dipeptide) == 3
+    assert count("rank 9", dipeptide) == 1
+
+
+def test_rank_and_index_are_not_the_same_field(dipeptide):
+    """Here atom_id starts at 1 and rank at 0, so they differ by one."""
+    assert count("rank 0", dipeptide) == 1
+    assert count("index 0", dipeptide) == 0
+    assert count("index 1", dipeptide) == 1
+
+
+def test_a_rank_beyond_the_end_matches_nothing(dipeptide):
+    """Like a residue number out of range: a true answer, not a mistake."""
+    assert count("rank 1000000", dipeptide) == 0
+
+
 def test_unsupported_constructs_still_raise(mixed):
     with pytest.raises(SelectionError, match="not supported"):
-        select_mask("bymolecule resi 1", mixed)
+        select_mask("last chain A", mixed)
 
 
 # -- secondary structure -------------------------------------------------------
