@@ -169,12 +169,49 @@ currently be asked for the second.
 Needs new handle transport — atom-id ranges cannot distinguish copies that
 share ids. Hardest item here.
 
-### 8. Selection keywords still unsupported
+### 8. Selection keywords still unsupported — mostly closed
 
-`extend`, `bymolecule`, `rank`, `bound_to` all raise. `alt` cannot work as
-things stand, because biotite resolves altlocs at parse time and no altloc
-field survives. Each refusal names its reason, which is the right failure — but
-the grammar is a subset of PyMOL's and the benchmark says so.
+`extend`, `bymolecule`, `bound_to`, `neighbor` and `rank` all work now. Every
+count was checked against PyMOL 3.1.0 on the same file and matches exactly:
+
+| on 1UBQ | PyMOL | protean |
+|---|---|---|
+| `byres (name CA extend 1)` | 602 | 602 |
+| `name CA extend 1` | 298 | 298 |
+| `name CA extend 2` | 464 | 464 |
+| `bymolecule (resi 10)` | 602 | 602 |
+| `bymolecule (resn HOH)` | 58 | 58 |
+| `bound_to (resi 10 and name CA)` | 2 | 2 |
+| `rank 5` | 1 | 1 |
+
+Two of the original reasons for refusing them were wrong. Bond topology *is*
+available — biotite assigns it from residue templates, at 25 ms for a
+59,000-atom assembly, so it is derived on demand rather than at load. And
+`rank` needed no tracking at all: it is the atom's position in the array,
+distinct from `index`, which is the file's own `atom_site.id`.
+
+`extend 0` and a fractional `extend` are refused, on the same argument as a
+non-positive radius in item 4.
+
+**`alt` is still refused, but now by choice rather than impossibility.**
+`get_structure(altloc="all")` exists, so every conformer *can* be loaded — and
+doing so would make the viewer and analysis atom counts agree exactly, which is
+the other half of item 2. The reason not to is that buried areas, potentials
+and contact counts would then be computed over atoms sitting on top of each
+other. The refusal now names that tradeoff instead of claiming it cannot be
+done, so it can be argued with. **Wants a decision.**
+
+### 11. The two engines disagree about what a bond is
+
+Found while implementing item 8. `resn HEM extend 1` on 4HHB returns the hemes
+unchanged for protean and for PyMOL — a residue template gives iron no bond to
+the protein — where Mol\* returns four atoms more, having modelled the Fe-NE2
+coordination bond to the proximal histidine.
+
+Neither is wrong. It is a real question about whether metal coordination is a
+bond, and the two answers are both defensible. Recorded and asserted from both
+sides so that either engine changing its mind is visible, rather than folded
+into the agreement table where it would look like a bug.
 
 ### 10. Secondary structure disagrees with every other tool by ~18%
 
