@@ -97,6 +97,14 @@ rigid core that protean's sequence-based `superpose` cannot, and PyMOL's
 selection grammar has no gaps where protean's has several. protean wins where
 the answer needs to arrive as structured data a model can compose.
 
+## Known gaps
+
+[docs/backlog.md](docs/backlog.md) lists what the benchmark and a 499-probe
+corpus of structures and failure modes turned up — including two wrong answers
+worth knowing about before trusting a number: `sidechain` returns the whole
+molecule on nucleic acids, and the viewer and analysis disagree by 217 atoms on
+one glycoprotein.
+
 ## Development
 
 ```bash
