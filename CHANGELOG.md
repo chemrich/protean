@@ -47,6 +47,12 @@ nothing is released yet, so everything below is unreleased.
 
 - Selections are named handles: `select()` takes PyMOL syntax for leaf
   predicates, and `combine()`, `near()` and `invert()` compose them.
+- `ss H`, `ss S` and `ss L` select secondary structure, which used to be
+  refused outright. It is computed from backbone geometry with P-SEA rather
+  than read from the file, so it answers the same way for a predicted model as
+  for a deposited one — but it is not the DSSP-style criterion PyMOL and Mol\*
+  use, and assigns slightly smaller elements than either. The difference is
+  asserted in the differential suite and recorded in docs/backlog.md.
 - Representations, colour themes, camera control, measurements and labels.
 - Sessions save and load as gzipped `.protean` files that embed the structure.
 

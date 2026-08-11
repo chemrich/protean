@@ -151,7 +151,7 @@ class Expand:
 # Property selectors that take a value list. Which field each one reads, and
 # how case is treated, belongs to the evaluator; the grammar only needs to know
 # the name is real.
-PROPERTIES = frozenset({"chain", "segi", "resi", "resn", "name", "elem", "index"})
+PROPERTIES = frozenset({"chain", "segi", "resi", "resn", "name", "elem", "index", "ss"})
 
 _PROPERTY_ALIASES = {
     "c.": "chain",
@@ -216,7 +216,6 @@ _MODIFIERS = {"byres", "bychain", "bymolecule", "first", "last", "neighbor", "bo
 # nothing — the caller learns the difference between "unsupported" and "no
 # match", which is the whole reason this table exists.
 _UNSUPPORTED: dict[str, str] = {
-    "ss": "secondary structure is not assigned by the selection evaluator",
     "alt": (
         "alternate locations are resolved when coordinates are parsed, so no "
         "altloc field survives to select on"

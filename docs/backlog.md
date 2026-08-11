@@ -87,16 +87,22 @@ than trusting the sequence alignment — iterative outlier rejection over the
 sequence-aligned pairs would get most of the way, and biotite has the
 superposition primitives already.
 
-### 6. Secondary structure cannot be selected
+### 6. Secondary structure cannot be selected — added, with a caveat
 
-`ss H` and `ss S` work in PyMOL and are refused here, because secondary
-structure is never assigned. Colouring *by* it works, since Mol\* assigns its
-own for the theme.
+`ss H`, `ss S` and `ss L` now resolve. The long names work too (`ss helix`),
+several classes can be asked for at once (`ss H+S`), and an unrecognised class
+is refused rather than matching nothing.
 
-Fix: assign secondary structure on load — Mol\*'s computable
-`SecondaryStructure` is one route, a DSSP-style implementation over the
-analysis copy is another. This is the most visible hole in the selection
-grammar.
+It is assigned rather than read from the file, using biotite's P-SEA over
+backbone geometry. Deposited HELIX/SHEET records are the depositor's opinion
+and are absent from anything predicted or minimised, so computing it means
+`ss` answers the same way for every structure — including AlphaFold models.
+Mol\*'s computable `SecondaryStructure` was the other candidate and was not
+used: it would tie a selection to having a rendering session open, which no
+other selection needs.
+
+**The caveat, which is item 10 below:** P-SEA is not what PyMOL and Mol\* use,
+and the numbers differ.
 
 ### 7. A handle cannot address one symmetry copy
 
@@ -115,6 +121,35 @@ share ids. Hardest item here.
 things stand, because biotite resolves altlocs at parse time and no altloc
 field survives. Each refusal names its reason, which is the right failure — but
 the grammar is a subset of PyMOL's and the benchmark says so.
+
+### 10. Secondary structure disagrees with every other tool by ~18%
+
+On 1UBQ:
+
+| | `ss H` | `ss S` |
+|---|---|---|
+| PyMOL 3.1.0 | 132 | 274 |
+| Mol\* transpiler | 132 | 274 |
+| protean (P-SEA) | 89 | 217 |
+
+PyMOL and Mol\* agree exactly with each other, and protean is the outlier —
+both of them use a DSSP-style hydrogen-bond criterion where P-SEA works off
+backbone geometry alone.
+
+Per residue the two assignments agree **82%** of the time, and every
+disagreement is the same kind: P-SEA trims one or two residues from the ends of
+each element and misses the shortest ones altogether. The elements are in the
+same places; their edges are not.
+
+```
+PyMOL   SSSSSSS--SSSSSSSS-----HHHHHHHHHHHH-----SSSSSS--SSS-----HHHH----SSSSSSSSS----
+protean -SSSSS----SSSSSSS-----HHHHHHHHHHH-------SSSS-------------------SSSSSSSSSS---
+```
+
+Both numbers are asserted in the differential suite, so this cannot drift
+silently. Closing it means implementing the Kabsch-Sander hydrogen-bond
+criterion in Python — biotite ships only a wrapper around an external `mkdssp`
+binary, which is not a dependency worth taking for this.
 
 ## Not bugs, but worth knowing
 
