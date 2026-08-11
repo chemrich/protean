@@ -18,6 +18,8 @@ from protean_mcp.selections import (
     PROPERTIES,
     And,
     Compare,
+    Expand,
+    Extend,
     Keyword,
     Modifier,
     Not,
@@ -168,17 +170,27 @@ def test_around_excludes_source():
 @pytest.mark.parametrize(
     "selection",
     [
-        "bymolecule resi 50",
         "last chain A",
-        "bound_to resn HEM",
-        "resi 50-60 extend 2",
-        "rank 1",
+        "alt A",
+        "pepseq AVL",
     ],
 )
 def test_unsupported_constructs_raise(selection):
     """The core contract: never answer an unsupported construct with silence."""
     with pytest.raises(SelectionError, match="not supported"):
         parse(selection)
+
+
+def test_the_altloc_refusal_says_what_it_would_cost_to_lift(tiny_structure):
+    """`alt` is refused by choice now, not by impossibility.
+
+    Every conformer can be loaded; the reason not to is that buried areas and
+    potentials would then be computed over atoms sitting on top of each other.
+    A refusal that names the tradeoff can be argued with; "not implemented"
+    cannot.
+    """
+    with pytest.raises(SelectionError, match="overlap each other"):
+        parse("alt A")
 
 
 def test_secondary_structure_is_no_longer_refused():
@@ -188,6 +200,47 @@ def test_secondary_structure_is_no_longer_refused():
     asserted against coordinates in test_selections_numpy.py.
     """
     assert parse("ss H") == Property("ss", ("H",))
+
+
+# -- bond topology -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "selection", ["bymolecule resi 50", "bound_to resn HEM", "neighbor resi 50"]
+)
+def test_bond_modifiers_are_no_longer_refused(selection):
+    assert isinstance(parse(selection), Modifier)
+
+
+def test_extend_parses_as_a_bond_count():
+    assert parse("resi 50 extend 2") == Extend(Property("resi", ("50",)), 2)
+
+
+def test_rank_is_a_property():
+    assert parse("rank 5") == Property("rank", ("5",))
+
+
+@pytest.mark.parametrize("selection", ["resi 10 extend 0", "resi 10 extend -1"])
+def test_a_non_positive_extend_is_refused(selection):
+    """The same argument as a zero radius: it can only return the input."""
+    with pytest.raises(SelectionError, match="whole number of bonds above 0"):
+        parse(selection)
+
+
+def test_a_fractional_extend_is_refused():
+    """Half a bond is not a distance."""
+    with pytest.raises(SelectionError, match="whole number of bonds above 0"):
+        parse("resi 10 extend 1.5")
+
+
+def test_extend_and_expand_are_different_operators():
+    """One counts bonds, the other measures angstroms.
+
+    Two atoms can be 1.5 A apart and not bonded, so neither substitutes for
+    the other and they must not parse to the same node.
+    """
+    assert parse("resi 10 extend 2") != parse("resi 10 expand 2")
+    assert isinstance(parse("resi 10 expand 2"), Expand)
 
 
 def test_unknown_keyword_lists_alternatives():
@@ -311,9 +364,9 @@ def test_every_keyword_is_evaluable(keyword, tiny_structure):
 
 
 # A value each property will accept. Most take free text, so a placeholder is
-# fine; `resi` and `index` need a number, and `elem` and `ss` have closed
+# fine; `resi`, `index` and `rank` need a number, and `elem` and `ss` have closed
 # vocabularies where a placeholder is correctly refused.
-_PROBE_VALUES = {"resi": "1", "index": "1", "elem": "C", "ss": "H"}
+_PROBE_VALUES = {"resi": "1", "index": "1", "rank": "0", "elem": "C", "ss": "H"}
 
 
 @pytest.mark.parametrize("prop", sorted(PROPERTIES))

@@ -173,30 +173,36 @@ Both produce a 600-dpi file. The differences:
 **protean wins narrowly** on physical sizing, TIFF, and the capture check.
 PyMOL wins on rendering anywhere without a GPU.
 
-## 5. Selection grammar — PyMOL wins clearly
+## 5. Selection grammar — PyMOL wins, by less than it did
 
-Every one of these works in PyMOL and is refused by protean:
+Every one of these worked in PyMOL and was refused by protean when this was
+first run. Five have since been implemented; the protean column is current:
 
 | Selection | PyMOL | protean |
 |---|---|---|
 | `ss H` | 132 atoms | **89 atoms** — assigned, but by a different algorithm |
 | `ss S` | 274 atoms | **217 atoms** — as above |
-| `byres (name CA extend 1)` | 602 atoms | refused — `extend` unsupported |
-| `bymolecule (resi 10)` | 602 atoms | refused — connected-molecule grouping unsupported |
-| `rank 5` | 1 atom | refused — per-object atom rank is not tracked |
-| `alt A` | 0 atoms | refused — altlocs are resolved at parse time |
-| `bound_to (...)` | 2 atoms | refused |
+| `byres (name CA extend 1)` | 602 atoms | **602 atoms** |
+| `bymolecule (resi 10)` | 602 atoms | **602 atoms** |
+| `rank 5` | 1 atom | **1 atom** |
+| `alt A` | 0 atoms | refused — one conformer per site is loaded, by choice |
+| `bound_to (...)` | 2 atoms | **2 atoms** |
 
-**PyMOL wins.** Its grammar is complete and protean's is a subset. The one thing
-protean does better here is *how* it loses: each refusal names the reason rather
-than returning zero atoms, which is the failure mode that costs the most time.
+**PyMOL still wins, but by much less than this table first showed.** Four of
+the seven rows have since been implemented and match PyMOL exactly, along with
+`ss`. What is left is `alt`, which is a deliberate choice rather than a gap:
+every conformer can be loaded, and loading them would mean computing buried
+areas over atoms that sit on top of each other.
 
-`ss` has since been implemented and no longer refuses, but it is a partial win
-at best. protean assigns secondary structure with P-SEA where PyMOL and Mol\*
-both use a DSSP-style criterion, and the three do not agree: the two of them
-say 132 and 274, protean says 89 and 217. Per residue the assignments agree
-82%, with P-SEA consistently trimming the ends of elements and missing short
-ones. Recorded as item 10 in [the backlog](backlog.md).
+The one thing protean does better here is *how* it loses: each refusal names
+the reason rather than returning zero atoms, which is the failure mode that
+costs the most time.
+
+`ss` is the partial one. protean assigns secondary structure with P-SEA where
+PyMOL and Mol\* both use a DSSP-style criterion, and the three do not agree:
+the two of them say 132 and 274, protean says 89 and 217. Per residue the
+assignments agree 82%, with P-SEA consistently trimming the ends of elements
+and missing the shortest. Recorded as item 10 in [the backlog](backlog.md).
 
 There is a second PyMOL advantage no table shows: **a model already knows PyMOL**.
 It writes `byres (chain A within 4 of chain B)` correctly with no tool schema at

@@ -52,6 +52,18 @@ nothing is released yet, so everything below is unreleased.
 
 - Selections are named handles: `select()` takes PyMOL syntax for leaf
   predicates, and `combine()`, `near()` and `invert()` compose them.
+- `extend`, `bymolecule`, `bound_to`, `neighbor` and `rank` all resolve, having
+  been refused as unimplemented. Bond topology comes from residue templates and
+  is derived on demand, since only these four selectors need it. Every count
+  matches PyMOL 3.1.0 exactly on the same file. `alt` is still refused, but the
+  refusal now names the tradeoff — every conformer can be loaded, at the cost
+  of computing buried areas over atoms that overlap each other — rather than
+  claiming it cannot be done.
+- `backbone` includes `OXT`, the C-terminal carboxylate's second oxygen, which
+  used to fall into `sidechain`. Four atoms per structure, and the reason
+  PyMOL and protean disagreed about `backbone` on anything with a modelled
+  C-terminus. Mol\*'s transpiler still excludes it; the difference is asserted
+  in the differential suite rather than left to drift.
 - `ss H`, `ss S` and `ss L` select secondary structure, which used to be
   refused outright. It is computed from backbone geometry with P-SEA rather
   than read from the file, so it answers the same way for a predicted model as

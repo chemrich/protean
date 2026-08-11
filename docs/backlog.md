@@ -94,24 +94,32 @@ infinite radius does not merely answer wrongly — with the guard removed,
 `near()` on an infinite radius took six minutes to return in the cell list
 rather than answering at all.
 
-### 9. `OXT` is classified as a sidechain atom
+### 9. `OXT` is classified as a sidechain atom — fixed
 
-Found while fixing item 1, by taking PyMOL's opinion on the same structures.
-On 4HHB:
+`backbone` is now N/CA/C/O **plus OXT**, the second oxygen of the C-terminal
+carboxylate. It hangs off the same carbonyl carbon as O, so calling it a
+sidechain atom was the odd position; four atoms per structure, one per
+modelled C-terminus.
 
 ```
-protean   backbone -> 2296     PyMOL   backbone -> 2300
+                before   after    PyMOL
+backbone         2296     2300     2300
+sidechain        2088     2084     2084
 ```
 
-The four atoms are the C-terminal `OXT`, one per chain. It is the second oxygen
-of the terminal carboxylate — backbone by any chemical reading — and it
-currently falls into `sidechain` instead.
+This was recorded as wanting a decision rather than a fix, because Mol\*'s
+transpiler agreed with the old answer and two implementations against one is
+usually the wrong side to be on. The tiebreak is that the chemistry is not
+actually in dispute: OXT is main chain, and `sidechain` returning it was
+indefensible whatever any transpiler says.
 
-Unlike item 1 this is not a clear win, which is why it was left alone: Mol\*'s
-bundled transpiler *also* says 2296, so two independent implementations agree
-with protean and only PyMOL differs. Changing it would move a hand-checked
-ground-truth count and break agreement with the transpiler, so it wants a
-deliberate decision rather than a drive-by fix. Four atoms per structure.
+The three affected counts moved out of the differential suite's agreement
+table and into its recorded divergences, so the 4-atom disagreement with Mol\*
+is asserted from both sides rather than dropped. Transport coverage did not
+shrink with them: `test_handles_survive_the_trip_to_the_viewer` now runs over
+the divergences too, which it always should have — whether our atom ids
+survive the trip to the viewer has nothing to do with whether their parser
+agrees about the selection.
 
 ## Gaps — the answer is unavailable
 
@@ -169,12 +177,49 @@ currently be asked for the second.
 Needs new handle transport — atom-id ranges cannot distinguish copies that
 share ids. Hardest item here.
 
-### 8. Selection keywords still unsupported
+### 8. Selection keywords still unsupported — mostly closed
 
-`extend`, `bymolecule`, `rank`, `bound_to` all raise. `alt` cannot work as
-things stand, because biotite resolves altlocs at parse time and no altloc
-field survives. Each refusal names its reason, which is the right failure — but
-the grammar is a subset of PyMOL's and the benchmark says so.
+`extend`, `bymolecule`, `bound_to`, `neighbor` and `rank` all work now. Every
+count was checked against PyMOL 3.1.0 on the same file and matches exactly:
+
+| on 1UBQ | PyMOL | protean |
+|---|---|---|
+| `byres (name CA extend 1)` | 602 | 602 |
+| `name CA extend 1` | 298 | 298 |
+| `name CA extend 2` | 464 | 464 |
+| `bymolecule (resi 10)` | 602 | 602 |
+| `bymolecule (resn HOH)` | 58 | 58 |
+| `bound_to (resi 10 and name CA)` | 2 | 2 |
+| `rank 5` | 1 | 1 |
+
+Two of the original reasons for refusing them were wrong. Bond topology *is*
+available — biotite assigns it from residue templates, at 25 ms for a
+59,000-atom assembly, so it is derived on demand rather than at load. And
+`rank` needed no tracking at all: it is the atom's position in the array,
+distinct from `index`, which is the file's own `atom_site.id`.
+
+`extend 0` and a fractional `extend` are refused, on the same argument as a
+non-positive radius in item 4.
+
+**`alt` is still refused, but now by choice rather than impossibility.**
+`get_structure(altloc="all")` exists, so every conformer *can* be loaded — and
+doing so would make the viewer and analysis atom counts agree exactly, which is
+the other half of item 2. The reason not to is that buried areas, potentials
+and contact counts would then be computed over atoms sitting on top of each
+other. The refusal now names that tradeoff instead of claiming it cannot be
+done, so it can be argued with. **Wants a decision.**
+
+### 11. The two engines disagree about what a bond is
+
+Found while implementing item 8. `resn HEM extend 1` on 4HHB returns the hemes
+unchanged for protean and for PyMOL — a residue template gives iron no bond to
+the protein — where Mol\* returns four atoms more, having modelled the Fe-NE2
+coordination bond to the proximal histidine.
+
+Neither is wrong. It is a real question about whether metal coordination is a
+bond, and the two answers are both defensible. Recorded and asserted from both
+sides so that either engine changing its mind is visible, rather than folded
+into the agreement table where it would look like a bug.
 
 ### 10. Secondary structure disagrees with every other tool by ~18%
 
