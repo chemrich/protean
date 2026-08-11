@@ -39,6 +39,7 @@ from protean_mcp.server import (
     load_session,
     material,
     mcp,
+    near,
     opacity,
     path_trace,
     preset,
@@ -322,6 +323,48 @@ async def _load(wired_bridge, path: Path) -> None:
     task = wired_bridge.serve(1)
     await fetch_structure(str(path))
     await task
+
+
+# -- near() and its radius -----------------------------------------------------
+
+
+async def _load_with_handle(wired_bridge, tmp_path) -> None:
+    """A loaded structure with one handle, `sele`, holding chain A."""
+    await _load(wired_bridge, _two_chain_pdb(tmp_path / "pair.pdb"))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("chain A", name="sele")
+    await task
+
+
+@pytest.mark.parametrize("radius", [0.0, -1.0, -0.001, float("nan"), float("inf")])
+async def test_near_refuses_a_non_positive_radius(wired_bridge, tmp_path, radius):
+    """It used to answer 0 atoms and no complaint.
+
+    An empty set is the one answer that looks like a real result, so the
+    request that can only produce one is refused rather than served. `nan`
+    slips past a bare `<= 0`, and `inf` is not a question either.
+    """
+    await _load_with_handle(wired_bridge, tmp_path)
+    with pytest.raises(ViewerError, match="radius must be greater than 0"):
+        await near("sele", radius=radius)
+
+
+async def test_near_still_answers_a_real_radius(wired_bridge, tmp_path):
+    """Guards the test above: refusing every radius would satisfy it."""
+    await _load_with_handle(wired_bridge, tmp_path)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    summary = await near("sele", radius=5.0, name="shell")
+    await task
+    assert summary["atom_count"] > 0
+    assert "shell" in server_mod._handles.names()
+
+
+async def test_near_names_the_radius_it_rejected(wired_bridge, tmp_path):
+    await _load_with_handle(wired_bridge, tmp_path)
+    with pytest.raises(ViewerError, match=r"got -2\.5"):
+        await near("sele", radius=-2.5)
 
 
 async def test_interface_registers_handles_on_the_loaded_structure(

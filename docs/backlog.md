@@ -65,17 +65,26 @@ by checking against the live registry; `elem` has the same shape and no check.
 cases — a residue number out of range legitimately matches nothing — but the
 element one is a straightforward typo the tool could catch.
 
-### 4. `near` accepts a radius of zero or less
+### 4. `near` accepts a radius of zero or less — fixed
+
+`near()` was the entry point the corpus found, but the grammar had the same
+hole in all three of its spatial operators:
 
 ```
-near(handle, -1.0)  ->  0 atoms, no complaint
-near(handle,  0.0)  ->  0 atoms, no complaint
+near(handle, -1)             ->  0 atoms, no complaint
+"polymer within 0 of ..."    ->  0 atoms, no complaint
+"resn ZN expand -3"          ->  the source unchanged, no complaint
 ```
 
-A non-positive radius is not a question anyone means to ask, and the empty
-answer looks like a legitimate result. Every other numeric argument in the
-project is bounds-checked — opacity, metalness, cel steps, bounces, dpi, frame
-counts — so this is an omission rather than a decision.
+All four now refuse, naming the operator and the value. The bound lives in a
+distance-specific helper rather than in the shared number parser, because a
+b-factor comparison may legitimately be zero or negative and a distance may
+not.
+
+`nan` and `inf` are refused too. `nan` slips past a bare `<= 0`, and an
+infinite radius does not merely answer wrongly — with the guard removed,
+`near()` on an infinite radius took six minutes to return in the cell list
+rather than answering at all.
 
 ## Gaps — the answer is unavailable
 
