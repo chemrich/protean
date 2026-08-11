@@ -52,7 +52,8 @@ CLASS_FIXTURES: dict[str, dict[str, str]] = {
         "nucleic": "nonzero",
         "protein": "zero",
         "polymer": "nonzero",
-        "backbone": "zero",  # our backbone is protein N/CA/C/O
+        "backbone": "nonzero",  # the sugar-phosphate backbone
+        "sidechain": "nonzero",  # the bases, not the whole molecule
     },
     "5fji": {  # glycoprotein: branched oligosaccharide entities
         "protein": "nonzero",
@@ -397,3 +398,68 @@ async def test_the_conformer_counts_are_the_expected_ones(conformer_counts):
     """Guards the test above: 0 + 0 == 0 would satisfy it otherwise."""
     assert conformer_counts == CONFORMER_EXPECTED
     assert conformer_counts["python"] != conformer_counts["molstar"]
+
+
+# -- the nucleic backbone ------------------------------------------------------
+
+# `backbone` used to be protein N/CA/C/O only, so on B-DNA it found nothing and
+# `sidechain` — defined as "polymer and not backbone" — returned all 486 atoms
+# and read as a real answer.
+#
+# These counts are the sugar-phosphate backbone and the bases. PyMOL 3.1.0 on
+# the same file gives 258 and 228, and so does Mol*'s bundled transpiler, so
+# three independent implementations are pinned here rather than one.
+NUCLEIC_FIXTURE = "1bna"
+NUCLEIC_EXPECTED = {"polymer": 486, "backbone": 258, "sidechain": 228}
+
+
+@pytest.fixture(scope="module")
+async def nucleic_counts() -> dict[str, dict[str, int]]:
+    structure = await fetch_structure_data(NUCLEIC_FIXTURE)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
+    viewer = await _evaluate(
+        NUCLEIC_FIXTURE,
+        [[f"theirs::{selection}", "pymol", selection] for selection in NUCLEIC_EXPECTED],
+    )
+    return {
+        "python": {
+            selection: int(select_mask(selection, array).sum())
+            for selection in NUCLEIC_EXPECTED
+        },
+        "molstar": {
+            selection: _count(viewer, "theirs", selection)
+            for selection in NUCLEIC_EXPECTED
+        },
+    }
+
+
+@pytest.mark.parametrize("selection", sorted(NUCLEIC_EXPECTED))
+async def test_nucleic_backbone_matches_ground_truth(nucleic_counts, selection):
+    assert nucleic_counts["python"][selection] == NUCLEIC_EXPECTED[selection]
+
+
+@pytest.mark.parametrize("selection", sorted(NUCLEIC_EXPECTED))
+async def test_nucleic_backbone_agrees_with_bundled_transpiler(nucleic_counts, selection):
+    """A second implementation that did not read our code splits DNA the same way."""
+    assert nucleic_counts["molstar"][selection] == NUCLEIC_EXPECTED[selection]
+
+
+async def test_nucleic_backbone_and_sidechain_partition_the_polymer(nucleic_counts):
+    """The property the bug broke: sidechain was the whole molecule."""
+    counts = nucleic_counts["python"]
+    assert counts["backbone"] + counts["sidechain"] == counts["polymer"]
+    assert counts["sidechain"] != counts["polymer"]
+
+
+async def test_we_beat_the_transpiler_on_nucleic():
+    """Their `nucleic` finds nothing in a structure that is nothing else.
+
+    Noticed while taking their opinion on the backbone split. Asserted both
+    ways, like the other divergences, so that an upstream fix retires the
+    claim rather than leaving it stale.
+    """
+    structure = await fetch_structure_data(NUCLEIC_FIXTURE)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
+    viewer = await _evaluate(NUCLEIC_FIXTURE, [["theirs::nucleic", "pymol", "nucleic"]])
+    assert int(select_mask("nucleic", array).sum()) == NUCLEIC_EXPECTED["polymer"]
+    assert _count(viewer, "theirs", "nucleic") == 0

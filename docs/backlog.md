@@ -9,25 +9,26 @@ Ordered by how wrong the answer is, not by effort.
 
 ## Bugs — a wrong answer that looks right
 
-### 1. `sidechain` returns the entire molecule on nucleic acids
+### 1. `sidechain` returns the entire molecule on nucleic acids — fixed
 
-On 1BNA (B-DNA dodecamer, 486 polymer atoms):
+`backbone` is now the sugar-phosphate backbone as well as protein N/CA/C/O, so
+`sidechain` is the nucleobase — the variable part that decides which residue
+this is, exactly as a protein sidechain does. On 1BNA:
 
 ```
-backbone   ->   0 atoms
-sidechain  -> 486 atoms   <- the whole thing
+backbone   -> 258 atoms   (was 0)
+sidechain  -> 228 atoms   (was 486, the whole thing)
 ```
 
-`backbone` is defined as protein N/CA/C/O, so it correctly finds nothing in
-DNA — visibly nothing, which is survivable. `sidechain` is defined as *not
-backbone*, so it returns every nucleic atom and looks like a real answer.
-Anyone colouring or measuring "sidechains" of a nucleic acid gets the whole
-molecule and no indication.
+The sugar is included: the whole ribose ring, not just the phosphodiester
+atoms the backlog originally listed. "Sugar-phosphate backbone" is what the
+thing is called, and putting C1'/C2'/O4' in `sidechain` would mean the base
+plus half its own sugar.
 
-Fix: either define nucleic backbone (P, OP1/OP2, O5', C5', C4', C3', O3') and
-let sidechain be the bases, or refuse both on non-protein polymers with a
-reason. The differential suite already asserts `backbone` is zero on 1BNA; it
-does not test `sidechain`, which is why this survived.
+258 and 228 are also what PyMOL 3.1.0 and Mol\*'s bundled transpiler give for
+the same file, so the differential suite now pins three independent
+implementations rather than one, on top of exact offline counts. Legacy atom
+naming is handled too — O1P/O2P and asterisks for primes.
 
 ### 2. Viewer and analysis disagree by 217 atoms on 5FJI — fixed
 
@@ -85,6 +86,25 @@ not.
 infinite radius does not merely answer wrongly — with the guard removed,
 `near()` on an infinite radius took six minutes to return in the cell list
 rather than answering at all.
+
+### 9. `OXT` is classified as a sidechain atom
+
+Found while fixing item 1, by taking PyMOL's opinion on the same structures.
+On 4HHB:
+
+```
+protean   backbone -> 2296     PyMOL   backbone -> 2300
+```
+
+The four atoms are the C-terminal `OXT`, one per chain. It is the second oxygen
+of the terminal carboxylate — backbone by any chemical reading — and it
+currently falls into `sidechain` instead.
+
+Unlike item 1 this is not a clear win, which is why it was left alone: Mol\*'s
+bundled transpiler *also* says 2296, so two independent implementations agree
+with protean and only PyMOL differs. Changing it would move a hand-checked
+ground-truth count and break agreement with the transpiler, so it wants a
+deliberate decision rather than a drive-by fix. Four atoms per structure.
 
 ## Gaps — the answer is unavailable
 
@@ -153,6 +173,16 @@ Found by the corpus, expected to be refused, and correct as they stand:
 - **`select()` after `clear_viewer()` is refused** with "No structure loaded".
   `clear_viewer` clears the analysis copy as well as the scene, which is what
   "clear" should mean; the corpus expected the Python side to survive.
+- **Mol\*'s transpiler counts a smaller polymer in tRNA.** On 1EHZ it reports
+  `polymer` as 1329 atoms where protean and PyMOL say 1652. 1EHZ is dense with
+  modified nucleotides (2MG, H2U, PSU, 5MC, 7MG, 1MA), and they appear to be
+  falling outside their polymer test. protean counting them is the right
+  answer — they are in the chain — so this is recorded rather than chased. It
+  is why 1BNA, not 1EHZ, is the fixture the nucleic backbone counts are pinned
+  to.
+- **Mol\*'s transpiler finds nothing for `nucleic`.** It returns 0 on 1BNA,
+  which is nothing but DNA. Now asserted both ways in the differential suite,
+  alongside the other divergences, so an upstream fix retires the claim.
 
 ## Verified working
 

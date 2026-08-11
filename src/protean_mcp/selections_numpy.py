@@ -54,8 +54,26 @@ _METAL_SYMBOLS = (
     "RU RH PD AG CD IN SN CS BA LA HF TA W RE OS IR PT AU HG TL PB BI"
 )
 _METALS = frozenset(_METAL_SYMBOLS.split())
-_BACKBONE = frozenset({"N", "CA", "C", "O"})
 _HYDROGEN = frozenset({"H", "D"})
+
+_PROTEIN_BACKBONE = frozenset({"N", "CA", "C", "O"})
+
+# The sugar-phosphate backbone: phosphate, then the whole ribose ring. The
+# sugar belongs to the backbone under the name everyone uses for it, which
+# leaves `sidechain` meaning the nucleobase — the variable part that decides
+# which residue this is, exactly as a protein sidechain does.
+#
+# Legacy spellings are included because they still arrive: O1P/O2P/O3P are the
+# pre-2007 phosphate oxygens, and primes were written as asterisks before the
+# PDB remediation.
+_NUCLEIC_BACKBONE = frozenset(
+    {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
+    | {
+        f"{atom}{prime}"
+        for atom in ("O5", "C5", "C4", "O4", "C3", "O3", "C2", "O2", "C1")
+        for prime in ("'", "*")
+    }
+)
 
 
 @dataclass
@@ -301,6 +319,19 @@ def _has_carbon(array: AtomArray[Any], mask: Mask) -> Mask:
     return mask & _widen(carbon, keys)
 
 
+def _backbone(array: AtomArray[Any], protein: Mask, nucleic: Mask) -> Mask:
+    """Backbone atoms of either polymer, by the names each one uses.
+
+    Kept as one mask rather than two keywords because a structure can hold
+    both, and asking for "the backbone" of a protein-DNA complex should not
+    make the caller name which half they meant.
+    """
+    names = array.atom_name
+    return (protein & np.isin(names, list(_PROTEIN_BACKBONE))) | (
+        nucleic & np.isin(names, list(_NUCLEIC_BACKBONE))
+    )
+
+
 def _keyword(name: str, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911, PLR0912
     n = array.array_length()
     protein = np.asarray(filter_amino_acids(array))
@@ -324,9 +355,13 @@ def _keyword(name: str, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911, PLR091
     if name == "hetatm":
         return hetero
     if name == "backbone":
-        return polymer & np.isin(array.atom_name, list(_BACKBONE))
+        return _backbone(array, protein, nucleic)
     if name == "sidechain":
-        return polymer & ~np.isin(array.atom_name, list(_BACKBONE))
+        # Whatever the polymer is, sidechain is the rest of it. That only
+        # answers the right question once backbone knows about both polymers:
+        # while it was protein-only, `sidechain` on DNA returned every atom of
+        # the molecule and looked like a real answer.
+        return polymer & ~_backbone(array, protein, nucleic)
     if name == "hydro":
         return np.isin(array.element, list(_HYDROGEN))
     if name == "metals":
