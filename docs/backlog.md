@@ -29,22 +29,26 @@ let sidechain be the bases, or refuse both on non-protein polymers with a
 reason. The differential suite already asserts `backbone` is zero on 1BNA; it
 does not test `sidechain`, which is why this survived.
 
-### 2. Viewer and analysis disagree by 217 atoms on 5FJI
+### 2. Viewer and analysis disagree by 217 atoms on 5FJI — fixed
+
+It was not glycans. 5FJI has 206 atom sites with two conformers and 11 with a
+third: 423 alternate-location rows over 206 sites, so 217 rows more than there
+are atoms. biotite resolves conformers at parse time and keeps one per site;
+Mol\* draws all of them. Both are right, about the same molecule.
+
+The invariant now measures that surplus from the file — independently of either
+builder, since a difference computed by differencing the two explains any bug
+along with itself — and subtracts it before calling anything a mismatch:
 
 ```
-Loaded 5fji ... MISMATCH: 15712 atoms here but 15929 in the viewer.
+Loaded 5fji ... [asymmetric assembly, 15712 atoms here and 15929 in the
+viewer; the 217 extra are alternate conformers, which analysis resolves to one
+per site and the viewer draws all of]
 ```
 
-Decision 9's invariant is doing its job — the divergence is reported loudly and
-the reply says to treat counts, buried areas and potentials as unreliable. But
-the divergence itself is a bug: on a glycoprotein, biotite and Mol\* build
-different numbers of atoms from the same file, and 5FJI is in the test corpus
-precisely because branched glycan entities are handled differently from other
-het groups.
-
-Until it is understood, analysis on glycoproteins is unreliable. Worth
-diagnosing before anything else here, because it is the one finding that makes
-numbers wrong rather than missing.
+A difference the conformers do not fully account for is still a loud mismatch,
+and says how much of it they explain. Verified against a real Mol\* in the
+differential suite; 1AKE has 12 such rows and was the second case.
 
 ### 3. `elem` accepts an element symbol that does not exist
 

@@ -66,3 +66,9 @@ nothing is released yet, so everything below is unreleased.
   written.
 - `superpose()` applies its transform and displays the pair.
 - The viewer and the analysis load the same assembly, and say so.
+- A structure with alternate conformers is no longer reported as a mismatch.
+  The analysis keeps one conformer per atom site and the viewer draws all of
+  them, which on 5FJI is a 217-atom difference between two descriptions of the
+  same molecule; the load reply now says so instead of declaring every count,
+  buried area and potential in the session unreliable. A difference the
+  conformers do not fully account for is still a mismatch.

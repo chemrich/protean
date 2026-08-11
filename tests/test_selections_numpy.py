@@ -256,3 +256,156 @@ def test_asymmetric_pdb_load_carries_no_note():
         "END\n"
     )
     assert load_structure(text, "pdb", "asymmetric").note == ""
+
+
+# -- alternate conformers ------------------------------------------------------
+
+_CIF_COLUMNS = [
+    "group_PDB",
+    "id",
+    "type_symbol",
+    "label_atom_id",
+    "label_alt_id",
+    "label_comp_id",
+    "label_asym_id",
+    "label_entity_id",
+    "label_seq_id",
+    "pdbx_PDB_ins_code",
+    "Cartn_x",
+    "Cartn_y",
+    "Cartn_z",
+    "occupancy",
+    "B_iso_or_equiv",
+    "auth_seq_id",
+    "auth_asym_id",
+    "auth_comp_id",
+    "auth_atom_id",
+    "pdbx_PDB_model_num",
+]
+
+
+def _cif(rows: list[tuple[str, str, str, int, int]]) -> str:
+    """A minimal mmCIF from (element, atom name, altloc, residue, model) rows."""
+    header = "data_test\nloop_\n" + "".join(
+        f"_atom_site.{column}\n" for column in _CIF_COLUMNS
+    )
+    lines = [
+        f"ATOM {i} {element} {name} {alt} GLY A 1 {res} ? "
+        f"{float(i)} 0.0 0.0 1.00 10.0 {res} A GLY {name} {model}"
+        for i, (element, name, alt, res, model) in enumerate(rows, start=1)
+    ]
+    return header + "\n".join(lines) + "\n"
+
+
+# One residue whose CB has two conformers and one whose OG has three: five rows
+# in the file, two of them surplus, three atoms once resolved.
+_TWO_AND_THREE = [
+    ("N", "N", ".", 1, 1),
+    ("C", "CB", "A", 1, 1),
+    ("C", "CB", "B", 1, 1),
+    ("O", "OG", "A", 2, 1),
+    ("O", "OG", "B", 2, 1),
+    ("O", "OG", "C", 2, 1),
+]
+
+
+def test_altloc_surplus_counts_the_conformers_analysis_drops():
+    """The count the viewer holds and the analysis does not.
+
+    Stated as the invariant that matters: what biotite parsed plus the surplus
+    is every row in the file, which is what Mol* draws.
+    """
+    loaded = load_structure(_cif(_TWO_AND_THREE), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 3
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+
+
+def test_altloc_surplus_is_zero_when_every_atom_has_one_conformer():
+    rows = [("N", "N", ".", 1, 1), ("C", "CA", ".", 1, 1)]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 0
+    assert loaded.array.array_length() == len(rows)
+
+
+def test_altloc_surplus_ignores_models_after_the_first():
+    """Only model 1 is parsed, so only model 1's conformers may be counted.
+
+    An NMR ensemble repeats every atom per model; counting all of them would
+    invent a surplus many times the real one and explain away a genuine
+    mismatch.
+    """
+    rows = _TWO_AND_THREE + [(e, n, a, r, 2) for e, n, a, r, _ in _TWO_AND_THREE]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 3
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+
+
+def test_altloc_surplus_separates_atoms_that_share_a_conformer_letter():
+    """Two residues' CB, both labelled A, are not conformers of each other.
+
+    Same atom name, same letter, different residue — so a site identity that
+    leaves the residue out folds them together and invents a surplus.
+    """
+    rows = [("C", "CB", "A", 1, 1), ("C", "CB", "A", 2, 1)]
+    loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
+    assert loaded.altloc_surplus == 0
+    assert loaded.array.array_length() == 2
+
+
+def test_altloc_surplus_reads_pdb_columns():
+    """Two conformers of residue 1's CB, and one unambiguous CB in residue 2.
+
+    Residue 2 repeats both the atom name and the conformer letter, so a site
+    identity that reads only the name folds it into residue 1 and counts a
+    conformer that does not exist.
+    """
+    text = (
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "ATOM      2  CB AMET A   1      12.104   6.134  -6.504  0.50  0.00           C\n"
+        "ATOM      3  CB BMET A   1      12.204   6.134  -6.504  0.50  0.00           C\n"
+        "ATOM      4  CB ASER A   2      15.104   6.134  -6.504  1.00  0.00           C\n"
+        "END\n"
+    )
+    loaded = load_structure(text, "pdb", "asymmetric")
+    assert loaded.altloc_surplus == 1
+    assert loaded.array.array_length() + loaded.altloc_surplus == 4
+
+
+_ASSEMBLY_OF_TWO = """
+loop_
+_pdbx_struct_assembly_gen.assembly_id
+_pdbx_struct_assembly_gen.oper_expression
+_pdbx_struct_assembly_gen.asym_id_list
+1 '(1,2)' A
+loop_
+_pdbx_struct_oper_list.id
+_pdbx_struct_oper_list.type
+_pdbx_struct_oper_list.matrix[1][1]
+_pdbx_struct_oper_list.matrix[1][2]
+_pdbx_struct_oper_list.matrix[1][3]
+_pdbx_struct_oper_list.matrix[2][1]
+_pdbx_struct_oper_list.matrix[2][2]
+_pdbx_struct_oper_list.matrix[2][3]
+_pdbx_struct_oper_list.matrix[3][1]
+_pdbx_struct_oper_list.matrix[3][2]
+_pdbx_struct_oper_list.matrix[3][3]
+_pdbx_struct_oper_list.vector[1]
+_pdbx_struct_oper_list.vector[2]
+_pdbx_struct_oper_list.vector[3]
+1 'identity operation' 1 0 0 0 1 0 0 0 1 0 0 0
+2 'point symmetry operation' 1 0 0 0 1 0 0 0 1 30 0 0
+"""
+
+
+def test_altloc_surplus_scales_with_the_assembly():
+    """Each symmetry copy carries the file's conformers again.
+
+    The viewer expands the assembly from the same rows, so a surplus counted
+    once explains only half a two-copy assembly and the rest reads as a
+    mismatch that is not there.
+    """
+    rows = [("N", "N", ".", 1, 1), ("C", "CB", "A", 1, 1), ("C", "CB", "B", 1, 1)]
+    loaded = load_structure(_cif(rows) + _ASSEMBLY_OF_TWO, "mmcif", "biological")
+    assert loaded.copies == 2
+    assert loaded.altloc_surplus == 2
+    assert loaded.array.array_length() + loaded.altloc_surplus == len(rows) * 2
