@@ -75,17 +75,31 @@ counts — so this is an omission rather than a decision.
 
 ## Gaps — the answer is unavailable
 
-### 5. No structural-alignment mode for `superpose`
+### 5. No structural-alignment mode for `superpose` — added, and the
+diagnosis was wrong
 
-The benchmark's clearest loss. On 1AKE/4AKE, PyMOL's `cealign` finds the rigid
-core and reports **3.460 Å over 112 residues**; protean aligns by sequence and
-superposes everything it matched, giving **17.706 Å over 414**. Both numbers are
-honest, but only one answers the question a structural biologist asked.
+`superpose(mode="structural")` matches residues by the shape of their local
+backbone instead of by sequence, using biotite's TM-align-inspired
+`superimpose_structural_homologs`. On haemoglobin's alpha and beta chains it
+superposes **139 residues of the shared fold where sequence mode anchors only
+64** — the remote-homolog case, which is what this class of algorithm is for.
 
-Fix: add a structural mode that finds the largest well-fitting subset rather
-than trusting the sequence alignment — iterative outlier rejection over the
-sequence-aligned pairs would get most of the way, and biotite has the
-superposition primitives already.
+The proposed fix here — iterative outlier rejection over the sequence-aligned
+pairs — was tried first and does not work, for two reasons worth recording:
+
+1. **biotite already does it.** `superimpose_homologs` removes outliers
+   internally. That is why chain A of 1AKE/4AKE gives 112 residues at 1.083 Å,
+   which is *better* than `cealign`'s 3.460 Å over its 112.
+2. **On the case that motivated it, rejection has nothing to find.** Superposing
+   the two dimers whole, RMSD falls smoothly from 17.7 Å with no knee, and the
+   largest sub-2 Å core is 18 residues. The correspondence across two chains
+   that have moved relative to each other is the problem, not the subset.
+
+The 17.706 Å figure was also compared against the wrong baseline. PyMOL's
+`align` gives 18.491 Å and `super` 18.515 Å on that same whole-dimer task, so
+protean was already winning the like-for-like comparison and losing only to a
+different class of algorithm. See [benchmark.md](benchmark.md), which has been
+corrected.
 
 ### 6. Secondary structure cannot be selected
 
