@@ -97,6 +97,102 @@ def test_leaf_selectors(mixed, selection, expected):
     assert count(selection, mixed) == expected
 
 
+# -- the nucleic backbone ------------------------------------------------------
+
+
+@pytest.fixture
+def dna() -> AtomArray[Any]:
+    """One deoxyguanosine: phosphate, full sugar ring, and a slice of the base.
+
+    Named as a real nucleotide is, because the whole classification is by atom
+    name — a fixture with invented names would agree with anything.
+    """
+    backbone = [
+        ("P", "P"),
+        ("OP1", "O"),
+        ("OP2", "O"),
+        ("O5'", "O"),
+        ("C5'", "C"),
+        ("C4'", "C"),
+        ("O4'", "O"),
+        ("C3'", "C"),
+        ("O3'", "O"),
+        ("C2'", "C"),
+        ("C1'", "C"),
+    ]
+    base = [("N9", "N"), ("C8", "C"), ("N7", "N"), ("C5", "C"), ("O6", "O")]
+    atoms = [
+        _atom("A", 1, "DG", name, element, [float(i), 0.0, 0.0])
+        for i, (name, element) in enumerate(backbone + base)
+    ]
+    return atom_array(atoms)
+
+
+def test_nucleic_backbone_is_the_sugar_phosphate(dna):
+    """11 backbone atoms: phosphate plus the whole ribose, base excluded."""
+    assert count("backbone", dna) == 11
+
+
+def test_nucleic_sidechain_is_the_base_not_the_whole_molecule(dna):
+    """The bug this fixture exists for.
+
+    `sidechain` was "polymer and not protein-backbone", so on a nucleic acid
+    it returned every atom and read as a real answer.
+    """
+    assert count("sidechain", dna) == 5
+    assert count("sidechain", dna) != count("polymer", dna)
+
+
+def test_backbone_and_sidechain_partition_the_nucleic_polymer(dna):
+    """Neither overlapping nor leaving atoms unclaimed."""
+    assert count("backbone", dna) + count("sidechain", dna) == count("polymer", dna)
+    assert count("backbone and sidechain", dna) == 0
+
+
+def test_legacy_atom_name_spellings_are_still_backbone():
+    """Pre-remediation files write primes as asterisks and OP1/OP2 as O1P/O2P.
+
+    A file old enough to use them parses fine and would otherwise have its
+    entire backbone classified as base.
+    """
+    names = [("O1P", "O"), ("O2P", "O"), ("O5*", "O"), ("C5*", "C"), ("C1*", "C")]
+    array = atom_array(
+        [
+            _atom("A", 1, "DG", name, element, [float(i), 0.0, 0.0])
+            for i, (name, element) in enumerate(names)
+        ]
+    )
+    assert count("backbone", array) == len(names)
+    assert count("sidechain", array) == 0
+
+
+def test_the_two_name_sets_do_not_leak_into_each_other():
+    """Each polymer's backbone is judged only by its own names.
+
+    A single merged set of names would classify this serine's P and O3' as
+    backbone and this nucleotide's CA as backbone, both wrongly. Neither atom
+    name is realistic — that is the point: only the residue decides which
+    vocabulary applies.
+    """
+    array = atom_array(
+        [
+            _atom("A", 1, "SER", "N", "N", [0.0, 0.0, 0.0]),
+            _atom("A", 1, "SER", "P", "P", [1.0, 0.0, 0.0]),
+            _atom("A", 1, "SER", "O3'", "O", [2.0, 0.0, 0.0]),
+            _atom("B", 2, "DG", "P", "P", [3.0, 0.0, 0.0]),
+            _atom("B", 2, "DG", "CA", "C", [4.0, 0.0, 0.0]),
+        ]
+    )
+    assert count("backbone", array) == 2  # the serine N and the DG phosphate
+    assert count("sidechain", array) == 3
+
+
+def test_protein_backbone_is_unchanged(mixed):
+    """The protein answer must not move: it is pinned to hand-checked counts."""
+    assert count("backbone", mixed) == 5
+    assert count("sidechain", mixed) == 2
+
+
 def test_boolean_operators(mixed):
     assert count("chain A and name CA", mixed) == 2
     assert count("chain A or chain B", mixed) == 9

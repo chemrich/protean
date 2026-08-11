@@ -66,3 +66,9 @@ nothing is released yet, so everything below is unreleased.
   written.
 - `superpose()` applies its transform and displays the pair.
 - The viewer and the analysis load the same assembly, and say so.
+- `backbone` and `sidechain` understand nucleic acids. `backbone` was protein
+  N/CA/C/O only, so it found nothing in DNA and `sidechain` — "polymer and not
+  backbone" — returned every atom of the molecule as though that were an
+  answer. `backbone` is now the sugar-phosphate backbone as well, which leaves
+  `sidechain` meaning the nucleobase: 258 and 228 atoms on 1BNA, matching both
+  PyMOL and Mol\*'s transpiler.
