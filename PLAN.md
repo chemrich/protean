@@ -70,7 +70,7 @@ High-resolution snapshot pipeline, a render-style surface, and presets. Scoped i
 
 ### Phase 5 — Trajectories + animation (v0.4)
 
-Trajectory loading (XTC/TRR/DCD/NetCDF — biotite rather than MDAnalysis, see decision 14), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera + representation states with smooth interpolation; ffmpeg encoding to MP4/GIF. Phase 4 lands turntable and rocking capture ahead of this (decision 13), so the frame-capture loop already exists and this phase adds keyframes, trajectories and encoding rather than starting from nothing. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
+Trajectory loading (XTC/TRR/DCD/NetCDF — biotite rather than MDAnalysis, see decision 14), frame streaming to the viewer, playback controls, per-frame measurements (RMSD/RMSF/distance timeseries as structured data). Animation timeline: keyframed camera with smooth interpolation, and ffmpeg encoding to MP4/GIF/WebM. Keyframed *representation* states are not built — a timeline interpolates the camera, and changing what is drawn part-way through is a cut rather than a tween. Phase 4 lands turntable and rocking capture ahead of this (decision 13), so the frame-capture loop already exists and this phase adds keyframes, trajectories and encoding rather than starting from nothing. *Exit: load a trajectory, plot RMSF, render a 10-second annotated movie.*
 
 ### Phase 6 — Polish and publish (v1.0)
 

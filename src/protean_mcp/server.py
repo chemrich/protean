@@ -37,6 +37,9 @@ from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
+from .analysis.timeline import EASINGS as _EASINGS
+from .analysis.timeline import TimelineError
+from .analysis.timeline import path as _timeline_path
 from .analysis.trajectory import TrajectoryError
 from .analysis.trajectory import read as _read_trajectory
 from .analysis.trajectory import rmsd_series as _rmsd_series
@@ -76,6 +79,10 @@ _structure: Any = None
 _structure_error: str | None = None
 _structure_identifier: str | None = None
 _handles = HandleRegistry()
+# Named camera positions, in the order they were set: a timeline runs through
+# them as written rather than in some sorted order.
+_keyframes: dict[str, dict[str, Any]] = {}
+
 # The coordinate stack from the last load_trajectory(), kept because the
 # analysis copy is only ever one frame of it.
 _trajectory: Any = None
@@ -118,6 +125,8 @@ _MAX_BACKGROUND_IMAGE_BYTES = 8 * 1024 * 1024
 _MAX_TURNTABLE_FRAMES = 720
 # Two frames is the least that is a sequence rather than a picture.
 _MIN_TURNTABLE_FRAMES = 2
+# Fewer than two keyframes is a still, not a move.
+_MIN_KEYFRAMES = 2
 _SKYBOX_FACES = ("nx", "ny", "nz", "px", "py", "pz")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
@@ -1062,6 +1071,62 @@ async def frame(index: int) -> dict[str, Any]:
     return await _call("frame", {"index": index})
 
 
+async def _capture_sequence(
+    directory: str,
+    width: int,
+    transparent: bool | None,
+    place: list[Any],
+) -> dict[str, Any]:
+    """Capture one frame per entry in *place*, writing frame_0000.png upward.
+
+    Shared by turntable(), record_trajectory() and record_timeline(), which
+    differ only in how they position the scene for each frame. Each entry is a
+    coroutine factory called just before its capture; the loop itself — the
+    naming, the decode, the incomplete-capture guard — is the same every time,
+    and was three near-copies before it was one.
+    """
+    if width < 1:
+        raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
+
+    out = Path(directory).expanduser()
+    out.mkdir(parents=True, exist_ok=True)
+
+    bridge = _require_viewer()
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    args: dict[str, Any] = {"width": width, "crop": False}
+    if transparent is not None:
+        args["transparent"] = transparent
+
+    written: list[str] = []
+    for index, position in enumerate(place):
+        await position()
+        result = await bridge.request("snapshot", args, timeout=timeout)
+        data_uri: str = result["data_uri"]
+        header, _, payload = data_uri.partition(",")
+        if "base64" not in header:
+            raise ViewerError(f"Unexpected frame encoding: {header}")
+        png = base64.b64decode(payload)
+        image = _open_snapshot(png)
+        # Per frame, because one bad frame in thirty-six is a flicker nobody
+        # notices until the movie is assembled.
+        if not result.get("transparent") and _incomplete_capture(image):
+            raise ViewerError(
+                f"Frame {index} came back incomplete: parts of the "
+                f"{image.width}x{image.height} image were never rendered. "
+                "Lower the width, or capture on a machine with a GPU."
+            )
+        frame_path = out / f"frame_{index:04d}.png"
+        frame_path.write_bytes(png)
+        written.append(str(frame_path))
+
+    return {
+        "directory": str(out),
+        "frames": len(written),
+        "width": width,
+        "bytes": sum(Path(f).stat().st_size for f in written),
+    }
+
+
 @mcp.tool()
 async def record_trajectory(
     directory: str, width: int = 1200, stride: int = 1, transparent: bool | None = None
@@ -1081,51 +1146,118 @@ async def record_trajectory(
     """
     if stride < 1:
         raise ViewerError(f"Stride must be 1 or more, got {stride}")
-    if width < 1:
-        raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
     stack = _require_trajectory()
     total = int(stack.stack_depth())
-
-    out = Path(directory).expanduser()
-    out.mkdir(parents=True, exist_ok=True)
-
     bridge = _require_viewer()
-    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
-    args: dict[str, Any] = {"width": width, "crop": False}
-    if transparent is not None:
-        args["transparent"] = transparent
 
     indices = list(range(0, total, stride))
-    written: list[str] = []
-    for position, index in enumerate(indices):
-        await bridge.request("frame", {"index": index}, timeout=_SNAPSHOT_TIMEOUT)
-        result = await bridge.request("snapshot", args, timeout=timeout)
-        data_uri: str = result["data_uri"]
-        header, _, payload = data_uri.partition(",")
-        if "base64" not in header:
-            raise ViewerError(f"Unexpected frame encoding: {header}")
-        png = base64.b64decode(payload)
-        image = _open_snapshot(png)
-        if not result.get("transparent") and _incomplete_capture(image):
-            raise ViewerError(
-                f"Frame {index} came back incomplete: parts of the "
-                f"{image.width}x{image.height} image were never rendered. "
-                "Lower the width, or capture on a machine with a GPU."
-            )
-        frame_path = out / f"frame_{position:04d}.png"
-        frame_path.write_bytes(png)
-        written.append(str(frame_path))
 
+    def step(index: int) -> Any:
+        async def place() -> None:
+            await bridge.request("frame", {"index": index}, timeout=_SNAPSHOT_TIMEOUT)
+
+        return place
+
+    result = await _capture_sequence(
+        directory, width, transparent, [step(i) for i in indices]
+    )
     # Back to where the run started, so the viewer is not left mid-trajectory.
     await bridge.request("frame", {"index": 0}, timeout=_SNAPSHOT_TIMEOUT)
+    return {**result, "of": total, "stride": stride}
 
+
+@mcp.tool()
+async def keyframe(name: str, remove: bool = False) -> dict[str, Any]:
+    """Remember where the camera is now, under a name.
+
+    A timeline runs through keyframes in the order they were set, so orient the
+    view, save it, move, save again. focus() and orient() are the usual way to
+    get somewhere worth saving.
+
+    name: what to call this position. Setting the same name twice replaces it
+      without changing where it sits in the order.
+    remove: forget this one instead of saving it.
+    """
+    if remove:
+        if name not in _keyframes:
+            raise ViewerError(
+                f"No keyframe named {name!r}. Known: {', '.join(_keyframes) or '(none)'}"
+            )
+        del _keyframes[name]
+        return {"removed": name, "keyframes": list(_keyframes)}
+
+    state = await _call("camera_state", {})
+    _keyframes[name] = {
+        "position": list(state["position"]),
+        "target": list(state["target"]),
+        "up": list(state["up"]),
+    }
+    return {"keyframe": name, "keyframes": list(_keyframes), **_keyframes[name]}
+
+
+@mcp.tool()
+async def list_keyframes() -> dict[str, Any]:
+    """The camera positions saved so far, in the order a timeline will use."""
     return {
-        "directory": str(out),
-        "frames": len(written),
-        "of": total,
-        "stride": stride,
-        "width": width,
-        "bytes": sum(Path(f).stat().st_size for f in written),
+        "keyframes": [{"name": name, **state} for name, state in _keyframes.items()],
+        "count": len(_keyframes),
+    }
+
+
+@mcp.tool()
+async def record_timeline(
+    directory: str,
+    frames: int = 60,
+    width: int = 1200,
+    easing: str = "ease-in-out",
+    transparent: bool | None = None,
+) -> dict[str, Any]:
+    """Capture a camera move through the saved keyframes.
+
+    The camera swings around its target rather than sliding between positions,
+    so the subject stays the same size throughout — a straight line between two
+    viewpoints passes closer to the molecule on the way, and for a half-turn
+    goes through it.
+
+    frames: how many captures make up the move. At 30 fps, 60 frames is two
+      seconds.
+    easing: how the move starts and stops — ease-in-out by default, because
+      linear motion reads as mechanical exactly at the cuts. Also linear,
+      ease-in, ease-out.
+    width: frame width in pixels; the height follows the viewport's aspect.
+
+    Frames are written as frame_0000.png upward, for movie() to encode. The
+    camera is left on the last keyframe.
+    """
+    if easing not in _EASINGS:
+        raise ViewerError(f"Unknown easing {easing!r}. Available: {', '.join(_EASINGS)}")
+    if len(_keyframes) < _MIN_KEYFRAMES:
+        raise ViewerError(
+            f"A timeline needs at least two keyframes; {len(_keyframes)} saved. "
+            "Point the camera somewhere and call keyframe()."
+        )
+
+    try:
+        states = _timeline_path(list(_keyframes.values()), frames, easing)
+    except TimelineError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    bridge = _require_viewer()
+
+    def move(state: dict[str, Any]) -> Any:
+        async def place() -> None:
+            await bridge.request("set_camera", state, timeout=_SNAPSHOT_TIMEOUT)
+
+        return place
+
+    result = await _capture_sequence(
+        directory, width, transparent, [move(state) for state in states]
+    )
+    return {
+        **result,
+        "keyframes": list(_keyframes),
+        "easing": easing,
+        "seconds_at_30fps": round(frames / 30, 2),
     }
 
 
@@ -1207,55 +1339,34 @@ async def turntable(
             f"{frames} frames is beyond the {_MAX_TURNTABLE_FRAMES} this writes in one "
             "call. Capture a shorter turn, or run it twice."
         )
-    if width < 1:
-        raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
-
-    out = Path(directory).expanduser()
-    out.mkdir(parents=True, exist_ok=True)
-
     bridge = _require_viewer()
-    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
     step = degrees / frames
-    args: dict[str, Any] = {"width": width, "crop": False}
-    if transparent is not None:
-        args["transparent"] = transparent
 
-    written: list[str] = []
-    for index in range(frames):
-        if index:
-            await bridge.request("orbit", {"degrees": step}, timeout=_SNAPSHOT_TIMEOUT)
-        result = await bridge.request("snapshot", args, timeout=timeout)
-        data_uri: str = result["data_uri"]
-        header, _, payload = data_uri.partition(",")
-        if "base64" not in header:
-            raise ViewerError(f"Unexpected frame encoding: {header}")
-        png = base64.b64decode(payload)
-        image = _open_snapshot(png)
-        if not result.get("transparent") and _incomplete_capture(image):
-            raise ViewerError(
-                f"Frame {index} came back incomplete: parts of the "
-                f"{image.width}x{image.height} image were never rendered. "
-                "Lower the width, or capture on a machine with a GPU."
-            )
-        frame = out / f"frame_{index:04d}.png"
-        frame.write_bytes(png)
-        written.append(str(frame))
+    def turn(index: int) -> Any:
+        async def place() -> None:
+            # The first frame is captured where the camera already is; every
+            # later one is a step further round.
+            if index:
+                await bridge.request(
+                    "orbit", {"degrees": step}, timeout=_SNAPSHOT_TIMEOUT
+                )
 
-    # Put the camera back where the sequence started, so a turntable is not a
-    # one-way trip that leaves every later capture facing somewhere else.
+        return place
+
+    result = await _capture_sequence(
+        directory, width, transparent, [turn(i) for i in range(frames)]
+    )
+    # Close the loop, so a turntable is not a one-way trip that leaves every
+    # later capture facing somewhere else.
     await bridge.request(
         "orbit", {"degrees": degrees - step * (frames - 1)}, timeout=_SNAPSHOT_TIMEOUT
     )
-
     return {
-        "directory": str(out),
-        "frames": len(written),
+        **result,
         "degrees": degrees,
         "step_degrees": round(step, 4),
-        "width": width,
-        "first": written[0],
-        "last": written[-1],
-        "bytes": sum(Path(f).stat().st_size for f in written),
+        "first": str(Path(result["directory"]) / "frame_0000.png"),
+        "last": str(Path(result["directory"]) / f"frame_{frames - 1:04d}.png"),
     }
 
 
