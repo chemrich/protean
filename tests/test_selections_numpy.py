@@ -193,6 +193,28 @@ def test_protein_backbone_is_unchanged(mixed):
     assert count("sidechain", mixed) == 2
 
 
+def test_the_terminal_carboxylate_oxygen_is_backbone():
+    """OXT hangs off the same carbonyl carbon as O.
+
+    It was landing in `sidechain`, where it is certainly not — four atoms per
+    structure, one per chain, and the reason PyMOL and protean disagreed about
+    `backbone` on every structure with a modelled C-terminus.
+    """
+    array = atom_array(
+        [
+            _atom("A", 1, "ALA", "N", "N", [0.0, 0.0, 0.0]),
+            _atom("A", 1, "ALA", "CA", "C", [1.5, 0.0, 0.0]),
+            _atom("A", 1, "ALA", "C", "C", [2.5, 1.0, 0.0]),
+            _atom("A", 1, "ALA", "O", "O", [2.5, 2.0, 0.0]),
+            _atom("A", 1, "ALA", "OXT", "O", [3.5, 0.8, 0.0]),
+            _atom("A", 1, "ALA", "CB", "C", [1.5, -1.5, 0.0]),
+        ]
+    )
+    assert count("backbone", array) == 5
+    assert count("sidechain", array) == 1  # CB alone
+    assert count("name OXT and sidechain", array) == 0
+
+
 # -- element symbols are a closed set ------------------------------------------
 
 

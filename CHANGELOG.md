@@ -52,6 +52,11 @@ nothing is released yet, so everything below is unreleased.
 
 - Selections are named handles: `select()` takes PyMOL syntax for leaf
   predicates, and `combine()`, `near()` and `invert()` compose them.
+- `backbone` includes `OXT`, the C-terminal carboxylate's second oxygen, which
+  used to fall into `sidechain`. Four atoms per structure, and the reason
+  PyMOL and protean disagreed about `backbone` on anything with a modelled
+  C-terminus. Mol\*'s transpiler still excludes it; the difference is asserted
+  in the differential suite rather than left to drift.
 - `ss H`, `ss S` and `ss L` select secondary structure, which used to be
   refused outright. It is computed from backbone geometry with P-SEA rather
   than read from the file, so it answers the same way for a predicted model as
