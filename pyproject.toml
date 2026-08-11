@@ -79,6 +79,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# The benchmark scripts are written the way someone comparing the two tools
+# would write them, and are quoted verbatim in docs/benchmark.md. Tidying them
+# into library style would misrepresent what the comparison actually ran.
+"docs/benchmark/*" = ["E501", "E702", "PLR2004", "T201", "INP001"]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = [

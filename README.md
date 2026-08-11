@@ -89,6 +89,14 @@ path-trace quality, and whether ffmpeg is installed.
 | Capture | `screenshot`, `snapshot`, `turntable`, `record_trajectory`, `record_timeline`, `movie` |
 | Trajectories | `load_trajectory`, `frame`, `rmsf`, `rmsd_series` |
 
+## How it compares to PyMOL
+
+[docs/benchmark.md](docs/benchmark.md) runs five common tasks through both, with
+the real output of each. protean loses two of them — PyMOL's `cealign` finds a
+rigid core that protean's sequence-based `superpose` cannot, and PyMOL's
+selection grammar has no gaps where protean's has several. protean wins where
+the answer needs to arrive as structured data a model can compose.
+
 ## Development
 
 ```bash
