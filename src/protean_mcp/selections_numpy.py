@@ -55,9 +55,26 @@ _METAL_SYMBOLS = (
     "RU RH PD AG CD IN SN CS BA LA HF TA W RE OS IR PT AU HG TL PB BI"
 )
 _METALS = frozenset(_METAL_SYMBOLS.split())
-_BACKBONE = frozenset({"N", "CA", "C", "O"})
 _HYDROGEN = frozenset({"H", "D"})
 
+_PROTEIN_BACKBONE = frozenset({"N", "CA", "C", "O"})
+
+# The sugar-phosphate backbone: phosphate, then the whole ribose ring. The
+# sugar belongs to the backbone under the name everyone uses for it, which
+# leaves `sidechain` meaning the nucleobase — the variable part that decides
+# which residue this is, exactly as a protein sidechain does.
+#
+# Legacy spellings are included because they still arrive: O1P/O2P/O3P are the
+# pre-2007 phosphate oxygens, and primes were written as asterisks before the
+# PDB remediation.
+_NUCLEIC_BACKBONE = frozenset(
+    {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
+    | {
+        f"{atom}{prime}"
+        for atom in ("O5", "C5", "C4", "O4", "C3", "O3", "C2", "O2", "C1")
+        for prime in ("'", "*")
+    }
+)
 # Elements 1-118, plus the hydrogen isotopes that carry their own symbol in
 # neutron structures. Unlike a chain id or a residue number this is a closed
 # set, so a symbol outside it is a typo rather than a question about a molecule.
@@ -79,12 +96,19 @@ class LoadedStructure:
     present. It is reported rather than inferred because it is the number that
     decides whether an atom count here means the same thing as an atom count
     in the viewer.
+
+    ``altloc_surplus`` is how many atoms the viewer holds that this array does
+    not, purely because biotite resolves alternate conformers at parse time and
+    Mol\\* draws all of them. It is a knowable difference rather than evidence
+    the two are holding different molecules, so it is measured and subtracted
+    before anything is called a mismatch.
     """
 
     array: AtomArray[Any]
     assembly: str
     copies: int
     note: str = ""
+    altloc_surplus: int = 0
 
 
 # A whole viral capsid is 60 copies of its asymmetric unit; expanding one
@@ -99,6 +123,82 @@ def assembly_multiplicity(text: str) -> int:
         return len(block["pdbx_struct_oper_list"]["id"].as_array())
     except Exception:
         return 1
+
+
+# The columns that, together, name one physical atom site. Two rows agreeing on
+# all of them are alternate conformers of the same atom, not two atoms. Both
+# sequence numberings are included because label_seq_id is "." for anything that
+# is not a polymer residue, which would fold every het atom of a chain together.
+_SITE_COLUMNS = (
+    "label_asym_id",
+    "label_seq_id",
+    "auth_seq_id",
+    "label_comp_id",
+    "label_atom_id",
+    "pdbx_PDB_ins_code",
+)
+
+
+def altloc_surplus(text: str, fmt: str) -> int:
+    """How many atoms the viewer will hold that the analysis will not.
+
+    biotite keeps one conformer per atom site; Mol\\* draws every conformer in
+    the file. On a structure with alternate conformations the two therefore
+    disagree about the atom count while describing the same molecule — 217
+    atoms apart on 5FJI, which read as a mismatch for a whole phase.
+
+    Counted from the file rather than by differencing the two builders, because
+    a difference that explains itself explains any bug along with it.
+    """
+    if fmt == "pdb":
+        return _pdb_altloc_surplus(text)
+    try:
+        site = CIFFile.read(io.StringIO(text)).block["atom_site"]
+    except Exception:
+        return 0
+    columns = set(site.keys())
+    if "label_alt_id" not in columns:
+        return 0
+
+    rows = np.ones(len(site["label_alt_id"].as_array()), dtype=bool)
+    if "pdbx_PDB_model_num" in columns:
+        models = site["pdbx_PDB_model_num"].as_array()
+        rows = models == models[0]
+
+    alternate = rows & (site["label_alt_id"].as_array() != ".")
+    if not alternate.any():
+        return 0
+    keys = [
+        site[name].as_array()[alternate].tolist()
+        for name in _SITE_COLUMNS
+        if name in columns
+    ]
+    return int(alternate.sum()) - len(set(zip(*keys, strict=True)))
+
+
+# The insertion code is the last column a site identity reads, at index 26, so
+# a record shorter than this cannot be one.
+_PDB_SITE_WIDTH = 27
+
+
+def _pdb_altloc_surplus(text: str) -> int:
+    """The same count over fixed-column PDB records.
+
+    Only the first model is counted, matching what ``get_structure`` parses.
+    """
+    sites: set[tuple[str, ...]] = set()
+    alternate = 0
+    for line in text.splitlines():
+        if line.startswith("ENDMDL"):
+            break
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < _PDB_SITE_WIDTH:
+            continue
+        if line[16] == " ":
+            continue
+        alternate += 1
+        # name, resName, chainID, resSeq, iCode — every field but altLoc.
+        sites.add((line[12:16], line[17:20], line[21], line[22:26], line[26]))
+    return alternate - len(sites)
 
 
 def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedStructure:
@@ -133,13 +233,22 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                 "PDB input carries its assembly in REMARK 350, which is not "
                 "parsed; the asymmetric unit was loaded instead"
             )
-        return LoadedStructure(array=array, assembly="asymmetric", copies=1, note=note)
+        return LoadedStructure(
+            array=array,
+            assembly="asymmetric",
+            copies=1,
+            note=note,
+            altloc_surplus=altloc_surplus(text, fmt),
+        )
 
+    surplus = altloc_surplus(text, fmt)
     try:
         handle = CIFFile.read(io.StringIO(text))
         if assembly == "asymmetric":
             array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
-            return LoadedStructure(array=array, assembly="asymmetric", copies=1)
+            return LoadedStructure(
+                array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+            )
 
         copies = assembly_multiplicity(text)
         if copies > MAX_ASSEMBLY_COPIES:
@@ -153,6 +262,7 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                     f"limit of {MAX_ASSEMBLY_COPIES}; the asymmetric unit was "
                     "loaded instead and the viewer will show more than this"
                 ),
+                altloc_surplus=surplus,
             )
         array = get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS)
     except SelectionError:
@@ -161,7 +271,14 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
         raise SelectionError(f"Could not parse mmcif coordinates: {exc}") from exc
 
     present = int(np.unique(np.asarray(array.sym_id)).size) if _has_sym(array) else 1
-    return LoadedStructure(array=array, assembly="biological", copies=present)
+    # Every copy carries the same alternate conformers, so the excess scales
+    # with the expansion the same way the atom count does.
+    return LoadedStructure(
+        array=array,
+        assembly="biological",
+        copies=present,
+        altloc_surplus=surplus * present,
+    )
 
 
 def _has_sym(array: AtomArray[Any]) -> bool:
@@ -214,6 +331,19 @@ def _has_carbon(array: AtomArray[Any], mask: Mask) -> Mask:
     return mask & _widen(carbon, keys)
 
 
+def _backbone(array: AtomArray[Any], protein: Mask, nucleic: Mask) -> Mask:
+    """Backbone atoms of either polymer, by the names each one uses.
+
+    Kept as one mask rather than two keywords because a structure can hold
+    both, and asking for "the backbone" of a protein-DNA complex should not
+    make the caller name which half they meant.
+    """
+    names = array.atom_name
+    return (protein & np.isin(names, list(_PROTEIN_BACKBONE))) | (
+        nucleic & np.isin(names, list(_NUCLEIC_BACKBONE))
+    )
+
+
 def _keyword(name: str, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911, PLR0912
     n = array.array_length()
     protein = np.asarray(filter_amino_acids(array))
@@ -237,9 +367,13 @@ def _keyword(name: str, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911, PLR091
     if name == "hetatm":
         return hetero
     if name == "backbone":
-        return polymer & np.isin(array.atom_name, list(_BACKBONE))
+        return _backbone(array, protein, nucleic)
     if name == "sidechain":
-        return polymer & ~np.isin(array.atom_name, list(_BACKBONE))
+        # Whatever the polymer is, sidechain is the rest of it. That only
+        # answers the right question once backbone knows about both polymers:
+        # while it was protein-only, `sidechain` on DNA returned every atom of
+        # the molecule and looked like a real answer.
+        return polymer & ~_backbone(array, protein, nucleic)
     if name == "hydro":
         return np.isin(array.element, list(_HYDROGEN))
     if name == "metals":

@@ -1,6 +1,16 @@
-"""Superposition analysis: pure Python, no browser."""
+"""Superposition analysis: pure Python, no browser.
+
+Most of this runs offline against synthetic coordinates. The section at the
+bottom fetches two real globins, because the case that justifies structural
+mode cannot be built by hand — it needs two proteins whose sequences have
+diverged while their fold has not. It shares CI's network gate:
+
+    PROTEAN_DIFFERENTIAL=1 uv run pytest tests/test_superposition.py
+"""
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 import pytest
@@ -10,6 +20,12 @@ from protean_mcp.analysis.superposition import (
     parse_structure,
     protein_atoms,
     superpose,
+)
+from protean_mcp.fetch import fetch_structure_data
+
+NEEDS_NETWORK = pytest.mark.skipif(
+    os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
+    reason="fetches from RCSB; set PROTEAN_DIFFERENTIAL=1 to run",
 )
 
 # Two residues of a minimal poly-alanine backbone, enough for biotite to parse
@@ -157,6 +173,7 @@ def test_outliers_are_ordered_worst_first(helix_pdb):
 def test_result_dict_rounds_for_reporting(helix_pdb):
     payload = superpose(helix_pdb, "pdb", helix_pdb, "pdb").as_dict()
     assert set(payload) == {
+        "mode",
         "rmsd",
         "aligned_residues",
         "sequence_identity",
@@ -171,3 +188,92 @@ def test_result_dict_rounds_for_reporting(helix_pdb):
 def test_unrelated_structures_are_refused(helix_pdb):
     with pytest.raises(SuperpositionError):
         superpose(TINY_PDB, "pdb", helix_pdb, "pdb")
+
+
+# -- correspondence modes ------------------------------------------------------
+
+
+def test_an_unknown_mode_is_refused_with_the_valid_ones(helix_pdb):
+    with pytest.raises(SuperpositionError, match="Unknown mode 'cealign'"):
+        superpose(helix_pdb, "pdb", helix_pdb, "pdb", mode="cealign")
+
+
+@pytest.mark.parametrize("mode", ["sequence", "structural"])
+def test_the_result_says_which_mode_produced_it(helix_pdb, mode):
+    """A number whose method is not stated cannot be compared with another."""
+    result = superpose(helix_pdb, "pdb", helix_pdb, "pdb", mode=mode)
+    assert result.mode == mode
+    assert result.as_dict()["mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["sequence", "structural"])
+def test_a_pure_translation_is_undone_in_either_mode(helix_pdb, mode):
+    """Both modes must recover a known offset, not merely report a small number."""
+    moved = _shifted(helix_pdb, 25.0)
+    result = superpose(moved, "pdb", helix_pdb, "pdb", mode=mode)
+    assert result.rmsd == pytest.approx(0.0, abs=1e-4)
+
+
+def test_the_modes_are_not_the_same_computation(helix_pdb):
+    """Guards the tests above: two aliases for one function would pass them all.
+
+    Sequence mode discards anchors as outliers even on a structure against
+    itself; structural mode matches on backbone shape and keeps the whole
+    helix. That difference in coverage is the observable one.
+    """
+    by_sequence = superpose(helix_pdb, "pdb", helix_pdb, "pdb", mode="sequence")
+    by_shape = superpose(helix_pdb, "pdb", helix_pdb, "pdb", mode="structural")
+    assert by_shape.aligned_residues > by_sequence.aligned_residues
+
+
+# -- the case structural mode exists for --------------------------------------
+
+# Haemoglobin's alpha and beta chains: the textbook remote homologs. Same fold,
+# ~140 residues each, sequences diverged far enough that aligning them anchors
+# less than half the chain. Structural mode should recover most of the fold.
+_GLOBIN_MINIMUM = 120
+
+
+@pytest.fixture(scope="module")
+async def globins() -> tuple[str, str]:
+    structure = await fetch_structure_data("1hho")
+    return structure.data, structure.format
+
+
+@NEEDS_NETWORK
+async def test_structural_mode_superposes_the_fold_a_sequence_alignment_misses(globins):
+    """The gap this mode was added to close.
+
+    Both numbers are asserted: structural mode covering more of the chain is
+    the claim, and sequence mode covering less of it is what makes the claim
+    worth anything.
+    """
+    data, fmt = globins
+    by_sequence = superpose(
+        data, fmt, data, fmt, mobile_chain="A", target_chain="B", mode="sequence"
+    )
+    by_shape = superpose(
+        data, fmt, data, fmt, mobile_chain="A", target_chain="B", mode="structural"
+    )
+    assert by_sequence.aligned_residues < _GLOBIN_MINIMUM
+    assert by_shape.aligned_residues >= _GLOBIN_MINIMUM
+    # A fold match, not a coincidence: the two globins really do superpose.
+    assert by_shape.rmsd < 3.0
+
+
+@NEEDS_NETWORK
+async def test_structural_mode_pays_for_that_coverage_in_rmsd(globins):
+    """It is not strictly better, and the reply should not imply that it is.
+
+    Structural mode maximises what it can superpose, so over the residues it
+    keeps it fits worse than sequence mode does over the conserved core it
+    picks. Both are honest answers to different questions.
+    """
+    data, fmt = globins
+    by_sequence = superpose(
+        data, fmt, data, fmt, mobile_chain="A", target_chain="B", mode="sequence"
+    )
+    by_shape = superpose(
+        data, fmt, data, fmt, mobile_chain="A", target_chain="B", mode="structural"
+    )
+    assert by_shape.rmsd > by_sequence.rmsd
