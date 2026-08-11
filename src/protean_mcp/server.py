@@ -344,13 +344,26 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
         parts.append(f", {loaded.copies} symmetry copies")
     ours = int(loaded.array.array_length())
     theirs = viewer_result.get("atom_count") if isinstance(viewer_result, dict) else None
+    surplus = loaded.altloc_surplus
     if theirs is None:
         parts.append(f", {ours} atoms here; the viewer reported no count")
     elif int(theirs) == ours:
         parts.append(f", {ours} atoms in both viewer and analysis")
-    else:
+    elif surplus and int(theirs) - ours == surplus:
+        # The same molecule described two defensible ways, not two molecules.
+        # Saying so beats declaring every number unreliable over a difference
+        # that is fully accounted for.
         parts.append(
-            f", MISMATCH: {ours} atoms here but {theirs} in the viewer. "
+            f", {ours} atoms here and {theirs} in the viewer; the {surplus} "
+            "extra are alternate conformers, which analysis resolves to one "
+            "per site and the viewer draws all of"
+        )
+    else:
+        explained = (
+            f" ({surplus} of the difference is alternate conformers)" if surplus else ""
+        )
+        parts.append(
+            f", MISMATCH: {ours} atoms here but {theirs} in the viewer{explained}. "
             "Analysis and the picture are different molecules; treat counts, "
             "buried areas and potentials as unreliable"
         )
