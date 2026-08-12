@@ -229,6 +229,14 @@ _KEYWORD_ALIASES = {
 
 _MODIFIERS = {"byres", "bychain", "bymolecule", "first", "last", "neighbor", "bound_to"}
 
+# `extend` walks the bond graph one shell per pass, re-deriving topology each
+# time, so an unbounded depth is an unbounded amount of work on the server's
+# single thread. No molecule is 64 bonds across in a way that `bymolecule`
+# does not say better, and the walk saturates long before this in practice —
+# the bound exists so a typo cannot hang the process rather than to constrain
+# any real selection.
+MAX_EXTEND_DEPTH = 64
+
 # Constructs we can parse but refuse to evaluate, with the reason. Keeping
 # these explicit is what lets us fail loudly instead of silently returning
 # nothing — the caller learns the difference between "unsupported" and "no
@@ -353,7 +361,14 @@ class _Parser:
 
         # `within 5 of X` with no left operand: PyMOL rejects it, users write it
         # anyway, and Mol*'s transpiler answers 0. Treat it as `all within ...`.
-        if word in ("within", "around", "expand"):
+        #
+        # `extend` belongs here for the same reason and was missed when it moved
+        # out of the unsupported table. Without it a bare `extend 2` fell through
+        # to "Unknown selection keyword: 'extend'" with a supported-keyword list
+        # that does not contain `extend` — telling a caller the operator does not
+        # exist, days after it was implemented, when the real problem is a
+        # missing left operand.
+        if word in ("within", "around", "expand", "extend"):
             self.pos -= 1
             return Keyword("all")
 
@@ -398,10 +413,21 @@ class _Parser:
         refused for the same reason.
         """
         raw = self._number()
-        depth = int(raw)
-        if depth != raw or depth < 1:
+        # Checked before `int()`, not after. `int(nan)` raises ValueError and
+        # `int(inf)` raises OverflowError; neither is a SelectionError, so the
+        # tool layer — which catches only SelectionError — turns a typo into a
+        # traceback rather than an explanation. `_radius` guards the same way
+        # for the same reason.
+        if not math.isfinite(raw) or int(raw) != raw or int(raw) < 1:
             raise SelectionError(
                 f"'extend' needs a whole number of bonds above 0, got {raw:g}"
+            )
+        depth = int(raw)
+        if depth > MAX_EXTEND_DEPTH:
+            raise SelectionError(
+                f"'extend' is limited to {MAX_EXTEND_DEPTH} bonds, got {depth}. "
+                "Walking further reaches everything the molecule connects to "
+                "anyway, and `bymolecule` says that directly"
             )
         return depth
 

@@ -431,8 +431,40 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         # PyMOL's rank is the atom's 0-based position within the object, which
         # here is its position in the array. Distinct from `index`, which is
         # the file's own atom_site id and need not start at 0 or be contiguous.
+        _check_rank_is_transportable(array)
         return _numeric_terms(np.arange(array.array_length()), node.values, array)
     raise SelectionError(f"Property {prop!r} is not supported by the Python evaluator")
+
+
+def _check_rank_is_transportable(array: AtomArray[Any]) -> None:
+    """Refuse `rank` on an assembly with more than one symmetry copy.
+
+    Decision 9 rests on an invariant: everything the tools produce is symmetric
+    across symmetry copies, which is why handles can travel to the viewer as
+    `atom.id` ranges even though an assembly duplicates those ids. `rank` is
+    the first selector that breaks it. It picks one atom by array position, and
+    that atom shares its `atom_id` with its counterpart in every other copy, so
+    the handle selects one atom here and lights up N in the picture — a count
+    and a rendering that disagree, with nothing to say they do.
+
+    Refused rather than quietly widened to all copies: `rank 5` means one atom
+    in PyMOL, and answering with N atoms would be a different question. The
+    asymmetric unit has one copy of everything and is where the selector works.
+
+    This is backlog item 7 seen from a new direction — the fix is a handle
+    transport that can name a copy, not a patch here.
+    """
+    if not _has_sym(array):
+        return
+    copies = int(np.unique(np.asarray(array.sym_id)).size)
+    if copies <= 1:
+        return
+    raise SelectionError(
+        f"'rank' is a position in the atom array, and this assembly has "
+        f"{copies} symmetry copies that share atom ids — so a rank selects one "
+        "atom here and would highlight one per copy in the viewer. Load with "
+        'assembly="asymmetric" to use it, or select by index, name or residue'
+    )
 
 
 def _check_elements(wanted: list[str], present: Mask) -> None:
@@ -635,11 +667,46 @@ def _bonded_to(array: AtomArray[Any], source: Mask) -> Mask:
 
 
 def _extend(array: AtomArray[Any], source: Mask, depth: int) -> Mask:
-    """*source* plus everything reachable within *depth* bonds, source kept."""
+    """*source* plus everything reachable within *depth* bonds, source kept.
+
+    Two things this deliberately does not do naively, both of which cost real
+    time on a large structure:
+
+    - it derives the bond topology **once**, not once per pass. Every pass used
+      to call `_bonded_to`, which re-runs `connect_via_residue_names` — 25 ms
+      on a 59,000-atom assembly, paid `depth` times over.
+    - it stops as soon as a pass adds nothing. The walk saturates at the size
+      of the connected component, and every further pass rebuilds the identical
+      mask.
+
+    Depth is bounded at parse time too. That bound keeps a typo finite; this
+    keeps an in-range but oversized depth cheap.
+    """
+    pairs = _bond_pairs(array)
+    if len(pairs) == 0:
+        return source
     grown = source
     for _ in range(depth):
-        grown = grown | _bonded_to(array, grown)
+        widened = _one_bond_shell(grown, pairs)
+        if not (widened & ~grown).any():
+            return grown
+        grown = widened
     return grown
+
+
+def _one_bond_shell(source: Mask, pairs: Mask) -> Mask:
+    """*source* widened by exactly one bond, source kept.
+
+    Split out from :func:`_extend` so the number of shells actually walked can
+    be counted. Saturating early returns the same mask as running the loop to
+    its full depth, so a test comparing results cannot tell the two apart —
+    only counting passes can.
+    """
+    first, second = pairs[:, 0], pairs[:, 1]
+    widened = source.copy()
+    widened[first[source[second]]] = True
+    widened[second[source[first]]] = True
+    return widened
 
 
 def _molecules(array: AtomArray[Any]) -> Mask:

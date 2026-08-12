@@ -384,3 +384,42 @@ def test_every_property_is_evaluable(prop, tiny_structure):
 @pytest.mark.parametrize("prop", sorted(COMPARABLE))
 def test_every_comparable_is_evaluable(prop, tiny_structure):
     select_mask(f"{prop} > 0", tiny_structure)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e400"])
+def test_a_non_finite_extend_is_a_selection_error_not_a_crash(value):
+    """`int(nan)` raises ValueError and `int(inf)` OverflowError.
+
+    Neither is a SelectionError, and the tool layer catches only SelectionError,
+    so before this the caller got a traceback where a typo deserved a sentence.
+    The same contract `_numeric_terms` documents and `_radius` already honours.
+    """
+    with pytest.raises(SelectionError, match="whole number of bonds above 0"):
+        parse(f"resi 10 extend {value}")
+
+
+def test_an_enormous_extend_depth_is_refused():
+    """`extend` walks one bond shell per pass, so depth is work.
+
+    `extend 1e20` parsed cleanly and then ran a topology derivation per pass on
+    the server's single thread — not slow, non-terminating.
+    """
+    with pytest.raises(SelectionError, match="limited to 64 bonds"):
+        parse("resi 10 extend 100000")
+
+
+def test_the_depth_limit_leaves_real_selections_alone():
+    """The bound exists to stop a typo, not to constrain a selection."""
+    assert parse("resi 10 extend 64") == Extend(Property("resi", ("10",)), 64)
+
+
+def test_bare_extend_is_implicitly_all():
+    """`extend` was missed when it moved out of the unsupported table.
+
+    A bare `extend 2` fell through to "Unknown selection keyword: 'extend'"
+    with a list of supported keywords that does not contain `extend` — telling
+    a caller the operator does not exist, days after it was implemented, when
+    the real problem is a missing left operand. `within`, `around` and `expand`
+    have read the intent since the beginning.
+    """
+    assert parse("extend 2") == Extend(Keyword("all"), 2)

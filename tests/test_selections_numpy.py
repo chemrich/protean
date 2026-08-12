@@ -13,6 +13,7 @@ import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
 
+from protean_mcp import selections_numpy
 from protean_mcp.analysis.secondary_structure import _Backbone, _bridges
 from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
@@ -898,6 +899,98 @@ def test_altloc_surplus_scales_with_the_assembly():
     assert loaded.copies == 2
     assert loaded.altloc_surplus == 2
     assert loaded.array.array_length() + loaded.altloc_surplus == len(rows) * 2
+
+
+# -- extend saturation and rank transport --------------------------------------
+
+
+@pytest.fixture
+def two_molecules() -> AtomArray[Any]:
+    """A four-atom chain and a lone atom, so extend has somewhere to stop."""
+    atoms = [
+        _atom("A", 1, "ALA", "N", "N", [0.0, 0.0, 0.0]),
+        _atom("A", 1, "ALA", "CA", "C", [1.5, 0.0, 0.0]),
+        _atom("A", 1, "ALA", "C", "C", [2.5, 1.0, 0.0]),
+        _atom("A", 1, "ALA", "O", "O", [2.5, 2.0, 0.0]),
+        _atom("B", 2, "ZN", "ZN", "ZN", [40.0, 0.0, 0.0], hetero=True),
+    ]
+    for i, atom in enumerate(atoms, start=1):
+        atom.atom_id = i
+    return atom_array(atoms)
+
+
+def test_extend_saturates_instead_of_walking_a_bond_at_a_time(two_molecules):
+    """Once a pass adds nothing there is nothing left to reach.
+
+    Every further pass rebuilt the identical mask, and each one re-derived the
+    whole bond topology, so a large depth was linear work for a constant
+    answer.
+    """
+    saturated = count("name N extend 3", two_molecules)
+    assert saturated == count("name N extend 64", two_molecules)
+    assert saturated == 4, "the residue, and not the zinc 40 A away"
+
+
+def test_extend_stops_walking_once_nothing_new_is_reached(monkeypatch, two_molecules):
+    """The half of the fix a result comparison cannot see.
+
+    Running the loop to its full depth returns exactly the same mask as
+    stopping early, so the answer is identical either way — only the number of
+    shells walked tells them apart. This four-atom chain saturates quickly.
+    """
+    shells = 0
+    original = selections_numpy._one_bond_shell
+
+    def counted(source, pairs):
+        nonlocal shells
+        shells += 1
+        return original(source, pairs)
+
+    monkeypatch.setattr(selections_numpy, "_one_bond_shell", counted)
+    count("name N extend 64", two_molecules)
+    assert shells < 64, "the loop ran to its full depth"
+
+
+def test_the_bond_topology_is_derived_once_per_extend(monkeypatch, two_molecules):
+    """The half of the fix a result comparison cannot see.
+
+    Deriving topology per pass gives exactly the same answer, so only counting
+    the derivations distinguishes the two.
+    """
+    calls = 0
+    original = selections_numpy._bond_pairs
+
+    def counted(array):
+        nonlocal calls
+        calls += 1
+        return original(array)
+
+    monkeypatch.setattr(selections_numpy, "_bond_pairs", counted)
+    count("name N extend 8", two_molecules)
+    assert calls == 1
+
+
+def test_rank_is_refused_on_an_assembly_with_symmetry_copies(two_molecules):
+    """A rank names one atom here and one per copy in the viewer.
+
+    Handles reach Mol* as atom.id, which an assembly duplicates. Every other
+    selector is symmetric across copies, so the transport stays exact; `rank`
+    is the first that is not, and answering would mean a count and a picture
+    that disagree with nothing to say so.
+    """
+    copies = two_molecules.copy()
+    copies.set_annotation("sym_id", np.array([0, 0, 0, 1, 1]))
+    with pytest.raises(SelectionError, match="symmetry copies"):
+        count("rank 2", copies)
+
+
+def test_rank_still_works_where_the_transport_is_exact(two_molecules):
+    """One copy, or no sym_id at all, is the case the selector is for."""
+    assert count("rank 2", two_molecules) == 1
+
+    single = two_molecules.copy()
+    single.set_annotation("sym_id", np.zeros(single.array_length(), dtype=int))
+    assert count("rank 2", single) == 1
 
 
 # -- secondary structure: identity and refusals --------------------------------
