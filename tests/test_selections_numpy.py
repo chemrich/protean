@@ -14,6 +14,7 @@ from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
 
 from protean_mcp import selections_numpy
+from protean_mcp.analysis.secondary_structure import _Backbone, _bridges
 from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
     _SS_CLASSES,
@@ -990,3 +991,115 @@ def test_rank_still_works_where_the_transport_is_exact(two_molecules):
     single = two_molecules.copy()
     single.set_annotation("sym_id", np.zeros(single.array_length(), dtype=int))
     assert count("rank 2", single) == 1
+
+
+# -- secondary structure: identity and refusals --------------------------------
+
+
+def _poly_alanine(
+    residues: int, chain: str = "A", sym: int | None = None, backbone: bool = True
+) -> AtomArray[Any]:
+    """A straight run of residues, optionally CA-only, optionally a copy."""
+    names = (
+        (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")) if backbone else (("CA", "C"),)
+    )
+    atoms = []
+    for r in range(1, residues + 1):
+        for offset, (name, element) in enumerate(names):
+            atoms.append(
+                _atom(
+                    chain,
+                    r,
+                    "ALA",
+                    name,
+                    element,
+                    [float(r) * 3.8 + offset * 0.1, 0.0, 100.0 * (sym or 0)],
+                )
+            )
+    array = atom_array(atoms)
+    if sym is not None:
+        array.set_annotation("sym_id", np.full(array.array_length(), sym))
+    return array
+
+
+def test_symmetry_copies_are_separate_residues_to_dssp():
+    """Copies share chain id and residue number, so the key must carry sym_id.
+
+    Without it every copy of residue A/1 hashes to one entry and all but the
+    first are discarded, so DSSP runs on one copy and calls the rest loop —
+    on the default `assembly="biological"` load path.
+    """
+    one = _poly_alanine(3, sym=0)
+    two = _poly_alanine(3, sym=1)
+    both = atom_array(list(one) + list(two))
+    both.set_annotation("sym_id", np.concatenate([one.sym_id, two.sym_id]))
+
+    assert _Backbone(one).n == 3
+    assert _Backbone(both).n == 6, "the second copy was merged into the first"
+
+
+def test_a_chain_key_separates_copies_as_well_as_chains():
+    """`connected()` must not run a helix out of one copy and into the next.
+
+    Two copies of chain A are both called "A", so comparing chain ids alone
+    leaves them looking like one continuous chain.
+    """
+    one = _poly_alanine(3, sym=0)
+    two = _poly_alanine(3, sym=1)
+    both = atom_array(list(one) + list(two))
+    both.set_annotation("sym_id", np.concatenate([one.sym_id, two.sym_id]))
+
+    keys = _Backbone(both).chain_id
+    assert len(set(keys.tolist())) == 2
+    assert not _Backbone(both).connected().all()
+
+
+def test_a_ca_only_model_is_refused_rather_than_answered_empty():
+    """Three empty sets read as three answers about the molecule.
+
+    `ss H`, `ss S` and `ss L` all returning 0 says "no helix, no strand, and no
+    loop either", which is one fact about the file dressed as three facts about
+    the protein. This is the project's dominant failure mode.
+    """
+    trace = _poly_alanine(20, backbone=False)
+    assert count("polymer", trace) == 20
+    for selection in ("ss H", "ss S", "ss L"):
+        with pytest.raises(SelectionError, match="complete backbone"):
+            count(selection, trace)
+
+
+def test_a_structure_with_no_amino_acids_is_not_refused():
+    """The refusal is about an unassignable protein, not about absent protein.
+
+    A DNA-only structure legitimately has no secondary structure to report, and
+    `ss H` returning 0 there is a true answer rather than a missing one.
+    """
+    dna = atom_array(
+        [
+            _atom("A", 1, "DG", "P", "P", [0.0, 0.0, 0.0]),
+            _atom("A", 1, "DG", "C1'", "C", [1.0, 0.0, 0.0]),
+        ]
+    )
+    assert count("ss H", dna) == 0
+    assert count("ss L", dna) == 0
+
+
+def test_a_bridge_is_not_built_across_a_chain_break():
+    """Every bridge rule reads i-1 and i+1 as sequence neighbours.
+
+    At a chain junction the last residue of one chain sits at array index k and
+    the first of the next at k+1, so without the guard the terminal carbonyl of
+    one chain acts as "the preceding residue" of the other. A real hydrogen
+    bond there then reports a strand that does not exist — which is what mkdssp
+    avoids by breaking chains explicitly.
+    """
+    # An antiparallel bridge at (5, 8) via the i-1/j+1 rule, which reaches
+    # across index 4 -> 5.
+    bonds = {(4, 9), (7, 6)}
+
+    unbroken = np.ones(9, dtype=bool)
+    assert (5, 8, "A") in _bridges(bonds, 10, unbroken)
+
+    broken = unbroken.copy()
+    broken[4] = False  # residues 4 and 5 are in different chains
+    assert _bridges(bonds, 10, broken) == []

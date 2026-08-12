@@ -38,6 +38,11 @@ def tiny_structure() -> AtomArray[Any]:
 
     Deliberately mixed: a protein residue, a water and a metal ion, so a
     keyword cannot pass by matching everything or nothing on a uniform array.
+
+    The residue carries a *complete* backbone — N, CA, C, O — not because any
+    test here reads its geometry, but because `ss` now refuses a structure in
+    which no residue can be assigned at all. Without C and O this fixture is a
+    CA-only trace, and the promise in the first line stops being true.
     """
 
     def atom(
@@ -68,8 +73,10 @@ def tiny_structure() -> AtomArray[Any]:
             atom("A", 1, "ALA", "N", "N", False, 1),
             atom("A", 1, "ALA", "CA", "C", False, 2),
             atom("A", 1, "ALA", "CB", "C", False, 3),
-            atom("A", 2, "HOH", "O", "O", True, 4),
-            atom("A", 3, "ZN", "ZN", "ZN", True, 5),
+            atom("A", 1, "ALA", "C", "C", False, 4),
+            atom("A", 1, "ALA", "O", "O", False, 5),
+            atom("A", 2, "HOH", "O", "O", True, 6),
+            atom("A", 3, "ZN", "ZN", "ZN", True, 7),
         ]
     )
 

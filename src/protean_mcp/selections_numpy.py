@@ -564,10 +564,23 @@ def _secondary_structure(array: AtomArray[Any], values: tuple[str, ...]) -> Mask
                 f"Unknown secondary structure {value!r}. Expected one of: {listed}"
             )
         wanted |= classes
+
     # One class per atom, '' for anything that has none — every non-amino-acid,
     # and any residue whose backbone is too incomplete to assign. Neither can
     # match, including via `ss L`.
-    return np.isin(assign_secondary_structure(array), sorted(wanted))
+    codes = assign_secondary_structure(array)
+
+    # A CA-only trace has amino acids and no assignable residue, so every `ss`
+    # class comes back empty — "no helix, no strand, and no loop either", three
+    # answers about the molecule that are really one fact about the file. DSSP
+    # needs N, CA, C and O; say so instead.
+    if not (codes != "").any() and bool(filter_amino_acids(array).any()):
+        raise SelectionError(
+            "Secondary structure needs a complete backbone (N, CA, C and O) and "
+            "no residue in this structure has one, so `ss` cannot be evaluated "
+            "here. A CA-only or coarse-grained model is the usual reason"
+        )
+    return np.isin(codes, sorted(wanted))
 
 
 def _numeric_terms(
