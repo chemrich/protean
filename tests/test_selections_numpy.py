@@ -15,6 +15,7 @@ from biotite.structure import array as atom_array
 
 from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
+    _SS_CLASSES,
     _residue_keys,
     load_structure,
     residue_labels,
@@ -452,32 +453,87 @@ def test_unsupported_constructs_still_raise(mixed):
 # -- secondary structure -------------------------------------------------------
 
 
+# Residues 22-36 of 1UBQ, backbone only: the structure's one alpha-helix with a
+# residue of loop either side. Real deposited coordinates, embedded so the fast
+# suite stays offline.
+#
+# **These replaced a generated fixture, and the reason matters.** The old one
+# placed N, CA, C and O on four concentric cylinders, which traces a helical
+# *path* and satisfied P-SEA, because P-SEA reads backbone shape. It has no
+# peptide geometry at all — the C=O vectors point nowhere in particular — so no
+# hydrogen bond forms and DSSP correctly finds nothing in it. A fixture that is
+# only shaped like the answer tests the previous implementation, not the
+# molecule.
+_UBIQUITIN_HELIX = (
+    "ATOM      1  N   THR A  22      31.510  18.936  12.852  1.00  0.00           N",
+    "ATOM      2  CA  THR A  22      31.398  19.064  14.286  1.00  0.00           C",
+    "ATOM      3  C   THR A  22      31.593  20.553  14.655  1.00  0.00           C",
+    "ATOM      4  O   THR A  22      32.159  21.311  13.861  1.00  0.00           O",
+    "ATOM      5  N   ILE A  23      31.113  20.863  15.860  1.00  0.00           N",
+    "ATOM      6  CA  ILE A  23      31.288  22.201  16.417  1.00  0.00           C",
+    "ATOM      7  C   ILE A  23      32.776  22.519  16.577  1.00  0.00           C",
+    "ATOM      8  O   ILE A  23      33.233  23.659  16.384  1.00  0.00           O",
+    "ATOM      9  N   GLU A  24      33.548  21.526  16.950  1.00  0.00           N",
+    "ATOM     10  CA  GLU A  24      35.031  21.722  17.069  1.00  0.00           C",
+    "ATOM     11  C   GLU A  24      35.615  22.190  15.759  1.00  0.00           C",
+    "ATOM     12  O   GLU A  24      36.532  23.046  15.724  1.00  0.00           O",
+    "ATOM     13  N   ASN A  25      35.139  21.624  14.662  1.00  0.00           N",
+    "ATOM     14  CA  ASN A  25      35.590  21.945  13.302  1.00  0.00           C",
+    "ATOM     15  C   ASN A  25      35.238  23.382  12.920  1.00  0.00           C",
+    "ATOM     16  O   ASN A  25      36.066  24.109  12.333  1.00  0.00           O",
+    "ATOM     17  N   VAL A  26      34.007  23.745  13.250  1.00  0.00           N",
+    "ATOM     18  CA  VAL A  26      33.533  25.097  12.978  1.00  0.00           C",
+    "ATOM     19  C   VAL A  26      34.441  26.099  13.684  1.00  0.00           C",
+    "ATOM     20  O   VAL A  26      34.883  27.090  13.093  1.00  0.00           O",
+    "ATOM     21  N   LYS A  27      34.734  25.822  14.949  1.00  0.00           N",
+    "ATOM     22  CA  LYS A  27      35.596  26.715  15.736  1.00  0.00           C",
+    "ATOM     23  C   LYS A  27      36.975  26.826  15.107  1.00  0.00           C",
+    "ATOM     24  O   LYS A  27      37.579  27.926  15.159  1.00  0.00           O",
+    "ATOM     25  N   ALA A  28      37.499  25.743  14.571  1.00  0.00           N",
+    "ATOM     26  CA  ALA A  28      38.794  25.761  13.880  1.00  0.00           C",
+    "ATOM     27  C   ALA A  28      38.728  26.591  12.611  1.00  0.00           C",
+    "ATOM     28  O   ALA A  28      39.704  27.346  12.277  1.00  0.00           O",
+    "ATOM     29  N   LYS A  29      37.633  26.543  11.867  1.00  0.00           N",
+    "ATOM     30  CA  LYS A  29      37.471  27.391  10.668  1.00  0.00           C",
+    "ATOM     31  C   LYS A  29      37.441  28.882  11.052  1.00  0.00           C",
+    "ATOM     32  O   LYS A  29      38.020  29.772  10.382  1.00  0.00           O",
+    "ATOM     33  N   ILE A  30      36.811  29.170  12.192  1.00  0.00           N",
+    "ATOM     34  CA  ILE A  30      36.731  30.570  12.645  1.00  0.00           C",
+    "ATOM     35  C   ILE A  30      38.148  30.981  13.069  1.00  0.00           C",
+    "ATOM     36  O   ILE A  30      38.544  32.150  12.856  1.00  0.00           O",
+    "ATOM     37  N   GLN A  31      38.883  30.110  13.713  1.00  0.00           N",
+    "ATOM     38  CA  GLN A  31      40.269  30.508  14.115  1.00  0.00           C",
+    "ATOM     39  C   GLN A  31      41.092  30.808  12.851  1.00  0.00           C",
+    "ATOM     40  O   GLN A  31      41.828  31.808  12.681  1.00  0.00           O",
+    "ATOM     41  N   ASP A  32      41.001  29.878  11.931  1.00  0.00           N",
+    "ATOM     42  CA  ASP A  32      41.718  30.022  10.643  1.00  0.00           C",
+    "ATOM     43  C   ASP A  32      41.399  31.338   9.967  1.00  0.00           C",
+    "ATOM     44  O   ASP A  32      42.260  32.036   9.381  1.00  0.00           O",
+    "ATOM     45  N   LYS A  33      40.117  31.750   9.988  1.00  0.00           N",
+    "ATOM     46  CA  LYS A  33      39.808  32.994   9.233  1.00  0.00           C",
+    "ATOM     47  C   LYS A  33      39.837  34.271   9.995  1.00  0.00           C",
+    "ATOM     48  O   LYS A  33      40.164  35.323   9.345  1.00  0.00           O",
+    "ATOM     49  N   GLU A  34      39.655  34.335  11.285  1.00  0.00           N",
+    "ATOM     50  CA  GLU A  34      39.676  35.547  12.072  1.00  0.00           C",
+    "ATOM     51  C   GLU A  34      40.675  35.527  13.200  1.00  0.00           C",
+    "ATOM     52  O   GLU A  34      40.814  36.528  13.911  1.00  0.00           O",
+    "ATOM     53  N   GLY A  35      41.317  34.393  13.432  1.00  0.00           N",
+    "ATOM     54  CA  GLY A  35      42.345  34.269  14.431  1.00  0.00           C",
+    "ATOM     55  C   GLY A  35      41.949  34.076  15.842  1.00  0.00           C",
+    "ATOM     56  O   GLY A  35      42.829  34.000  16.739  1.00  0.00           O",
+    "ATOM     57  N   ILE A  36      40.642  33.916  16.112  1.00  0.00           N",
+    "ATOM     58  CA  ILE A  36      40.226  33.716  17.509  1.00  0.00           C",
+    "ATOM     59  C   ILE A  36      40.449  32.278  17.945  1.00  0.00           C",
+    "ATOM     60  O   ILE A  36      39.936  31.336  17.315  1.00  0.00           O",
+)
+
+
 @pytest.fixture
 def ideal_helix() -> AtomArray[Any]:
-    """16 residues on an ideal alpha-helical path.
-
-    Real geometry rather than invented coordinates: secondary structure is
-    assigned from backbone shape, so a fixture that was not helix-shaped would
-    agree with any implementation, right or wrong.
-    """
-    lines, serial = [], 1
-    for i in range(16):
-        angle = np.deg2rad(100.0 * i)
-        for name, element, radius, offset in (
-            ("N", "N", 1.5, -0.4),
-            ("CA", "C", 2.3, 0.0),
-            ("C", "C", 1.9, 0.4),
-            ("O", "O", 2.0, 0.6),
-        ):
-            turn = angle + offset
-            x, y = radius * np.cos(turn), radius * np.sin(turn)
-            z = 1.5 * i + offset * 1.5
-            lines.append(
-                f"ATOM  {serial:5d}  {name:<3s} ALA A{i + 1:4d}    "
-                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {element}"
-            )
-            serial += 1
-    return load_structure("\n".join(lines) + "\nEND\n", "pdb", "asymmetric").array
+    """1UBQ's alpha-helix, residues 22-36, backbone only."""
+    return load_structure(
+        "\n".join(_UBIQUITIN_HELIX) + "\nEND\n", "pdb", "asymmetric"
+    ).array
 
 
 def test_a_helix_is_selectable_as_one(ideal_helix):
@@ -510,6 +566,72 @@ def test_an_unknown_class_is_refused(ideal_helix):
     """Like `elem`, the vocabulary is closed, so a typo is not a query."""
     with pytest.raises(SelectionError, match="Unknown secondary structure"):
         count("ss Q", ideal_helix)
+
+
+def test_the_helix_types_partition_ss_h(ideal_helix):
+    """`ss H` is every helix type, and the three do not overlap.
+
+    The point of assigning with DSSP rather than P-SEA: alpha, 3-10 and pi are
+    separately addressable. P-SEA had two classes and could not express two of
+    these at all.
+    """
+    parts = (
+        count("ss alpha", ideal_helix)
+        + count("ss 3-10", ideal_helix)
+        + count("ss pi", ideal_helix)
+    )
+    assert parts == count("ss H", ideal_helix)
+    assert count("ss alpha and ss 3-10", ideal_helix) == 0
+    assert count("ss alpha and ss pi", ideal_helix) == 0
+
+
+def test_this_fixture_is_alpha_and_nothing_else(ideal_helix):
+    """Guards the test above from passing on a fixture with no helix at all.
+
+    Summing three zeroes also equals a zero `ss H`, so the partition test alone
+    would pass against an assignment that found nothing.
+    """
+    assert count("ss alpha", ideal_helix) > 0
+    assert count("ss 3-10", ideal_helix) == 0
+    assert count("ss pi", ideal_helix) == 0
+
+
+def test_the_helix_type_aliases_agree(ideal_helix):
+    """DSSP's letters are deep in a model's prior; the long names are clearer."""
+    assert count("ss G", ideal_helix) == count("ss 3-10", ideal_helix)
+    assert count("ss 310", ideal_helix) == count("ss 3-10", ideal_helix)
+    assert count("ss helix_310", ideal_helix) == count("ss 3-10", ideal_helix)
+    assert count("ss I", ideal_helix) == count("ss pi", ideal_helix)
+    assert count("ss helix_alpha", ideal_helix) == count("ss alpha", ideal_helix)
+
+
+def test_ss_s_is_sheet_not_bend(ideal_helix):
+    """The one collision in the vocabulary, and it is a silent one.
+
+    S is PyMOL's letter for strand and DSSP's letter for bend. A caller writing
+    `ss S` means strand, so `bend` gets a name of its own — and the two must not
+    resolve to the same atoms.
+    """
+    assert count("ss S", ideal_helix) == count("ss extended", ideal_helix) + count(
+        "ss bridge", ideal_helix
+    )
+    # Asserted against the vocabulary rather than against this fixture, which
+    # is helix and loop and so has neither strand nor bend: equal counts of
+    # nothing would pass whichever class `ss S` resolved to.
+    assert _SS_CLASSES["S"] == frozenset("EB")
+    assert _SS_CLASSES["BEND"] == frozenset("S")
+    assert _SS_CLASSES["S"].isdisjoint(_SS_CLASSES["BEND"])
+
+
+def test_loop_covers_everything_that_is_not_helix_or_strand(ideal_helix):
+    """`ss L` has to include turns and bends, or the classes leak.
+
+    A caller who asks for helix, strand and loop expects the whole polymer
+    back. Turn and bend are DSSP classes with no PyMOL equivalent, so they have
+    to fall somewhere, and loop is where PyMOL puts them.
+    """
+    total = ideal_helix.array_length()
+    assert count("ss H+S+L", ideal_helix) == total
 
 
 def test_secondary_structure_is_empty_on_a_molecule_that_has_none(mixed):

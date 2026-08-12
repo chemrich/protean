@@ -221,7 +221,50 @@ bond, and the two answers are both defensible. Recorded and asserted from both
 sides so that either engine changing its mind is visible, rather than folded
 into the agreement table where it would look like a bug.
 
-### 10. Secondary structure — the ~18% was measured against the wrong thing
+### 10. Secondary structure — benchmark corrected, then DSSP ported — fixed
+
+**Outcome first.** The ~18% was measured against the deposited header rather
+than against any implementation (below). Once that was established, DSSP was
+ported in-tree and now replaces P-SEA, so `ss` distinguishes all three helix
+types. Against `mkdssp` 4.6.1 over 11 structures and 4,875 residues the port
+agrees **99.84%**, and exactly on 8 of them:
+
+| class | mkdssp | protean | matched |
+|---|---|---|---|
+| H alpha-helix | 1255 | 1255 | **1255** |
+| G 3-10 helix | 246 | 248 | 246 |
+| I pi-helix | 58 | 58 | **58** |
+| E strand | 882 | 880 | 880 |
+| B isolated bridge | 112 | 109 | 108 |
+| T turn | 504 | 504 | 502 |
+| S bend | 496 | 498 | 496 |
+
+`ss H` is now every helix class, as PyMOL's is, so it moves 89 → 148 atoms on
+1UBQ. `ss S` is unchanged at 217. The types are addressable as `ss alpha`,
+`ss 3-10` and `ss pi`, which is what makes colouring by helix type possible.
+
+**Four rules had to be found by measurement**, and each was wrong in a way that
+looked right — every one is mutation-tested:
+
+- **pi-helix outranks alpha-helix.** DSSP 4 reversed the 1983 order. Exactly 15
+  residues on 4HHB, and the counts look plausible either way.
+- **T covers a turn's interior**, not its two bonded endpoints. Over-assigning
+  it also swallowed most of the bends, since T outranks S.
+- **An overlapping 3-10 helix is discarded whole**, not trimmed. Trimming
+  leaves 1-2 residue G stubs on the ends of alpha-helices: 13 wrong on 4HHB.
+- **...but that rule must not apply between pi and alpha**, which are separated
+  by summary priority instead. Applying it there costs 8 real alpha residues on
+  5FJI. Same rule, two readings, only measurement separates them.
+
+Polyproline II (DSSP 4's `P`) is deliberately not implemented: a 2021 addition,
+not part of the published algorithm, and it never overrides a structured class.
+
+What follows is the original correction, kept because the *reasoning* is the
+reusable part.
+
+---
+
+#### The ~18% was measured against the wrong thing
 
 **The original claim was that protean disagrees "with every other tool" by
 ~18%, on the strength of PyMOL and Mol\* agreeing exactly at 132/274. Neither
@@ -318,15 +361,17 @@ they were diagnosed while chasing the wrong target:
   never measured against `mkdssp`, and the assignment it supposedly starved
   came out matching DSSP exactly, so this one is suspect.
 
-Closing this properly no longer means taking `mkdssp` as a real dependency.
-`mkdssp` is not in homebrew-core (it is the `brewsci/bio` tap, or conda-forge)
-and has no wheel, so requiring it fails the same test decision 8 applied to
-APBS: an optional binary cannot be the only way to get an answer. The one
+Closing this did not mean taking `mkdssp` as a real dependency. `mkdssp` is not
+in homebrew-core (it is the `brewsci/bio` tap, or conda-forge) and has no
+wheel, so requiring it fails the same test decision 8 applied to APBS: an
+optional binary cannot be the only way to get an answer. The one
 pip-installable pure-Python option, `pydssp`, declares **torch**.
 
-So the routes are: leave P-SEA and document the 3-10 blind spot, or re-port
-DSSP in-tree — this time validated per rule against `mkdssp`, which is now
-wired up as a scoring tool.
+The route taken was the second one: re-port DSSP in-tree, validated per rule
+against `mkdssp` as a scoring tool. That is
+`src/protean_mcp/analysis/secondary_structure.py`, and the result is at the top
+of this item. The second attempt succeeded where the first was thought to have
+failed, for the reason recorded above — the first one had not failed.
 
 ## Not bugs, but worth knowing
 

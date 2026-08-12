@@ -513,27 +513,27 @@ async def test_the_two_engines_disagree_about_metal_coordination():
 
 # -- secondary structure -------------------------------------------------------
 
-# `ss` was refused entirely until secondary structure was assigned here. It is
-# assigned with P-SEA, which works off backbone geometry.
+# `ss` is assigned by the in-tree DSSP port (analysis/secondary_structure.py),
+# which replaced P-SEA. `ss H` is every helix class, as PyMOL's is.
 #
-# On 1UBQ Mol*'s transpiler says 132 helix atoms and 274 strand, where P-SEA
-# says 89 and 217. **Mol* is not computing an assignment.** 132 and 274 are the
+# On 1UBQ Mol*'s transpiler says 132 helix atoms and 274 strand, where we say
+# 148 and 217. **Mol* is not computing an assignment.** 132 and 274 are the
 # deposited `struct_conf` and `struct_sheet_range` records in the mmCIF, and
 # parsing those records directly reproduces both numbers exactly —
-# tests/test_secondary_structure_reference.py pins that, and it is the whole
-# correction to backlog item 10. PyMOL reports the same two numbers for the same
-# reason; its own computed assignment (`cmd.dss()`) is a third answer, 135/266.
+# tests/test_secondary_structure_reference.py pins that. PyMOL reports the same
+# two numbers for the same reason; its own computed assignment (`cmd.dss()`) is
+# a third answer, 135/266.
 #
-# So this is a computed assignment against a file annotation, and says nothing
-# about either algorithm. Real DSSP scores 82% against that annotation — exactly
-# what P-SEA scores.
+# So this is a computed assignment against a file annotation and says nothing
+# about either algorithm. Against real DSSP the port matches 1UBQ residue for
+# residue, and 574 of 574 on 4HHB.
 #
 # Asserted anyway, from both sides. What reaches the viewer has to stay
 # predictable whatever it derives from, and a silent change in either the
 # annotation or our assignment should fail loudly rather than move every `ss`
 # answer in the project.
 SS_FIXTURE = "1ubq"
-SS_OURS = {"ss H": 89, "ss S": 217}
+SS_OURS = {"ss H": 148, "ss S": 217}
 SS_DEPOSITED = {"ss H": 132, "ss S": 274}
 
 
@@ -561,6 +561,16 @@ async def test_the_transpiler_reports_the_deposited_annotation(ss_counts, select
     what the transpiler does rather than scoring our assignment against it. If
     upstream ever starts computing secondary structure instead, these counts
     move and the claim retires rather than going stale.
+
+    The two now differ in opposite directions, which is worth pinning as such:
+    we count *more* helix than the header because we count 3-10 helices it does
+    not, and *less* strand because the depositor's sheet ranges are more
+    generous than DSSP's. A single "we are lower" assertion held only while the
+    assignment was P-SEA and would now pass for the wrong reason on one row.
     """
     assert ss_counts["molstar"][selection] == SS_DEPOSITED[selection]
-    assert ss_counts["python"][selection] < ss_counts["molstar"][selection]
+    assert ss_counts["python"][selection] != ss_counts["molstar"][selection]
+    if selection == "ss H":
+        assert ss_counts["python"][selection] > ss_counts["molstar"][selection]
+    else:
+        assert ss_counts["python"][selection] < ss_counts["molstar"][selection]
