@@ -87,4 +87,5 @@ jobs:
             --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
         run: >-
           uv run pytest tests/test_selection_differential.py
-          tests/test_render_differential.py tests/test_packaging.py -q
+          tests/test_render_differential.py tests/test_packaging.py
+          tests/test_secondary_structure_reference.py -q
