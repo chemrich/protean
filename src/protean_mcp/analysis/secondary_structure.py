@@ -26,12 +26,13 @@ What it assigns, using DSSP's own letters:
 a caller almost always wants. Each type is separately addressable as
 `ss alpha`, `ss 3-10` and `ss pi`, so one can be selected and coloured alone.
 
-**Cost.** Assignment is recomputed per `ss` node, and the hydrogen-bond search
-is a Python loop over each residue's neighbours: 53 ms on 1UBQ, 559 ms on
-5FJI's 15,712 atoms. Tolerable, but `ss H or ss S` pays it twice. The energy
-term is trivially vectorisable over candidate pairs, and the corpus test pins
-the result residue by residue, so that is a contained follow-up rather than
-something this module needs in order to be right.
+**Cost.** 189 ms on 5FJI's 15,712 atoms, and memoised on content, so a
+compound selection pays once. It was 559 ms and paid per `ss` node: the bridge
+scan tested every residue pair, which on 5FJI was more time than the
+hydrogen-bond search it depends on and grew quadratically from there.
+Candidates now come out of the bond set instead. What remains is the
+hydrogen-bond loop itself, which is linear in residues and vectorisable if it
+ever matters.
 
 **Not implemented: DSSP 4's polyproline II helix (`P`).** It is a 2021 addition
 rather than part of the published algorithm, and it never overrides H, G, I, E
@@ -282,22 +283,55 @@ def _contiguous(linked: np.ndarray, start: int, stop: int) -> bool:
     return bool(linked[start:stop].all())
 
 
+def _bridge_candidates(
+    bonds: set[tuple[int, int]], n_residues: int
+) -> list[tuple[int, int]]:
+    """Residue pairs that could possibly form a bridge.
+
+    Every bridge rule is a conjunction of hydrogen bonds among
+    {i-1, i, i+1} x {j-1, j, j+1}, so a pair with no bond in that neighbourhood
+    cannot satisfy any of them. Reading the candidates out of `bonds` therefore
+    loses nothing and turns an O(n_residues^2) scan into one linear in the
+    number of hydrogen bonds — on 5FJI the pair scan was 0.334 s of a 0.565 s
+    assignment, more than the bond search it depends on, and it grew
+    quadratically from there.
+
+    Each bond (a, b) is mapped back through every rule position it could
+    occupy. Returned sorted, because `_ladders` chains bridges in the order
+    they arrive.
+    """
+    candidates: set[tuple[int, int]] = set()
+    for a, b in bonds:
+        for i, j in (
+            (a + 1, b),  # (i-1, j)
+            (b - 1, a),  # (j,   i+1)
+            (b, a + 1),  # (j-1, i)
+            (a, b - 1),  # (i,   j+1)
+            (a, b),  # (i,   j)
+            (b, a),  # (j,   i)
+            (a + 1, b - 1),  # (i-1, j+1)
+            (b - 1, a + 1),  # (j-1, i+1)
+        ):
+            if 1 <= i <= n_residues - 2 and i + 3 <= j <= n_residues - 2:
+                candidates.add((i, j))
+    return sorted(candidates)
+
+
 def _bridges(bonds: set[tuple[int, int]], n_residues: int) -> list[tuple[int, int, str]]:
     """Beta-bridges as (i, j, kind), kind being 'P' parallel or 'A' anti."""
     has = bonds.__contains__
     found: list[tuple[int, int, str]] = []
-    for i in range(1, n_residues - 1):
-        for j in range(i + 3, n_residues - 1):
-            parallel = (has((i - 1, j)) and has((j, i + 1))) or (
-                has((j - 1, i)) and has((i, j + 1))
-            )
-            anti = (has((i, j)) and has((j, i))) or (
-                has((i - 1, j + 1)) and has((j - 1, i + 1))
-            )
-            if parallel:
-                found.append((i, j, "P"))
-            elif anti:
-                found.append((i, j, "A"))
+    for i, j in _bridge_candidates(bonds, n_residues):
+        parallel = (has((i - 1, j)) and has((j, i + 1))) or (
+            has((j - 1, i)) and has((i, j + 1))
+        )
+        anti = (has((i, j)) and has((j, i))) or (
+            has((i - 1, j + 1)) and has((j - 1, i + 1))
+        )
+        if parallel:
+            found.append((i, j, "P"))
+        elif anti:
+            found.append((i, j, "A"))
     return found
 
 
@@ -487,12 +521,56 @@ def assign_per_residue(array: AtomArray[Any]) -> dict[tuple[Any, ...], str]:
     return out
 
 
+def _fingerprint(array: AtomArray[Any]) -> tuple[Any, ...]:
+    """A content key for the cache: every input the assignment reads.
+
+    Deliberately not `id(array)`. Arrays are rebuilt and reused freely here,
+    and a trajectory sets coordinates in place on the same object, so identity
+    would serve a previous frame's helices for the current frame's geometry —
+    a wrong answer that looks like a fast one. Hashing costs 0.31 ms on 15,712
+    atoms against a 189 ms assignment.
+    """
+    return (
+        array.coord.tobytes(),
+        array.res_id.tobytes(),
+        array.chain_id.tobytes(),
+        array.ins_code.tobytes(),
+        array.res_name.tobytes(),
+        array.atom_name.tobytes(),
+        array.sym_id.tobytes() if "sym_id" in array.get_annotation_categories() else b"",
+    )
+
+
+# One structure is selected against many times in a row, so a single live entry
+# is most of the win; a few guard against alternating between two structures.
+# Bounded because each value is one byte per atom and the keys hold the
+# coordinates they were made from.
+_CACHE_ENTRIES = 4
+_cache: dict[tuple[Any, ...], np.ndarray] = {}
+
+
 def assign(array: AtomArray[Any]) -> np.ndarray:
     """Per-atom DSSP class, `-` for anything without one.
 
     Per-atom rather than per-residue because that is what a selection needs and
     because spreading it here keeps the residue keying in one place.
+
+    Memoised on content: `ss` re-derives the whole assignment per node, so
+    `ss H or ss S` used to pay for it twice and a compound selection more.
     """
+    key = _fingerprint(array)
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached.copy()
+
+    codes = _assign_uncached(array)
+    if len(_cache) >= _CACHE_ENTRIES:
+        _cache.pop(next(iter(_cache)))
+    _cache[key] = codes
+    return codes.copy()
+
+
+def _assign_uncached(array: AtomArray[Any]) -> np.ndarray:
     per_residue = assign_per_residue(array)
     # Empty, not "-": a water has no secondary structure rather than an
     # unassigned one, and `ss L` must not select the solvent.

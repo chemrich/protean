@@ -417,10 +417,6 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         wanted = [v.upper() for v in node.values]
         _check_elements(wanted, present)
         return np.isin(present, wanted)
-        return np.isin(
-            np.char.upper(array.element.astype(str)),
-            [v.upper() for v in node.values],
-        )
     if prop == "ss":
         return _secondary_structure(array, node.values)
     if prop == "resi":
