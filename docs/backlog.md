@@ -451,3 +451,30 @@ ensemble and ubiquitin:
 - Structures loaded and selected correctly at every size tried, including 21
   chains and 8,015 residues; measurements and set operations were exact;
   sessions restored every handle with none dropped.
+
+## 12. Two refusal tests pass only because CI never runs them together
+
+Found 2026-08-13 while running the whole suite with the browser gate on:
+
+```
+FAILED tests/test_server.py::test_rmsf_needs_a_trajectory_first
+FAILED tests/test_server.py::test_rmsd_series_needs_a_trajectory_first
+```
+
+Both assert `ViewerError("No trajectory loaded")`, and both pass alone and in
+the fast job. `tests/test_render_differential.py` calls `load_trajectory`,
+sorts *before* `test_server.py`, and only runs when `PROTEAN_DIFFERENTIAL=1`
+— so it leaves `server._trajectory` set and the two refusals stop refusing.
+
+**CI cannot see it.** The fast job runs `pytest -q` with no gate, so the
+polluting file skips; the browser job names four files explicitly, so
+`test_server.py` never runs beside it. The two only meet in a local full run.
+Confirmed identical on `main` at `efc42e0`, so this is not new.
+
+The fix is for `load_trajectory` to be undone between tests — an autouse
+fixture resetting the module globals — rather than for the tests to be
+reordered, since ordering is not something a test should have to rely on.
+
+Worth noting as a class: `server.py` keeps `_structure`, `_trajectory` and
+`_handles` as module globals, and only `_handles` is cleared anywhere. Any
+test asserting "nothing is loaded" is at the mercy of whatever ran first.

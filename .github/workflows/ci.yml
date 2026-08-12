@@ -85,7 +85,12 @@ jobs:
           PROTEAN_CHROME_FLAGS: >-
             --headless=new --no-sandbox --disable-dev-shm-usage
             --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
+        # An explicit file list, so a new browser suite has to be named here to
+        # run at all. tests/test_symmetry_differential.py proves a handle can
+        # name one symmetry copy, and every claim in it is a centroid read back
+        # from a real Mol* — nothing in the fast job can stand in for it.
         run: >-
           uv run pytest tests/test_selection_differential.py
           tests/test_render_differential.py tests/test_packaging.py
-          tests/test_secondary_structure_reference.py -q
+          tests/test_secondary_structure_reference.py
+          tests/test_symmetry_differential.py -q
