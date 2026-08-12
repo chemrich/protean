@@ -42,6 +42,7 @@ in T or `-` here, and the reference tests compare the structured classes.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -88,6 +89,37 @@ HELIX_CLASSES = ("H", "G", "I")
 STRAND_CLASSES = ("E", "B")
 
 
+def residue_identity(array: AtomArray[Any]) -> Callable[[int], tuple[Any, ...]]:
+    """A key per atom naming the residue it belongs to, uniquely.
+
+    Chain id and insertion code are both required: two chains routinely number
+    from 1, and keying on res_id alone welds them into one chain whose
+    "consecutive" residues are far apart.
+
+    **So is the symmetry copy, and leaving it out is a silent wrong answer.**
+    `load_structure` defaults to the biological assembly, where copies share
+    chain ids *and* residue numbers, so without `sym_id` every copy of residue
+    A/1 hashes to one key and all but the first are discarded. DSSP then runs
+    on one copy and reports the rest as loop — including any sheet formed
+    across a symmetry interface, which is exactly the kind that only exists in
+    the assembly. `residue_labels` in `selections_numpy` carries the copy for
+    the same reason; this is PLAN.md decision 9's rule, applied here.
+    """
+    has_sym = "sym_id" in array.get_annotation_categories()
+    sym = np.asarray(array.sym_id) if has_sym else None
+
+    def key(i: int) -> tuple[Any, ...]:
+        base = (
+            array.chain_id[i],
+            int(array.res_id[i]),
+            str(array.ins_code[i]),
+            str(array.res_name[i]),
+        )
+        return base if sym is None else (*base, int(sym[i]))
+
+    return key
+
+
 class _Backbone:
     """The N, CA, C and O of every residue that has all four, in chain order.
 
@@ -100,45 +132,39 @@ class _Backbone:
         amino = filter_amino_acids(array)
         wanted = {"N": 0, "CA": 1, "C": 2, "O": 3}
 
-        # Residue identity has to include the chain and the insertion code:
-        # two chains routinely number from 1, and keying on res_id alone welds
-        # them into one chain whose "consecutive" residues are far apart.
         keys: dict[tuple[Any, ...], int] = {}
         order: list[tuple[Any, ...]] = []
-        for i in np.flatnonzero(amino):
-            key = (
-                array.chain_id[i],
-                int(array.res_id[i]),
-                str(array.ins_code[i]),
-                str(array.res_name[i]),
-            )
+        identity = residue_identity(array)
+        for index in np.flatnonzero(amino):
+            key = identity(int(index))
             if key not in keys:
                 keys[key] = len(order)
                 order.append(key)
 
         coords = np.full((len(order), 4, 3), np.nan, dtype=np.float64)
-        for i in np.flatnonzero(amino):
-            name = str(array.atom_name[i])
-            slot = wanted.get(name)
+        for index in np.flatnonzero(amino):
+            i = int(index)
+            slot = wanted.get(str(array.atom_name[i]))
             if slot is None:
                 continue
-            key = (
-                array.chain_id[i],
-                int(array.res_id[i]),
-                str(array.ins_code[i]),
-                str(array.res_name[i]),
-            )
+            row = keys[identity(i)]
             # First occurrence wins: an unresolved altloc column would
             # otherwise let the last conformer silently define the geometry.
-            if np.isnan(coords[keys[key], slot]).all():
-                coords[keys[key], slot] = array.coord[i]
+            if np.isnan(coords[row, slot]).all():
+                coords[row, slot] = array.coord[i]
 
         complete = ~np.isnan(coords).any(axis=(1, 2))
         self.residue_keys = [k for k, ok in zip(order, complete, strict=True) if ok]
         self.coords = coords[complete]
-        self.chain_id = np.array([k[0] for k in self.residue_keys])
         self.res_name = np.array([k[3] for k in self.residue_keys])
+        # Chain *and* copy: two symmetry copies of chain A are both "A", so
+        # comparing chain ids alone would let a turn or bridge run from the end
+        # of one copy into the start of the next.
+        self.chain_id = np.array(
+            ["|".join(str(part) for part in (k[0], *k[4:])) for k in self.residue_keys]
+        )
         self.n = len(self.residue_keys)
+        self.dropped = int(np.count_nonzero(~complete))
 
     @property
     def N(self) -> np.ndarray:
@@ -317,11 +343,32 @@ def _bridge_candidates(
     return sorted(candidates)
 
 
-def _bridges(bonds: set[tuple[int, int]], n_residues: int) -> list[tuple[int, int, str]]:
-    """Beta-bridges as (i, j, kind), kind being 'P' parallel or 'A' anti."""
+def _bridges(
+    bonds: set[tuple[int, int]], n_residues: int, linked: np.ndarray
+) -> list[tuple[int, int, str]]:
+    """Beta-bridges as (i, j, kind), kind being 'P' parallel or 'A' anti.
+
+    Two independent constraints, and both are needed:
+
+    - candidates come out of the bond set rather than from scanning every
+      residue pair, which is what makes this linear in hydrogen bonds instead
+      of quadratic in residues;
+    - both partners need an unbroken peptide run either side of them, because
+      every rule reads i-1/i+1 and j-1/j+1 as sequence neighbours. Without it
+      the last residue of one chain acts as "the preceding residue" of the
+      first residue of the next, and a real hydrogen bond across that junction
+      is reported as a strand that does not exist.
+
+    The candidate filter narrows *where* to look; the chain-break filter
+    decides what counts once you look there. Dropping either one reintroduces
+    a defect the other cannot catch.
+    """
     has = bonds.__contains__
     found: list[tuple[int, int, str]] = []
+    neighboured = [_contiguous(linked, k - 1, k + 1) for k in range(n_residues)]
     for i, j in _bridge_candidates(bonds, n_residues):
+        if not (neighboured[i] and neighboured[j]):
+            continue
         parallel = (has((i - 1, j)) and has((j, i + 1))) or (
             has((j - 1, i)) and has((i, j + 1))
         )
@@ -332,6 +379,7 @@ def _bridges(bonds: set[tuple[int, int]], n_residues: int) -> list[tuple[int, in
             found.append((i, j, "P"))
         elif anti:
             found.append((i, j, "A"))
+    return found
     return found
 
 
@@ -466,7 +514,7 @@ def assign_per_residue(array: AtomArray[Any]) -> dict[tuple[Any, ...], str]:
     turns = _turns(bonds, bb.n)
     helix = _helices(turns, linked, bb.n)
 
-    ladders = _ladders(_bridges(bonds, bb.n))
+    ladders = _ladders(_bridges(bonds, bb.n, linked))
     strand = np.zeros(bb.n, dtype=bool)
     for (i_lo, i_hi), (j_lo, j_hi) in _bulge_link(ladders):
         strand[i_lo : i_hi + 1] = True
@@ -578,14 +626,9 @@ def _assign_uncached(array: AtomArray[Any]) -> np.ndarray:
     if not per_residue:
         return codes
     amino = filter_amino_acids(array)
-    for i in np.flatnonzero(amino):
-        key = (
-            array.chain_id[i],
-            int(array.res_id[i]),
-            str(array.ins_code[i]),
-            str(array.res_name[i]),
-        )
-        code = per_residue.get(key)
+    identity = residue_identity(array)
+    for index in np.flatnonzero(amino):
+        code = per_residue.get(identity(int(index)))
         if code is not None:
-            codes[i] = code
+            codes[index] = code
     return codes
