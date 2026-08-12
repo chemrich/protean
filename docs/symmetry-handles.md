@@ -9,6 +9,64 @@ is that a wrong answer here looks exactly like a right one.
 
 ---
 
+> ## Done, 2026-08-13 — and this plan was wrong in three places
+>
+> Implemented in PR 53 and recorded as **PLAN.md decision 15**, which is the
+> authority; this file is kept as the plan it was, with corrections marked
+> where it misled. §5's insistence on proving the mapping by geometry is the
+> part that earned its keep — it is what caught the off-by-one below.
+>
+> **The plan's own central risk landed exactly as described, three times over.**
+> Each of these parses cleanly, matches zero atoms, and is reported as a
+> successful empty selection:
+>
+> 1. **§2's predicate does not work as written.** The MolScript *script parser*
+>    accepts aliases, not symbol-table paths: it is **`atom.op-name`**, never
+>    `atom-property.core.operatorName`. §2's source reading was accurate and
+>    still produced an expression that matched nothing. The alias table is
+>    `mol-script/script/mol-script/symbols.js`.
+> 2. **String literals are delimited by backticks.** `(= atom.op-name "ASM_1")`
+>    parses `"ASM_1"` as a *symbol*, which compares unequal to every string; it
+>    must be `` (= atom.op-name `ASM_1`) ``. Nothing in protean's emitter had
+>    ever sent a string, so this was unexplored ground —
+>    `mol-script/language/parser.js:28`.
+> 3. **§3 and §4.1 assume `ASM_0`; the first operator is `ASM_1`.** Mol\*
+>    pre-increments its operator index in `getAssemblyOperators`, so biotite's
+>    0-based `sym_id k` is **`ASM_{k+1}`**. §3 was right that only coordinates
+>    could settle this and right that it had not been established — it was
+>    simply wrong about the answer.
+>
+> Also: **`operatorKey` is unusable.** §4.1 offers it as possibly the better
+> key. Every unit in an assembly reports key `-1`, so only the name works.
+>
+> **What the §5.1 mapping proof returned** — centroid distance between
+> biotite's copy and Mol\*'s operator, against a real headless Chrome:
+>
+> ```
+> 1HHO  sym_id 0 -> ASM_1  0.0000 A     1COI  sym_id 0 -> ASM_1  0.0000 A
+>       sym_id 1 -> ASM_2  0.0000 A           sym_id 1 -> ASM_2  0.0000 A
+>                                             sym_id 2 -> ASM_3  0.0000 A
+> ```
+>
+> 1COI is a coiled-coil trimer, added because §5.1 correctly notes that a
+> 2-copy fixture cannot tell "correct" from "consistently reversed".
+>
+> **§7's questions were answered by Charlie**: `sym N` in the grammar *and*
+> `copy=` on `interface()`, the grammar being the primitive so every
+> handle-taking tool becomes copy-aware at once; and `interface()` reports per
+> copy *plus* the total. The third was settled as §7 suggested — the integer
+> `sym` is the only vocabulary a caller sees, and `ASM_k` never leaves the
+> emitter.
+>
+> **One task §6 was missing, worth naming.** The list stops at the code. CI's
+> browser job names its test files explicitly, so the new suite did not run
+> there until it was added — the first run on PR 53 went green with all twenty
+> of its centroid tests unexecuted. A plan that adds a browser suite should
+> carry "add it to `.github/workflows/ci.yml`, and check the job's `N passed`
+> actually moved" as a task of its own.
+
+---
+
 ## 1. What is broken
 
 `load_structure` defaults to `assembly="biological"`, so the array protean
@@ -62,6 +120,14 @@ mol-script/runtime/query/table.js:326
 Symbol table *and* runtime binding. So the viewer can already express "this
 copy"; what is missing is protean saying which one.
 
+> **Corrected.** The conclusion holds, the spelling does not. Neither name
+> above is usable in a script: the parser takes the alias **`atom.op-name`**,
+> and the string needs backticks. Writing
+> `(= atom-property.core.operatorName "ASM_1")` from this section returns 0
+> atoms and reports success. Symbol table and runtime binding were the wrong
+> two files to check — `mol-script/script/mol-script/symbols.js` is the one
+> that decides what a script may say.
+
 **This means no new handle transport is needed.** Decision 9 asked for one; the
 actual shape is an emitter change plus a verified name mapping. That is a much
 smaller job than the backlog implies, and the backlog entry should be corrected
@@ -78,9 +144,19 @@ Both sides enumerate copies. Neither promises the other's order.
   names are `ASM_0`, `ASM_1`, … in the order operators are expanded from
   `pdbx_struct_assembly_gen.oper_expression`.
 
+> **Corrected: the names start at `ASM_1`.** The same line increments `index`
+> *before* building the name, and `operatorOffset` starts at 0, so the first
+> operator of the first generator is `ASM_1`. `ASM_0` exists nowhere and
+> selecting it returns 0 atoms with a success reply.
+
 For 1HHO that expression is `1,2` over `pdbx_struct_oper_list` ids `1` (identity,
 `x,y,z`) and `2` (`y,x,-z`), and both sides produce 2 copies. It is *plausible*
 that biotite's `sym_id = k` is Mol\*'s `ASM_k`. It is not established, and:
+
+> **Corrected: it is `ASM_{k+1}`,** proven by centroid on 1HHO and 1COI. The
+> caution in this section was right; only its guess was wrong. Of the three
+> risks listed below, the one that actually bit was none of them — it was an
+> off-by-one in a single `index++`.
 
 - a product expression like `(1-60)(P)` expands as a nested loop, and the two
   implementations may nest in opposite orders;
@@ -108,13 +184,31 @@ Smallest change that makes the invariant true rather than assumed.
       (and (= atom-property.core.operatorName "ASM_1") <atom.id test for copy 1>)))
 ```
 
+> **Corrected — this expression matches nothing**, in all three of its parts:
+> wrong symbol, wrong quotes, wrong index. What shipped is
+>
+> ```
+> (sel.atom.atom-groups :atom-test
+>   (or (and (= atom.op-name `ASM_1`) <atom.id test for copy 0>)
+>       (and (= atom.op-name `ASM_2`) <atom.id test for copy 1>)))
+> ```
+
 - A structure with no `sym_id`, or one copy, emits exactly what it does today.
   No behaviour change off the assembly path.
 - A set that *is* symmetric emits the same atom-id test under each operator,
   which is more verbose but identical in meaning — so existing handles keep
   working and the differential suite should not move.
+
+> **Amended.** A symmetric set is emitted as the *bare* atom-id test, not as n
+> identical clauses. It means the same thing, is far smaller, and keeps every
+> existing handle byte-for-byte what it was — which turns §5.3 from "the counts
+> should not move" into "the emitted string does not move" for those cases.
+
 - `operatorKey` (numeric) may be the better key than `operatorName`; decide
   after §5.1 measures which is stable.
+
+> **Answered: no.** Every unit in an assembly reports `operatorKey` `-1`, so it
+> cannot distinguish copies at all. `operatorName` is the only option.
 
 ### 4.2 Name a copy in the selection grammar
 
