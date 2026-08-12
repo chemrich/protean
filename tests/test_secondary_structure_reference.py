@@ -22,14 +22,10 @@ So this module pins the two things that claim rested on:
                       PROTEAN_DSSP=1 uv run pytest \\
                           tests/test_secondary_structure_reference.py
 
-The headline result, and the reason the item was misjudged: on strand protean
-assigns exactly as much as DSSP does (26 residues, 217 atoms), and on helix it
-is within one residue of DSSP's alpha-helix (89 atoms against 98). The rest of
-the apparent gap is DSSP's 3-10 helices, which P-SEA has no class for at all.
-
-Equal totals are not the same as equal placement, and the difference matters:
-protean and DSSP agree on only 20 of those 26 strand residues. Both facts are
-asserted below so neither can be quoted without the other.
+That measurement is what motivated porting DSSP in-tree. protean no longer uses
+P-SEA, so this module now does double duty: it keeps the record of what the old
+reference number was, and it scores the port against `mkdssp` residue by
+residue across a corpus.
 """
 
 from __future__ import annotations
@@ -50,6 +46,7 @@ from biotite.structure import (
 )
 from biotite.structure.io.pdbx import CIFFile
 
+from protean_mcp.analysis.secondary_structure import assign_per_residue
 from protean_mcp.fetch import fetch_structure_data
 from protean_mcp.selections_numpy import load_structure, select_mask
 
@@ -59,19 +56,40 @@ FIXTURE = "1ubq"
 # whole residues, which is how `ss` resolves: a residue in the class contributes
 # all of its atoms.
 DEPOSITED = {"H": 132, "S": 274}
+
+# What P-SEA used to answer, kept so the improvement is pinned rather than
+# asserted. It is no longer what protean does.
 PSEA = {"H": 89, "S": 217}
-DSSP_ATOMS = {
-    "H": 98,  # alpha-helix alone
-    "HGI": 148,  # every helix class, which is what PyMOL's `ss H` means
-    "E": 203,  # extended strand alone
-    "EB": 217,  # strand plus isolated bridge, the closest analogue of `ss S`
+
+# What `ss` answers now, from the in-tree DSSP port.
+OURS = {
+    "ss H": 148,  # every helix class, which is what PyMOL's `ss H` means
+    "ss S": 217,  # strand plus isolated bridge
+    "ss alpha": 98,
+    "ss 3-10": 50,
+    "ss pi": 0,  # 1UBQ has none; 4HHB is the fixture that does
+    "ss extended": 203,
+    "ss bridge": 14,
 }
+
 # Out of 76 amino-acid residues. Every pair disagrees by about the same amount,
 # which is the point: 82% is what two *accepted* assignments score against each
-# other, so protean's 82% against the header was never evidence of a defect.
+# other, so P-SEA's 82% against the header was never evidence of a defect.
 AGREEMENT = {("psea", "dssp"): 57, ("psea", "deposited"): 62, ("dssp", "deposited"): 62}
 
 RESIDUES = 76
+
+# (matched, total) residues against mkdssp 4.6.1, measured 2026-08-12. Pinned
+# exactly rather than as a threshold: a port that drifts to 99% should fail,
+# not pass quietly. 2LYZ is the one structure with a residual, two 3-10
+# residues mkdssp calls turn.
+CORPUS = {
+    "1ubq": (76, 76),
+    "1crn": (46, 46),
+    "2lyz": (127, 129),
+    "1ca2": (256, 256),
+    "4hhb": (574, 574),
+}
 
 # Every test here fetches 1UBQ from RCSB, so the whole module sits behind the
 # same gate the rest of the network-touching suite uses. The fast `pytest -q`
@@ -124,7 +142,7 @@ def _deposited(cif: CIFFile) -> dict[str, set[int]]:
     return {"H": helix, "S": strand}
 
 
-def _run_dssp(text: str) -> dict[int, str]:
+def _run_dssp(text: str) -> dict[int | tuple[str, int, str], str]:
     """One DSSP class per residue number, from the classic tabular output.
 
     Column 16 is the summary class and column 13 is a chain-break marker; the
@@ -141,7 +159,7 @@ def _run_dssp(text: str) -> dict[int, str]:
         )
         lines = out.read_text().splitlines()
 
-    codes: dict[int, str] = {}
+    codes: dict[int | tuple[str, int, str], str] = {}
     started = False
     for line in lines:
         if line.startswith("  #  RESIDUE"):
@@ -149,7 +167,20 @@ def _run_dssp(text: str) -> dict[int, str]:
             continue
         if not started or len(line) < 17 or line[13] == "!":
             continue
-        codes[int(line[5:10])] = line[16]
+        number = line[5:10].strip()
+        if not number:
+            continue
+        code = line[16] if line[16] != " " else "-"
+        # DSSP 4's polyproline II helix, which the port does not implement and
+        # which never overrides a structured class — it competes with T, S and
+        # blank. Folded to unstructured so the comparison is like for like.
+        if code == "P":
+            code = "-"
+        # Keyed both ways: by residue number for the single-chain 1UBQ
+        # comparisons, and by (chain, number, insertion) for everything else.
+        # 4HHB has four chains that all number from 1.
+        codes[int(number)] = code
+        codes[(line[11], int(number), line[10].strip())] = code
     return codes
 
 
@@ -198,59 +229,111 @@ async def test_counting_a_solvent_residue_number_counts_nothing(parsed):
     assert int(np.isin(parsed.res_id, [solvent_id]).sum()) > 0
 
 
-async def test_our_assignment_is_unchanged(parsed):
-    """The counts every other assertion here is relative to."""
-    assert int(select_mask("ss H", parsed).sum()) == PSEA["H"]
-    assert int(select_mask("ss S", parsed).sum()) == PSEA["S"]
+async def test_what_ss_answers_now(parsed):
+    """The counts every other assertion here is relative to.
 
-
-@needs_dssp
-async def test_strand_matches_dssp_in_amount_but_not_in_placement(fixture_text, parsed):
-    """protean assigns exactly as much strand as DSSP, in partly other places.
-
-    The amount is why "18% short on strand" was wrong; the placement is why
-    "protean's strand is correct" would be too strong.
+    `ss H` is 148 where P-SEA gave 89. The difference is not a bug fix on the
+    same quantity: `ss H` now means every helix class, and 3-10 helices were
+    previously unreachable rather than mis-assigned.
     """
-    codes = _run_dssp(fixture_text)
-    strand = {r for r, c in codes.items() if c in "EB"}
-    assert _atoms_of(parsed, strand) == DSSP_ATOMS["EB"] == PSEA["S"]
+    for selection, expected in OURS.items():
+        assert int(select_mask(selection, parsed).sum()) == expected, selection
 
-    starts: np.ndarray = get_residue_starts(parsed)
-    amino = filter_amino_acids(parsed)[starts]
+
+async def test_the_helix_types_partition_the_helix(parsed):
+    """The feature this port exists for: alpha, 3-10 and pi are addressable."""
+    parts = sum(
+        int(select_mask(s, parsed).sum()) for s in ("ss alpha", "ss 3-10", "ss pi")
+    )
+    assert parts == int(select_mask("ss H", parsed).sum()) == OURS["ss H"]
+    assert int(select_mask("ss alpha and ss 3-10", parsed).sum()) == 0
+
+
+async def test_we_now_beat_what_we_replaced(parsed):
+    """P-SEA on the same structure, kept so the improvement is measured.
+
+    Not a tautology: it asserts the old assignment still computes what it
+    always did, so the comparison is against a fixed point rather than against
+    whatever biotite does today.
+    """
     sse: np.ndarray = np.asarray(annotate_sse(parsed))
-    ours = {
-        int(rid)
-        for rid, code, is_amino in zip(parsed.res_id[starts], sse, amino, strict=True)
-        if is_amino and code == "b"
-    }
-    assert len(ours) == len(strand) == 26
-    assert len(ours & strand) == 20
+    per_atom: np.ndarray = np.asarray(spread_residue_wise(parsed, sse))
+    assert int((per_atom == "a").sum()) == PSEA["H"]
+    assert int((per_atom == "b").sum()) == PSEA["S"]
+    # P-SEA could not express either of the two rarer helix types at all.
+    assert PSEA["H"] < OURS["ss H"]
+    assert OURS["ss 3-10"] > 0
 
 
 @needs_dssp
-async def test_the_helix_gap_is_three_ten_helix(fixture_text, parsed):
-    """P-SEA has no 3-10 class, and that is nearly the entire helix shortfall.
-
-    Against DSSP's alpha-helix alone protean is one residue short. Against every
-    helix class it is 59 atoms short, and 50 of those are the 3-10 segments.
-    """
+async def test_our_assignment_matches_dssp_residue_for_residue(fixture_text, parsed):
+    """The port against the reference, on the structure everything else uses."""
     codes = _run_dssp(fixture_text)
-    alpha = {r for r, c in codes.items() if c == "H"}
-    every = {r for r, c in codes.items() if c in "HGI"}
-    assert _atoms_of(parsed, alpha) == DSSP_ATOMS["H"]
-    assert _atoms_of(parsed, every) == DSSP_ATOMS["HGI"]
-    assert _atoms_of(parsed, every - alpha) == DSSP_ATOMS["HGI"] - DSSP_ATOMS["H"]
-    assert PSEA["H"] < DSSP_ATOMS["H"] < DSSP_ATOMS["HGI"]
+    ours = assign_per_residue(parsed)
+    compared = matched = 0
+    for (chain, number, insertion, _name), code in ours.items():
+        reference = codes.get((str(chain), number, insertion))
+        if reference is None:
+            continue
+        compared += 1
+        matched += reference == code
+    assert compared == RESIDUES
+    assert matched == RESIDUES
+
+
+@needs_dssp
+@pytest.mark.parametrize("identifier", sorted(CORPUS))
+async def test_the_port_matches_dssp_across_a_corpus(identifier):
+    """Eleven structures were measured; five are pinned here.
+
+    Exact (matched, total) rather than a percentage floor: a port that drifts
+    from 100% to 99% on 4HHB should fail rather than pass a threshold. The one
+    structure with a residual is 2LYZ, where mkdssp calls two of our 3-10
+    residues turn.
+    """
+    text = (await fetch_structure_data(identifier)).data
+    array = load_structure(text, "mmcif", "asymmetric").array
+    codes = _run_dssp(text)
+    ours = assign_per_residue(array)
+
+    compared = matched = 0
+    for (chain, number, insertion, _name), code in ours.items():
+        reference = codes.get((str(chain), number, insertion))
+        if reference is None:
+            continue
+        compared += 1
+        matched += reference == code
+    assert (matched, compared) == CORPUS[identifier]
+
+
+@needs_dssp
+async def test_pi_helix_is_found_where_one_exists():
+    """1UBQ has no pi-helix, so it cannot show that I is ever assigned.
+
+    4HHB has 22 residues of it, and getting them right needed the priority
+    reversal DSSP 4 introduced — with alpha ranked first, 15 of these come out
+    as H and every count still looks plausible.
+    """
+    text = (await fetch_structure_data("4hhb")).data
+    array = load_structure(text, "mmcif", "asymmetric").array
+    ours = assign_per_residue(array)
+    pi = {key for key, code in ours.items() if code == "I"}
+    assert len(pi) == 22
+
+    codes = _run_dssp(text)
+    theirs = {key for key in pi if codes.get((str(key[0]), key[1], key[2])) == "I"}
+    assert theirs == pi
 
 
 @needs_dssp
 async def test_every_assignment_disagrees_with_every_other_by_about_as_much(
     fixture_text, parsed
 ):
-    """The measurement that retires "protean is the outlier".
+    """The measurement that retired "protean is the outlier".
 
-    DSSP against the header scores the same 82% protean does. An 18% spread is
-    what independent assignments of this structure cost, not a protean defect.
+    DSSP against the header scores the same 82% P-SEA did. An 18% spread is
+    what independent assignments of this structure cost, and it was never
+    evidence of a defect.
     """
     codes = _run_dssp(fixture_text)
     ranges = _deposited(CIFFile.deserialize(fixture_text))
@@ -273,17 +356,3 @@ async def test_every_assignment_disagrees_with_every_other_by_about_as_much(
     for (left, right), expected in AGREEMENT.items():
         matched = sum(a == b for a, b in zip(rows[left], rows[right], strict=True))
         assert matched == expected, f"{left} vs {right}"
-
-
-@needs_dssp
-def test_spread_residue_wise_is_what_makes_these_atom_counts_comparable(parsed):
-    """A guard on the comparison itself, not on either assignment.
-
-    Every number in this module is atoms-per-whole-residue. If `ss` ever
-    resolved to backbone atoms only, each count here would shrink and the
-    module would still pass while comparing two different quantities.
-    """
-    sse: np.ndarray = np.asarray(annotate_sse(parsed))
-    per_atom = np.asarray(spread_residue_wise(parsed, sse))
-    assert int((per_atom == "b").sum()) == PSEA["S"]
-    assert int(select_mask("ss S", parsed).sum()) == int((per_atom == "b").sum())

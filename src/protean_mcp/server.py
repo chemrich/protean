@@ -383,11 +383,16 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
       string, so there is no operator precedence to get wrong.
     name: the handle. Pass it to show(), color(), measure(), combine() and so on.
 
-    `ss H`, `ss S` and `ss L` select helix, strand and loop. Secondary
-    structure is computed from backbone geometry with P-SEA rather than read
-    from the file, so it answers the same way for a predicted model as for a
-    deposited one — but it is not the DSSP-style criterion PyMOL and Mol* use,
-    and it assigns slightly smaller elements than either.
+    `ss H`, `ss S` and `ss L` select helix, strand and loop, as in PyMOL. The
+    three helix types are separately addressable: `ss alpha` for the common
+    3.6-residue-per-turn helix, `ss 3-10` for the tighter one, `ss pi` for the
+    rare wide one, and `ss H` for all three together. `ss extended`,
+    `ss bridge`, `ss turn` and `ss bend` reach the remaining DSSP classes.
+    Note that `ss S` is strand, following PyMOL, where DSSP's own letter S
+    means bend — ask for `ss bend` if that is what you want.
+
+    Secondary structure is computed with DSSP rather than read from the file,
+    so it answers the same way for a predicted model as for a deposited one.
 
     Resolved in Python, so it works with no viewer open. Returns atom and
     residue counts, the chains touched, and the residue list.

@@ -21,18 +21,17 @@ import numpy as np
 from biotite.structure import (
     AtomArray,
     CellList,
-    annotate_sse,
     connect_via_residue_names,
     filter_amino_acids,
     filter_carbohydrates,
     filter_monoatomic_ions,
     filter_nucleotides,
     filter_solvent,
-    spread_residue_wise,
 )
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_assembly, get_structure
 
+from .analysis.secondary_structure import assign as assign_secondary_structure
 from .selections import (
     And,
     Compare,
@@ -468,48 +467,75 @@ def _check_elements(wanted: list[str], present: Mask) -> None:
     )
 
 
-# PyMOL's letters on the left, biotite's on the right. Written out rather than
-# taken from PyMOL wholesale: PyMOL also accepts the long names, and a model
+# Selection token -> the DSSP classes it means. Assignment distinguishes all
+# three helix types, so `ss` can address each one as well as the lumped
+# categories PyMOL offers. PyMOL's own long names are kept, because a model
 # writing `ss helix` should not be told that is a typo.
-_SS_CODES = {
-    "H": "a",
-    "HELIX": "a",
-    "S": "b",
-    "E": "b",  # DSSP writes strands as E; PyMOL takes S
-    "SHEET": "b",
-    "STRAND": "b",
-    "L": "c",
-    "C": "c",
-    "LOOP": "c",
-    "COIL": "c",
+#
+# **`ss S` is sheet, not bend.** S is PyMOL's letter for strand and DSSP's
+# letter for bend, and those are different things. PyMOL wins, because its is
+# the syntax a caller actually writes; bend is reachable as `ss bend`.
+_HELIX = frozenset("HGI")
+_STRAND = frozenset("EB")
+_UNSTRUCTURED = frozenset({"T", "S", "-"})
+
+_SS_CLASSES: dict[str, frozenset[str]] = {
+    "H": _HELIX,  # every helix type, which is what PyMOL's `ss H` means
+    "HELIX": _HELIX,
+    "ALPHA": frozenset("H"),
+    "HELIX_ALPHA": frozenset("H"),
+    "3-10": frozenset("G"),
+    "310": frozenset("G"),
+    "G": frozenset("G"),
+    "HELIX_310": frozenset("G"),
+    "PI": frozenset("I"),
+    "I": frozenset("I"),
+    "HELIX_PI": frozenset("I"),
+    "S": _STRAND,
+    "E": _STRAND,
+    "SHEET": _STRAND,
+    "STRAND": _STRAND,
+    "EXTENDED": frozenset("E"),
+    "BRIDGE": frozenset("B"),
+    "B": frozenset("B"),
+    "TURN": frozenset("T"),
+    "T": frozenset("T"),
+    "BEND": frozenset("S"),
+    "L": _UNSTRUCTURED,
+    "C": _UNSTRUCTURED,
+    "LOOP": _UNSTRUCTURED,
+    "COIL": _UNSTRUCTURED,
 }
 
 
 def _secondary_structure(array: AtomArray[Any], values: tuple[str, ...]) -> Mask:
-    """Atoms whose residue is helix, strand or coil.
+    """Atoms whose residue is helix, strand, loop, or one specific class.
 
     Assigned here rather than read from the file. A deposited HELIX/SHEET
     record is the depositor's opinion and is missing altogether from anything
     predicted or minimised, so computing it means `ss` answers the same way for
-    every structure. biotite's P-SEA runs off backbone geometry.
+    every structure.
+
+    The assignment is DSSP (see analysis/secondary_structure.py), which
+    replaced P-SEA because P-SEA has classes for alpha and beta only: 3-10 and
+    pi helices were not misclassified by it, they were unreachable.
 
     Like `elem`, the vocabulary is closed, so an unrecognised value is refused
     rather than quietly matching nothing.
     """
     wanted: set[str] = set()
     for value in values:
-        code = _SS_CODES.get(value.upper())
-        if code is None:
+        classes = _SS_CLASSES.get(value.upper())
+        if classes is None:
+            listed = ", ".join(sorted(_SS_CLASSES))
             raise SelectionError(
-                f"Unknown secondary structure {value!r}. Expected H (helix), "
-                "S (strand) or L (loop)"
+                f"Unknown secondary structure {value!r}. Expected one of: {listed}"
             )
-        wanted.add(code)
-    # One code per residue, in residue order; '' for anything with no CA, which
-    # is every non-amino-acid and so never matches.
-    per_residue: Mask = np.asarray(annotate_sse(array))
-    per_atom: Mask = np.asarray(spread_residue_wise(array, per_residue))
-    return np.isin(per_atom, list(wanted))
+        wanted |= classes
+    # One class per atom, '' for anything that has none — every non-amino-acid,
+    # and any residue whose backbone is too incomplete to assign. Neither can
+    # match, including via `ss L`.
+    return np.isin(assign_secondary_structure(array), sorted(wanted))
 
 
 def _numeric_terms(
