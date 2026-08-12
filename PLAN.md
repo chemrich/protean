@@ -234,14 +234,18 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
    all look plausible. Residue keys, handle summaries and interface residues
    now carry `sym`, which appears only when more than one copy is present.
 
-   **Not solved: addressing one copy.** Handles reach the viewer as `atom.id`
-   ranges, and an assembly duplicates those ids, so a set covering one copy
-   cannot be expressed. Everything the tools currently produce is symmetric
-   across copies, which is why the transport stays exact — but until it can
-   say "this copy", `interface("A", "B")` on a tetramer reports the total A-B
-   interface rather than alpha1beta1 alone. Mol\* exposes `operator-name` for
-   colouring but appears to offer no MolScript predicate for it, so this needs
-   new transport, not a bigger array.
+   **Not solved here: addressing one copy.** Handles reach the viewer as
+   `atom.id` ranges, and an assembly duplicates those ids, so a set covering
+   one copy cannot be expressed. Everything the tools currently produce is
+   symmetric across copies, which is why the transport stays exact — but until
+   it can say "this copy", `interface("A", "B")` on a tetramer reports the
+   total A-B interface rather than alpha1beta1 alone.
+
+   **Correction (2026-08-12): the blocker this stated was wrong.** The
+   paragraph above used to end "Mol\* exposes `operator-name` for colouring but
+   appears to offer no MolScript predicate for it, so this needs new transport,
+   not a bigger array." Mol\* 4.18 does offer one, and no new transport was
+   needed. Decision 15 records what was actually in the way and closes this.
 
    Two things worth recording. The biological assembly is not always larger:
    12E8's asymmetric unit holds two Fabs and its assembly is *half* its size,
@@ -398,3 +402,57 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
     smoothly and describes nothing, and the only evidence available is the
     atom count. So the counts must match exactly and a mismatch is refused,
     naming both numbers, rather than warned about.
+
+## Decisions (2026-08-12) — addressing one symmetry copy
+
+15. **A handle names a symmetry copy with Mol\*'s operator, and the mapping is
+    proven by geometry.** Closes decision 9's open limitation and backlog
+    item 7.
+
+    A biological assembly repeats the asymmetric unit, and the copies share
+    chain ids, residue numbers and `atom_id`. A handle travels as an atom-id
+    predicate, so it matched the named atom in *every* copy: a set covering
+    one copy could not be expressed at all. Two patches had accumulated around
+    that one gap — `rank` was refused on multi-copy assemblies, and
+    `interface()` could only report a fused total.
+
+    `to_molscript` now groups a set by biotite's `sym_id` and keys each group
+    on the operator, `(= atom.op-name \`ASM_k\`)`. A set that covers every copy
+    identically is still emitted as the bare atom-id test, which means exactly
+    the same thing, so every existing handle sends byte-for-byte what it always
+    sent. `sym N` joins the grammar as a leaf predicate and `interface()` takes
+    `copy=N`; with no copy named it reports the total *and* a per-copy
+    breakdown, because the total is several interfaces fused and used to read
+    like one.
+
+    **Three findings, each of which parses cleanly and matches nothing.** This
+    is why decision 9 recorded the wrong blocker.
+
+    - The MolScript **alias** is `atom.op-name`. The symbol-table path
+      `atom-property.core.operatorName` is real, and is what a source reading
+      finds, but the script parser does not accept it.
+    - MolScript delimits string literals with **backticks**. A double-quoted
+      `"ASM_1"` parses as a *symbol*, compares unequal to every string, and
+      comes back as a successful empty selection.
+    - `operatorKey` is unusable: every unit in an assembly reports key `-1`,
+      so only the name distinguishes copies.
+
+    **The mapping is off by one, and only coordinates could have caught it.**
+    Mol\* pre-increments its operator index, so the first operator is `ASM_1`
+    while biotite's `sym_id` is 0-based: `sym_id k` is `ASM_{k+1}`. Every copy
+    has the same atoms, residues and chains, so a permuted or offset mapping
+    gives identical counts, identical residue lists and a normal-looking
+    picture. The tests therefore assert **centroids**, on 1HHO (2 copies) and
+    1COI (3 copies — a 2-copy fixture cannot tell "correct" from "consistently
+    reversed"), and each copy must be nearer its own operator than any other.
+    Hard-coding `ASM_0`, restoring the off-by-one, and dropping the operator
+    clause each fail that suite.
+
+    **What was verified in the picture, not the numbers.** `chain A` on 1HHO's
+    assembly reds two subunits; `chain A and sym 0` reds one. The first attempt
+    at that check was inconclusive in a way worth recording: from the default
+    camera the view is nearly down the assembly's 2-fold, so copy 0's spacefill
+    sits exactly in front of copy 1's and the two selections give almost the
+    same red-pixel count (5004 vs 4937) despite differing by 1167 atoms. That
+    was occlusion, not a bug — but it means a pixel count from that angle is
+    not evidence either way. Orbiting 90 degrees separates them.

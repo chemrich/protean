@@ -166,16 +166,42 @@ other selection needs.
 **The caveat, which is item 10 below:** P-SEA is not what PyMOL and Mol\* use,
 and the numbers differ.
 
-### 7. A handle cannot address one symmetry copy
+### 7. A handle cannot address one symmetry copy — fixed
 
-Decision 9's unsolved limitation, now visible in a published comparison:
-`interface("A", "B")` on 1HHO reports the whole tetramer's A–B interface
-(2765.9 Å² per side) where PyMOL on the asymmetric unit reports one αβ pair
-(873.9 Å²). Both are right about different molecules, and protean cannot
-currently be asked for the second.
+`interface("A", "B")` on 1HHO reported the whole tetramer's A–B interface
+(2765.9 Å² per side) and protean could not be asked for one αβ pair. It can
+now: `sym N` selects a copy, `interface(copy=N)` describes one, and with no
+copy named the reply carries a per-copy breakdown beside the total.
 
-Needs new handle transport — atom-id ranges cannot distinguish copies that
-share ids. Hardest item here.
+```
+interface("A", "B")          -> 5530.2 A^2 total; per_copy 1776.9, 1786.7
+interface("A", "B", copy=0)  -> 1776.9 A^2 (892.7 + 884.2)
+select("chain A and sym 0")  -> one subunit, and drawn as one subunit
+```
+
+**"Needs new handle transport" was wrong.** Mol\* 4.18 has a MolScript
+predicate for the symmetry operator, so the emitter simply keys each copy's
+atom-id test on the operator name. Three things had hidden it, each of which
+parses cleanly and matches nothing: the script alias is `atom.op-name` rather
+than the symbol-table path `atom-property.core.operatorName`; MolScript string
+literals take **backticks**, so a double-quoted `"ASM_1"` parses as a symbol
+and matches nothing while reporting success; and `operatorKey` is `-1` on
+every unit, so only the name distinguishes copies.
+
+**The mapping is off by one.** Mol\* pre-increments its operator index, so
+`sym_id k` is `ASM_{k+1}`. Counting could never have caught that — every copy
+has the same atoms, residues and chains — so it is proven by centroid against
+a real viewer on 1HHO and on 1COI, which has three copies because a two-copy
+fixture cannot distinguish "correct" from "consistently reversed".
+
+The `rank` refusal added in PR 50 is retired: it existed only because the
+transport could not name a copy.
+
+One note on the 873.9 Å² this entry used to compare against. That is *PyMOL's*
+number for the asymmetric unit, from `get_area` on split objects. protean's own
+answer for the same pair is 892.7 Å² per side, and its `copy=0` result
+reproduces its own asymmetric-unit result exactly. The 2.1% gap is dot-based
+SASA against biotite's Shrake-Rupley — a method difference, not this item.
 
 ### 8. Selection keywords still unsupported — mostly closed
 
