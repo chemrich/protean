@@ -14,7 +14,8 @@ from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
 
 from protean_mcp import selections_numpy
-from protean_mcp.analysis.secondary_structure import _Backbone, _bridges
+from protean_mcp.analysis import secondary_structure
+from protean_mcp.analysis.secondary_structure import _Backbone, _bridges, _contiguous
 from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
     _SS_CLASSES,
@@ -1103,3 +1104,114 @@ def test_a_bridge_is_not_built_across_a_chain_break():
     broken = unbroken.copy()
     broken[4] = False  # residues 4 and 5 are in different chains
     assert _bridges(bonds, 10, broken) == []
+
+
+# -- secondary structure: caching and the bridge scan --------------------------
+
+
+def _brute_force_bridges(
+    bonds: set[tuple[int, int]], n_residues: int, linked: Any
+) -> list[tuple[int, int, str]]:
+    """The all-pairs scan `_bridges` replaced, kept as the oracle.
+
+    Carries the chain-break guard too, so the comparison stays fair: the
+    optimisation is about *which pairs to test*, not about which pairs count.
+    """
+    neighboured = [_contiguous(linked, k - 1, k + 1) for k in range(n_residues)]
+    has = bonds.__contains__
+    found: list[tuple[int, int, str]] = []
+    for i in range(1, n_residues - 1):
+        if not neighboured[i]:
+            continue
+        for j in range(i + 3, n_residues - 1):
+            if not neighboured[j]:
+                continue
+            parallel = (has((i - 1, j)) and has((j, i + 1))) or (
+                has((j - 1, i)) and has((i, j + 1))
+            )
+            anti = (has((i, j)) and has((j, i))) or (
+                has((i - 1, j + 1)) and has((j - 1, i + 1))
+            )
+            if parallel:
+                found.append((i, j, "P"))
+            elif anti:
+                found.append((i, j, "A"))
+    return found
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_reading_bridges_off_the_bonds_finds_exactly_what_scanning_all_pairs_did(seed):
+    """The optimisation must lose nothing, including the ordering.
+
+    Candidates are read out of the hydrogen-bond set instead of every residue
+    pair being tested. That is only valid because every bridge rule is a
+    conjunction of bonds among {i-1,i,i+1} x {j-1,j,j+1}, so a pair with no
+    bond nearby cannot satisfy one. A missed rule position would show up as a
+    dropped bridge on some seed and nowhere else — and `_ladders` chains
+    bridges in arrival order, so the sequence has to match too, not just the
+    set.
+    """
+    rng = np.random.default_rng(seed)
+    n = 40
+    pairs = rng.integers(0, n, size=(300, 2))
+    bonds = {(int(a), int(b)) for a, b in pairs if abs(int(a) - int(b)) >= 2}
+
+    # Breaks scattered through, so both filters are exercised at once: a
+    # candidate scan that quietly ignored `linked` would agree with an oracle
+    # that also ignored it, and both would be wrong.
+    linked = rng.random(n - 1) > 0.15
+    assert _bridges(bonds, n, linked) == _brute_force_bridges(bonds, n, linked)
+
+    unbroken = np.ones(n - 1, dtype=bool)
+    assert _bridges(bonds, n, unbroken) == _brute_force_bridges(bonds, n, unbroken)
+
+
+def test_the_assignment_is_computed_once_for_a_structure(monkeypatch, ideal_helix):
+    """`ss` re-derives per node, so `ss H or ss S` paid for it twice."""
+    secondary_structure._cache.clear()
+    calls = 0
+    original = secondary_structure._assign_uncached
+
+    def counted(array):
+        nonlocal calls
+        calls += 1
+        return original(array)
+
+    monkeypatch.setattr(secondary_structure, "_assign_uncached", counted)
+    count("ss H or ss S or ss L", ideal_helix)
+    assert calls == 1
+
+
+def test_moving_the_atoms_is_not_served_from_the_cache(ideal_helix):
+    """Keyed on content, not on `id(array)`.
+
+    A trajectory sets coordinates in place on the same object, so an identity
+    key would answer with the previous frame's helices for this frame's
+    geometry — a wrong answer that looks like a fast one.
+    """
+    secondary_structure._cache.clear()
+    assert count("ss H", ideal_helix) > 0
+
+    # In place, on the same object. Handing this a fresh array would pass
+    # against an `id(array)` key too, which is exactly the bug being guarded.
+    ideal_helix.coord = ideal_helix.coord * 3.0
+    assert count("ss H", ideal_helix) == 0
+
+
+def test_a_caller_cannot_corrupt_the_cached_assignment(ideal_helix):
+    """The cache hands out copies, or the first caller's edits become truth."""
+    secondary_structure._cache.clear()
+    secondary_structure.assign(ideal_helix)  # populate
+    served = secondary_structure.assign(ideal_helix)  # a cache *hit*
+    served[:] = "Z"
+    assert (secondary_structure.assign(ideal_helix) == "Z").sum() == 0
+
+
+def test_the_cache_does_not_grow_without_bound(ideal_helix):
+    """Each entry holds a copy of the coordinates it was keyed on."""
+    secondary_structure._cache.clear()
+    for scale in range(1, 12):
+        moved = ideal_helix.copy()
+        moved.coord = moved.coord * (1.0 + scale)
+        secondary_structure.assign(moved)
+    assert len(secondary_structure._cache) <= secondary_structure._CACHE_ENTRIES
