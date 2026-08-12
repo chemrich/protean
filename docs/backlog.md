@@ -221,63 +221,112 @@ bond, and the two answers are both defensible. Recorded and asserted from both
 sides so that either engine changing its mind is visible, rather than folded
 into the agreement table where it would look like a bug.
 
-### 10. Secondary structure disagrees with every other tool by ~18%
+### 10. Secondary structure — the ~18% was measured against the wrong thing
 
-On 1UBQ:
+**The original claim was that protean disagrees "with every other tool" by
+~18%, on the strength of PyMOL and Mol\* agreeing exactly at 132/274. Neither
+was computing an assignment.** Both were reading `struct_conf` and
+`struct_sheet_range` out of the deposited mmCIF — one depositor's opinion,
+counted twice. Parsing those records directly reproduces 132 and 274 exactly.
+
+PyMOL's *own* computed assignment is a third answer:
+
+```
+1UBQ as loaded (deposited header):   ss H = 132   ss S = 274
+after cmd.dss() (PyMOL computes):    ss H = 135   ss S = 266
+```
+
+Measured against real DSSP (`mkdssp` 4.6.1) rather than against the header, in
+atoms on 1UBQ:
 
 | | `ss H` | `ss S` |
 |---|---|---|
-| PyMOL 3.1.0 | 132 | 274 |
-| Mol\* transpiler | 132 | 274 |
-| protean (P-SEA) | 89 | 217 |
+| deposited header (was labelled "PyMOL" and "Mol\*") | 132 | 274 |
+| PyMOL 3.1.0, computed | 135 | 266 |
+| DSSP, α-helix and extended strand only | 98 | 203 |
+| DSSP, all helix classes / strand + bridge | 148 | **217** |
+| protean (P-SEA) | 89 | **217** |
 
-PyMOL and Mol\* agree exactly with each other, and protean is the outlier —
-both of them use a DSSP-style hydrogen-bond criterion where P-SEA works off
-backbone geometry alone.
+**Strand was never 18% short.** protean assigns exactly as much strand as DSSP
+— 26 residues, 217 atoms. It does not put all of it in the same place: the two
+agree on 20 of those 26 residues, so the equal totals are partly coincidence
+and this should not be quoted as "protean's strand is correct".
 
-Per residue the two assignments agree **82%** of the time, and every
-disagreement is the same kind: P-SEA trims one or two residues from the ends of
-each element and misses the shortest ones altogether. The elements are in the
-same places; their edges are not.
+**The helix gap is 3-10 helix.** P-SEA has a class for α and one for β and
+nothing else. Against DSSP's α-helix alone protean is one residue short (89
+against 98); the remaining 50 atoms are four short 3-10 segments P-SEA cannot
+express at all.
+
+Per residue, over 76 amino acids:
+
+| | agreement |
+|---|---|
+| protean vs the deposited header | 82% |
+| **DSSP vs the deposited header** | **82%** |
+| protean vs DSSP | 75% |
+
+DSSP scores against the depositor exactly what protean scores against the
+depositor. An ~18% spread is what two accepted assignments of this structure
+cost each other, not evidence of a protean defect.
 
 ```
-PyMOL   SSSSSSS--SSSSSSSS-----HHHHHHHHHHHH-----SSSSSS--SSS-----HHHH----SSSSSSSSS----
+DSSP    -EEEEEETTS-EEEEE--TTSBHHHHHHHHHHHH---GGGEEEEETTEEPPTTSBTGGGTPPTT-EEEEEE--S--
 protean -SSSSS----SSSSSSS-----HHHHHHHHHHH-------SSSS-------------------SSSSSSSSSS---
+deposit SSSSSSS--SSSSSSSS-----HHHHHHHHHHHH-----SSSSSS--SSS-----HHHH----SSSSSSSSS----
 ```
 
-Both numbers are asserted in the differential suite, so this cannot drift
-silently.
+All of this is asserted in `tests/test_secondary_structure_reference.py`,
+including the header numbers, so the correction cannot quietly revert. DSSP is
+**not** a dependency — it is a scoring tool, the way PyMOL is, behind
+`PROTEAN_DSSP=1`, and CI does not install it.
 
-**A from-scratch Kabsch-Sander implementation was tried and abandoned.** About
-250 lines: amide hydrogens placed from the preceding carbonyl, the published
-energy term, n-turns, bridges and ladders. It was measured rather than assumed,
-and the numbers did not justify shipping it:
+**What is left to decide is a semantics question, not an algorithm one:**
+should `ss H` mean α-helix, or every helix class? P-SEA can only answer the
+first, and read that way protean is 89 against DSSP's 98.
 
-| on 1UBQ | agreement with PyMOL | `ss H` | `ss S` |
-|---|---|---|---|
-| P-SEA (current) | 82% | 89 | 217 |
-| the attempt | 82% | 148 | 217 |
-| PyMOL / Mol\* | — | 132 | 274 |
+Measured on one structure so far. 1L2Y below is the obvious second, because it
+is largely 3-10 helix and so sits directly on P-SEA's blind spot.
 
-Helix improved; strand did not move at all. On 1L2Y it did beat P-SEA (80%
-against 65%), so the idea is not wrong — the implementation is. Two concrete
-defects were found and are worth knowing before anyone tries again:
+**A from-scratch Kabsch-Sander implementation was tried and abandoned — and it
+was working.** About 250 lines: amide hydrogens placed from the preceding
+carbonyl, the published energy term, n-turns, bridges and ladders. It was
+measured against the deposited header, judged to have missed, and deleted
+without being committed. Against real DSSP it did not miss:
+
+| on 1UBQ | `ss H` | `ss S` |
+|---|---|---|
+| P-SEA (current) | 89 | 217 |
+| **the attempt** | **148** | **217** |
+| **DSSP (all helix / strand + bridge)** | **148** | **217** |
+| the deposited header it was scored against | 132 | 274 |
+
+Both numbers exact, on both classes. The verdict recorded at the time — "helix
+improved; strand did not move at all" — was reading a pass as a failure: strand
+did not move because it was already where DSSP puts it, and 148 was not
+overshooting 132, it was landing on DSSP.
+
+The code is gone (never committed; only this entry survives), so a second
+attempt starts from scratch but on much better footing. Two defects were found
+and recorded then, and **both should now be re-verified rather than trusted** —
+they were diagnosed while chasing the wrong target:
 
 - the residue index space included waters, so "residue i+4" could be a solvent
   molecule rather than the fourth residue along — and every turn and bridge
-  rule is expressed in exactly that adjacency;
-- only 54 backbone hydrogen bonds were detected where DSSP finds 60-70 on this
-  structure, so the bridge and ladder rules were being starved of input.
+  rule is expressed in exactly that adjacency. Plausible on its face and worth
+  checking first;
+- "only 54 backbone hydrogen bonds where DSSP finds 60-70" — the 60-70 was
+  never measured against `mkdssp`, and the assignment it supposedly starved
+  came out matching DSSP exactly, so this one is suspect.
 
-It was dropped rather than fixed because a half-right assignment is worse than
-a documented divergence. P-SEA is at least a published algorithm whose
-disagreement is characterised above; a home-grown one matching neither
-reference would be a third answer with nothing behind it.
+Closing this properly no longer means taking `mkdssp` as a real dependency.
+`mkdssp` is not in homebrew-core (it is the `brewsci/bio` tap, or conda-forge)
+and has no wheel, so requiring it fails the same test decision 8 applied to
+APBS: an optional binary cannot be the only way to get an answer. The one
+pip-installable pure-Python option, `pydssp`, declares **torch**.
 
-Closing this properly means either taking `mkdssp` as a real dependency —
-biotite only wraps it — or porting DSSP against a trusted reference assignment
-so each rule can be validated as it goes. Both are larger decisions than the
-selector that prompted them.
+So the routes are: leave P-SEA and document the 3-10 blind spot, or re-port
+DSSP in-tree — this time validated per rule against `mkdssp`, which is now
+wired up as a scoring tool.
 
 ## Not bugs, but worth knowing
 

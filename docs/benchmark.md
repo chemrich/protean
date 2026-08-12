@@ -180,8 +180,8 @@ first run. Five have since been implemented; the protean column is current:
 
 | Selection | PyMOL | protean |
 |---|---|---|
-| `ss H` | 132 atoms | **89 atoms** — assigned, but by a different algorithm |
-| `ss S` | 274 atoms | **217 atoms** — as above |
+| `ss H` | 132 atoms | **89 atoms** — but see below; PyMOL is echoing the file |
+| `ss S` | 274 atoms | **217 atoms** — which is exactly DSSP's own count |
 | `byres (name CA extend 1)` | 602 atoms | **602 atoms** |
 | `bymolecule (resi 10)` | 602 atoms | **602 atoms** |
 | `rank 5` | 1 atom | **1 atom** |
@@ -198,11 +198,22 @@ The one thing protean does better here is *how* it loses: each refusal names
 the reason rather than returning zero atoms, which is the failure mode that
 costs the most time.
 
-`ss` is the partial one. protean assigns secondary structure with P-SEA where
-PyMOL and Mol\* both use a DSSP-style criterion, and the three do not agree:
-the two of them say 132 and 274, protean says 89 and 217. Per residue the
-assignments agree 82%, with P-SEA consistently trimming the ends of elements
-and missing the shortest. Recorded as item 10 in [the backlog](backlog.md).
+`ss` looked like the partial one, and the comparison above is not measuring
+what it claims. **PyMOL's 132 and 274 are the deposited `struct_conf` and
+`struct_sheet_range` records read out of the mmCIF, not an assignment PyMOL
+computed** — parsing those records directly gives both numbers exactly, and
+PyMOL's own computed answer (`cmd.dss()`) is a different one again, 135 and
+266. Mol\* reports 132/274 for the same reason.
+
+Measured against real DSSP (`mkdssp` 4.6.1) instead, protean assigns **exactly
+as much strand as DSSP does** (217 atoms), and on helix it is one residue short
+of DSSP's α-helix (89 against 98). The rest of the apparent helix gap is 3-10
+helix, which P-SEA has no class for. Per residue, DSSP agrees with the deposited
+header 82% of the time — precisely what protean scores against it.
+
+So this row is a computed assignment against a file annotation, and the ~18%
+was never evidence of a defect. Recorded as item 10 in
+[the backlog](backlog.md), with the full table.
 
 There is a second PyMOL advantage no table shows: **a model already knows PyMOL**.
 It writes `byres (chain A within 4 of chain B)` correctly with no tool schema at

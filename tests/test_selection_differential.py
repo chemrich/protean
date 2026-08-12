@@ -514,21 +514,27 @@ async def test_the_two_engines_disagree_about_metal_coordination():
 # -- secondary structure -------------------------------------------------------
 
 # `ss` was refused entirely until secondary structure was assigned here. It is
-# assigned with P-SEA, which works off backbone geometry; PyMOL and Mol* both
-# use a DSSP-style hydrogen-bond criterion, and the three do not agree.
+# assigned with P-SEA, which works off backbone geometry.
 #
-# On 1UBQ, PyMOL 3.1.0 and Mol*'s transpiler both say 132 helix atoms and 274
-# strand; P-SEA says 89 and 217. Per residue the two agree 82% of the time, and
-# the disagreements are all of one kind: P-SEA trims one or two residues from
-# the ends of each element and misses the shortest ones. The elements
-# themselves are in the same places.
+# On 1UBQ Mol*'s transpiler says 132 helix atoms and 274 strand, where P-SEA
+# says 89 and 217. **Mol* is not computing an assignment.** 132 and 274 are the
+# deposited `struct_conf` and `struct_sheet_range` records in the mmCIF, and
+# parsing those records directly reproduces both numbers exactly —
+# tests/test_secondary_structure_reference.py pins that, and it is the whole
+# correction to backlog item 10. PyMOL reports the same two numbers for the same
+# reason; its own computed assignment (`cmd.dss()`) is a third answer, 135/266.
 #
-# This is asserted rather than hidden, both ways. If the assignment is ever
-# moved onto a DSSP-style criterion, this test fails and says so instead of
-# quietly changing every `ss` answer in the project.
+# So this is a computed assignment against a file annotation, and says nothing
+# about either algorithm. Real DSSP scores 82% against that annotation — exactly
+# what P-SEA scores.
+#
+# Asserted anyway, from both sides. What reaches the viewer has to stay
+# predictable whatever it derives from, and a silent change in either the
+# annotation or our assignment should fail loudly rather than move every `ss`
+# answer in the project.
 SS_FIXTURE = "1ubq"
 SS_OURS = {"ss H": 89, "ss S": 217}
-SS_THEIRS = {"ss H": 132, "ss S": 274}
+SS_DEPOSITED = {"ss H": 132, "ss S": 274}
 
 
 @pytest.fixture(scope="module")
@@ -547,12 +553,14 @@ async def test_secondary_structure_matches_our_assignment(ss_counts, selection):
     assert ss_counts["python"][selection] == SS_OURS[selection]
 
 
-@pytest.mark.parametrize("selection", sorted(SS_THEIRS))
-async def test_the_transpiler_still_disagrees_by_the_known_amount(ss_counts, selection):
-    """A recorded divergence, not a passing grade.
+@pytest.mark.parametrize("selection", sorted(SS_DEPOSITED))
+async def test_the_transpiler_reports_the_deposited_annotation(ss_counts, selection):
+    """A recorded divergence, not a passing grade — and not a second opinion.
 
-    Asserted from both sides so that upstream changing its mind, or us moving
-    to a DSSP-style criterion, retires the claim rather than leaving it stale.
+    Mol* returns the depositor's own helix and sheet ranges here, so this pins
+    what the transpiler does rather than scoring our assignment against it. If
+    upstream ever starts computing secondary structure instead, these counts
+    move and the claim retires rather than going stale.
     """
-    assert ss_counts["molstar"][selection] == SS_THEIRS[selection]
+    assert ss_counts["molstar"][selection] == SS_DEPOSITED[selection]
     assert ss_counts["python"][selection] < ss_counts["molstar"][selection]
