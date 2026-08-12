@@ -134,3 +134,70 @@ def test_mixed_runs_and_singletons_are_both_present(array):
     script = to_molscript(array, np.array([0, 1, 2, 4]))
     assert ">= atom.id 1" in script and "set.has" in script
     assert script.startswith("(sel.atom.atom-groups :atom-test (or ")
+
+
+# -- rendering across symmetry copies -----------------------------------------
+#
+# On a biological assembly the copies share atom ids, so an atom-id predicate
+# alone matches the named atom in every copy. These pin the operator clause
+# that makes one copy addressable. The mapping itself (biotite sym_id k is
+# Mol*'s ASM_{k+1}) is proven against a real viewer by centroid in
+# test_selection_differential.py; counting cannot check it.
+
+
+@pytest.fixture
+def assembly() -> AtomArray[Any]:
+    """Two copies of a three-atom asymmetric unit, sharing atom ids 1-3."""
+    atoms = [
+        _atom("A", 1, "ALA", "N", 1),
+        _atom("A", 1, "ALA", "CA", 2),
+        _atom("A", 2, "GLY", "CA", 3),
+    ] * 2
+    arr = atom_array(atoms)
+    arr.set_annotation("sym_id", np.array([0, 0, 0, 1, 1, 1]))
+    return arr
+
+
+def test_a_set_inside_one_copy_names_that_copy(assembly):
+    # atom_id 2 in copy 1 only. Without the operator clause this predicate
+    # would also match atom_id 2 in copy 0 -- the bug item 7 is about.
+    script = to_molscript(assembly, np.array([4]))
+    assert "(= atom.op-name `ASM_2`)" in script
+    assert "ASM_1" not in script
+
+
+def test_copies_are_one_based_against_biotite_zero_based(assembly):
+    assert "`ASM_1`" in to_molscript(assembly, np.array([1]))
+    assert "`ASM_2`" in to_molscript(assembly, np.array([4]))
+
+
+def test_an_asymmetric_set_emits_one_clause_per_copy(assembly):
+    script = to_molscript(assembly, np.array([0, 1, 4]))
+    assert script.count("atom.op-name") == 2
+    assert "`ASM_1`" in script and "`ASM_2`" in script
+    assert script.startswith("(sel.atom.atom-groups :atom-test (or ")
+
+
+def test_a_symmetric_set_is_emitted_exactly_as_before(assembly, array):
+    # Every copy covered identically: the operator clauses would be two
+    # identical id tests, so the bare test means the same thing. Existing
+    # handles must keep sending byte-for-byte what they always sent.
+    script = to_molscript(assembly, np.array([0, 1, 2, 3, 4, 5]))
+    assert "atom.op-name" not in script
+    assert script == to_molscript(array, np.array([0, 1, 2]))
+
+
+def test_string_literals_use_backticks_not_quotes(assembly):
+    # MolScript delimits strings with backticks. A double-quoted "ASM_2"
+    # parses as a symbol, matches nothing, and reports success.
+    script = to_molscript(assembly, np.array([4]))
+    assert '"' not in script
+    assert "`ASM_2`" in script
+
+
+def test_a_single_copy_assembly_emits_no_operator_clause(array):
+    # sym_id present but constant: nothing to disambiguate, and the viewer's
+    # naming for a one-operator assembly is then never relied on.
+    single = array.copy()
+    single.set_annotation("sym_id", np.zeros(single.array_length(), dtype=int))
+    assert "atom.op-name" not in to_molscript(single, np.array([0, 1, 2]))
