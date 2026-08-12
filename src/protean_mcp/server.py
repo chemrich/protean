@@ -2082,12 +2082,15 @@ async def interface(
     contact_limit: int = 200,
     name_a: str = "iface_a",
     name_b: str = "iface_b",
+    copy: int | None = None,
 ) -> dict[str, Any]:
     """Describe the interface between two chains: buried area and contacts.
 
     identifier: defaults to the loaded structure, which is the usual case.
       Naming a different structure runs the analysis standalone, with no
       viewer and no handles.
+    copy: which symmetry copy to describe, numbered from 0 as `sym N` numbers
+      them. Only meaningful on a biological assembly.
     name_a, name_b: handles registered for the interface residues of each side,
       so the result can be shown or coloured without re-encoding it as a
       selection string. Pass them to show(), color(), combine() or near().
@@ -2095,6 +2098,13 @@ async def interface(
     Returns the buried surface area (total and per side), the interface
     residues with how much each buries, and the contacts classified as salt
     bridges, hydrogen bonds or polar contacts.
+
+    On a biological assembly the copies share chain ids, so "chain A" names
+    one chain in every copy and an A-B interface is several interfaces at
+    once — haemoglobin reports 2765.9 A^2 where one alpha-beta pair buries
+    873.9. With no `copy` the answer describes the whole structure and carries
+    a `per_copy` breakdown; the total is more than their sum, because chain A
+    of one copy also touches chain B of another.
 
     Solvent is excluded. The `criterion` field states how contacts were
     judged: real donor-H...acceptor geometry when the structure has hydrogens,
@@ -2120,13 +2130,17 @@ async def interface(
         label = identifier or _structure_identifier
 
     try:
-        result = _interface(array, chain_a, chain_b, contact_limit=contact_limit)
+        result = _interface(
+            array, chain_a, chain_b, contact_limit=contact_limit, copy=copy
+        )
     except (ContactError, SuperpositionError) as exc:
         raise ViewerError(str(exc)) from exc
 
     payload: dict[str, Any] = {"identifier": label, **result.as_dict()}
     if on_loaded:
-        call = f"interface({chain_a}, {chain_b})"
+        call = f"interface({chain_a}, {chain_b})" + (
+            f" copy {copy}" if copy is not None else ""
+        )
         for name, indices, side in (
             (name_a, result.indices_a, chain_a),
             (name_b, result.indices_b, chain_b),

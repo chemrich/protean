@@ -246,3 +246,83 @@ def test_single_copy_structures_carry_no_sym_field(salt_bridge_pair):
 def test_indices_still_cover_both_copies(salt_bridge_pair):
     doubled = interface(_copied(salt_bridge_pair), "A", "B")
     assert len(doubled.indices_a) == 8, "all four atoms of both ASP copies"
+
+
+# -- naming one symmetry copy --------------------------------------------------
+#
+# Copies share chain ids, so `interface("A", "B")` on an assembly describes
+# several interfaces fused into one number. These pin the breakdown and the
+# `copy` argument that reaches a single one.
+
+
+def test_a_copy_reproduces_the_single_structure_exactly(salt_bridge_pair):
+    """The invariant worth having: copy 0 of a doubled structure is the
+    original structure, to the decimal. A mapping that picked up the wrong
+    atoms would still produce a plausible area, so equality is the check."""
+    single = interface(salt_bridge_pair, "A", "B")
+    copy_zero = interface(_copied(salt_bridge_pair), "A", "B", copy=0)
+    assert copy_zero.buried_area == pytest.approx(single.buried_area)
+    assert copy_zero.buried_area_a == pytest.approx(single.buried_area_a)
+    assert len(copy_zero.interface_residues_a) == len(single.interface_residues_a)
+
+
+def test_a_copy_result_says_which_copy_it_is(salt_bridge_pair):
+    result = interface(_copied(salt_bridge_pair), "A", "B", copy=1)
+    assert result.copy == 1
+    assert result.as_dict()["copy"] == 1
+
+
+def test_a_copy_handle_indexes_the_array_the_caller_passed(salt_bridge_pair):
+    """Indices are resolved inside a private subset and must be mapped back.
+
+    Left unmapped they would still be valid positions in the caller's array —
+    just the wrong atoms — so this asserts the copy they land in, not merely
+    that they are in range.
+    """
+    doubled = _copied(salt_bridge_pair)
+    result = interface(doubled, "A", "B", copy=1)
+    assert result.indices_a.max() < doubled.array_length()
+    assert {int(v) for v in np.asarray(doubled.sym_id)[result.indices_a]} == {1}
+    assert {int(v) for v in np.asarray(doubled.sym_id)[result.indices_b]} == {1}
+
+
+def test_no_copy_named_reports_every_copy_separately(salt_bridge_pair):
+    result = interface(_copied(salt_bridge_pair), "A", "B")
+    assert [entry["copy"] for entry in result.per_copy] == [0, 1]
+    assert result.note
+    for entry in result.per_copy:
+        assert entry["buried_area"] > 0
+
+
+def test_the_total_still_describes_the_whole_structure(salt_bridge_pair):
+    """The existing answer must not change: a caller who asked for the whole
+    thing before still gets the whole thing."""
+    doubled = _copied(salt_bridge_pair)
+    result = interface(doubled, "A", "B")
+    # The copies sit 40 A apart here, so nothing bridges them and the total is
+    # their sum. On a real assembly it exceeds the sum by the contacts between
+    # different copies -- which is what the note field exists to say. Compared
+    # loosely because per_copy entries are rounded for display.
+    assert result.buried_area == pytest.approx(
+        sum(entry["buried_area"] for entry in result.per_copy), rel=1e-3
+    )
+    assert len(result.indices_a) == 8
+
+
+def test_a_single_copy_structure_gains_no_breakdown(salt_bridge_pair):
+    """Nothing changes off the assembly path."""
+    result = interface(salt_bridge_pair, "A", "B")
+    assert result.per_copy == []
+    assert result.copy is None
+    assert "per_copy" not in result.as_dict()
+    assert "copy" not in result.as_dict()
+
+
+def test_an_unknown_copy_is_refused_by_name(salt_bridge_pair):
+    with pytest.raises(ContactError, match="copies present: 0, 1"):
+        interface(_copied(salt_bridge_pair), "A", "B", copy=5)
+
+
+def test_a_copy_on_an_asymmetric_unit_is_refused(salt_bridge_pair):
+    with pytest.raises(ContactError, match="asymmetric unit"):
+        interface(salt_bridge_pair, "A", "B", copy=0)

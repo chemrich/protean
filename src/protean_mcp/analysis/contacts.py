@@ -13,7 +13,7 @@ reports in ``criterion`` which of the two produced the result.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -82,6 +82,12 @@ class InterfaceResult:
     contacts: list[Contact]
     criterion: str
     solvent: str
+    # Which symmetry copy this describes, or None for the whole structure.
+    copy: int | None = None
+    # On a multi-copy assembly with no copy named: one summary per copy, so a
+    # total that fuses several interfaces cannot be mistaken for one of them.
+    per_copy: list[dict[str, Any]] = field(default_factory=list)
+    note: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         # indices_a/indices_b are deliberately absent: thousands of integers
@@ -89,7 +95,7 @@ class InterfaceResult:
         kinds: dict[str, int] = {}
         for contact in self.contacts:
             kinds[contact.kind] = kinds.get(contact.kind, 0) + 1
-        return {
+        out = {
             "chain_a": self.chain_a,
             "chain_b": self.chain_b,
             "buried_area": round(self.buried_area, 1),
@@ -101,6 +107,28 @@ class InterfaceResult:
             "contacts": [c.as_dict() for c in self.contacts],
             "criterion": self.criterion,
             "solvent": self.solvent,
+        }
+        if self.copy is not None:
+            out["copy"] = self.copy
+        if self.per_copy:
+            out["per_copy"] = self.per_copy
+        if self.note:
+            out["note"] = self.note
+        return out
+
+    def summary(self) -> dict[str, Any]:
+        """The compact form used for one entry of ``per_copy``."""
+        kinds: dict[str, int] = {}
+        for contact in self.contacts:
+            kinds[contact.kind] = kinds.get(contact.kind, 0) + 1
+        return {
+            "copy": self.copy,
+            "buried_area": round(self.buried_area, 1),
+            "buried_area_a": round(self.buried_area_a, 1),
+            "buried_area_b": round(self.buried_area_b, 1),
+            "residue_count_a": len(self.interface_residues_a),
+            "residue_count_b": len(self.interface_residues_b),
+            "contact_counts": kinds,
         }
 
 
@@ -211,14 +239,36 @@ def _classify(
     return None
 
 
-def interface(
+def _copy_ids(array: AtomArray[Any]) -> list[int]:
+    """The symmetry copies present, or [] on an asymmetric unit."""
+    if "sym_id" not in array.get_annotation_categories():
+        return []
+    return sorted({int(v) for v in np.asarray(array.sym_id)})
+
+
+def interface(  # noqa: PLR0913
     array: AtomArray[Any],
     chain_a: str,
     chain_b: str,
     contact_limit: int = 200,
     include_water: bool = False,
+    *,
+    copy: int | None = None,
 ) -> InterfaceResult:
     """Describe the interface between two chains of one structure.
+
+    On a biological assembly the copies of the asymmetric unit share chain
+    ids, so "chain A" names one chain in *every* copy and an A-B interface is
+    really several interfaces at once. Haemoglobin's assembly reports 2765.9
+    A^2 between A and B where the one alpha-beta pair buries 873.9 A^2 — both
+    true, about different molecules.
+
+    ``copy`` names one copy, numbered from 0 as ``sym N`` numbers them. With
+    no copy given the answer still describes the whole structure, as it always
+    has, but carries a ``per_copy`` breakdown so a fused total cannot be
+    mistaken for a single interface. The total is **not** the sum of the
+    parts: chain A of one copy also touches chain B of another, and that
+    contribution belongs to neither.
 
     Solvent is excluded by default: ordered waters sit in the gap between
     subunits and fill the contact list with water-to-water pairs that say
@@ -231,6 +281,67 @@ def interface(
     """
     if chain_a == chain_b:
         raise ContactError("chain_a and chain_b must differ")
+    copies = _copy_ids(array)
+
+    if copy is not None:
+        if copy not in copies:
+            available = ", ".join(str(c) for c in copies) or "none"
+            raise ContactError(
+                f"No symmetry copy {copy} in this structure; copies present: "
+                f"{available}. A structure loaded as the asymmetric unit has "
+                'no copies — load with assembly="biological" to address one'
+            )
+        keep = np.flatnonzero(np.asarray(array.sym_id) == copy)
+        result = _interface(array[keep], chain_a, chain_b, contact_limit, include_water)
+        # The indices have to mean something in the array the caller handed
+        # us, not in this private subset, or every handle names wrong atoms.
+        return replace(
+            result,
+            copy=copy,
+            indices_a=keep[result.indices_a],
+            indices_b=keep[result.indices_b],
+        )
+
+    result = _interface(array, chain_a, chain_b, contact_limit, include_water)
+    if len(copies) <= 1:
+        return result
+
+    per_copy: list[dict[str, Any]] = []
+    for k in copies:
+        keep = np.flatnonzero(np.asarray(array.sym_id) == k)
+        subset = array[keep]
+        # An assembly generator can select a subset of chains, so do not
+        # assume every copy holds both. Skipping is right where raising would
+        # lose the copies that do.
+        if (
+            not (subset.chain_id == chain_a).any()
+            or not (subset.chain_id == chain_b).any()
+        ):
+            continue
+        one = _interface(subset, chain_a, chain_b, contact_limit, include_water)
+        per_copy.append(replace(one, copy=k).summary())
+
+    return replace(
+        result,
+        per_copy=per_copy,
+        note=(
+            f"this structure has {len(copies)} symmetry copies sharing chain "
+            f"ids, so buried_area is every {chain_a}-{chain_b} contact in the "
+            "assembly at once; per_copy breaks it down, and the total exceeds "
+            "their sum by the contacts between different copies. Pass copy=N, "
+            f"or select '{chain_a} and sym N', for one of them"
+        ),
+    )
+
+
+def _interface(
+    array: AtomArray[Any],
+    chain_a: str,
+    chain_b: str,
+    contact_limit: int = 200,
+    include_water: bool = False,
+) -> InterfaceResult:
+    """One interface over whatever atoms it is given."""
     # Dropping solvent renumbers the atoms, so keep the map back to the
     # caller's numbering: the indices we return have to mean something in the
     # array they handed us, not in this private copy.
