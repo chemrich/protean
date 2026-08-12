@@ -394,6 +394,13 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
     Secondary structure is computed with DSSP rather than read from the file,
     so it answers the same way for a predicted model as for a deposited one.
 
+    `sym N` names one copy of the asymmetric unit in a biological assembly,
+    numbered from 0. Copies share chain ids and residue numbers — haemoglobin
+    loaded as its assembly has two chains called A — so `chain A` alone means
+    every copy of that chain, and `chain A and sym 0` is the single subunit.
+    A selection with no `sym` term keeps meaning every copy. Refused on a
+    structure loaded as the asymmetric unit, which has only one.
+
     Resolved in Python, so it works with no viewer open. Returns atom and
     residue counts, the chains touched, and the residue list.
     """

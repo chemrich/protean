@@ -168,7 +168,7 @@ class Extend:
 # how case is treated, belongs to the evaluator; the grammar only needs to know
 # the name is real.
 PROPERTIES = frozenset(
-    {"chain", "segi", "resi", "resn", "name", "elem", "index", "ss", "rank"}
+    {"chain", "segi", "resi", "resn", "name", "elem", "index", "ss", "rank", "sym"}
 )
 
 _PROPERTY_ALIASES = {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
@@ -371,14 +372,27 @@ def test_every_keyword_is_evaluable(keyword, tiny_structure):
 
 
 # A value each property will accept. Most take free text, so a placeholder is
-# fine; `resi`, `index` and `rank` need a number, and `elem` and `ss` have closed
-# vocabularies where a placeholder is correctly refused.
-_PROBE_VALUES = {"resi": "1", "index": "1", "rank": "0", "elem": "C", "ss": "H"}
+# fine; `resi`, `index`, `rank` and `sym` need a number, and `elem` and `ss`
+# have closed vocabularies where a placeholder is correctly refused.
+_PROBE_VALUES = {
+    "resi": "1",
+    "index": "1",
+    "rank": "0",
+    "sym": "0",
+    "elem": "C",
+    "ss": "H",
+}
 
 
 @pytest.mark.parametrize("prop", sorted(PROPERTIES))
 def test_every_property_is_evaluable(prop, tiny_structure):
-    select_mask(f"{prop} {_PROBE_VALUES.get(prop, 'X')}", tiny_structure)
+    # `sym` reads the symmetry-copy annotation, which only a biological
+    # assembly carries, and refuses by name where there is none. Annotating
+    # the probe keeps this a vocabulary-drift check rather than a test of that
+    # refusal, which test_selections_numpy owns.
+    array = tiny_structure.copy()
+    array.set_annotation("sym_id", np.zeros(array.array_length(), dtype=int))
+    select_mask(f"{prop} {_PROBE_VALUES.get(prop, 'X')}", array)
 
 
 @pytest.mark.parametrize("prop", sorted(COMPARABLE))
