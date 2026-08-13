@@ -452,7 +452,7 @@ ensemble and ubiquitin:
   chains and 8,015 residues; measurements and set operations were exact;
   sessions restored every handle with none dropped.
 
-## 12. Two refusal tests pass only because CI never runs them together
+## 12. Two refusal tests pass only because CI never runs them together — fixed
 
 Found 2026-08-13 while running the whole suite with the browser gate on:
 
@@ -471,9 +471,27 @@ polluting file skips; the browser job names its files explicitly, so
 `test_server.py` never runs beside it. The two only meet in a local full run.
 Confirmed identical on `main` at `efc42e0`, so this is not new.
 
-The fix is for `load_trajectory` to be undone between tests — an autouse
-fixture resetting the module globals — rather than for the tests to be
-reordered, since ordering is not something a test should have to rely on.
+**Fixed in two independent changes, because there were two problems.**
+
+*The product bug.* `fetch_structure` cleared `_handles` and
+`_conservation_scores` but not `_trajectory`, so loading a new structure left
+`rmsf()` answering about the previous one — it reads the trajectory's own
+`stack[0]`, never `_structure`, so nothing mismatched and nothing complained
+while the viewer showed a different molecule. Loading a structure now ends the
+session before it, `_keyframes` included, and says so in the reply. `superpose`
+does the same, since it also replaces the loaded structure.
+
+*The test isolation.* An autouse fixture in `conftest.py` restores the session
+globals around every test, rather than reordering the files — ordering is not
+something a test should have to rely on.
+
+**The obvious way to verify the fixture does not work, and this is the
+interesting part.** Disabling it leaves the whole suite passing, because the
+product fix above *also* clears the pollution: `test_server.py` fetches a
+structure long before it reaches the two refusals. Two independent fixes mask
+one symptom. `tests/test_session_isolation.py` therefore checks the fixture
+directly — one test leaks on purpose, the next asserts the leak was cleaned —
+and that pair does fail when the fixture is disabled.
 
 **Planned in [docs/session-state.md](session-state.md), which found a product
 bug underneath the test one.** `fetch_structure` clears `_handles` and

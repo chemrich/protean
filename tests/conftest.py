@@ -10,6 +10,7 @@ from typing import Any
 import aiohttp
 import pytest
 
+import protean_mcp.server as server_mod
 from protean_mcp.connection import ViewerBridge
 
 
@@ -89,3 +90,56 @@ async def viewer(bridge):
     await bridge.wait_for_viewer(timeout=5)
     yield v
     await v.close()
+
+
+# -- session state ------------------------------------------------------------
+
+
+# `server.py` keeps the session in module globals: what is loaded, what
+# trajectory is on it, which handles exist. A test that calls the real tools
+# leaves those set, and the next test inherits them.
+#
+# That is not hypothetical. `test_render_differential.py` loads a trajectory
+# and sorts before `test_server.py`, so under PROTEAN_DIFFERENTIAL=1 two tests
+# asserting "no trajectory loaded" stopped refusing and failed — on `main`, for
+# as long as anyone had been running the whole suite locally. CI never saw it:
+# the fast job skips the polluting file for want of the gate, and the browser
+# job does not run `test_server.py` beside it. See backlog item 12.
+#
+# Restored rather than reset-to-empty, so this cannot quietly become a
+# different kind of pollution: a test that arranges state in a module-scoped
+# fixture still finds it there.
+#
+# `_bridge` is deliberately absent. It is a connection, not session state, and
+# `test_server.py` installs it through module-scoped fixtures that a
+# function-scoped reset would tear down underneath them.
+_SESSION_GLOBALS = (
+    "_structure",
+    "_structure_error",
+    "_structure_identifier",
+    "_trajectory",
+    "_path_tracing",
+)
+
+# Containers rebound by nothing and mutated in place, so restoring the object
+# restores nothing — their *contents* have to be snapshotted.
+_SESSION_CONTAINERS = ("_keyframes", "_conservation_scores")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_state():
+    """Give every test the session state it started with."""
+    scalars = {name: getattr(server_mod, name) for name in _SESSION_GLOBALS}
+    containers = {name: dict(getattr(server_mod, name)) for name in _SESSION_CONTAINERS}
+    handles = dict(server_mod._handles.handles)
+
+    yield
+
+    for name, value in scalars.items():
+        setattr(server_mod, name, value)
+    for name, value in containers.items():
+        container = getattr(server_mod, name)
+        container.clear()
+        container.update(value)
+    server_mod._handles.handles.clear()
+    server_mod._handles.handles.update(handles)
