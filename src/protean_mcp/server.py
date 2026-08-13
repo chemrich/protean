@@ -58,7 +58,9 @@ from .selections import parse as _parse_selection
 from .selections_numpy import _residue_keys
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
+from .selections_numpy import dominant_altloc as _dominant_altloc
 from .selections_numpy import evaluate as _evaluate
+from .selections_numpy import has_altlocs as _has_altlocs
 from .selections_numpy import load_structure as _load_structure
 
 logger = logging.getLogger(__name__)
@@ -390,9 +392,9 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
     elif int(theirs) == ours:
         parts.append(f", {ours} atoms in both viewer and analysis")
     elif surplus and int(theirs) - ours == surplus:
-        # The same molecule described two defensible ways, not two molecules.
-        # Saying so beats declaring every number unreliable over a difference
-        # that is fully accounted for.
+        # Kept for the formats where the two builders can still disagree about
+        # conformers. Both now load every one of them, so on the common path
+        # the counts match and this does not fire.
         parts.append(
             f", {ours} atoms here and {theirs} in the viewer; the {surplus} "
             "extra are alternate conformers, which analysis resolves to one "
@@ -406,6 +408,18 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
             f", MISMATCH: {ours} atoms here but {theirs} in the viewer{explained}. "
             "Analysis and the picture are different molecules; treat counts, "
             "buried areas and potentials as unreliable"
+        )
+    # Alternate conformers are drawn and selectable, but analysis reads one
+    # state at a time -- states never coexist, so geometry over both describes
+    # no molecule. Which one is used has to be in the reply: a number computed
+    # over conformer A while the picture shows both is exactly the kind of
+    # quiet mismatch the rest of this note exists to prevent.
+    if _has_altlocs(loaded.array):
+        letter = _dominant_altloc(loaded.array)
+        parts.append(
+            f"; {surplus} of these are alternate conformers, and analysis "
+            f"reads conformer {letter} — select `alt ''+{letter}` to see it, "
+            f"or `alt {letter}` for just the atoms that differ"
         )
     if loaded.note:
         parts.append(f" — {loaded.note}")

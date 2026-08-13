@@ -800,15 +800,17 @@ _TWO_AND_THREE = [
 ]
 
 
-def test_altloc_surplus_counts_the_conformers_analysis_drops():
-    """The count the viewer holds and the analysis does not.
+def test_altloc_surplus_counts_the_alternate_rows_and_all_are_loaded():
+    """The invariant inverted, deliberately.
 
-    Stated as the invariant that matters: what biotite parsed plus the surplus
-    is every row in the file, which is what Mol* draws.
+    This used to assert that what biotite parsed *plus* the surplus was every
+    row in the file: the surplus was the gap between the two halves. Every
+    conformer is now loaded, so the array **is** every row, and the surplus
+    describes how much of it is alternates rather than how much is missing.
     """
     loaded = load_structure(_cif(_TWO_AND_THREE), "mmcif", "asymmetric")
     assert loaded.altloc_surplus == 3
-    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+    assert loaded.array.array_length() == len(_TWO_AND_THREE)
 
 
 def test_altloc_surplus_is_zero_when_every_atom_has_one_conformer():
@@ -828,7 +830,7 @@ def test_altloc_surplus_ignores_models_after_the_first():
     rows = _TWO_AND_THREE + [(e, n, a, r, 2) for e, n, a, r, _ in _TWO_AND_THREE]
     loaded = load_structure(_cif(rows), "mmcif", "asymmetric")
     assert loaded.altloc_surplus == 3
-    assert loaded.array.array_length() + loaded.altloc_surplus == len(_TWO_AND_THREE)
+    assert loaded.array.array_length() == len(_TWO_AND_THREE)
 
 
 def test_altloc_surplus_separates_atoms_that_share_a_conformer_letter():
@@ -859,7 +861,7 @@ def test_altloc_surplus_reads_pdb_columns():
     )
     loaded = load_structure(text, "pdb", "asymmetric")
     assert loaded.altloc_surplus == 1
-    assert loaded.array.array_length() + loaded.altloc_surplus == 4
+    assert loaded.array.array_length() == 4
 
 
 _ASSEMBLY_OF_TWO = """
@@ -899,7 +901,7 @@ def test_altloc_surplus_scales_with_the_assembly():
     loaded = load_structure(_cif(rows) + _ASSEMBLY_OF_TWO, "mmcif", "biological")
     assert loaded.copies == 2
     assert loaded.altloc_surplus == 2
-    assert loaded.array.array_length() + loaded.altloc_surplus == len(rows) * 2
+    assert loaded.array.array_length() == len(rows) * 2
 
 
 # -- extend saturation and rank transport --------------------------------------

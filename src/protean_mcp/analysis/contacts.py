@@ -19,7 +19,12 @@ from typing import Any
 import numpy as np
 from biotite.structure import AtomArray, CellList, filter_solvent, hbond, sasa
 
-from ..selections_numpy import residue_labels
+from ..selections_numpy import (
+    conformer_state,
+    dominant_altloc,
+    has_altlocs,
+    residue_labels,
+)
 
 # Heavy-atom fallback: N/O pairs this close are conventionally treated as
 # putative polar contacts when hydrogens are absent.
@@ -84,6 +89,10 @@ class InterfaceResult:
     solvent: str
     # Which symmetry copy this describes, or None for the whole structure.
     copy: int | None = None
+    # Which alternate conformer the geometry was computed over, "" when the
+    # structure has none. Stated because a buried area over conformer A while
+    # the picture shows A and B is a quiet mismatch.
+    conformer: str = ""
     # On a multi-copy assembly with no copy named: one summary per copy, so a
     # total that fuses several interfaces cannot be mistaken for one of them.
     per_copy: list[dict[str, Any]] = field(default_factory=list)
@@ -110,6 +119,8 @@ class InterfaceResult:
         }
         if self.copy is not None:
             out["copy"] = self.copy
+        if self.conformer:
+            out["conformer"] = self.conformer
         if self.per_copy:
             out["per_copy"] = self.per_copy
         if self.note:
@@ -350,6 +361,19 @@ def _interface(
     else:
         origin_index = np.flatnonzero(~filter_solvent(array))
         array = array[origin_index]
+
+    # One conformer state, for the same reason and by the same mechanism.
+    # Alternate conformers never coexist, so an area computed with both of
+    # them present buries each behind the other and belongs to no molecule --
+    # and because a residue's shared atoms carry no letter, both states land
+    # in one residue entry and their areas sum. On 5FJI that inflates the
+    # worst residues by nearly half.
+    conformer = ""
+    if has_altlocs(array):
+        conformer = dominant_altloc(array)
+        keep = np.flatnonzero(conformer_state(array, conformer))
+        origin_index = origin_index[keep]
+        array = array[keep]
     mask_a = _chain(array, chain_a)
     mask_b = _chain(array, chain_b)
 
@@ -416,6 +440,7 @@ def _interface(
         indices_b=origin_index[atoms_b],
         contacts=contacts[:contact_limit],
         criterion=criterion,
+        conformer=conformer,
         solvent=(
             "contacts include water; buried area is always solvent-free"
             if include_water

@@ -103,11 +103,11 @@ class LoadedStructure:
     decides whether an atom count here means the same thing as an atom count
     in the viewer.
 
-    ``altloc_surplus`` is how many atoms the viewer holds that this array does
-    not, purely because biotite resolves alternate conformers at parse time and
-    Mol\\* draws all of them. It is a knowable difference rather than evidence
-    the two are holding different molecules, so it is measured and subtracted
-    before anything is called a mismatch.
+    ``altloc_surplus`` is how many rows of the file are alternate conformers
+    beyond the first at their site. Both halves now hold every conformer, so
+    this is no longer a difference to explain away -- it is how much of the
+    shared atom count is alternates, which is what a caller needs to know
+    before reading a number computed over one conformer state.
     """
 
     array: AtomArray[Any]
@@ -146,15 +146,18 @@ _SITE_COLUMNS = (
 
 
 def altloc_surplus(text: str, fmt: str) -> int:
-    """How many atoms the viewer will hold that the analysis will not.
+    """How many rows are alternate conformers beyond one per atom site.
 
-    biotite keeps one conformer per atom site; Mol\\* draws every conformer in
-    the file. On a structure with alternate conformations the two therefore
-    disagree about the atom count while describing the same molecule — 217
-    atoms apart on 5FJI, which read as a mismatch for a whole phase.
+    217 on 5FJI, 12 on 1AKE. This used to measure a disagreement: biotite kept
+    one conformer per site and Mol\\* drew all of them, so the two halves
+    reported different atom counts for the same molecule. Both now load every
+    conformer and the counts agree, so the number has stopped being a
+    discrepancy and become a description -- how much of the structure is
+    alternates, and therefore how much of it a single conformer state leaves
+    out.
 
-    Counted from the file rather than by differencing the two builders, because
-    a difference that explains itself explains any bug along with it.
+    Still counted from the file rather than by differencing the two builders,
+    because a difference that explains itself explains any bug along with it.
     """
     if fmt == "pdb":
         return _pdb_altloc_surplus(text)
@@ -227,8 +230,10 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
 
     if fmt == "pdb":
         try:
-            array = PDBFile.read(io.StringIO(text)).get_structure(
-                model=1, extra_fields=EXTRA_FIELDS
+            array = _normalise_altloc(
+                PDBFile.read(io.StringIO(text)).get_structure(
+                    model=1, extra_fields=EXTRA_FIELDS, altloc="all"
+                )
             )
         except Exception as exc:
             raise SelectionError(f"Could not parse pdb coordinates: {exc}") from exc
@@ -251,14 +256,18 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
     try:
         handle = CIFFile.read(io.StringIO(text))
         if assembly == "asymmetric":
-            array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
+            array = _normalise_altloc(
+                get_structure(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
+            )
             return LoadedStructure(
                 array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
             )
 
         copies = assembly_multiplicity(text)
         if copies > MAX_ASSEMBLY_COPIES:
-            array = get_structure(handle, model=1, extra_fields=EXTRA_FIELDS)
+            array = _normalise_altloc(
+                get_structure(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
+            )
             return LoadedStructure(
                 array=array,
                 assembly="asymmetric",
@@ -270,7 +279,9 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                 ),
                 altloc_surplus=surplus,
             )
-        array = get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS)
+        array = _normalise_altloc(
+            get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
+        )
     except SelectionError:
         raise
     except Exception as exc:
@@ -289,6 +300,92 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
 
 def _has_sym(array: AtomArray[Any]) -> bool:
     return "sym_id" in array.get_annotation_categories()
+
+
+# biotite writes "." for an atom with no alternate when parsing mmCIF and " "
+# when parsing PDB, and PyMOL spells the same thing "". One marker is chosen
+# and the annotation normalised to it at load, so nothing downstream has to
+# know which format a structure arrived in.
+NO_ALTLOC = "."
+_NO_ALTLOC_SPELLINGS = frozenset({NO_ALTLOC, "", " "})
+
+
+def _normalise_altloc(array: AtomArray[Any]) -> AtomArray[Any]:
+    """Make "no alternate" one string regardless of the source format."""
+    if "altloc_id" not in array.get_annotation_categories():
+        return array
+    ids = np.asarray(array.get_annotation("altloc_id")).astype(str)
+    array.set_annotation(
+        "altloc_id",
+        np.where(np.isin(ids, list(_NO_ALTLOC_SPELLINGS)), NO_ALTLOC, ids),
+    )
+    return array
+
+
+def has_altlocs(array: AtomArray[Any]) -> bool:
+    """Does this array carry alternate conformers to choose between?"""
+    if "altloc_id" not in array.get_annotation_categories():
+        return False
+    return bool((np.asarray(array.get_annotation("altloc_id")) != NO_ALTLOC).any())
+
+
+def conformer_state(array: AtomArray[Any], altloc: str | None = None) -> Mask:
+    """The atoms of one conformer state: the shared atoms plus one letter.
+
+    Alternate conformers of an atom never coexist -- each molecule in the
+    crystal is in one state or the other -- so geometry computed over both at
+    once describes a molecule that does not exist. Every tool that reads
+    coordinates resolves a state first.
+
+    **The states overlap.** Only the atoms that actually differ carry a
+    letter; the rest of the residue is shared and tagged ".". So state A is
+    the "." atoms plus the "A" atoms, and state B shares those same "." atoms
+    with it. That is why alternate conformers cannot be a residue-identity
+    field the way ``sym_id`` is: keying on them would split one residue into a
+    shared fragment and two partial ones.
+
+    ``altloc`` names the letter; the default is the one with the highest total
+    occupancy, which is the dominant conformer rather than whichever happened
+    to come first in the file.
+    """
+    if not has_altlocs(array):
+        return np.ones(array.array_length(), dtype=bool)
+    ids = np.asarray(array.get_annotation("altloc_id"))
+    letter = altloc if altloc is not None else dominant_altloc(array)
+    return np.asarray((ids == NO_ALTLOC) | (ids == letter))
+
+
+def dominant_altloc(array: AtomArray[Any]) -> str:
+    """The altloc letter carrying the most occupancy across the structure.
+
+    Ties fall back to the first letter alphabetically, which is arbitrary but
+    stated: 1AKE's ARG167 is 0.5/0.5 and something has to be chosen.
+    """
+    ids = np.asarray(array.get_annotation("altloc_id"))
+    letters = sorted({str(v) for v in ids} - {NO_ALTLOC})
+    if not letters:
+        return NO_ALTLOC
+    if "occupancy" not in array.get_annotation_categories():
+        return letters[0]
+    occupancy = np.asarray(array.occupancy, dtype=float)
+    totals = {letter: float(occupancy[ids == letter].sum()) for letter in letters}
+    best = max(totals.values())
+    return next(letter for letter in letters if totals[letter] == best)
+
+
+def resolve_conformers(
+    array: AtomArray[Any], altloc: str | None = None
+) -> tuple[AtomArray[Any], str]:
+    """One conformer state of *array*, and the letter it describes.
+
+    Returns the array unchanged with an empty label when there is nothing to
+    resolve, so a caller can put the label in its reply without special-casing
+    the ordinary structure.
+    """
+    if not has_altlocs(array):
+        return array, ""
+    letter = altloc if altloc is not None else dominant_altloc(array)
+    return array[conformer_state(array, letter)], letter
 
 
 def residue_labels(array: AtomArray[Any]) -> Any:
@@ -428,6 +525,15 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         # here is its position in the array. Distinct from `index`, which is
         # the file's own atom_site id and need not start at 0 or be contiguous.
         return _numeric_terms(np.arange(array.array_length()), node.values, array)
+    if prop == "alt":
+        # Literal, as PyMOL means it: the atoms carrying this label, not the
+        # conformer state. Only the atoms that actually differ carry one, so
+        # `alt A` on a residue whose backbone is shared is a side chain with
+        # no backbone. The state is `alt ''+A`, and the state that analysis
+        # computes over is chosen inside the tools, not here.
+        _check_alt_is_available(array)
+        wanted = [_altloc_value(v) for v in node.values]
+        return np.isin(np.asarray(array.get_annotation("altloc_id")), wanted)
     if prop == "sym":
         # Which copy of the asymmetric unit an atom belongs to, 0-based, as
         # biotite annotates it. A selection with no `sym` term keeps meaning
@@ -435,6 +541,37 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         _check_sym_is_available(array)
         return _numeric_terms(np.asarray(array.sym_id), node.values, array)
     raise SelectionError(f"Property {prop!r} is not supported by the Python evaluator")
+
+
+def _altloc_value(value: str) -> str:
+    """One `alt` value, normalised to what the annotation actually holds.
+
+    PyMOL spells "no alternate" as `alt \'\'`, and the quotes survive
+    tokenisation as part of the word -- so the value arrives here as the
+    two-character string `\'\'` rather than as an empty one. Stripping them is
+    what makes `alt \'\'` mean anything at all; without it the selection is
+    empty and reads as "this structure has no unlabelled atoms", which is the
+    silent-empty answer the grammar exists to avoid.
+    """
+    stripped = value.strip("\"'")
+    if stripped in _NO_ALTLOC_SPELLINGS:
+        return NO_ALTLOC
+    return stripped.upper()
+
+
+def _check_alt_is_available(array: AtomArray[Any]) -> None:
+    """Refuse `alt` where there are no alternate conformers to choose between.
+
+    Named rather than silently empty, as `sym` and `ss` refuse: most
+    structures have no alternates at all, and `alt A` coming back empty would
+    read as "this structure has no conformer A" rather than "it has none".
+    """
+    if has_altlocs(array):
+        return
+    raise SelectionError(
+        "'alt' names an alternate conformer, and no atom in this structure has "
+        "one. Every atom is modelled in a single position"
+    )
 
 
 def _check_sym_is_available(array: AtomArray[Any]) -> None:
@@ -634,7 +771,30 @@ def _bond_pairs(array: AtomArray[Any]) -> Mask:
                 f"Bond topology could not be derived for this structure: {exc}"
             ) from exc
     pairs: Mask = np.asarray(bonds.as_array()[:, :2])
-    return pairs
+    return _drop_cross_conformer_bonds(array, pairs)
+
+
+def _drop_cross_conformer_bonds(array: AtomArray[Any], pairs: Mask) -> Mask:
+    """Remove bonds joining one alternate conformer to another.
+
+    Templates match by atom name and cannot tell conformers apart, so they
+    wire them together: 16 such bonds on 1AKE, including
+    ``ARG167/CD(A) -- ARG167/NE(B)``, leaving CD(A) with three bonds where it
+    should have two. `extend`, `bymolecule`, `bound_to` and `neighbor` would
+    then walk out of one conformer into another along a path no molecule has.
+
+    Dropped here rather than by filtering the array first, because these
+    selectors answer about the structure as loaded, with every conformer
+    visible and selectable; only the impossible edges between states are
+    wrong. Two atoms sharing a letter, or either being unlabelled, are the
+    same state and stay bonded.
+    """
+    if not has_altlocs(array) or not len(pairs):
+        return pairs
+    ids = np.asarray(array.get_annotation("altloc_id"))
+    left, right = ids[pairs[:, 0]], ids[pairs[:, 1]]
+    across = (left != NO_ALTLOC) & (right != NO_ALTLOC) & (left != right)
+    return pairs[~across] if across.any() else pairs
 
 
 def _bonded_to(array: AtomArray[Any], source: Mask) -> Mask:
