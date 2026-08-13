@@ -971,27 +971,71 @@ def test_the_bond_topology_is_derived_once_per_extend(monkeypatch, two_molecules
     assert calls == 1
 
 
-def test_rank_is_refused_on_an_assembly_with_symmetry_copies(two_molecules):
-    """A rank names one atom here and one per copy in the viewer.
+def test_rank_works_on_an_assembly_with_symmetry_copies(two_molecules):
+    """Was a refusal, and is the second proof that the transport is exact.
 
-    Handles reach Mol* as atom.id, which an assembly duplicates. Every other
-    selector is symmetric across copies, so the transport stays exact; `rank`
-    is the first that is not, and answering would mean a count and a picture
-    that disagree with nothing to say so.
+    `rank` picks one atom by array position, and that atom shares its atom_id
+    with its counterpart in every other copy — so before the emitter could
+    name a copy, the handle selected one atom here and lit up one per copy in
+    the picture. It was refused rather than answered wrongly. The operator
+    clause makes it expressible, so the refusal is gone.
+
+    That the emitted MolScript really does name one copy is checked against a
+    real viewer in tests/test_symmetry_differential.py; here the claim is only
+    that the selector answers, and answers about the copy it landed in.
     """
     copies = two_molecules.copy()
     copies.set_annotation("sym_id", np.array([0, 0, 0, 1, 1]))
-    with pytest.raises(SelectionError, match="symmetry copies"):
-        count("rank 2", copies)
+    assert count("rank 2", copies) == 1
+    mask = select_mask("rank 4", copies)
+    assert int(np.asarray(copies.sym_id)[mask][0]) == 1
 
 
-def test_rank_still_works_where_the_transport_is_exact(two_molecules):
-    """One copy, or no sym_id at all, is the case the selector is for."""
+def test_rank_still_works_where_there_is_only_one_copy(two_molecules):
+    """One copy, or no sym_id at all, was never the problem."""
     assert count("rank 2", two_molecules) == 1
 
     single = two_molecules.copy()
     single.set_annotation("sym_id", np.zeros(single.array_length(), dtype=int))
     assert count("rank 2", single) == 1
+
+
+# -- naming a symmetry copy ----------------------------------------------------
+
+
+def test_sym_selects_one_copy(two_molecules):
+    copies = two_molecules.copy()
+    copies.set_annotation("sym_id", np.array([0, 0, 0, 1, 1]))
+    assert count("sym 0", copies) == 3
+    assert count("sym 1", copies) == 2
+    assert count("sym 0+1", copies) == 5
+
+
+def test_sym_composes_with_other_leaf_predicates(two_molecules):
+    """`chain A` spans both copies here, so naming one genuinely narrows it.
+
+    This is the shape the whole item is for: chain ids are shared across
+    copies, so `chain A` alone cannot mean one subunit of an assembly.
+    """
+    copies = two_molecules.copy()
+    copies.set_annotation("sym_id", np.array([0, 0, 0, 1, 1]))
+    assert count("chain A", copies) == 4
+    assert count("chain A and sym 0", copies) == 3
+    assert count("chain A and sym 1", copies) == 1
+
+
+def test_a_selection_with_no_sym_term_still_means_every_copy(two_molecules):
+    """The invariant that keeps every existing answer what it was."""
+    copies = two_molecules.copy()
+    copies.set_annotation("sym_id", np.array([0, 0, 0, 1, 1]))
+    assert count("all", copies) == 5
+
+
+def test_sym_is_refused_on_an_asymmetric_unit(two_molecules):
+    """Named rather than silently empty: there is no sym_id to read, and a
+    zero would read as "this structure has no first copy"."""
+    with pytest.raises(SelectionError, match="asymmetric unit"):
+        count("sym 0", two_molecules)
 
 
 # -- secondary structure: identity and refusals --------------------------------

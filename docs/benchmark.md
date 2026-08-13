@@ -93,12 +93,19 @@ being three times better.** protean loads the *biological assembly* by default
 (decision 9), so 1HHO is the α2β2 tetramer and `interface("A","B")` reports the
 total A–B interface across it. PyMOL loaded the deposited asymmetric unit, one
 αβ dimer. protean's own residue entries carry `sym: 1`, which is how you can
-tell. Addressing a single symmetry copy is a known protean limitation, recorded
-in decision 9 and still unsolved.
+tell.
+
+**Since fixed** (decision 15). `interface("A","B")` now returns a `per_copy`
+breakdown beside the total, and `interface("A","B", copy=0)` answers the
+question PyMOL was asked: 1776.9 Å², of which 892.7 Å² on the A side. That is
+2.1% above PyMOL's 873.9 because `get_area` uses dot-based SASA where biotite
+uses Shrake-Rupley. protean's `copy=0` reproduces protean's *own*
+asymmetric-unit answer to the decimal, which is the comparison that separates
+this change from the method difference.
 
 **protean wins** on not needing the split-objects trick, on returning contacts
-and per-residue buried area in the same call, and on stating its criterion. It
-**loses** on not being able to ask about one copy.
+and per-residue buried area in the same call, on stating its criterion, and on
+reporting the copies separately rather than fusing them into one number.
 
 ## 3. Superposition — a draw, and the first table asked the wrong question
 
