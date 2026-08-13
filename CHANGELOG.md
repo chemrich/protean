@@ -12,8 +12,10 @@ nothing is released yet, so everything below is unreleased.
   difference had to be explained in the load message.
 - `alt A` selects atoms carrying that label, as PyMOL does; the whole
   conformer is `alt ''+A`, and `alt ''` and `alt .` both mean "no alternate".
-- Analysis resolves one conformer state before computing — the one with the
-  most occupancy — and reports which. Alternate conformers never coexist, so
+- Analysis resolves one conformer state before computing — each site keeping
+  its own highest-occupancy alternate — and reports which letters it used.
+  Resolving per structure instead would delete any site not carrying the
+  winning letter, which is how a partially occupied ion is routinely modelled. Alternate conformers never coexist, so
   a buried area computed over both belongs to no molecule, and because a
   residue's shared atoms carry no label both states would otherwise land in
   one residue entry and sum.

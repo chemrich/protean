@@ -237,8 +237,11 @@ in place against what building it found.
        alt ''+A  -> 15712    the conformer state — what analysis used before
 ```
 
-Analysis resolves one conformer state, the one with the most occupancy, and
-says which. Bonds joining one conformer to another are dropped — templates
+Analysis resolves one conformer state **per site** — each atom keeps its own
+highest-occupancy alternate — and says which letters it used. Per site, not
+per structure: a lone `B`-labelled ion with no `A` counterpart would otherwise
+be deleted from the geometry without a word. 5FJI resolves to `A+B`, not to
+"conformer A". Bonds joining one conformer to another are dropped — templates
 match by atom name and wired 16 of them on 1AKE. One caveat found while
 building and recorded rather than papered over: `extend 1` stays inside a
 conformer, but `extend 2` can cross through a shared atom, because the file

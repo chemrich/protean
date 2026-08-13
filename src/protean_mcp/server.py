@@ -58,10 +58,11 @@ from .selections import parse as _parse_selection
 from .selections_numpy import _residue_keys
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
-from .selections_numpy import dominant_altloc as _dominant_altloc
+from .selections_numpy import conformers_used as _conformers_used
 from .selections_numpy import evaluate as _evaluate
-from .selections_numpy import has_altlocs as _has_altlocs
+from .selections_numpy import labelled_atom_count as _labelled_atom_count
 from .selections_numpy import load_structure as _load_structure
+from .selections_numpy import resolve_conformers as _resolve_conformers
 
 logger = logging.getLogger(__name__)
 
@@ -391,18 +392,11 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
         parts.append(f", {ours} atoms here; the viewer reported no count")
     elif int(theirs) == ours:
         parts.append(f", {ours} atoms in both viewer and analysis")
-    elif surplus and int(theirs) - ours == surplus:
-        # Kept for the formats where the two builders can still disagree about
-        # conformers. Both now load every one of them, so on the common path
-        # the counts match and this does not fire.
-        parts.append(
-            f", {ours} atoms here and {theirs} in the viewer; the {surplus} "
-            "extra are alternate conformers, which analysis resolves to one "
-            "per site and the viewer draws all of"
-        )
     else:
+        # The branch that used to explain a conformer difference is gone: both
+        # halves load every conformer now, so a difference is a difference.
         explained = (
-            f" ({surplus} of the difference is alternate conformers)" if surplus else ""
+            f" ({surplus} rows of the file are alternate conformers)" if surplus else ""
         )
         parts.append(
             f", MISMATCH: {ours} atoms here but {theirs} in the viewer{explained}. "
@@ -414,12 +408,20 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
     # no molecule. Which one is used has to be in the reply: a number computed
     # over conformer A while the picture shows both is exactly the kind of
     # quiet mismatch the rest of this note exists to prevent.
-    if _has_altlocs(loaded.array):
-        letter = _dominant_altloc(loaded.array)
+    #
+    # Counted from the labels rather than from `altloc_surplus`, which counts
+    # rows *beyond the first at a site*: a single partially occupied ion
+    # labelled `B` is one row at one site, so the surplus is 0 while the atom
+    # is very much an alternate. That combination printed "0 of these are
+    # alternate conformers, and analysis reads conformer B".
+    labelled = _labelled_atom_count(loaded.array)
+    if labelled:
+        used = _conformers_used(loaded.array)
         parts.append(
-            f"; {surplus} of these are alternate conformers, and analysis "
-            f"reads conformer {letter} — select `alt ''+{letter}` to see it, "
-            f"or `alt {letter}` for just the atoms that differ"
+            f"; {labelled} atoms carry an alternate-conformer label, and "
+            f"analysis reads conformer {used} — each site resolved to its "
+            f"highest occupancy. `alt ''+{used.split('+')[0]}` selects a whole "
+            "conformer, `alt A` only the atoms that differ"
         )
     if loaded.note:
         parts.append(f" — {loaded.note}")
@@ -2303,7 +2305,12 @@ async def electrostatics(
     (r = 0.96, 94% sign agreement) while running about 1.6x low in magnitude.
     Read it for where the charge is, never for an energy.
     """
-    array = _require_structure()
+    # One conformer state before any geometry. biotite's PDB writer blanks the
+    # altLoc column, so pdb2pqr would receive two rows for one atom with no way
+    # to tell them apart and would silently keep whichever came first -- a
+    # potential map computed over atoms sitting on top of each other, with
+    # nothing in the reply to say so.
+    array, conformer = _resolve_conformers(_require_structure())
     try:
         prepared = _prepare_charges(array, ph=ph)
     except ElectrostaticsError as exc:
@@ -2346,6 +2353,11 @@ async def electrostatics(
         "dx_path": str(out),
         "apbs_available": binary is not None,
     }
+    if conformer:
+        # Which atoms this map describes. Alternate conformers never coexist,
+        # so a potential computed over both would be of no molecule -- and the
+        # picture shows all of them.
+        payload["conformer"] = conformer
     if chosen == "coulombic":
         payload["caveat"] = (
             "Uniform dielectric: no protein interior, no reaction field. The "
@@ -2398,7 +2410,7 @@ async def conservation(
     number before trusting the scores: a protein with few known homologs looks
     conserved everywhere because nothing was found to disagree with it.
     """
-    array = _require_structure()
+    array, _ = _resolve_conformers(_require_structure())
     if chain is None:
         protein: Any = np.asarray(filter_amino_acids(array))
         if not protein.any():

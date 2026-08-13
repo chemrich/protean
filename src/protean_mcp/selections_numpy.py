@@ -344,22 +344,101 @@ def conformer_state(array: AtomArray[Any], altloc: str | None = None) -> Mask:
     field the way ``sym_id`` is: keying on them would split one residue into a
     shared fragment and two partial ones.
 
-    ``altloc`` names the letter; the default is the one with the highest total
-    occupancy, which is the dominant conformer rather than whichever happened
-    to come first in the file.
+    With no ``altloc``, the choice is made **per site**: each atom keeps its
+    own highest-occupancy alternate. Choosing one letter for the whole
+    structure instead looks equivalent and is not -- an atom labelled `B` with
+    no `A` counterpart, which is how a partially occupied ion or ligand is
+    routinely modelled, would be **deleted from the geometry entirely**, with
+    no note and a plausible answer. 5FJI has 11 atoms labelled `C` that a
+    global `A` discards.
+
+    Naming a letter explicitly asks a different question -- "conformer B" --
+    and is answered literally: the shared atoms plus that letter, matching
+    what ``alt ''+B`` selects. A site with no `B` contributes nothing, because
+    it has no B conformer.
     """
     if not has_altlocs(array):
         return np.ones(array.array_length(), dtype=bool)
     ids = np.asarray(array.get_annotation("altloc_id"))
-    letter = altloc if altloc is not None else dominant_altloc(array)
-    return np.asarray((ids == NO_ALTLOC) | (ids == letter))
+    shared = ids == NO_ALTLOC
+    if altloc is not None:
+        return np.asarray(shared | (ids == altloc))
+
+    keep: Mask = np.asarray(shared.copy())
+    labelled = np.flatnonzero(~shared)
+    if not len(labelled):
+        return keep
+    sites = _site_labels(array)[labelled]
+    if "occupancy" in array.get_annotation_categories():
+        occupancy = np.asarray(array.occupancy, dtype=float)[labelled]
+    else:
+        occupancy = np.zeros(len(labelled))
+    # Sort by site, then descending occupancy, then letter, and take the first
+    # row of each site. Ties fall to the alphabetically first letter, which is
+    # arbitrary but stated: 1AKE's ARG167 is 0.5/0.5.
+    order = np.lexsort((ids[labelled], -occupancy, sites))
+    ordered = sites[order]
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = ordered[1:] != ordered[:-1]
+    keep[labelled[order[first]]] = True
+    return np.asarray(keep)
+
+
+def _site_labels(array: AtomArray[Any]) -> Any:
+    """One string per atom naming the physical site it is a conformer of.
+
+    Two rows agreeing on all of these are alternate positions of the same
+    atom, not two atoms. The symmetry copy is included for the reason it is in
+    ``residue_labels``: copies repeat every chain id and residue number.
+    """
+    parts = [
+        array.chain_id.astype(str),
+        array.res_id.astype(str),
+        array.ins_code.astype(str),
+        array.atom_name.astype(str),
+    ]
+    if _has_sym(array):
+        parts.append(np.asarray(array.sym_id).astype(str))
+    labels = parts[0]
+    for part in parts[1:]:
+        labels = np.char.add(np.char.add(labels, "|"), part)
+    return labels
+
+
+def labelled_atom_count(array: AtomArray[Any]) -> int:
+    """How many atoms carry an alternate-conformer label.
+
+    Distinct from :func:`altloc_surplus`, which counts rows beyond the first
+    at a site. A single partially occupied ion labelled `B` is one row at one
+    site: the surplus is 0 while the atom is an alternate, so a note keyed on
+    the surplus said "0 of these are alternate conformers" and then named one.
+    """
+    if "altloc_id" not in array.get_annotation_categories():
+        return 0
+    ids = np.asarray(array.get_annotation("altloc_id"))
+    return int((ids != NO_ALTLOC).sum())
+
+
+def conformers_used(array: AtomArray[Any], state: Mask | None = None) -> str:
+    """The letters a resolved state actually kept, for the reply.
+
+    Usually one, and named as such. Where different sites favour different
+    conformers -- 5FJI resolves to `A+B` -- all of them are named, because
+    "conformer A" would be a false description of what was measured.
+    """
+    if not has_altlocs(array):
+        return ""
+    ids = np.asarray(array.get_annotation("altloc_id"))
+    chosen = ids[state if state is not None else conformer_state(array)]
+    return "+".join(sorted({str(v) for v in chosen} - {NO_ALTLOC}))
 
 
 def dominant_altloc(array: AtomArray[Any]) -> str:
     """The altloc letter carrying the most occupancy across the structure.
 
-    Ties fall back to the first letter alphabetically, which is arbitrary but
-    stated: 1AKE's ARG167 is 0.5/0.5 and something has to be chosen.
+    For *describing* a structure -- which conformer predominates. Deliberately
+    not what :func:`conformer_state` resolves with: a single letter applied
+    structure-wide deletes every site that does not carry it.
     """
     ids = np.asarray(array.get_annotation("altloc_id"))
     letters = sorted({str(v) for v in ids} - {NO_ALTLOC})
@@ -376,16 +455,18 @@ def dominant_altloc(array: AtomArray[Any]) -> str:
 def resolve_conformers(
     array: AtomArray[Any], altloc: str | None = None
 ) -> tuple[AtomArray[Any], str]:
-    """One conformer state of *array*, and the letter it describes.
+    """One conformer state of *array*, and a label for what it kept.
 
-    Returns the array unchanged with an empty label when there is nothing to
-    resolve, so a caller can put the label in its reply without special-casing
-    the ordinary structure.
+    The single entry point for every tool that reads coordinates, so that
+    "which conformer did this number come from?" has one answer and one
+    implementation. Returns the array unchanged with an empty label when there
+    is nothing to resolve, so a caller can put the label straight in its reply
+    without special-casing the ordinary structure.
     """
     if not has_altlocs(array):
         return array, ""
-    letter = altloc if altloc is not None else dominant_altloc(array)
-    return array[conformer_state(array, letter)], letter
+    state = conformer_state(array, altloc)
+    return array[state], conformers_used(array, state)
 
 
 def residue_labels(array: AtomArray[Any]) -> Any:
@@ -556,7 +637,11 @@ def _altloc_value(value: str) -> str:
     stripped = value.strip("\"'")
     if stripped in _NO_ALTLOC_SPELLINGS:
         return NO_ALTLOC
-    return stripped.upper()
+    # Returned as written. `label_alt_id` is a free-form code and lowercase
+    # ones exist, so upper-casing the request while leaving the annotation as
+    # parsed made `alt a` match nothing on such a file -- the silent-empty
+    # answer `_check_alt_is_available` exists to prevent.
+    return stripped
 
 
 def _check_alt_is_available(array: AtomArray[Any]) -> None:

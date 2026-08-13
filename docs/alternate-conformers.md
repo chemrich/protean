@@ -11,6 +11,45 @@ you look at which atoms actually carry an altloc label.
 
 ---
 
+> ## Done, 2026-08-13 — and a code review found what the plan and the build both missed
+>
+> Implemented in PR 59 and recorded as **PLAN.md decision 16**. Kept as the
+> plan it was, with two corrections marked.
+>
+> **§4.3's "highest occupancy per site" was written correctly and built
+> wrongly.** The implementation chose one letter for the *whole structure*,
+> which looks equivalent and is not: an atom labelled `B` with no `A`
+> counterpart — a routine way to model a partially occupied ion or ligand —
+> was **deleted from the geometry entirely**, silently, contributing no buried
+> area and appearing in no handle. 5FJI has 11 atoms labelled `C` that a
+> global `A` discards the same way. Now resolved per site, as §4.3 said.
+>
+> A consequence worth reading: 5FJI does not resolve to "conformer A". Its
+> sites disagree, so the answer is **`A+B`**, and any reply naming a single
+> letter for that structure was describing something that was not measured.
+>
+> **§4.3's list of affected tools was right and only `interface` got the
+> filter.** `electrostatics` computed potentials over every conformer at once —
+> and because biotite's PDB writer blanks the altLoc column, pdb2pqr received
+> two rows for one atom with no way to tell them apart and silently kept
+> whichever came first. `conservation` scored duplicated residues. Both now
+> resolve a state through the shared helper, which had been written and then
+> not used: `contacts.py` open-coded it instead, which is exactly how the
+> other tools came to be missed.
+>
+> **§4.4's promise is narrower than it reads.** Dropping direct A–B bonds
+> keeps `extend 1`, `bound_to` and `neighbor` inside one state. It cannot keep
+> a longer walk there: the file bonds the backbone N to *both* alternate CAs,
+> so `extend 2` crosses through the shared atom. Removing one of those bonds
+> would be inventing topology rather than filtering it.
+>
+> Still true and worth keeping: the counts match the viewer exactly, handle
+> transport is unaffected because every conformer row has its own
+> `atom_site.id`, `alt` is literal, and the empty-string spelling was the trap
+> §4.2 predicted — it returned nothing until the quotes were stripped.
+
+---
+
 ## 1. What an altloc is, and what protean does now
 
 Some atoms are resolved in more than one position: a side chain caught between

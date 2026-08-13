@@ -26,6 +26,7 @@ from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
     _bond_pairs,
     conformer_state,
+    conformers_used,
     dominant_altloc,
     has_altlocs,
     select_mask,
@@ -286,3 +287,59 @@ def test_interface_does_not_count_a_residue_twice():
     # and no atom of the rejected conformer is in the handle
     ids = np.asarray(arr.get_annotation("altloc_id"))
     assert "B" not in set(ids[result.indices_a].tolist())
+
+
+# -- the state is resolved per site, not per structure --------------------------
+
+
+def test_an_atom_with_no_counterpart_survives():
+    """The bug a code review found, and the reason this is per site.
+
+    Choosing one letter for the whole structure looks equivalent and is not.
+    A partially occupied ion labelled `B` with no `A` counterpart -- a routine
+    way to model one -- was **deleted from the geometry entirely**, silently,
+    contributing no buried area and appearing in no handle. 5FJI has 11 atoms
+    labelled `C` that a global `A` discards the same way.
+    """
+    atoms = [
+        _atom(1, "CB", "A", [0.0, 0.0, 0.0], 0.9),
+        _atom(2, "CB", "B", [4.0, 0.0, 0.0], 0.1),
+        _atom(3, "ZN", "B", [8.0, 0.0, 0.0], 0.5, res_name="ZN"),
+    ]
+    arr = _with_altloc(atoms, ["A", "B", "B"])
+    kept = conformer_state(arr)
+    assert int(kept.sum()) == 3, "every site keeps its own best conformer"
+    assert dominant_altloc(arr) == "A", "A still predominates by occupancy"
+
+
+def test_each_site_keeps_exactly_one_conformer(two_states):
+    """The other half of the claim: resolving must still resolve.
+
+    Keeping everything would satisfy the test above and defeat the purpose.
+    """
+    kept = conformer_state(two_states)
+    assert int(kept.sum()) == 5  # 3 shared + one CA + one CB
+    names = two_states.atom_name[kept].tolist()
+    assert sorted(names) == ["C", "CA", "CB", "N", "O"]
+
+
+def test_a_site_keeps_its_highest_occupancy_conformer():
+    """Per site, not globally: site 1 prefers A and site 2 prefers B."""
+    atoms = [
+        _atom(1, "CB", "A", [0.0, 0.0, 0.0], 0.8),
+        _atom(1, "CB", "B", [0.5, 0.0, 0.0], 0.2),
+        _atom(2, "CB", "A", [4.0, 0.0, 0.0], 0.3),
+        _atom(2, "CB", "B", [4.5, 0.0, 0.0], 0.7),
+    ]
+    arr = _with_altloc(atoms, ["A", "B", "A", "B"])
+    kept = np.flatnonzero(conformer_state(arr))
+    ids = np.asarray(arr.get_annotation("altloc_id"))
+    assert [str(ids[i]) for i in kept] == ["A", "B"]
+    assert conformers_used(arr) == "A+B"
+
+
+def test_naming_a_letter_is_still_literal(two_states):
+    """An explicit request is a different question and keeps its old answer."""
+    assert int(conformer_state(two_states, "B").sum()) == 5
+    ids = np.asarray(two_states.get_annotation("altloc_id"))
+    assert "A" not in set(ids[conformer_state(two_states, "B")].tolist())

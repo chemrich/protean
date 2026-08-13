@@ -21,7 +21,7 @@ from biotite.structure import AtomArray, CellList, filter_solvent, hbond, sasa
 
 from ..selections_numpy import (
     conformer_state,
-    dominant_altloc,
+    conformers_used,
     has_altlocs,
     residue_labels,
 )
@@ -134,6 +134,10 @@ class InterfaceResult:
             kinds[contact.kind] = kinds.get(contact.kind, 0) + 1
         return {
             "copy": self.copy,
+            # Each copy resolves its own conformers, and on an assembly whose
+            # copies differ in occupancy they can differ. Omitting it let the
+            # breakdown mix states with no way to see it.
+            **({"conformer": self.conformer} if self.conformer else {}),
             "buried_area": round(self.buried_area, 1),
             "buried_area_a": round(self.buried_area_a, 1),
             "buried_area_b": round(self.buried_area_b, 1),
@@ -370,8 +374,9 @@ def _interface(
     # worst residues by nearly half.
     conformer = ""
     if has_altlocs(array):
-        conformer = dominant_altloc(array)
-        keep = np.flatnonzero(conformer_state(array, conformer))
+        state = conformer_state(array)
+        conformer = conformers_used(array, state)
+        keep = np.flatnonzero(state)
         origin_index = origin_index[keep]
         array = array[keep]
     mask_a = _chain(array, chain_a)
