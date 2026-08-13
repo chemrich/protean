@@ -235,7 +235,7 @@ and contact counts would then be computed over atoms sitting on top of each
 other. The refusal now names that tradeoff instead of claiming it cannot be
 done, so it can be argued with. **Wants a decision.**
 
-### 11. The two engines disagree about what a bond is
+### 11. The two engines disagree about what a bond is — explained, and kept
 
 Found while implementing item 8. `resn HEM extend 1` on 4HHB returns the hemes
 unchanged for protean and for PyMOL — a residue template gives iron no bond to
@@ -243,9 +243,34 @@ the protein — where Mol\* returns four atoms more, having modelled the Fe-NE2
 coordination bond to the proximal histidine.
 
 Neither is wrong. It is a real question about whether metal coordination is a
-bond, and the two answers are both defensible. Recorded and asserted from both
-sides so that either engine changing its mind is visible, rather than folded
-into the agreement table where it would look like a bug.
+bond, and the two answers are both defensible.
+
+**The difference is now explained rather than merely recorded, and asserted by
+atom identity rather than by count.** "They differ by four" is consistent with
+any four atoms, including a bond model that differs somewhere else and happens
+to land on the same number. What the differential suite asserts is stronger:
+the set Mol\* adds is *exactly* the set protean's own distance selection finds
+coordinating the iron, and it drops nothing protean keeps.
+
+```
+resn HEM extend 1                                 -> 172 atoms (ours, PyMOL's)
+                                                  -> 176 atoms (Mol*)
+polymer within 2.6 of (resn HEM and elem Fe)      ->   4 atoms
+```
+
+Those four are the proximal histidine nitrogens — HIS87 in the alpha chains,
+HIS92 in the beta — and they are precisely Mol\*'s surplus.
+
+**Which is also the argument for keeping the template bond model.** The
+capability is not missing, only spelled differently: `byres (polymer within 2.6
+of (resn HEM and elem Fe))` gives the whole coordinating histidines, with the
+cutoff visible and chosen by the caller rather than implied by someone's bond
+model. That is the same idiom PLAN.md's phase 2 exit uses for the catalytic
+zinc of 1CA2. A bond model that silently decides 2.6 Å is a bond and 2.7 Å is
+not would make `extend` less predictable, not more useful.
+
+Sensitive to the cutoff, and mutation-tested as such: at 3.5 Å the same
+selection finds 12 atoms, and the suite fails.
 
 ### 10. Secondary structure — benchmark corrected, then DSSP ported — fixed
 

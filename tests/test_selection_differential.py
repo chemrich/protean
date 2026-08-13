@@ -488,7 +488,58 @@ async def test_we_beat_the_transpiler_on_nucleic():
 # -- what counts as a bond -----------------------------------------------------
 
 
-async def test_the_two_engines_disagree_about_metal_coordination():
+# The atom_site ids a component actually contains, rather than how many. A
+# count can agree while naming different atoms, and the whole claim below is
+# about *which* atoms differ.
+_ATOM_IDS_JS = r"""(async () => {
+  const p = window.__protean.plugin;
+  const struct = p.managers.structure.hierarchy.current.structures[0];
+  const sel = await p.builders.structure.tryCreateComponent(struct.cell.transform.ref, {
+    type: { name: 'script', params: { language: %s, expression: %s } },
+    nullIfEmpty: false, label: 'ids',
+  }, 'ids-key');
+  // `tryCreateComponent` returns null both for a selection that matched
+  // nothing and for one it could not compile, and `nullIfEmpty: false` does
+  // not change that -- measured, not assumed. So there is no error text to
+  // report and no way to tell the two apart from here. The Python side
+  // refuses to guess rather than attributing an empty result to either.
+  const data = sel && (sel.data || (sel.cell && sel.cell.obj && sel.cell.obj.data));
+  if (!data) return JSON.stringify({ ids: [] });
+  const ids = [];
+  for (const u of data.units) {
+    const col = u.model.atomicConformation.atomId;
+    const els = u.elements;
+    for (let i = 0; i < els.length; i++) ids.push(col.value(els[i]));
+  }
+  return JSON.stringify({ ids });
+})()"""
+
+
+async def _viewer_atom_ids(pdb_id: str, language: str, expression: str) -> set[int]:
+    """Atom ids of what Mol* matched, refusing to report an empty result.
+
+    Every caller here expects a non-empty answer, and an empty one has two
+    possible causes Mol* does not distinguish: the selection matched nothing,
+    or its transpiler could not compile the expression. Returning the empty
+    set would let the assertion below read that as "the bond model changed",
+    which is the wrong diagnosis for half the causes.
+    """
+    async with viewer_session(pdb_id, assembly="asymmetric") as session:
+        payload = await session.evaluate(
+            _ATOM_IDS_JS % (json.dumps(language), json.dumps(expression))
+        )
+    ids = {int(v) for v in payload["ids"]}
+    if not ids:
+        pytest.fail(
+            f"Mol* returned no atoms for {language} {expression!r}. It does not "
+            "distinguish a selection that matched nothing from one its "
+            "transpiler could not compile, so this is not evidence about the "
+            "bond model either way."
+        )
+    return ids
+
+
+async def test_the_bond_model_divergence_is_exactly_metal_coordination():
     """Not a bug on either side: a real question with two defensible answers.
 
     Extending one bond from the hemes returns the hemes unchanged for us and
@@ -496,19 +547,39 @@ async def test_the_two_engines_disagree_about_metal_coordination():
     Mol* models the Fe-NE2 coordination bond and so reaches the proximal
     histidine, four atoms further.
 
-    Recorded rather than resolved, and asserted from both sides so that either
-    engine changing its bond model shows up here. It is why `resn HEM extend 1`
-    is not in the agreement table.
+    **Asserted by atom identity, not by count.** "They differ by four" is
+    consistent with any four atoms, including a bond model that differs
+    somewhere else entirely and happens to land on the same number. What is
+    claimed here is stronger: the set Mol* adds is *exactly* the set our own
+    distance selection finds coordinating the iron, and it drops nothing of
+    ours. That turns a recorded discrepancy into an explained one, and it is
+    the check that would notice if either engine changed its bond model for a
+    different reason.
+
+    It is also the answer to "then how do I get the coordinating residue?" --
+    `polymer within 2.6 of (resn HEM and elem Fe)` is those four atoms, and
+    `byres` of it is the whole histidines. Distance says it explicitly, with
+    the cutoff visible, which is why the template bond model is kept.
     """
     structure = await fetch_structure_data(FIXTURE)
     array = load_structure(structure.data, structure.format, "asymmetric").array
-    viewer = await _evaluate(
-        FIXTURE, [["theirs::resn HEM extend 1", "pymol", "resn HEM extend 1"]]
+    atom_ids = np.asarray(array.atom_id)
+
+    ours = {int(v) for v in atom_ids[select_mask("resn HEM extend 1", array)]}
+    coordinating = {
+        int(v)
+        for v in atom_ids[
+            select_mask("polymer within 2.6 of (resn HEM and elem Fe)", array)
+        ]
+    }
+    theirs = await _viewer_atom_ids(FIXTURE, "pymol", "resn HEM extend 1")
+
+    assert len(ours) == 172, "the hemes alone, which is PyMOL's answer too"
+    assert len(coordinating) == 4, "one proximal histidine nitrogen per heme"
+    assert theirs - ours == coordinating, (
+        "what Mol* adds is exactly the iron's coordination sphere"
     )
-    ours = int(select_mask("resn HEM extend 1", array).sum())
-    theirs = _count(viewer, "theirs", "resn HEM extend 1")
-    assert ours == 172, "the hemes alone, which is PyMOL's answer too"
-    assert theirs == ours + 4, "one proximal histidine nitrogen per heme"
+    assert ours - theirs == set(), "and it drops nothing we keep"
 
 
 # -- secondary structure -------------------------------------------------------
