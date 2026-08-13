@@ -179,7 +179,6 @@ def test_around_excludes_source():
     "selection",
     [
         "last chain A",
-        "alt A",
         "pepseq AVL",
     ],
 )
@@ -189,16 +188,15 @@ def test_unsupported_constructs_raise(selection):
         parse(selection)
 
 
-def test_the_altloc_refusal_says_what_it_would_cost_to_lift(tiny_structure):
-    """`alt` is refused by choice now, not by impossibility.
+def test_altloc_is_no_longer_refused():
+    """The refusal named a tradeoff, and the tradeoff was taken.
 
-    Every conformer can be loaded; the reason not to is that buried areas and
-    potentials would then be computed over atoms sitting on top of each other.
-    A refusal that names the tradeoff can be argued with; "not implemented"
-    cannot.
+    Every conformer is loaded now, so `alt` parses. The cost it warned about —
+    areas computed over atoms sitting on top of each other — is paid by the
+    analysis tools resolving one conformer state before computing, not by
+    dropping conformers at parse time. See docs/alternate-conformers.md.
     """
-    with pytest.raises(SelectionError, match="overlap each other"):
-        parse("alt A")
+    assert parse("alt A") == Property("alt", ("A",))
 
 
 def test_secondary_structure_is_no_longer_refused():
@@ -379,6 +377,7 @@ _PROBE_VALUES = {
     "index": "1",
     "rank": "0",
     "sym": "0",
+    "alt": "A",
     "elem": "C",
     "ss": "H",
 }
@@ -392,6 +391,11 @@ def test_every_property_is_evaluable(prop, tiny_structure):
     # refusal, which test_selections_numpy owns.
     array = tiny_structure.copy()
     array.set_annotation("sym_id", np.zeros(array.array_length(), dtype=int))
+    # `alt` refuses a structure with no alternates, as `sym` refuses an
+    # asymmetric unit, so the probe needs one to resolve against.
+    altloc = np.full(array.array_length(), ".", dtype="<U1")
+    altloc[0] = "A"
+    array.set_annotation("altloc_id", altloc)
     select_mask(f"{prop} {_PROBE_VALUES.get(prop, 'X')}", array)
 
 

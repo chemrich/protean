@@ -168,7 +168,19 @@ class Extend:
 # how case is treated, belongs to the evaluator; the grammar only needs to know
 # the name is real.
 PROPERTIES = frozenset(
-    {"chain", "segi", "resi", "resn", "name", "elem", "index", "ss", "rank", "sym"}
+    {
+        "chain",
+        "segi",
+        "resi",
+        "resn",
+        "name",
+        "elem",
+        "index",
+        "ss",
+        "rank",
+        "sym",
+        "alt",
+    }
 )
 
 _PROPERTY_ALIASES = {
@@ -242,12 +254,6 @@ MAX_EXTEND_DEPTH = 64
 # nothing — the caller learns the difference between "unsupported" and "no
 # match", which is the whole reason this table exists.
 _UNSUPPORTED: dict[str, str] = {
-    "alt": (
-        "coordinates are parsed keeping one conformer per atom site, so no "
-        "altloc field survives to select on. Loading every conformer is "
-        "possible but would make buried areas and potentials be computed over "
-        "atoms that overlap each other"
-    ),
     "last": "no last-element filter; `first` is available",
     "pepseq": "sequence-motif matching not yet implemented",
     "like": "not implemented",

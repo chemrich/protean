@@ -227,8 +227,27 @@ distinct from `index`, which is the file's own `atom_site.id`.
 `extend 0` and a fractional `extend` are refused, on the same argument as a
 non-positive radius in item 4.
 
-**`alt` — decided 2026-08-13: load every conformer.** Planned in
-[docs/alternate-conformers.md](alternate-conformers.md). The obvious
+**`alt` — decided and implemented 2026-08-13: load every conformer.** Planned
+in [docs/alternate-conformers.md](alternate-conformers.md), which is corrected
+in place against what building it found.
+
+```
+5FJI   15929 atoms, matching the viewer exactly (was 15712, +217 explained)
+       alt A     ->   206    the labelled atoms, as PyMOL means it
+       alt ''+A  -> 15712    the conformer state — what analysis used before
+```
+
+Analysis resolves one conformer state **per site** — each atom keeps its own
+highest-occupancy alternate — and says which letters it used. Per site, not
+per structure: a lone `B`-labelled ion with no `A` counterpart would otherwise
+be deleted from the geometry without a word. 5FJI resolves to `A+B`, not to
+"conformer A". Bonds joining one conformer to another are dropped — templates
+match by atom name and wired 16 of them on 1AKE. One caveat found while
+building and recorded rather than papered over: `extend 1` stays inside a
+conformer, but `extend 2` can cross through a shared atom, because the file
+genuinely bonds the backbone N to both alternate CAs.
+
+The original decision note: The obvious
 implementation is wrong: conformer states *overlap* (13 of 32 residues with
 alternates on 5FJI also carry shared atoms), so altloc cannot go into the
 residue key the way `sym_id` did — it would split one residue into three.

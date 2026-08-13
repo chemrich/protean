@@ -378,12 +378,20 @@ async def test_the_two_settings_are_actually_different(assembly_counts):
 
 # -- alternate conformers ------------------------------------------------------
 
-# 5FJI carries 206 atom sites with two conformers and 11 with a third. biotite
-# keeps one per site and Mol* draws all of them, so the two disagree by 217
-# atoms while describing the same molecule. That difference read as a mismatch
-# — and as "treat every number as unreliable" — until it was measured.
+# 5FJI carries 206 atom sites with two conformers and 11 with a third, so 217
+# rows are alternates. biotite used to keep one per site while Mol* drew all of
+# them, and the two halves disagreed by exactly that much — a difference that
+# read as a mismatch until it was measured, and then as an explained one.
+#
+# **Both now load every conformer**, so the counts are equal and the surplus
+# has stopped being a difference at all. It describes how much of the shared
+# structure is alternates, which is what a caller needs before reading a
+# number computed over one conformer state.
 CONFORMER_FIXTURE = "5fji"
-CONFORMER_EXPECTED = {"python": 15712, "molstar": 15929, "surplus": 217}
+CONFORMER_EXPECTED = {"python": 15929, "molstar": 15929, "surplus": 217}
+# What one conformer state comes to, and what the Python half held before this
+# change: the same atoms, now reached deliberately rather than by parsing.
+CONFORMER_STATE_ATOMS = 15712
 
 
 @pytest.fixture(scope="module")
@@ -397,27 +405,38 @@ async def conformer_counts() -> dict[str, int]:
         "python": int(loaded.array.array_length()),
         "molstar": _count(viewer, "all", ""),
         "surplus": loaded.altloc_surplus,
+        "state": int(select_mask("alt ''+A", loaded.array).sum()),
     }
 
 
-async def test_the_conformer_surplus_accounts_for_the_whole_difference(
-    conformer_counts,
-):
-    """The claim the explained-difference branch rests on.
+async def test_both_halves_hold_every_conformer(conformer_counts):
+    """The invariant inverted, against a real Mol* rather than the file.
 
-    Measured against a real Mol* rather than against the file's row count,
-    because what matters is what the viewer actually built.
+    This asserted `python + surplus == molstar` for as long as the two halves
+    disagreed. They no longer do, and equality measured against the viewer is
+    the strongest available evidence that loading every conformer worked.
     """
-    assert (
-        conformer_counts["python"] + conformer_counts["surplus"]
-        == conformer_counts["molstar"]
-    )
+    assert conformer_counts["python"] == conformer_counts["molstar"]
 
 
 async def test_the_conformer_counts_are_the_expected_ones(conformer_counts):
-    """Guards the test above: 0 + 0 == 0 would satisfy it otherwise."""
-    assert conformer_counts == CONFORMER_EXPECTED
-    assert conformer_counts["python"] != conformer_counts["molstar"]
+    """Guards the test above: 0 == 0 would satisfy it otherwise."""
+    assert {
+        k: v for k, v in conformer_counts.items() if k != "state"
+    } == CONFORMER_EXPECTED
+    assert conformer_counts["surplus"] > 0, "a fixture with no alternates proves nothing"
+
+
+async def test_one_conformer_state_is_what_analysis_used_to_hold(conformer_counts):
+    """The old number, now reached on purpose.
+
+    15712 was what biotite returned when it resolved conformers at parse time.
+    It is now `alt ''+A` — the shared atoms plus the dominant letter — which
+    is what the analysis tools resolve internally. Tying the two together is
+    what makes "nothing moved except deliberately" checkable.
+    """
+    assert conformer_counts["state"] == CONFORMER_STATE_ATOMS
+    assert conformer_counts["state"] < conformer_counts["python"]
 
 
 # -- the nucleic backbone ------------------------------------------------------

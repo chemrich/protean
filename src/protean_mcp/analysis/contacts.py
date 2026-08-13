@@ -19,7 +19,12 @@ from typing import Any
 import numpy as np
 from biotite.structure import AtomArray, CellList, filter_solvent, hbond, sasa
 
-from ..selections_numpy import residue_labels
+from ..selections_numpy import (
+    conformer_state,
+    conformers_used,
+    has_altlocs,
+    residue_labels,
+)
 
 # Heavy-atom fallback: N/O pairs this close are conventionally treated as
 # putative polar contacts when hydrogens are absent.
@@ -84,6 +89,10 @@ class InterfaceResult:
     solvent: str
     # Which symmetry copy this describes, or None for the whole structure.
     copy: int | None = None
+    # Which alternate conformer the geometry was computed over, "" when the
+    # structure has none. Stated because a buried area over conformer A while
+    # the picture shows A and B is a quiet mismatch.
+    conformer: str = ""
     # On a multi-copy assembly with no copy named: one summary per copy, so a
     # total that fuses several interfaces cannot be mistaken for one of them.
     per_copy: list[dict[str, Any]] = field(default_factory=list)
@@ -110,6 +119,8 @@ class InterfaceResult:
         }
         if self.copy is not None:
             out["copy"] = self.copy
+        if self.conformer:
+            out["conformer"] = self.conformer
         if self.per_copy:
             out["per_copy"] = self.per_copy
         if self.note:
@@ -123,6 +134,10 @@ class InterfaceResult:
             kinds[contact.kind] = kinds.get(contact.kind, 0) + 1
         return {
             "copy": self.copy,
+            # Each copy resolves its own conformers, and on an assembly whose
+            # copies differ in occupancy they can differ. Omitting it let the
+            # breakdown mix states with no way to see it.
+            **({"conformer": self.conformer} if self.conformer else {}),
             "buried_area": round(self.buried_area, 1),
             "buried_area_a": round(self.buried_area_a, 1),
             "buried_area_b": round(self.buried_area_b, 1),
@@ -342,14 +357,34 @@ def _interface(
     include_water: bool = False,
 ) -> InterfaceResult:
     """One interface over whatever atoms it is given."""
-    # Dropping solvent renumbers the atoms, so keep the map back to the
-    # caller's numbering: the indices we return have to mean something in the
-    # array they handed us, not in this private copy.
-    if include_water:
-        origin_index = np.arange(array.array_length())
-    else:
-        origin_index = np.flatnonzero(~filter_solvent(array))
-        array = array[origin_index]
+    # Every atom index this returns has to mean something in the array the
+    # caller handed us, not in the private copies below, so each filter keeps
+    # its map back.
+    origin_index = np.arange(array.array_length())
+
+    # One conformer state first, and on the *whole* array. Alternate
+    # conformers never coexist, so an area computed with both present buries
+    # each behind the other and belongs to no molecule -- and because a
+    # residue's shared atoms carry no letter, both states land in one residue
+    # entry and their areas sum. On 5FJI that inflates the worst residues by
+    # nearly half.
+    #
+    # Before solvent, deliberately. High-resolution structures model waters
+    # with alternates too, so resolving afterwards could pick different
+    # letters than the load message announced over the full structure -- the
+    # reply would promise one conformer and report another.
+    conformer = ""
+    if has_altlocs(array):
+        state = conformer_state(array)
+        conformer = conformers_used(array, state)
+        keep = np.flatnonzero(state)
+        origin_index = origin_index[keep]
+        array = array[keep]
+
+    if not include_water:
+        keep = np.flatnonzero(~filter_solvent(array))
+        origin_index = origin_index[keep]
+        array = array[keep]
     mask_a = _chain(array, chain_a)
     mask_b = _chain(array, chain_b)
 
@@ -416,6 +451,7 @@ def _interface(
         indices_b=origin_index[atoms_b],
         contacts=contacts[:contact_limit],
         criterion=criterion,
+        conformer=conformer,
         solvent=(
             "contacts include water; buried area is always solvent-free"
             if include_water

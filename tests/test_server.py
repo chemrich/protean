@@ -154,25 +154,26 @@ def test_matching_counts_are_reported_as_agreement():
     assert "MISMATCH" not in note
 
 
-def test_a_difference_that_is_all_conformers_is_explained_not_alarmed():
-    """5FJI's 217 atoms: the same molecule counted two defensible ways.
+def test_a_conformer_sized_difference_is_now_a_real_mismatch():
+    """The explained-difference branch is gone, deliberately.
 
-    Calling this a mismatch told the caller to distrust every number in the
-    session over a difference that is fully accounted for.
+    It existed because biotite kept one conformer per site while Mol* drew all
+    of them, so a gap of exactly the surplus was the same molecule counted two
+    defensible ways. Both halves now load every conformer, so that gap can only
+    mean the loading failed -- and calling it explained would be the silence
+    this note exists to break.
     """
     note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 15929})
-    assert "MISMATCH" not in note
-    assert "unreliable" not in note
-    assert "217" in note
-    assert "alternate conformers" in note
+    assert "MISMATCH" in note
+    assert "unreliable" in note
 
 
-def test_a_difference_larger_than_the_conformers_is_still_a_mismatch():
-    """The invariant has to survive being given something to explain with."""
+def test_a_mismatch_still_says_how_much_of_it_is_conformers():
+    """Not an excuse for the difference, but a lead on where it came from."""
     note = server_mod._assembly_note(_loaded(15712, 217), {"atom_count": 16000})
     assert "MISMATCH" in note
     assert "unreliable" in note
-    assert "217 of the difference is alternate conformers" in note
+    assert "217 rows of the file are alternate conformers" in note
 
 
 def test_a_difference_with_no_conformers_to_explain_it_is_a_mismatch():

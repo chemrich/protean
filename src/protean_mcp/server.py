@@ -58,8 +58,11 @@ from .selections import parse as _parse_selection
 from .selections_numpy import _residue_keys
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
+from .selections_numpy import conformers_used as _conformers_used
 from .selections_numpy import evaluate as _evaluate
+from .selections_numpy import labelled_atom_count as _labelled_atom_count
 from .selections_numpy import load_structure as _load_structure
+from .selections_numpy import resolve_conformers as _resolve_conformers
 
 logger = logging.getLogger(__name__)
 
@@ -389,23 +392,36 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
         parts.append(f", {ours} atoms here; the viewer reported no count")
     elif int(theirs) == ours:
         parts.append(f", {ours} atoms in both viewer and analysis")
-    elif surplus and int(theirs) - ours == surplus:
-        # The same molecule described two defensible ways, not two molecules.
-        # Saying so beats declaring every number unreliable over a difference
-        # that is fully accounted for.
-        parts.append(
-            f", {ours} atoms here and {theirs} in the viewer; the {surplus} "
-            "extra are alternate conformers, which analysis resolves to one "
-            "per site and the viewer draws all of"
-        )
     else:
+        # The branch that used to explain a conformer difference is gone: both
+        # halves load every conformer now, so a difference is a difference.
         explained = (
-            f" ({surplus} of the difference is alternate conformers)" if surplus else ""
+            f" ({surplus} rows of the file are alternate conformers)" if surplus else ""
         )
         parts.append(
             f", MISMATCH: {ours} atoms here but {theirs} in the viewer{explained}. "
             "Analysis and the picture are different molecules; treat counts, "
             "buried areas and potentials as unreliable"
+        )
+    # Alternate conformers are drawn and selectable, but analysis reads one
+    # state at a time -- states never coexist, so geometry over both describes
+    # no molecule. Which one is used has to be in the reply: a number computed
+    # over conformer A while the picture shows both is exactly the kind of
+    # quiet mismatch the rest of this note exists to prevent.
+    #
+    # Counted from the labels rather than from `altloc_surplus`, which counts
+    # rows *beyond the first at a site*: a single partially occupied ion
+    # labelled `B` is one row at one site, so the surplus is 0 while the atom
+    # is very much an alternate. That combination printed "0 of these are
+    # alternate conformers, and analysis reads conformer B".
+    labelled = _labelled_atom_count(loaded.array)
+    if labelled:
+        used = _conformers_used(loaded.array)
+        parts.append(
+            f"; {labelled} atoms carry an alternate-conformer label, and "
+            f"analysis reads conformer {used} — each site resolved to its "
+            f"highest occupancy. `alt ''+{used.split('+')[0]}` selects a whole "
+            "conformer, `alt A` only the atoms that differ"
         )
     if loaded.note:
         parts.append(f" — {loaded.note}")
@@ -439,6 +455,17 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
     every copy of that chain, and `chain A and sym 0` is the single subunit.
     A selection with no `sym` term keeps meaning every copy. Refused on a
     structure loaded as the asymmetric unit, which has only one.
+
+    `alt A` names an alternate conformer — an atom resolved in more than one
+    position — and means exactly the atoms carrying that label, as PyMOL does.
+    Only the atoms that actually differ carry one, so `alt A` is usually a
+    side chain with no backbone. **The whole conformer is `alt ''+A`**: the
+    shared atoms plus that letter. `alt ''` and `alt .` both mean "no
+    alternate". The labels are disjoint, so `alt A and alt B` is empty.
+
+    Analysis tools do not use `alt`. They resolve one conformer state on their
+    own — the one with the most occupancy — because the states never coexist
+    and geometry over both describes no molecule; each says which it used.
 
     Resolved in Python, so it works with no viewer open. Returns atom and
     residue counts, the chains touched, and the residue list.
@@ -927,7 +954,11 @@ async def load_trajectory(
     capture it.
     """
     global _structure, _structure_error, _structure_identifier, _trajectory  # noqa: PLW0603 - session state
-    template = _require_structure()
+    # A trajectory carries one position per atom and no alternates, so the
+    # template has to be one conformer state. Matching against every conformer
+    # would refuse a trajectory that belongs to this structure, and tell the
+    # caller to load a different one.
+    template, conformer = _resolve_conformers(_require_structure())
     if max_frames < 1:
         raise ViewerError(f"max_frames must be at least 1, got {max_frames}")
 
@@ -954,6 +985,7 @@ async def load_trajectory(
         "frames": available,
         "stride": stride,
         "atoms": int(stack.array_length()),
+        **({"conformer": conformer} if conformer else {}),
         "viewer_atoms": reply.get("atom_count"),
         "formats": _trajectory_formats(),
     }
@@ -2062,8 +2094,16 @@ async def _display_superposition(
     selection written against the original name would otherwise pick up the
     wrong molecule.
     """
-    moved = _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
-    fixed = _load_structure(target_data.data, target_data.format, "asymmetric").array
+    # One state each. The pair is written back out as mmCIF, and biotite's
+    # writer blanks `label_alt_id`, so sending every conformer would hand Mol*
+    # atoms it cannot tell apart: overlapping spheres, template bonds across
+    # them, and no `alt` selection possible in the picture.
+    moved, _ = _resolve_conformers(
+        _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
+    )
+    fixed, _ = _resolve_conformers(
+        _load_structure(target_data.data, target_data.format, "asymmetric").array
+    )
 
     matrix = np.asarray(result.transform, dtype=float)
     if matrix.shape != (_TRANSFORM_SIZE, _TRANSFORM_SIZE):
@@ -2278,7 +2318,12 @@ async def electrostatics(
     (r = 0.96, 94% sign agreement) while running about 1.6x low in magnitude.
     Read it for where the charge is, never for an energy.
     """
-    array = _require_structure()
+    # One conformer state before any geometry. biotite's PDB writer blanks the
+    # altLoc column, so pdb2pqr would receive two rows for one atom with no way
+    # to tell them apart and would silently keep whichever came first -- a
+    # potential map computed over atoms sitting on top of each other, with
+    # nothing in the reply to say so.
+    array, conformer = _resolve_conformers(_require_structure())
     try:
         prepared = _prepare_charges(array, ph=ph)
     except ElectrostaticsError as exc:
@@ -2321,6 +2366,11 @@ async def electrostatics(
         "dx_path": str(out),
         "apbs_available": binary is not None,
     }
+    if conformer:
+        # Which atoms this map describes. Alternate conformers never coexist,
+        # so a potential computed over both would be of no molecule -- and the
+        # picture shows all of them.
+        payload["conformer"] = conformer
     if chosen == "coulombic":
         payload["caveat"] = (
             "Uniform dielectric: no protein interior, no reaction field. The "
@@ -2373,7 +2423,7 @@ async def conservation(
     number before trusting the scores: a protein with few known homologs looks
     conserved everywhere because nothing was found to disagree with it.
     """
-    array = _require_structure()
+    array, _ = _resolve_conformers(_require_structure())
     if chain is None:
         protein: Any = np.asarray(filter_amino_acids(array))
         if not protein.any():

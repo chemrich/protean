@@ -5,6 +5,23 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Alternate conformers
+
+- Every alternate conformer is loaded, so the viewer and the analysis hold the
+  same atoms — 15929 on 5FJI, where analysis previously held 15712 and the
+  difference had to be explained in the load message.
+- `alt A` selects atoms carrying that label, as PyMOL does; the whole
+  conformer is `alt ''+A`, and `alt ''` and `alt .` both mean "no alternate".
+- Analysis resolves one conformer state before computing — each site keeping
+  its own highest-occupancy alternate — and reports which letters it used.
+  Resolving per structure instead would delete any site not carrying the
+  winning letter, which is how a partially occupied ion is routinely modelled. Alternate conformers never coexist, so
+  a buried area computed over both belongs to no molecule, and because a
+  residue's shared atoms carry no label both states would otherwise land in
+  one residue entry and sum.
+- Bonds joining one conformer to another are dropped, so `extend` and
+  `bound_to` do not step between mutually exclusive states.
+
 ### Session state
 
 - Loading a structure now ends the session before it. A trajectory and any
