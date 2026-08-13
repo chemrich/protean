@@ -22,7 +22,12 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
-from protean_mcp.selections_numpy import LoadedStructure, load_structure, select_mask
+from protean_mcp.selections_numpy import (
+    LoadedStructure,
+    conformer_state,
+    load_structure,
+    select_mask,
+)
 from protean_mcp.server import (
     background,
     capabilities,
@@ -295,11 +300,13 @@ def _pdb_line(
     resseq: int,
     xyz: tuple[float, float, float],
     element: str,
+    altloc: str = " ",
+    occupancy: float = 1.0,
 ) -> str:
     x, y, z = xyz
     return (
-        f"ATOM  {serial:5d} {name:^4s} {resname:3s} {chain:1s}{resseq:4d}    "
-        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}"
+        f"ATOM  {serial:5d} {name:^4s}{altloc:1s}{resname:3s} {chain:1s}{resseq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}{occupancy:6.2f}  0.00          {element:>2s}"
     )
 
 
@@ -565,6 +572,58 @@ def _peptide_pdb(path: Path, n: int = 12) -> Path:
     return path
 
 
+def _peptide_with_alternate_pdb(
+    path: Path, n: int = 12, alt_at: tuple[int, ...] = (2, 11)
+) -> Path:
+    """The same chain, with two residues' CAs modelled in two positions.
+
+    Both positions are load-bearing and they test different things.
+
+    Residue 2 is early, so every atom after it sits at a different index in the
+    resolved-state array than in the full one — that is what makes a handle
+    built in the wrong index space land on the wrong *residue* rather than
+    merely on the wrong atom of the right one.
+
+    Residue 11 is inside the conserved tail the graded alignment produces, so
+    the handle covering it must hold one conformer rather than both. Without
+    it, a handle built over whole residues of the full array — the obvious way
+    to "simplify" this code — passes every residue-level assertion while
+    quietly carrying two rows for one atom.
+    """
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
+        ):
+            xyz = (float(res) * 4, float(i), 0.0)
+            if res in alt_at and name == "CA":
+                # Highest occupancy wins, so state resolution keeps A and drops
+                # B — one row shorter than the array the viewer holds.
+                lines.append(
+                    _pdb_line(serial, name, "ALA", "A", res, xyz, elem, "A", 0.7)
+                )
+                serial += 1
+                lines.append(
+                    _pdb_line(
+                        serial,
+                        name,
+                        "ALA",
+                        "A",
+                        res,
+                        (xyz[0], xyz[1] + 0.4, 0.0),
+                        elem,
+                        "B",
+                        0.3,
+                    )
+                )
+            else:
+                lines.append(_pdb_line(serial, name, "ALA", "A", res, xyz, elem))
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
 def _fake_msa(monkeypatch, sequence_length: int, depth: int = 20) -> None:
     """Stand in for the MMseqs2 search: column 0 conserved, the rest varied."""
     query = "A" * sequence_length
@@ -577,6 +636,105 @@ def _fake_msa(monkeypatch, sequence_length: int, depth: int = 20) -> None:
         return a3m, "search"
 
     monkeypatch.setattr(server_mod, "_fetch_msa", fake_fetch)
+
+
+def _fake_msa_graded(monkeypatch, sequence_length: int) -> None:
+    """An alignment whose entropy falls monotonically along the chain.
+
+    Column *i* disagrees with the query in ``n-i`` of the ``2n`` homologs, so
+    the first column is an even split — maximum entropy — and the last is
+    nearly invariant. The conserved quartile is therefore the tail of the
+    chain, which is what the test needs: only a residue *after* the alternate
+    site sits at a different index in the two arrays.
+
+    Built from the mismatch counts rather than from whole sequences because
+    entropy is a function of the column, and a construction that reads
+    left-to-right along each homolog produced a U — low at both ends, since a
+    column that disagrees in almost every sequence is as ordered as one that
+    agrees in almost every sequence.
+    """
+    query = "A" * sequence_length
+    mismatches = [sequence_length - i for i in range(sequence_length)]
+    homologs = [
+        "".join("W" if j < m else "A" for m in mismatches)
+        for j in range(2 * sequence_length)
+    ]
+    a3m = f">query\n{query}\n" + "".join(f">h{j}\n{h}\n" for j, h in enumerate(homologs))
+
+    async def fake_fetch(sequence, cache_dir, **kwargs):
+        return a3m, "search"
+
+    monkeypatch.setattr(server_mod, "_fetch_msa", fake_fetch)
+
+
+async def test_conservation_handles_name_the_residues_the_scores_name(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The scores and the handles must describe the same residues.
+
+    `conservation` scores a resolved conformer state, which is shorter than
+    the array the viewer holds, while `_register` and `_display` resolve
+    indices against the full one. Indexing the second with positions computed
+    in the first shifts every residue past the alternate site, and nothing
+    downstream can notice: the scores are right, the atom count is right, and
+    the handle draws a neighbouring residue.
+    """
+    await _load(wired_bridge, _peptide_with_alternate_pdb(tmp_path / "alt.pdb"))
+    _fake_msa_graded(monkeypatch, sequence_length=12)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(2)
+    payload = await conservation()
+    await task
+
+    low = payload["conserved_below_entropy"]
+    scored_conserved = {r["seq"] for r in payload["residues"] if r["entropy"] <= low}
+    # Guard the guard: if the cutoff ever swept in the whole chain, or only
+    # residues before the alternate site, this test could not fail.
+    assert 0 < len(scored_conserved) < payload["residues_scored"]
+    assert min(scored_conserved) > 2, scored_conserved
+    # ...and it has to reach a residue that carries an alternate, or the
+    # one-state assertion below is vacuous.
+    assert 11 in scored_conserved, scored_conserved
+
+    indices = server_mod._handles.get("conserved").indices
+    drawn = summarise(server_mod._structure, indices)
+    assert {r["seq"] for r in drawn["residues"]} == scored_conserved
+    # One conformer per site, not both rows of residue 11's CA. Four atoms per
+    # residue is the fixture's own shape, so this counts what was kept rather
+    # than restating the implementation.
+    assert drawn["atom_count"] == 4 * len(scored_conserved)
+    assert bool(np.all(conformer_state(server_mod._structure)[indices]))
+
+
+async def test_conservation_refuses_if_the_structure_changed_while_it_waited(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """Indices computed before a minutes-long await must not be applied after it.
+
+    Nothing in the server locks `_structure`, and the alignment fetch is the
+    longest await in the codebase. A `fetch_structure` landing inside it would
+    leave the handle indices addressing the previous molecule while
+    `_summarise` reports a believable atom count for whatever they now hit.
+    """
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    a3m = f">query\n{'A' * 12}\n>h0\n{'A' * 12}\n"
+
+    async def swap_then_fetch(sequence, cache_dir, **kwargs):
+        # Stand in for a concurrent fetch_structure completing mid-await.
+        monkeypatch.setattr(
+            server_mod,
+            "_structure",
+            load_structure(
+                _peptide_pdb(tmp_path / "other.pdb", n=9).read_text(), "pdb"
+            ).array,
+        )
+        return a3m, "search"
+
+    monkeypatch.setattr(server_mod, "_fetch_msa", swap_then_fetch)
+
+    with pytest.raises(ViewerError, match="structure changed"):
+        await conservation()
+    assert "conserved" not in server_mod._handles.names()
 
 
 async def test_conservation_registers_conserved_and_variable_handles(
