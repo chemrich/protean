@@ -22,7 +22,7 @@ from biotite.structure import (
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
-from ..selections_numpy import _normalise_altloc, resolve_conformers
+from ..selections_numpy import _normalise_altloc, conformers_used, resolve_conformers
 
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
@@ -160,14 +160,20 @@ def superpose(
     # twice contributes two anchors to one column and pairs off every residue
     # after it by one. The rmsd, identity and outliers stay plausible, and the
     # transform they produce is wrong with them.
-    mobile_state, mobile_conformer = resolve_conformers(
-        parse_structure(mobile_text, mobile_format)
-    )
-    target_state, target_conformer = resolve_conformers(
-        parse_structure(target_text, target_format)
-    )
+    mobile_state, _ = resolve_conformers(parse_structure(mobile_text, mobile_format))
+    target_state, _ = resolve_conformers(parse_structure(target_text, target_format))
     mobile = protein_atoms(mobile_state, mobile_chain, "mobile")
     target = protein_atoms(target_state, target_chain, "target")
+
+    # Resolve over the whole file but *label* what was superposed. The
+    # resolution has to see every site, so that the letter chosen here matches
+    # the one the load message named; the label has to describe the narrowed
+    # arrays, or an alternate sitting in a chain nobody superposed — or in a
+    # ligand, or an ordered water — puts a letter on a result it had no part
+    # in. Asking `superpose(mobile_chain="A")` about a file whose only
+    # alternate is in chain B must answer "no choice was made".
+    mobile_conformer = conformers_used(mobile)
+    target_conformer = conformers_used(target)
 
     # biotite's generic signatures do not narrow here, so name the parts.
     fitted: Any

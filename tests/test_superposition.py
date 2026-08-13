@@ -142,12 +142,33 @@ def helix_pdb():
     return "\n".join(lines) + "\nEND\n"
 
 
+def _renamed_chain(text: str, chain: str) -> str:
+    """Rewrite the chain id by column, not by string replacement.
+
+    A `.replace(" A ", " B ")` also hits the residue and element fields, which
+    produces a file biotite parses into something other than what was meant.
+    """
+    out = [
+        f"{line[:21]}{chain}{line[22:]}" if line.startswith("ATOM") else line
+        for line in text.splitlines()
+    ]
+    return "\n".join(out) + "\n"
+
+
 def _with_alternate_ca(text: str, residue: int, offset: float = 1.2) -> str:
     """Model one residue's CA in two positions, the way a real file does.
 
-    ``A`` keeps the true coordinates and the higher occupancy; ``B`` is
-    displaced, so a correspondence that picks up both CAs fits badly rather
-    than merely differently.
+    ``A`` keeps the true coordinates and ``B`` is displaced, so a
+    correspondence that picks up both CAs fits badly rather than merely
+    differently.
+
+    The occupancy columns are here to make the fixture look like a real file,
+    and **this test does not pin which rule chose the letter**: on this branch
+    `parse_structure` requests no occupancy, so the choice falls to sort order,
+    and swapping these two numbers changes nothing. `A` is written with the
+    higher value so the expected letter stays the same once occupancy is
+    actually read. What decides the letter is asserted in
+    `test_parse_structure_resolves_the_state_the_loader_would`.
     """
     out = []
     for line in text.splitlines():
@@ -200,6 +221,24 @@ def test_an_alternate_backbone_does_not_shift_the_residue_correspondence(helix_p
     # The reply must say what it kept, or the atoms an RMSD was computed over
     # are not recoverable from it.
     assert result.mobile_conformer == "A"
+    assert result.target_conformer == ""
+
+
+def test_the_conformer_label_describes_only_what_was_superposed(helix_pdb):
+    """An alternate in a chain nobody superposed must not label the result.
+
+    Resolution runs over the whole file on purpose, so the letter kept here
+    matches the one the load message named. The *label* is a claim about the
+    atoms this result was computed from, and a chain that was excluded before
+    fitting contributed none of them.
+    """
+    chain_b = _with_alternate_ca(_renamed_chain(helix_pdb, "B"), residue=3)
+    two_chains = helix_pdb.replace("END\n", "") + chain_b
+
+    result = superpose(
+        two_chains, "pdb", helix_pdb, "pdb", mobile_chain="A", target_chain="A"
+    )
+    assert result.mobile_conformer == ""
     assert result.target_conformer == ""
 
 
