@@ -22,7 +22,12 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
-from protean_mcp.selections_numpy import LoadedStructure, load_structure, select_mask
+from protean_mcp.selections_numpy import (
+    LoadedStructure,
+    conformer_state,
+    load_structure,
+    select_mask,
+)
 from protean_mcp.server import (
     background,
     capabilities,
@@ -567,13 +572,23 @@ def _peptide_pdb(path: Path, n: int = 12) -> Path:
     return path
 
 
-def _peptide_with_alternate_pdb(path: Path, n: int = 12, alt_at: int = 2) -> Path:
-    """The same chain, with one residue's CA modelled in two positions.
+def _peptide_with_alternate_pdb(
+    path: Path, n: int = 12, alt_at: tuple[int, ...] = (2, 11)
+) -> Path:
+    """The same chain, with two residues' CAs modelled in two positions.
 
-    `alt_at` is early in the chain on purpose: every atom after it sits at a
-    different index in the resolved-state array than in the full one, which is
-    what makes a handle built in the wrong index space land on the wrong
-    residue rather than merely on the wrong atom of the right one.
+    Both positions are load-bearing and they test different things.
+
+    Residue 2 is early, so every atom after it sits at a different index in the
+    resolved-state array than in the full one — that is what makes a handle
+    built in the wrong index space land on the wrong *residue* rather than
+    merely on the wrong atom of the right one.
+
+    Residue 11 is inside the conserved tail the graded alignment produces, so
+    the handle covering it must hold one conformer rather than both. Without
+    it, a handle built over whole residues of the full array — the obvious way
+    to "simplify" this code — passes every residue-level assertion while
+    quietly carrying two rows for one atom.
     """
     lines = []
     serial = 1
@@ -582,7 +597,7 @@ def _peptide_with_alternate_pdb(path: Path, n: int = 12, alt_at: int = 2) -> Pat
             (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
         ):
             xyz = (float(res) * 4, float(i), 0.0)
-            if res == alt_at and name == "CA":
+            if res in alt_at and name == "CA":
                 # Highest occupancy wins, so state resolution keeps A and drops
                 # B — one row shorter than the array the viewer holds.
                 lines.append(
@@ -677,9 +692,49 @@ async def test_conservation_handles_name_the_residues_the_scores_name(
     # residues before the alternate site, this test could not fail.
     assert 0 < len(scored_conserved) < payload["residues_scored"]
     assert min(scored_conserved) > 2, scored_conserved
+    # ...and it has to reach a residue that carries an alternate, or the
+    # one-state assertion below is vacuous.
+    assert 11 in scored_conserved, scored_conserved
 
-    drawn = summarise(server_mod._structure, server_mod._handles.get("conserved").indices)
+    indices = server_mod._handles.get("conserved").indices
+    drawn = summarise(server_mod._structure, indices)
     assert {r["seq"] for r in drawn["residues"]} == scored_conserved
+    # One conformer per site, not both rows of residue 11's CA. Four atoms per
+    # residue is the fixture's own shape, so this counts what was kept rather
+    # than restating the implementation.
+    assert drawn["atom_count"] == 4 * len(scored_conserved)
+    assert bool(np.all(conformer_state(server_mod._structure)[indices]))
+
+
+async def test_conservation_refuses_if_the_structure_changed_while_it_waited(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """Indices computed before a minutes-long await must not be applied after it.
+
+    Nothing in the server locks `_structure`, and the alignment fetch is the
+    longest await in the codebase. A `fetch_structure` landing inside it would
+    leave the handle indices addressing the previous molecule while
+    `_summarise` reports a believable atom count for whatever they now hit.
+    """
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    a3m = f">query\n{'A' * 12}\n>h0\n{'A' * 12}\n"
+
+    async def swap_then_fetch(sequence, cache_dir, **kwargs):
+        # Stand in for a concurrent fetch_structure completing mid-await.
+        monkeypatch.setattr(
+            server_mod,
+            "_structure",
+            load_structure(
+                _peptide_pdb(tmp_path / "other.pdb", n=9).read_text(), "pdb"
+            ).array,
+        )
+        return a3m, "search"
+
+    monkeypatch.setattr(server_mod, "_fetch_msa", swap_then_fetch)
+
+    with pytest.raises(ViewerError, match="structure changed"):
+        await conservation()
+    assert "conserved" not in server_mod._handles.names()
 
 
 async def test_conservation_registers_conserved_and_variable_handles(

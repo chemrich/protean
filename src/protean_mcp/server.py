@@ -2452,6 +2452,21 @@ async def conservation(
     except ConservationError as exc:
         raise ViewerError(str(exc)) from exc
 
+    # The alignment fetch above is a network call the docstring describes as
+    # "tens of seconds to minutes", and nothing in this server holds a lock.
+    # `fetch_structure`, `superpose` and `load_trajectory` all rebind
+    # `_structure`, so a call landing during that wait would leave
+    # `origin_index` mapping into the array this started with while `_register`
+    # summarises against the new one — a handle naming arbitrary atoms, with a
+    # plausible count. Refuse instead: the scores describe a molecule that is
+    # no longer loaded.
+    if _require_structure() is not full:
+        raise ViewerError(
+            "The loaded structure changed while the alignment was being "
+            "fetched, so these scores describe a molecule that is no longer "
+            "loaded. Nothing was registered — call conservation() again."
+        )
+
     # Keep the scores so color_by_conservation does not have to pay for the
     # alignment again just to change how it is drawn.
     _conservation_scores[chain] = result.scores
