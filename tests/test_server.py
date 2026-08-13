@@ -1932,3 +1932,91 @@ async def test_record_trajectory_honours_stride(wired_bridge, tmp_path, monkeypa
     # 0, 3, 6, 9 captured, then back to 0.
     assert seen == [0, 3, 6, 9, 0]
     assert len(sorted(Path(out["directory"]).glob("frame_*.png"))) == 4
+
+
+# -- a new structure ends the session before it ---------------------------------
+#
+# The trajectory's frames are one molecule's atoms in one order, and a saved
+# camera was framed on that molecule. Kept across a load, both keep answering
+# about something that is no longer here. `rmsf` reads the trajectory's own
+# first frame rather than the loaded structure, so nothing mismatches and
+# nothing complains — the analysis simply describes the wrong molecule while
+# the viewer shows the right one.
+
+
+def _toy_pdb(tmp_path: Any, name: str = "toy") -> str:
+    f = tmp_path / f"{name}.pdb"
+    f.write_text(
+        "ATOM      1  N   MET A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "END\n"
+    )
+    return str(f)
+
+
+async def _load_toy(wired_bridge: Any, path: str) -> Any:
+    wired_bridge.handlers["load_structure"] = lambda args: {"loaded": args["name"]}
+    task = wired_bridge.serve(1)
+    try:
+        return await fetch_structure(path)
+    finally:
+        await task
+
+
+async def test_loading_a_structure_discards_the_previous_trajectory(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The product claim, asserted through the tool a caller would actually hit."""
+    template = _peptide_array()
+    frames = np.stack([template.coord] * 4)
+    monkeypatch.setattr(server_mod, "_trajectory", _stack_from(template, frames))
+
+    await _load_toy(wired_bridge, _toy_pdb(tmp_path))
+
+    assert server_mod._trajectory is None
+    with pytest.raises(ViewerError, match="No trajectory loaded"):
+        await rmsf()
+    with pytest.raises(ViewerError, match="No trajectory loaded"):
+        await rmsd_series()
+
+
+async def test_the_reply_says_the_trajectory_was_discarded(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """Silently dropping it would be a smaller version of the same bug: the
+    caller finds out from a refusal several calls later instead."""
+    template = _peptide_array()
+    monkeypatch.setattr(
+        server_mod, "_trajectory", _stack_from(template, np.stack([template.coord] * 2))
+    )
+    message = await _load_toy(wired_bridge, _toy_pdb(tmp_path))
+    assert "discarded" in message and "trajectory" in message
+
+
+async def test_loading_a_structure_discards_saved_keyframes(
+    wired_bridge, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        server_mod,
+        "_keyframes",
+        {"a": {"position": [0, 0, 1]}, "b": {"position": [0, 1, 0]}},
+    )
+    message = await _load_toy(wired_bridge, _toy_pdb(tmp_path))
+    assert server_mod._keyframes == {}
+    assert "2 keyframes" in message
+
+
+async def test_a_clean_load_says_nothing_about_discarding(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The usual case must not grow a confusing sentence about things that
+    were never there."""
+    monkeypatch.setattr(server_mod, "_trajectory", None)
+    monkeypatch.setattr(server_mod, "_keyframes", {})
+    message = await _load_toy(wired_bridge, _toy_pdb(tmp_path))
+    assert "discarded" not in message
+
+
+async def test_one_keyframe_is_not_pluralised(wired_bridge, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_mod, "_keyframes", {"only": {"position": [0, 0, 1]}})
+    message = await _load_toy(wired_bridge, _toy_pdb(tmp_path))
+    assert "1 keyframe" in message and "1 keyframes" not in message

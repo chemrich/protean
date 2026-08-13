@@ -298,8 +298,7 @@ async def fetch_structure(
     # should still display. Only analysis degrades, and it says so rather than
     # silently matching nothing.
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
-    _handles.clear()
-    _conservation_scores.clear()
+    discarded = _discard_session_state()
     loaded = None
     try:
         loaded = _load_structure(structure.data, structure.format, assembly)
@@ -329,7 +328,47 @@ async def fetch_structure(
     )
     if loaded is not None:
         note += _assembly_note(loaded, result)
+    note += discarded
     return f"Loaded {label} ({structure.format}, from {origin}): {result}{note}"
+
+
+def _discard_session_state() -> str:
+    """Drop everything that belonged to the structure being replaced.
+
+    A trajectory and a set of keyframes are each bound to the structure they
+    were made for: the frames are that molecule's atoms in that order, and a
+    saved camera was framed on it. Carried across a load they keep answering,
+    about a molecule that is no longer here — and ``rmsf()`` reads the
+    trajectory's own first frame rather than the loaded structure, so nothing
+    would mismatch and nothing would complain. ``load_trajectory`` refuses a
+    mismatched atom count at load time; this is the call that would otherwise
+    invalidate that check afterwards.
+
+    Returns what was thrown away, for the reply. Doing it silently would be a
+    smaller version of the same bug: a caller who had a trajectory loaded
+    should be told it is gone rather than discover it from a later refusal.
+    """
+    global _trajectory  # noqa: PLW0603 - session state
+    discarded: list[str] = []
+    if _trajectory is not None:
+        discarded.append("the trajectory")
+    _trajectory = None
+    if _keyframes:
+        count = len(_keyframes)
+        discarded.append(f"{count} keyframe{'s' if count > 1 else ''}")
+    _keyframes.clear()
+    # Handles and conservation scores were already dropped on every load. They
+    # are here so one function is the whole answer to "what does loading a new
+    # structure end?". Neither is announced, because neither ever was.
+    _handles.clear()
+    _conservation_scores.clear()
+    if not discarded:
+        return ""
+    return (
+        f" [discarded with the previous structure: {', '.join(discarded)} — "
+        "a trajectory and a saved camera belong to the molecule they were "
+        "made for]"
+    )
 
 
 def _assembly_note(loaded: Any, viewer_result: Any) -> str:
@@ -2048,8 +2087,10 @@ async def _display_superposition(
     _renumber_for_viewer(combined)
 
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
-    _handles.clear()
-    _conservation_scores.clear()
+    # Superposing replaces the loaded structure with the pair, so it ends the
+    # previous session exactly as a fetch does -- the trajectory's frames are
+    # not this molecule, and a saved camera was framed on something else.
+    discarded = _discard_session_state()
     _structure, _structure_error = combined, None
     _structure_identifier = f"{target}+{mobile}"
 
@@ -2070,6 +2111,7 @@ async def _display_superposition(
             "analysis address both. The mobile copy is in the target's frame; "
             "its coordinates were transformed, not just displayed shifted."
             + (f" Renamed to avoid collisions: {renamed}." if renamed else "")
+            + discarded
         ),
     }
 
