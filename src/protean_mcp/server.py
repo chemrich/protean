@@ -954,7 +954,11 @@ async def load_trajectory(
     capture it.
     """
     global _structure, _structure_error, _structure_identifier, _trajectory  # noqa: PLW0603 - session state
-    template = _require_structure()
+    # A trajectory carries one position per atom and no alternates, so the
+    # template has to be one conformer state. Matching against every conformer
+    # would refuse a trajectory that belongs to this structure, and tell the
+    # caller to load a different one.
+    template, conformer = _resolve_conformers(_require_structure())
     if max_frames < 1:
         raise ViewerError(f"max_frames must be at least 1, got {max_frames}")
 
@@ -981,6 +985,7 @@ async def load_trajectory(
         "frames": available,
         "stride": stride,
         "atoms": int(stack.array_length()),
+        **({"conformer": conformer} if conformer else {}),
         "viewer_atoms": reply.get("atom_count"),
         "formats": _trajectory_formats(),
     }
@@ -2089,8 +2094,16 @@ async def _display_superposition(
     selection written against the original name would otherwise pick up the
     wrong molecule.
     """
-    moved = _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
-    fixed = _load_structure(target_data.data, target_data.format, "asymmetric").array
+    # One state each. The pair is written back out as mmCIF, and biotite's
+    # writer blanks `label_alt_id`, so sending every conformer would hand Mol*
+    # atoms it cannot tell apart: overlapping spheres, template bonds across
+    # them, and no `alt` selection possible in the picture.
+    moved, _ = _resolve_conformers(
+        _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
+    )
+    fixed, _ = _resolve_conformers(
+        _load_structure(target_data.data, target_data.format, "asymmetric").array
+    )
 
     matrix = np.asarray(result.transform, dtype=float)
     if matrix.shape != (_TRANSFORM_SIZE, _TRANSFORM_SIZE):

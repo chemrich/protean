@@ -22,6 +22,8 @@ from biotite.structure import (
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
+from ..selections_numpy import _normalise_altloc
+
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
 _SINGLE_MATRIX_DIMS = 2
@@ -83,10 +85,15 @@ def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
             f"Unsupported format {fmt!r} (expected 'pdb' or 'mmcif')"
         )
     try:
+        # `altloc="all"` to match the main loader: a structure parsed here and
+        # the same structure fetched normally must hold the same atoms, or
+        # `interface("5fji", ...)` and `interface(...)` after loading 5fji
+        # quietly answer about different molecules.
         if fmt == "pdb":
-            array = PDBFile.read(handle).get_structure(model=1)
+            array = PDBFile.read(handle).get_structure(model=1, altloc="all")
         else:
-            array = get_structure(CIFFile.read(handle), model=1)
+            array = get_structure(CIFFile.read(handle), model=1, altloc="all")
+        array = _normalise_altloc(array)
     except Exception as exc:
         # Surface malformed coordinates as our own error rather than letting a
         # biotite exception type escape into the tool layer.

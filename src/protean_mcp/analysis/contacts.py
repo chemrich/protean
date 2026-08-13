@@ -357,26 +357,32 @@ def _interface(
     include_water: bool = False,
 ) -> InterfaceResult:
     """One interface over whatever atoms it is given."""
-    # Dropping solvent renumbers the atoms, so keep the map back to the
-    # caller's numbering: the indices we return have to mean something in the
-    # array they handed us, not in this private copy.
-    if include_water:
-        origin_index = np.arange(array.array_length())
-    else:
-        origin_index = np.flatnonzero(~filter_solvent(array))
-        array = array[origin_index]
+    # Every atom index this returns has to mean something in the array the
+    # caller handed us, not in the private copies below, so each filter keeps
+    # its map back.
+    origin_index = np.arange(array.array_length())
 
-    # One conformer state, for the same reason and by the same mechanism.
-    # Alternate conformers never coexist, so an area computed with both of
-    # them present buries each behind the other and belongs to no molecule --
-    # and because a residue's shared atoms carry no letter, both states land
-    # in one residue entry and their areas sum. On 5FJI that inflates the
-    # worst residues by nearly half.
+    # One conformer state first, and on the *whole* array. Alternate
+    # conformers never coexist, so an area computed with both present buries
+    # each behind the other and belongs to no molecule -- and because a
+    # residue's shared atoms carry no letter, both states land in one residue
+    # entry and their areas sum. On 5FJI that inflates the worst residues by
+    # nearly half.
+    #
+    # Before solvent, deliberately. High-resolution structures model waters
+    # with alternates too, so resolving afterwards could pick different
+    # letters than the load message announced over the full structure -- the
+    # reply would promise one conformer and report another.
     conformer = ""
     if has_altlocs(array):
         state = conformer_state(array)
         conformer = conformers_used(array, state)
         keep = np.flatnonzero(state)
+        origin_index = origin_index[keep]
+        array = array[keep]
+
+    if not include_water:
+        keep = np.flatnonzero(~filter_solvent(array))
         origin_index = origin_index[keep]
         array = array[keep]
     mask_a = _chain(array, chain_a)

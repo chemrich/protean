@@ -29,6 +29,7 @@ from protean_mcp.selections_numpy import (
     conformers_used,
     dominant_altloc,
     has_altlocs,
+    resolve_conformers,
     select_mask,
 )
 
@@ -343,3 +344,47 @@ def test_naming_a_letter_is_still_literal(two_states):
     assert int(conformer_state(two_states, "B").sum()) == 5
     ids = np.asarray(two_states.get_annotation("altloc_id"))
     assert "A" not in set(ids[conformer_state(two_states, "B")].tolist())
+
+
+# -- every path that reads coordinates resolves the same state -----------------
+
+
+def test_the_conformer_reported_matches_the_one_announced():
+    """The load message and the analysis must name the same letters.
+
+    `interface` resolved *after* dropping solvent, and high-resolution
+    structures model waters with alternates too — so the two could pick
+    different letters and the reply would promise one conformer while
+    reporting another.
+    """
+    atoms = [
+        _atom(1, "CA", ".", [0.0, 0.0, 0.0], chain="A"),
+        _atom(1, "CB", "A", [1.0, 0.0, 0.0], 0.6, chain="A"),
+        _atom(1, "CB", "B", [1.0, 0.5, 0.0], 0.4, chain="A"),
+        _atom(2, "CA", ".", [4.0, 0.0, 0.0], chain="B"),
+        _atom(2, "CB", ".", [3.0, 0.0, 0.0], chain="B"),
+        # a water whose alternates favour the other letter
+        _atom(3, "O", "A", [20.0, 0.0, 0.0], 0.2, chain="W", res_name="HOH"),
+        _atom(3, "O", "B", [20.5, 0.0, 0.0], 0.8, chain="W", res_name="HOH"),
+    ]
+    arr = _with_altloc(atoms, [".", "A", "B", ".", ".", "A", "B"])
+    announced = conformers_used(arr)
+    assert interface(arr, "A", "B").conformer == announced
+
+
+def test_a_trajectory_template_is_one_state():
+    """A trajectory carries one position per atom and no alternates.
+
+    Matching it against every conformer refuses a trajectory that does belong
+    to this structure, and tells the caller to load a different one.
+    """
+    atoms = [
+        _atom(1, "N", ".", [0.0, 0.0, 0.0]),
+        _atom(1, "CB", "A", [1.0, 0.0, 0.0], 0.7),
+        _atom(1, "CB", "B", [1.0, 0.4, 0.0], 0.3),
+    ]
+    arr = _with_altloc(atoms, [".", "A", "B"])
+    template, letter = resolve_conformers(arr)
+    assert template.array_length() == 2, "one position per atom"
+    assert arr.array_length() == 3, "the loaded structure still holds both"
+    assert letter == "A"
