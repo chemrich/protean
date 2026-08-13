@@ -17,6 +17,10 @@ dependencies = [
     # of which Mol* can do. Promoted from the dev group by decision 11, in the
     # PR that first needs it at runtime.
     "pillow>=11.0",
+    # The viewer-neutral cryo-EM views, shared with MCPymol. A view returns
+    # (report, Scene) and never calls a viewer; `backends/` here lowers a
+    # Scene onto Mol*. See github.com/chemrich/wiggles-em.
+    "wiggles-em",
 ]
 
 [project.urls]
@@ -122,3 +126,24 @@ ignore_missing_imports = true
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+# A pinned git dependency, not a path one. CI runs `uv sync` after
+# `actions/checkout@v4`, which checks out protean and nothing else, so
+# `../wiggles-em` exists on a laptop where both repos sit side by side and
+# nowhere else. wiggles-em is public, so a git pin works without publishing
+# either project to PyPI.
+#
+# To edit wiggles-em and see it here immediately, shadow the pin locally:
+#
+#     uv pip install -e ../wiggles-em
+#     export UV_NO_SYNC=1
+#
+# Both lines, not just the first. `uv sync` reverts the editable install to the
+# pinned revision — measured on uv 0.12.3, and it does so silently as a
+# one-line "Uninstalled 1 package". `uv run` syncs first, so without
+# UV_NO_SYNC every test run puts the pin back. A `uv.toml` override is not an
+# alternative: uv rejects `sources` there outright.
+#
+# Bump `rev` when a wiggles-em change needs to reach CI or another clone.
+[tool.uv.sources]
+wiggles-em = { git = "https://github.com/chemrich/wiggles-em", rev = "9381dbe7cd8894b7720d3833cdbd68fe66387169" }
