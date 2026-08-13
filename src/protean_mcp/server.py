@@ -58,6 +58,7 @@ from .selections import parse as _parse_selection
 from .selections_numpy import _residue_keys
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
+from .selections_numpy import conformer_state as _conformer_state
 from .selections_numpy import conformers_used as _conformers_used
 from .selections_numpy import evaluate as _evaluate
 from .selections_numpy import labelled_atom_count as _labelled_atom_count
@@ -2423,7 +2424,16 @@ async def conservation(
     number before trusting the scores: a protein with few known homologs looks
     conserved everywhere because nothing was found to disagree with it.
     """
-    array, _ = _resolve_conformers(_require_structure())
+    # Scoring reads one conformer state; the handles it registers are indices
+    # into the *full* array, because that is what `_register` and `_display`
+    # resolve them against. Keeping the origin of every atom kept is the only
+    # thing that connects the two — the same `origin_index` `contacts.py`
+    # carries, for the same reason. Both come off one mask: computing the state
+    # twice would be two enumerations assumed to agree.
+    full = _require_structure()
+    state = _conformer_state(full)
+    array = full[state]
+    origin_index = np.flatnonzero(state)
     if chain is None:
         protein: Any = np.asarray(filter_amino_acids(array))
         if not protein.any():
@@ -2467,7 +2477,7 @@ async def conservation(
             f"conservation({chain}) above the {variable_percentile}th percentile",
         ),
     ):
-        indices = _residue_indices(array, keys)
+        indices = origin_index[_residue_indices(array, keys)]
         _register(name, indices, origin)
         await _display(name, indices)
     payload["handles"] = {"conserved": name_conserved, "variable": name_variable}

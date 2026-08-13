@@ -295,11 +295,13 @@ def _pdb_line(
     resseq: int,
     xyz: tuple[float, float, float],
     element: str,
+    altloc: str = " ",
+    occupancy: float = 1.0,
 ) -> str:
     x, y, z = xyz
     return (
-        f"ATOM  {serial:5d} {name:^4s} {resname:3s} {chain:1s}{resseq:4d}    "
-        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}"
+        f"ATOM  {serial:5d} {name:^4s}{altloc:1s}{resname:3s} {chain:1s}{resseq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}{occupancy:6.2f}  0.00          {element:>2s}"
     )
 
 
@@ -565,6 +567,48 @@ def _peptide_pdb(path: Path, n: int = 12) -> Path:
     return path
 
 
+def _peptide_with_alternate_pdb(path: Path, n: int = 12, alt_at: int = 2) -> Path:
+    """The same chain, with one residue's CA modelled in two positions.
+
+    `alt_at` is early in the chain on purpose: every atom after it sits at a
+    different index in the resolved-state array than in the full one, which is
+    what makes a handle built in the wrong index space land on the wrong
+    residue rather than merely on the wrong atom of the right one.
+    """
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"))
+        ):
+            xyz = (float(res) * 4, float(i), 0.0)
+            if res == alt_at and name == "CA":
+                # Highest occupancy wins, so state resolution keeps A and drops
+                # B — one row shorter than the array the viewer holds.
+                lines.append(
+                    _pdb_line(serial, name, "ALA", "A", res, xyz, elem, "A", 0.7)
+                )
+                serial += 1
+                lines.append(
+                    _pdb_line(
+                        serial,
+                        name,
+                        "ALA",
+                        "A",
+                        res,
+                        (xyz[0], xyz[1] + 0.4, 0.0),
+                        elem,
+                        "B",
+                        0.3,
+                    )
+                )
+            else:
+                lines.append(_pdb_line(serial, name, "ALA", "A", res, xyz, elem))
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
 def _fake_msa(monkeypatch, sequence_length: int, depth: int = 20) -> None:
     """Stand in for the MMseqs2 search: column 0 conserved, the rest varied."""
     query = "A" * sequence_length
@@ -577,6 +621,65 @@ def _fake_msa(monkeypatch, sequence_length: int, depth: int = 20) -> None:
         return a3m, "search"
 
     monkeypatch.setattr(server_mod, "_fetch_msa", fake_fetch)
+
+
+def _fake_msa_graded(monkeypatch, sequence_length: int) -> None:
+    """An alignment whose entropy falls monotonically along the chain.
+
+    Column *i* disagrees with the query in ``n-i`` of the ``2n`` homologs, so
+    the first column is an even split — maximum entropy — and the last is
+    nearly invariant. The conserved quartile is therefore the tail of the
+    chain, which is what the test needs: only a residue *after* the alternate
+    site sits at a different index in the two arrays.
+
+    Built from the mismatch counts rather than from whole sequences because
+    entropy is a function of the column, and a construction that reads
+    left-to-right along each homolog produced a U — low at both ends, since a
+    column that disagrees in almost every sequence is as ordered as one that
+    agrees in almost every sequence.
+    """
+    query = "A" * sequence_length
+    mismatches = [sequence_length - i for i in range(sequence_length)]
+    homologs = [
+        "".join("W" if j < m else "A" for m in mismatches)
+        for j in range(2 * sequence_length)
+    ]
+    a3m = f">query\n{query}\n" + "".join(f">h{j}\n{h}\n" for j, h in enumerate(homologs))
+
+    async def fake_fetch(sequence, cache_dir, **kwargs):
+        return a3m, "search"
+
+    monkeypatch.setattr(server_mod, "_fetch_msa", fake_fetch)
+
+
+async def test_conservation_handles_name_the_residues_the_scores_name(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The scores and the handles must describe the same residues.
+
+    `conservation` scores a resolved conformer state, which is shorter than
+    the array the viewer holds, while `_register` and `_display` resolve
+    indices against the full one. Indexing the second with positions computed
+    in the first shifts every residue past the alternate site, and nothing
+    downstream can notice: the scores are right, the atom count is right, and
+    the handle draws a neighbouring residue.
+    """
+    await _load(wired_bridge, _peptide_with_alternate_pdb(tmp_path / "alt.pdb"))
+    _fake_msa_graded(monkeypatch, sequence_length=12)
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(2)
+    payload = await conservation()
+    await task
+
+    low = payload["conserved_below_entropy"]
+    scored_conserved = {r["seq"] for r in payload["residues"] if r["entropy"] <= low}
+    # Guard the guard: if the cutoff ever swept in the whole chain, or only
+    # residues before the alternate site, this test could not fail.
+    assert 0 < len(scored_conserved) < payload["residues_scored"]
+    assert min(scored_conserved) > 2, scored_conserved
+
+    drawn = summarise(server_mod._structure, server_mod._handles.get("conserved").indices)
+    assert {r["seq"] for r in drawn["residues"]} == scored_conserved
 
 
 async def test_conservation_registers_conserved_and_variable_handles(
