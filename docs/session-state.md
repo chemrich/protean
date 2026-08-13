@@ -140,22 +140,42 @@ all produce that result.
 4. **Run the full local suite**, which is the only place the original symptom
    is visible at all.
 
-## 4. Also worth fixing while here
+## 4. Making CI able to see this at all
 
-**CI never runs the whole suite together.** That is the reason a cross-file
-interaction could live on `main` indefinitely. Options, cheapest first:
+**CI never runs the whole suite in one process**, which is why a cross-file
+interaction can live on `main` indefinitely. The fast job runs without
+`PROTEAN_DIFFERENTIAL`, so the polluting file skips; the browser job runs a
+named list that does not include `test_server.py`. They meet only in a local
+full run.
 
-- Add `tests/test_server.py` to the browser job's file list. Narrow, and
-  leaves every other pair unchecked.
-- Have the browser job run `pytest tests/ -q` with the gate set, instead of a
-  file list. This is what a local full run does. Costs browser-job minutes —
-  measured at 76.5% of CI spend already — so price it before proposing it.
-- Leave CI as it is and add the full local run to the pre-merge routine.
-  Free, and relies on someone remembering.
+**Priced, rather than guessed at** — from the PR 52 merge run:
 
-Recommend the second if the minutes are acceptable, since the first only
-closes the one pair we happen to know about. Charlie is watching Actions
-minutes, so this is their call rather than an obvious win.
+| job | pytest time |
+|---|---|
+| fast, `pytest -q` | 8.3 s (518 tests) |
+| browser, 5 named files | 690 s (242 tests) |
+
+So folding the fast tests into the browser job adds **~9 s to an 11.5-minute
+job, about 1.3%**. An earlier draft of this section warned that it would cost
+browser-job minutes and cited the browser job being 76.5% of CI spend. That was
+wrong and the number says so: the 76.5% is the browser *tests* being slow, and
+adding fast tests does not move it.
+
+**Recommendation: have the browser job run `pytest tests/ -q` with the gate
+set.** It is the run that found this, it covers every future pair rather than
+the one pair we happen to know about, and it costs about a percent.
+
+Two real consequences, neither large:
+
+- The fast tests run twice per PR, once in each job. Redundant, and a fast-test
+  failure surfacing in the browser job is marginally more confusing to place.
+- **It cannot land before §2.1 and §2.2.** That full run fails on `main` today,
+  so switching CI first turns it red immediately. Sequenced after the fix, it
+  doubles as the proof the fix worked and the guard against its regression.
+
+The narrower alternative — adding `tests/test_server.py` to the existing list —
+is cheaper still and closes only the known pair. It is the right choice only if
+the duplicate-run objection outweighs covering the class.
 
 ## 5. Not in scope
 
