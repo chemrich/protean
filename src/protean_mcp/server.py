@@ -58,6 +58,7 @@ from .selections import parse as _parse_selection
 from .selections_numpy import _residue_keys
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
+from .selections_numpy import conformer_state as _conformer_state
 from .selections_numpy import conformers_used as _conformers_used
 from .selections_numpy import evaluate as _evaluate
 from .selections_numpy import labelled_atom_count as _labelled_atom_count
@@ -2423,7 +2424,16 @@ async def conservation(
     number before trusting the scores: a protein with few known homologs looks
     conserved everywhere because nothing was found to disagree with it.
     """
-    array, _ = _resolve_conformers(_require_structure())
+    # Scoring reads one conformer state; the handles it registers are indices
+    # into the *full* array, because that is what `_register` and `_display`
+    # resolve them against. Keeping the origin of every atom kept is the only
+    # thing that connects the two — the same `origin_index` `contacts.py`
+    # carries, for the same reason. Both come off one mask: computing the state
+    # twice would be two enumerations assumed to agree.
+    full = _require_structure()
+    state = _conformer_state(full)
+    array = full[state]
+    origin_index = np.flatnonzero(state)
     if chain is None:
         protein: Any = np.asarray(filter_amino_acids(array))
         if not protein.any():
@@ -2441,6 +2451,21 @@ async def conservation(
         result = _score_conservation(array, chain, a3m, source=source)
     except ConservationError as exc:
         raise ViewerError(str(exc)) from exc
+
+    # The alignment fetch above is a network call the docstring describes as
+    # "tens of seconds to minutes", and nothing in this server holds a lock.
+    # `fetch_structure`, `superpose` and `load_trajectory` all rebind
+    # `_structure`, so a call landing during that wait would leave
+    # `origin_index` mapping into the array this started with while `_register`
+    # summarises against the new one — a handle naming arbitrary atoms, with a
+    # plausible count. Refuse instead: the scores describe a molecule that is
+    # no longer loaded.
+    if _require_structure() is not full:
+        raise ViewerError(
+            "The loaded structure changed while the alignment was being "
+            "fetched, so these scores describe a molecule that is no longer "
+            "loaded. Nothing was registered — call conservation() again."
+        )
 
     # Keep the scores so color_by_conservation does not have to pay for the
     # alignment again just to change how it is drawn.
@@ -2467,7 +2492,7 @@ async def conservation(
             f"conservation({chain}) above the {variable_percentile}th percentile",
         ),
     ):
-        indices = _residue_indices(array, keys)
+        indices = origin_index[_residue_indices(array, keys)]
         _register(name, indices, origin)
         await _display(name, indices)
     payload["handles"] = {"conserved": name_conserved, "variable": name_variable}
