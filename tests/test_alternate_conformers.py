@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
+from biotite.structure import stack as struct_stack
 
 from protean_mcp.analysis.contacts import interface
 from protean_mcp.selections import SelectionError
@@ -32,6 +33,7 @@ from protean_mcp.selections_numpy import (
     resolve_conformers,
     select_mask,
 )
+from protean_mcp.server import _structure_as_mmcif
 
 
 def _atom(
@@ -388,3 +390,110 @@ def test_a_trajectory_template_is_one_state():
     assert template.array_length() == 2, "one position per atom"
     assert arr.array_length() == 3, "the loaded structure still holds both"
     assert letter == "A"
+
+
+# -- what we hand back to the viewer -------------------------------------------
+
+
+def test_serialising_keeps_the_altloc_column(two_states):
+    """The letters must survive the round trip out to the viewer.
+
+    biotite's mmCIF writer emits `_atom_site.label_alt_id` as "." for every
+    row whatever the array holds, so a structure re-sent this way arrived as
+    atoms sitting on top of each other with nothing to separate them. The atom
+    count still agreed, which is the only check the re-sending paths had.
+    """
+    text = _structure_as_mmcif(two_states)
+    rows = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert len(rows) == two_states.array_length()
+
+    written = [row.split()[2:4] for row in rows]  # atom name, altloc
+    assert [alt for _, alt in written] == [".", "A", "B", ".", ".", "A", "B"]
+
+
+def test_serialising_a_structure_with_no_alternates_writes_no_letters():
+    """The column has to stay "." where there is nothing to distinguish."""
+    plain = _with_altloc(
+        [
+            _atom(1, "N", ".", [0.0, 0.0, 0.0]),
+            _atom(1, "CA", ".", [1.5, 0.0, 0.0]),
+        ],
+        [".", "."],
+    )
+    text = _structure_as_mmcif(plain)
+    rows = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert [row.split()[3] for row in rows] == [".", "."]
+
+
+# -- `alt` with no alternates --------------------------------------------------
+
+
+def test_alt_with_no_letter_selects_every_atom_when_there_are_no_alternates():
+    """`alt ''` asks for atoms carrying no label; without alternates that is all.
+
+    The refusal exists to stop `alt A` reading as "this structure has no
+    conformer A" when it has no conformers at all. It fired for every `alt`
+    term, so `select("chain A and alt '.'")` failed on a structure where
+    `select("chain A")` succeeded, for a selection that means the same thing.
+    """
+    plain = _with_altloc(
+        [
+            _atom(1, "N", ".", [0.0, 0.0, 0.0]),
+            _atom(1, "CA", ".", [1.5, 0.0, 0.0]),
+        ],
+        [".", "."],
+    )
+    for spelling in (
+        "alt ''",
+        "alt .",
+        "alt ''+.",
+    ):
+        assert int(np.sum(select_mask(spelling, plain))) == 2, spelling
+
+
+def test_alt_naming_a_letter_is_still_refused_when_there_are_none():
+    """The case the refusal was written for has to keep refusing."""
+    plain = _with_altloc([_atom(1, "N", ".", [0.0, 0.0, 0.0])], ["."])
+    with pytest.raises(SelectionError, match="no conformer A"):
+        select_mask("alt A", plain)
+
+
+def test_a_letter_mixed_with_the_empty_spelling_is_still_refused():
+    """`alt ''+A` names a letter, so the structure has to have one."""
+    plain = _with_altloc([_atom(1, "N", ".", [0.0, 0.0, 0.0])], ["."])
+    with pytest.raises(SelectionError, match="no conformer A"):
+        select_mask("alt ''+A", plain)
+
+
+def test_serialising_a_trajectory_stack_labels_every_model(two_states):
+    """A stack writes one row per atom per model; the annotation is per atom.
+
+    `rmsf` and trajectory display send a stack, so assigning the per-atom
+    column straight onto its rows made biotite fail in `write` — and both of
+    those paths are gated, so the fast suite stayed green while every
+    trajectory render died.
+    """
+    frames = struct_stack([two_states, two_states.copy(), two_states.copy()])
+    text = _structure_as_mmcif(frames)
+    rows = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert len(rows) == 3 * two_states.array_length()
+
+    expected = [".", "A", "B", ".", ".", "A", "B"] * 3
+    assert [row.split()[3] for row in rows] == expected
+
+
+def test_alt_on_an_array_with_no_altloc_annotation_at_all():
+    """`has_altlocs` is False for two different reasons, and they differ here.
+
+    An array with no `altloc_id` category is not the same as one whose column
+    is all ".". Narrowing the guard to letters let the second spelling through
+    to `get_annotation`, which raises biotite's `ValueError` — not a
+    `SelectionError`, so it escapes `select()` and `show()` as an internal
+    error instead of a bad selection.
+    """
+    bare = atom_array([_atom(1, "N", ".", [0.0, 0.0, 0.0])])
+    assert "altloc_id" not in bare.get_annotation_categories()
+
+    assert int(np.sum(select_mask("alt ''", bare))) == 1
+    with pytest.raises(SelectionError, match="no conformer A"):
+        select_mask("alt A", bare)

@@ -612,8 +612,17 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         # `alt A` on a residue whose backbone is shared is a side chain with
         # no backbone. The state is `alt ''+A`, and the state that analysis
         # computes over is chosen inside the tools, not here.
-        _check_alt_is_available(array)
         wanted = [_altloc_value(v) for v in node.values]
+        _check_alt_is_available(array, wanted)
+        if "altloc_id" not in array.get_annotation_categories():
+            # No annotation at all, rather than an annotation full of ".".
+            # `has_altlocs` is False for both, so narrowing the guard to letters
+            # let this spelling through to `get_annotation`, which raises
+            # biotite's `ValueError` — not a `SelectionError`, so it escapes
+            # `select()` and `show()` as an internal error rather than a bad
+            # selection. The guard has already refused any letter here, so what
+            # is left asks for the unlabelled atoms, and every atom is one.
+            return np.ones(array.array_length(), dtype=bool)
         return np.isin(np.asarray(array.get_annotation("altloc_id")), wanted)
     if prop == "sym":
         # Which copy of the asymmetric unit an atom belongs to, 0-based, as
@@ -644,18 +653,29 @@ def _altloc_value(value: str) -> str:
     return stripped
 
 
-def _check_alt_is_available(array: AtomArray[Any]) -> None:
-    """Refuse `alt` where there are no alternate conformers to choose between.
+def _check_alt_is_available(array: AtomArray[Any], wanted: list[str]) -> None:
+    """Refuse `alt <letter>` where there are no alternate conformers.
 
     Named rather than silently empty, as `sym` and `ss` refuse: most
     structures have no alternates at all, and `alt A` coming back empty would
     read as "this structure has no conformer A" rather than "it has none".
+
+    **`alt ''` and `alt .` are not refused**, on a structure with alternates or
+    without. They ask for the atoms carrying no alternate label, and on a
+    structure where nothing does that is every atom -- a well-defined answer,
+    and the same answer PyMOL gives. Refusing it made
+    `select("chain A and alt ''")` fail on 4HHB while `select("chain A")`
+    succeeded, for a selection that means the same thing there. The refusal
+    exists to stop a *letter* reading as absence, and a letter is the only
+    thing it now applies to.
     """
-    if has_altlocs(array):
+    if has_altlocs(array) or all(v == NO_ALTLOC for v in wanted):
         return
+    named = ", ".join(sorted({v for v in wanted if v != NO_ALTLOC}))
     raise SelectionError(
-        "'alt' names an alternate conformer, and no atom in this structure has "
-        "one. Every atom is modelled in a single position"
+        f"'alt' names an alternate conformer, and no atom in this structure has "
+        f"one, so there is no conformer {named}. Every atom is modelled in a "
+        f"single position -- 'alt .' would select all of them"
     )
 
 
