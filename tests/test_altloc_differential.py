@@ -32,6 +32,8 @@ from protean_mcp.selections_numpy import (
     load_structure,
     select_mask,
 )
+from protean_mcp.server import _renumber_for_viewer as renumber_for_viewer
+from protean_mcp.server import _structure_as_mmcif as structure_as_mmcif
 
 from .browser import BROWSER_MARKS, viewer_session
 
@@ -145,3 +147,67 @@ async def test_the_state_is_a_strict_subset_of_the_whole(conformers):
     """It must leave something out, or the filter is doing nothing."""
     assert EXPECTED_STATE < EXPECTED_ATOMS
     assert conformers["theirs"]["state"] < set(range(1, EXPECTED_ATOMS + 1))
+
+
+# -- what the viewer receives when we serialise a structure ourselves ---------
+
+# Mol* stores the altloc code on the atomic hierarchy, spelling "none" as the
+# empty string where mmCIF writes ".". Counting per letter rather than listing
+# ids, because the claim is that the states are *distinguishable*, not which
+# atom is which — that is what the tests above already pin.
+_ALTLOC_COUNTS_JS = r"""(async () => {
+  const p = window.__protean.plugin;
+  const all = p.managers.structure.hierarchy.current.structures;
+  const struct = all[all.length - 1];
+  const counts = {};
+  for (const u of struct.cell.obj.data.units) {
+    const col = u.model.atomicHierarchy.atoms.label_alt_id;
+    const els = u.elements;
+    for (let i = 0; i < els.length; i++) {
+      const v = col.value(els[i]) || '';
+      counts[v] = (counts[v] || 0) + 1;
+    }
+  }
+  return JSON.stringify(counts);
+})()"""
+
+
+async def test_a_structure_we_serialise_keeps_its_conformers_apart():
+    """Re-sending a structure must not flatten its alternates into one blob.
+
+    `color_by_conservation(mode="gradient")`, `rmsf` and trajectory display all
+    write a scalar into the B-factor column and re-send the array through
+    `_structure_as_mmcif`. biotite's writer emits `label_alt_id` as "." for
+    every row, so what arrived was 15929 atoms sitting on top of each other
+    with nothing to separate them: template bonds across conformer states,
+    doubled spheres, and no `alt` selection possible in the picture.
+
+    Nothing downstream could see it. The atom count still matched, which is the
+    only cross-check those paths had.
+    """
+    structure = await fetch_structure_data(FIXTURE)
+    array = load_structure(structure.data, structure.format, "asymmetric").array
+    renumber_for_viewer(array)
+
+    ours: dict[str, int] = {}
+    for value in np.asarray(array.get_annotation("altloc_id")):
+        key = "" if str(value) == "." else str(value)
+        ours[key] = ours.get(key, 0) + 1
+
+    async with viewer_session(FIXTURE, assembly="asymmetric") as session:
+        await session.request(
+            "load_structure",
+            {
+                "name": "resent",
+                "format": "mmcif",
+                "data": structure_as_mmcif(array),
+                "assembly": "asymmetric",
+            },
+        )
+        payload = await session.evaluate(_ALTLOC_COUNTS_JS)
+
+    theirs = {key: int(value) for key, value in payload.items()}
+    assert theirs == ours
+    # Guard the guard: on a structure with no alternates an all-blank file
+    # would match an all-blank expectation, and this would pass for nothing.
+    assert len([key for key in theirs if key]) >= 2, theirs

@@ -2094,10 +2094,12 @@ async def _display_superposition(
     selection written against the original name would otherwise pick up the
     wrong molecule.
     """
-    # One state each. The pair is written back out as mmCIF, and biotite's
-    # writer blanks `label_alt_id`, so sending every conformer would hand Mol*
-    # atoms it cannot tell apart: overlapping spheres, template bonds across
-    # them, and no `alt` selection possible in the picture.
+    # One state each, and now by choice rather than by necessity. This used to
+    # say the writer blanks `label_alt_id` so every conformer would arrive
+    # indistinguishable; `_structure_as_mmcif` writes that column now. What
+    # remains is the argument that outlasts the workaround: a superposition is
+    # a statement about one conformation of each side, and the transform was
+    # fitted over exactly these atoms.
     moved, _ = _resolve_conformers(
         _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
     )
@@ -2773,9 +2775,22 @@ def _structure_as_mmcif(array: Any) -> str:
     mmCIF rather than PDB because PDB cannot carry more than 99,999 atoms or a
     multi-character chain id. What biotite writes declares no assembly, so the
     viewer has nothing to expand even if it were asked to.
+
+    **The altloc column is written back in.** biotite's writer emits
+    `_atom_site.label_alt_id` as "." for every row regardless of what the array
+    carries, so a structure sent this way arrived as overlapping atoms Mol\\*
+    could not tell apart: template bonds inferred across conformer states,
+    doubled spheres, and no `alt` selection possible in the picture — while
+    `viewer_atom_count` still agreed, so nothing flagged it. The annotation
+    already spells "no alternate" as ".", which is mmCIF's own spelling, so it
+    is written through unchanged.
     """
     handle = CIFFile()
     set_structure(handle, array)
+    if "altloc_id" in array.get_annotation_categories():
+        handle.block["atom_site"]["label_alt_id"] = np.asarray(
+            array.get_annotation("altloc_id")
+        )
     buffer = io.StringIO()
     handle.write(buffer)
     return buffer.getvalue()
