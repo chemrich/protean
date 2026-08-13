@@ -22,6 +22,7 @@ from protean_mcp.analysis.superposition import (
     superpose,
 )
 from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections_numpy import load_structure, resolve_conformers
 
 NEEDS_NETWORK = pytest.mark.skipif(
     os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
@@ -57,6 +58,39 @@ def test_malformed_coordinates_raise_our_error():
 def test_unknown_format_is_refused():
     with pytest.raises(SuperpositionError, match="Unsupported format"):
         parse_structure(TINY_PDB, "mol2")
+
+
+# A site whose *second* letter has the higher occupancy, which is the only
+# fixture that can tell "highest occupancy" from "first letter". Both rules
+# keep the shared N/C/O; they disagree about which CA.
+BACKWARDS_OCCUPANCY_PDB = """\
+ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA AALA A   1      1.458   0.000   0.000  0.30  0.00           C
+ATOM      3  CA BALA A   1      1.458   0.900   0.000  0.70  0.00           C
+ATOM      4  C   ALA A   1      2.009   1.420   0.000  1.00  0.00           C
+ATOM      5  O   ALA A   1      1.251   2.390   0.000  1.00  0.00           O
+END
+"""
+
+
+def test_parse_structure_resolves_the_state_the_loader_would():
+    """Both parsers must reach the same conformer state from the same bytes.
+
+    `parse_structure` requested no `extra_fields`, so occupancy was absent and
+    `conformer_state` fell back to `np.zeros`: every alternate at a site tied
+    and the winner was decided by sort order, i.e. the letter. The atom counts
+    matched either way, so `interface("5fji", ...)` standalone and
+    `interface(...)` after `fetch_structure("5fji")` computed buried areas over
+    different atoms while both reported the same totals.
+
+    Here B carries the higher occupancy, so the two rules disagree: occupancy
+    says B, alphabetical says A.
+    """
+    here = parse_structure(BACKWARDS_OCCUPANCY_PDB, "pdb")
+    loaded = load_structure(BACKWARDS_OCCUPANCY_PDB, "pdb", "asymmetric").array
+
+    assert here.array_length() == loaded.array_length()
+    assert resolve_conformers(here)[1] == resolve_conformers(loaded)[1] == "B"
 
 
 def test_protein_atoms_drops_non_amino_acids():

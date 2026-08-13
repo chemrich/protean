@@ -22,7 +22,7 @@ from biotite.structure import (
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
-from ..selections_numpy import _normalise_altloc
+from ..selections_numpy import EXTRA_FIELDS, _normalise_altloc
 
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
@@ -85,14 +85,25 @@ def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
             f"Unsupported format {fmt!r} (expected 'pdb' or 'mmcif')"
         )
     try:
-        # `altloc="all"` to match the main loader: a structure parsed here and
-        # the same structure fetched normally must hold the same atoms, or
+        # `altloc="all"` and `EXTRA_FIELDS` to match the main loader, and both
+        # halves matter. `altloc="all"` makes a structure parsed here hold the
+        # same atoms as the same structure fetched normally, or
         # `interface("5fji", ...)` and `interface(...)` after loading 5fji
         # quietly answer about different molecules.
+        #
+        # `EXTRA_FIELDS` carries occupancy, which is what conformer resolution
+        # ranks a site's alternates by. Without it `conformer_state` falls back
+        # to `np.zeros`, every alternate ties, and the winner is decided by
+        # sort order — the letter. Same bytes, same atom count, different
+        # state: 5FJI resolves to `A+B` through the loader and `A` here.
         if fmt == "pdb":
-            array = PDBFile.read(handle).get_structure(model=1, altloc="all")
+            array = PDBFile.read(handle).get_structure(
+                model=1, extra_fields=EXTRA_FIELDS, altloc="all"
+            )
         else:
-            array = get_structure(CIFFile.read(handle), model=1, altloc="all")
+            array = get_structure(
+                CIFFile.read(handle), model=1, extra_fields=EXTRA_FIELDS, altloc="all"
+            )
         array = _normalise_altloc(array)
     except Exception as exc:
         # Surface malformed coordinates as our own error rather than letting a
