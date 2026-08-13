@@ -22,7 +22,12 @@ from biotite.structure import (
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
-from ..selections_numpy import _normalise_altloc
+from ..selections_numpy import (
+    EXTRA_FIELDS,
+    _normalise_altloc,
+    conformers_used,
+    resolve_conformers,
+)
 
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
@@ -63,6 +68,12 @@ class SuperpositionResult:
     target_chains: list[str]
     outliers: list[ResidueDeviation]
     mode: str = "sequence"
+    #: Which conformer state each side was reduced to, empty when it had no
+    #: alternates. Reported for the same reason every other analysis reports
+    #: it: an RMSD is over particular atoms, and which ones were dropped is
+    #: not recoverable from the number.
+    mobile_conformer: str = ""
+    target_conformer: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +81,8 @@ class SuperpositionResult:
             "rmsd": round(self.rmsd, 3),
             "aligned_residues": self.aligned_residues,
             "sequence_identity": round(self.sequence_identity, 3),
+            "mobile_conformer": self.mobile_conformer,
+            "target_conformer": self.target_conformer,
             "transform": self.transform,
             "mobile_chains": self.mobile_chains,
             "target_chains": self.target_chains,
@@ -85,18 +98,52 @@ def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
             f"Unsupported format {fmt!r} (expected 'pdb' or 'mmcif')"
         )
     try:
-        # `altloc="all"` to match the main loader: a structure parsed here and
-        # the same structure fetched normally must hold the same atoms, or
-        # `interface("5fji", ...)` and `interface(...)` after loading 5fji
-        # quietly answer about different molecules.
+        # `EXTRA_FIELDS` carries occupancy, which is what conformer resolution
+        # ranks a site's alternates by. Without it `conformer_state` falls back
+        # to `np.zeros`, every alternate ties, and the winner is decided by
+        # sort order — the letter. Same bytes, same atom count, different
+        # state: 5FJI resolves to `A+B` through the loader and `A` here.
+        #
+        # `altloc="all"` for the same reason it is in the loader: every
+        # conformer is loaded and a state is resolved afterwards.
+        #
+        # **This is not parity with the loader, and an earlier version of this
+        # comment claimed it was.** `get_structure` reads the asymmetric unit
+        # while `load_structure` defaults to the biological assembly, so the
+        # two still hold different molecules: 1HHO is 2396 atoms here against
+        # 4792 loaded (2 copies), and 1AKE is 3816 here against 1966 loaded —
+        # the assembly is *smaller* than the deposited coordinates. So
+        # `interface("1hho", "A", "B")` standalone and `interface("A", "B")`
+        # after `fetch_structure("1hho")` still describe different things, and
+        # `sym_id` is absent here so `copy=N` refuses. Recorded rather than
+        # fixed: making this call `load_structure` changes what `superpose`
+        # superposes, which is a decision, not a repair.
         if fmt == "pdb":
-            array = PDBFile.read(handle).get_structure(model=1, altloc="all")
+            array = PDBFile.read(handle).get_structure(
+                model=1, extra_fields=EXTRA_FIELDS, altloc="all"
+            )
         else:
-            array = get_structure(CIFFile.read(handle), model=1, altloc="all")
+            array = get_structure(
+                CIFFile.read(handle), model=1, extra_fields=EXTRA_FIELDS, altloc="all"
+            )
         array = _normalise_altloc(array)
     except Exception as exc:
         # Surface malformed coordinates as our own error rather than letting a
         # biotite exception type escape into the tool layer.
+        #
+        # A PDB whose occupancy and B-factor columns are blank — some modelling
+        # tools write them that way — fails here on "'' cannot be parsed into a
+        # number", which names neither the column nor the file. `load_structure`
+        # has always refused the same file with the same message, so this is a
+        # limitation of the loader rather than one this parser adds; naming it
+        # is what makes the two answerable at all.
+        if "cannot be parsed into a number" in str(exc):
+            raise SuperpositionError(
+                f"Could not parse {fmt} coordinates: {exc}. If this file leaves "
+                f"the occupancy or B-factor columns blank, fill them — occupancy "
+                f"is what decides between alternate conformers, and guessing it "
+                f"would pick a conformer without saying so."
+            ) from exc
         raise SuperpositionError(f"Could not parse {fmt} coordinates: {exc}") from exc
     return array
 
@@ -145,12 +192,27 @@ def superpose(
     """
     if mode not in MODES:
         raise SuperpositionError(f"Unknown mode {mode!r} ({', '.join(MODES)})")
-    mobile = protein_atoms(
-        parse_structure(mobile_text, mobile_format), mobile_chain, "mobile"
-    )
-    target = protein_atoms(
-        parse_structure(target_text, target_format), target_chain, "target"
-    )
+    # Resolve a conformer state before anything reads coordinates, as every
+    # other analysis path does. It matters more here than elsewhere: biotite's
+    # anchors are one entry per CA *atom* while the alignment columns it maps
+    # them onto are one per *residue*, so a residue whose backbone is modelled
+    # twice contributes two anchors to one column and pairs off every residue
+    # after it by one. The rmsd, identity and outliers stay plausible, and the
+    # transform they produce is wrong with them.
+    mobile_state, _ = resolve_conformers(parse_structure(mobile_text, mobile_format))
+    target_state, _ = resolve_conformers(parse_structure(target_text, target_format))
+    mobile = protein_atoms(mobile_state, mobile_chain, "mobile")
+    target = protein_atoms(target_state, target_chain, "target")
+
+    # Resolve over the whole file but *label* what was superposed. The
+    # resolution has to see every site, so that the letter chosen here matches
+    # the one the load message named; the label has to describe the narrowed
+    # arrays, or an alternate sitting in a chain nobody superposed — or in a
+    # ligand, or an ordered water — puts a letter on a result it had no part
+    # in. Asking `superpose(mobile_chain="A")` about a file whose only
+    # alternate is in chain B must answer "no choice was made".
+    mobile_conformer = conformers_used(mobile)
+    target_conformer = conformers_used(target)
 
     # biotite's generic signatures do not narrow here, so name the parts.
     fitted: Any
@@ -204,4 +266,6 @@ def superpose(
         target_chains=sorted({str(c) for c in target.chain_id}),
         outliers=outliers,
         mode=mode,
+        mobile_conformer=mobile_conformer,
+        target_conformer=target_conformer,
     )

@@ -22,6 +22,7 @@ from protean_mcp.analysis.superposition import (
     superpose,
 )
 from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections_numpy import load_structure, resolve_conformers
 
 NEEDS_NETWORK = pytest.mark.skipif(
     os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
@@ -57,6 +58,106 @@ def test_malformed_coordinates_raise_our_error():
 def test_unknown_format_is_refused():
     with pytest.raises(SuperpositionError, match="Unsupported format"):
         parse_structure(TINY_PDB, "mol2")
+
+
+# A site whose *second* letter has the higher occupancy, which is the only
+# fixture that can tell "highest occupancy" from "first letter". Both rules
+# keep the shared N/C/O; they disagree about which CA.
+BACKWARDS_OCCUPANCY_PDB = """\
+ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA AALA A   1      1.458   0.000   0.000  0.30  0.00           C
+ATOM      3  CA BALA A   1      1.458   0.900   0.000  0.70  0.00           C
+ATOM      4  C   ALA A   1      2.009   1.420   0.000  1.00  0.00           C
+ATOM      5  O   ALA A   1      1.251   2.390   0.000  1.00  0.00           O
+END
+"""
+
+# The same site as mmCIF. Both branches need covering and mmCIF is the one that
+# matters most: `fetch.py` requests `.cif` from RCSB and from AlphaFold, so
+# every fetched structure takes this path and a PDB-only test would leave the
+# dominant branch free to regress.
+BACKWARDS_OCCUPANCY_CIF = """\
+data_test
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_PDB_model_num
+ATOM 1 N N  . ALA A 1 1 A 0.000 0.000 0.000 1.00 0.00 1
+ATOM 2 C CA A ALA A 1 1 A 1.458 0.000 0.000 0.30 0.00 1
+ATOM 3 C CA B ALA A 1 1 A 1.458 0.900 0.000 0.70 0.00 1
+ATOM 4 C C  . ALA A 1 1 A 2.009 1.420 0.000 1.00 0.00 1
+ATOM 5 O O  . ALA A 1 1 A 1.251 2.390 0.000 1.00 0.00 1
+"""
+
+
+def test_parse_structure_resolves_the_state_the_loader_would():
+    """Both parsers must reach the same conformer state from the same bytes.
+
+    `parse_structure` requested no `extra_fields`, so occupancy was absent and
+    `conformer_state` fell back to `np.zeros`: every alternate at a site tied
+    and the winner was decided by sort order, i.e. the letter. The atom counts
+    matched either way, so `interface("5fji", ...)` standalone and
+    `interface(...)` after `fetch_structure("5fji")` computed buried areas over
+    different atoms while both reported the same totals.
+
+    Here B carries the higher occupancy, so the two rules disagree: occupancy
+    says B, alphabetical says A.
+
+    Scope, because the PR that added this overstated it: what this fixes is the
+    state `parse_structure` resolves, which is what `interface`'s standalone
+    path measures over. `superpose` resolves no state at all until the change
+    on `fix-superpose-conformer-state` lands, so the fit/viewer divergence
+    needs both.
+    """
+    here = parse_structure(BACKWARDS_OCCUPANCY_PDB, "pdb")
+    loaded = load_structure(BACKWARDS_OCCUPANCY_PDB, "pdb", "asymmetric").array
+
+    assert here.array_length() == loaded.array_length()
+    assert resolve_conformers(here)[1] == resolve_conformers(loaded)[1] == "B"
+
+
+def test_parse_structure_reads_occupancy_from_mmcif_too():
+    """The branch every fetched structure actually takes.
+
+    RCSB and AlphaFold both return mmCIF, so a PDB-only test would leave the
+    dominant path free to regress: dropping `extra_fields` from the mmCIF call
+    alone left the whole fast suite green.
+    """
+    here = parse_structure(BACKWARDS_OCCUPANCY_CIF, "mmcif")
+    loaded = load_structure(BACKWARDS_OCCUPANCY_CIF, "mmcif", "asymmetric").array
+
+    assert here.array_length() == loaded.array_length() == 5
+    assert resolve_conformers(here)[1] == resolve_conformers(loaded)[1] == "B"
+
+
+def test_a_blank_occupancy_column_says_which_column_is_missing():
+    """ "'' cannot be parsed into a number" names neither the file nor the field.
+
+    `load_structure` refuses the same file the same way, so this is a limit of
+    the loader rather than one this parser adds -- but a caller cannot act on
+    the biotite message, and occupancy is not something to guess at, since
+    guessing picks a conformer without saying so.
+    """
+    blank = (
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000"
+        "                       N\n"
+        "END\n"
+    )
+    with pytest.raises(SuperpositionError, match="occupancy or B-factor"):
+        parse_structure(blank, "pdb")
 
 
 def test_protein_atoms_drops_non_amino_acids():
@@ -142,6 +243,49 @@ def helix_pdb():
     return "\n".join(lines) + "\nEND\n"
 
 
+def _renamed_chain(text: str, chain: str) -> str:
+    """Rewrite the chain id by column, not by string replacement.
+
+    A `.replace(" A ", " B ")` also hits the residue and element fields, which
+    produces a file biotite parses into something other than what was meant.
+    """
+    out = [
+        f"{line[:21]}{chain}{line[22:]}" if line.startswith("ATOM") else line
+        for line in text.splitlines()
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _with_alternate_ca(text: str, residue: int, offset: float = 1.2) -> str:
+    """Model one residue's CA in two positions, the way a real file does.
+
+    ``A`` keeps the true coordinates and ``B`` is displaced, so a
+    correspondence that picks up both CAs fits badly rather than merely
+    differently.
+
+    The occupancy columns are here to make the fixture look like a real file,
+    and **this test does not pin which rule chose the letter**: on this branch
+    `parse_structure` requests no occupancy, so the choice falls to sort order,
+    and swapping these two numbers changes nothing. `A` is written with the
+    higher value so the expected letter stays the same once occupancy is
+    actually read. What decides the letter is asserted in
+    `test_parse_structure_resolves_the_state_the_loader_would`.
+    """
+    out = []
+    for line in text.splitlines():
+        if not (
+            line.startswith("ATOM")
+            and line[12:16].strip() == "CA"
+            and int(line[22:26]) == residue
+        ):
+            out.append(line)
+            continue
+        out.append(f"{line[:16]}A{line[17:54]}  0.70{line[60:]}")
+        y = float(line[38:46]) + offset
+        out.append(f"{line[:16]}B{line[17:38]}{y:8.3f}{line[46:54]}  0.30{line[60:]}")
+    return "\n".join(out) + "\n"
+
+
 def test_identical_structures_superpose_exactly(helix_pdb):
     result = superpose(helix_pdb, "pdb", helix_pdb, "pdb")
     assert result.rmsd == pytest.approx(0.0, abs=1e-4)
@@ -149,6 +293,54 @@ def test_identical_structures_superpose_exactly(helix_pdb):
     # superimpose_homologs iteratively discards outlier anchors, so even a
     # structure against itself keeps most rather than all of them.
     assert 8 <= result.aligned_residues <= 12
+
+
+def test_an_alternate_backbone_does_not_shift_the_residue_correspondence(helix_pdb):
+    """One residue modelled twice must not pair every later residue off by one.
+
+    biotite's anchors are one entry per CA *atom*; the alignment columns they
+    index are one per *residue*. A residue carrying an alternate backbone
+    therefore contributes two anchors to one column, and everything after it
+    slides. The same structure still superposes onto itself at RMSD 0 under
+    that bug — both sides slide together — so the mobile side alone carries the
+    alternate here.
+
+    **RMSD is the wrong thing to assert on**, which is worth stating because it
+    is the obvious choice. `superimpose_homologs` iteratively discards anchors
+    that fit badly, so it throws away the mispaired ones and returns a clean
+    fit over what is left: measured, 0.000295 A against a 1e-4 tolerance, which
+    would make this test turn on a factor of three. Sequence identity is the
+    signal that actually discriminates — every residue paired with the wrong
+    residue's *type* — and it goes 1.0 to 0.0.
+    """
+    with_alt = _with_alternate_ca(helix_pdb, residue=3)
+    result = superpose(with_alt, "pdb", helix_pdb, "pdb")
+
+    assert result.sequence_identity == pytest.approx(1.0)
+    assert 8 <= result.aligned_residues <= 12
+    assert result.rmsd == pytest.approx(0.0, abs=1e-4)
+    # The reply must say what it kept, or the atoms an RMSD was computed over
+    # are not recoverable from it.
+    assert result.mobile_conformer == "A"
+    assert result.target_conformer == ""
+
+
+def test_the_conformer_label_describes_only_what_was_superposed(helix_pdb):
+    """An alternate in a chain nobody superposed must not label the result.
+
+    Resolution runs over the whole file on purpose, so the letter kept here
+    matches the one the load message named. The *label* is a claim about the
+    atoms this result was computed from, and a chain that was excluded before
+    fitting contributed none of them.
+    """
+    chain_b = _with_alternate_ca(_renamed_chain(helix_pdb, "B"), residue=3)
+    two_chains = helix_pdb.replace("END\n", "") + chain_b
+
+    result = superpose(
+        two_chains, "pdb", helix_pdb, "pdb", mobile_chain="A", target_chain="A"
+    )
+    assert result.mobile_conformer == ""
+    assert result.target_conformer == ""
 
 
 def test_a_pure_translation_is_undone(helix_pdb):
@@ -177,12 +369,17 @@ def test_result_dict_rounds_for_reporting(helix_pdb):
         "rmsd",
         "aligned_residues",
         "sequence_identity",
+        "mobile_conformer",
+        "target_conformer",
         "transform",
         "mobile_chains",
         "target_chains",
         "outliers",
     }
     assert payload["mobile_chains"] == ["A"]
+    # Empty rather than absent: a structure with no alternates still has to
+    # answer "which conformer is this?", and the answer is "there was no choice".
+    assert payload["mobile_conformer"] == ""
 
 
 def test_unrelated_structures_are_refused(helix_pdb):
