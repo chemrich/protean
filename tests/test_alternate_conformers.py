@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
+from biotite.structure import stack as struct_stack
 
 from protean_mcp.analysis.contacts import interface
 from protean_mcp.selections import SelectionError
@@ -462,3 +463,20 @@ def test_a_letter_mixed_with_the_empty_spelling_is_still_refused():
     plain = _with_altloc([_atom(1, "N", ".", [0.0, 0.0, 0.0])], ["."])
     with pytest.raises(SelectionError, match="no conformer A"):
         select_mask("alt ''+A", plain)
+
+
+def test_serialising_a_trajectory_stack_labels_every_model(two_states):
+    """A stack writes one row per atom per model; the annotation is per atom.
+
+    `rmsf` and trajectory display send a stack, so assigning the per-atom
+    column straight onto its rows made biotite fail in `write` — and both of
+    those paths are gated, so the fast suite stayed green while every
+    trajectory render died.
+    """
+    frames = struct_stack([two_states, two_states.copy(), two_states.copy()])
+    text = _structure_as_mmcif(frames)
+    rows = [line for line in text.splitlines() if line.startswith("ATOM")]
+    assert len(rows) == 3 * two_states.array_length()
+
+    expected = [".", "A", "B", ".", ".", "A", "B"] * 3
+    assert [row.split()[3] for row in rows] == expected

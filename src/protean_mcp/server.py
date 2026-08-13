@@ -2788,9 +2788,23 @@ def _structure_as_mmcif(array: Any) -> str:
     handle = CIFFile()
     set_structure(handle, array)
     if "altloc_id" in array.get_annotation_categories():
-        handle.block["atom_site"]["label_alt_id"] = np.asarray(
-            array.get_annotation("altloc_id")
-        )
+        site = handle.block["atom_site"]
+        letters = np.asarray(array.get_annotation("altloc_id"))
+        # A trajectory arrives as a stack, and biotite writes one row per atom
+        # *per model* while the annotation is per atom. Tiling rather than
+        # assuming one model: the first version of this assigned the per-atom
+        # column straight onto a stack's rows and every trajectory and rmsf
+        # render died in `write` with "Failed to serialize block", which the
+        # fast suite could not see because both paths are gated.
+        rows = len(site["label_alt_id"].as_array())
+        models, remainder = divmod(rows, len(letters))
+        if remainder:
+            raise ViewerError(
+                f"Cannot label conformers: the written file has {rows} atom rows, "
+                f"which is not a whole number of copies of the array's "
+                f"{len(letters)} atoms."
+            )
+        site["label_alt_id"] = np.tile(letters, models)
     buffer = io.StringIO()
     handle.write(buffer)
     return buffer.getvalue()
