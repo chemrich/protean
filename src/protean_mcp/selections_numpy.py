@@ -427,39 +427,29 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         # PyMOL's rank is the atom's 0-based position within the object, which
         # here is its position in the array. Distinct from `index`, which is
         # the file's own atom_site id and need not start at 0 or be contiguous.
-        _check_rank_is_transportable(array)
         return _numeric_terms(np.arange(array.array_length()), node.values, array)
+    if prop == "sym":
+        # Which copy of the asymmetric unit an atom belongs to, 0-based, as
+        # biotite annotates it. A selection with no `sym` term keeps meaning
+        # "every copy", so this narrows an answer rather than changing one.
+        _check_sym_is_available(array)
+        return _numeric_terms(np.asarray(array.sym_id), node.values, array)
     raise SelectionError(f"Property {prop!r} is not supported by the Python evaluator")
 
 
-def _check_rank_is_transportable(array: AtomArray[Any]) -> None:
-    """Refuse `rank` on an assembly with more than one symmetry copy.
+def _check_sym_is_available(array: AtomArray[Any]) -> None:
+    """Refuse `sym` where there are no copies to choose between.
 
-    Decision 9 rests on an invariant: everything the tools produce is symmetric
-    across symmetry copies, which is why handles can travel to the viewer as
-    `atom.id` ranges even though an assembly duplicates those ids. `rank` is
-    the first selector that breaks it. It picks one atom by array position, and
-    that atom shares its `atom_id` with its counterpart in every other copy, so
-    the handle selects one atom here and lights up N in the picture — a count
-    and a rendering that disagree, with nothing to say they do.
-
-    Refused rather than quietly widened to all copies: `rank 5` means one atom
-    in PyMOL, and answering with N atoms would be a different question. The
-    asymmetric unit has one copy of everything and is where the selector works.
-
-    This is backlog item 7 seen from a new direction — the fix is a handle
-    transport that can name a copy, not a patch here.
+    Named rather than silently empty, the same way `ss` refuses a CA-only
+    model: an asymmetric unit carries no ``sym_id`` at all, and ``sym 0``
+    coming back empty would read as "this structure has no first copy".
     """
-    if not _has_sym(array):
-        return
-    copies = int(np.unique(np.asarray(array.sym_id)).size)
-    if copies <= 1:
+    if _has_sym(array):
         return
     raise SelectionError(
-        f"'rank' is a position in the atom array, and this assembly has "
-        f"{copies} symmetry copies that share atom ids — so a rank selects one "
-        "atom here and would highlight one per copy in the viewer. Load with "
-        'assembly="asymmetric" to use it, or select by index, name or residue'
+        "'sym' names a copy of the asymmetric unit, and this structure holds "
+        "the asymmetric unit itself, which has only one. Load with "
+        'assembly="biological" to address a copy'
     )
 
 

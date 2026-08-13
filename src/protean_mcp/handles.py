@@ -145,6 +145,18 @@ def summarise(
     }
 
 
+def _multi_copy(array: AtomArray[Any]) -> bool:
+    """Does this array hold more than one symmetry copy?
+
+    Keyed on the *structure*, not on the selection: a set covering only copy 0
+    of a three-copy assembly still needs its operator clause, and asking the
+    selection would drop it.
+    """
+    if "sym_id" not in array.get_annotation_categories():
+        return False
+    return int(np.unique(np.asarray(array.sym_id)).size) > 1
+
+
 def _runs(values: Indices) -> list[tuple[int, int]]:
     ordered = np.sort(np.asarray(values))
     if len(ordered) == 0:
@@ -155,17 +167,8 @@ def _runs(values: Indices) -> list[tuple[int, int]]:
     return [(int(ordered[s]), int(ordered[e])) for s, e in zip(starts, ends, strict=True)]
 
 
-def to_molscript(array: AtomArray[Any], indices: Indices) -> str:
-    """Render an explicit atom set as MolScript for the viewer.
-
-    Contiguous stretches become ranges and the rest set membership, which
-    keeps even a fully fragmented selection small: every backbone CA of
-    haemoglobin is 574 separate runs and still under 3 kB, while a whole
-    polymer chain collapses to a single range.
-    """
-    if len(indices) == 0:
-        return "(sel.atom.empty)"
-    atom_ids = np.asarray(array.atom_id)[np.asarray(indices)]
+def _id_test(atom_ids: Indices) -> str:
+    """An atom-id predicate over one set of ids: ranges plus set membership."""
     spans = _runs(atom_ids)
     terms = [
         f"(and (>= atom.id {lo}) (<= atom.id {hi}))"
@@ -176,5 +179,62 @@ def to_molscript(array: AtomArray[Any], indices: Indices) -> str:
     if singles:
         members = " ".join(str(v) for v in singles)
         terms.append(f"(set.has (set {members}) atom.id)")
+    return terms[0] if len(terms) == 1 else "(or " + " ".join(terms) + ")"
+
+
+def operator_name(sym_id: int) -> str:
+    """Mol\\*'s name for the symmetry operator biotite calls ``sym_id``.
+
+    Mol\\* builds assembly operators in ``getAssemblyOperators`` and names them
+    ``ASM_<index>`` where the index is **pre-incremented**, so the first
+    operator is ``ASM_1`` and biotite's 0-based ``sym_id`` is one less. Proven
+    by centroid against a real viewer on 1HHO (2 copies) and 1COI (3 copies);
+    counting cannot check it, because every copy has the same atoms.
+    """
+    return f"ASM_{sym_id + 1}"
+
+
+def to_molscript(array: AtomArray[Any], indices: Indices) -> str:
+    """Render an explicit atom set as MolScript for the viewer.
+
+    Contiguous stretches become ranges and the rest set membership, which
+    keeps even a fully fragmented selection small: every backbone CA of
+    haemoglobin is 574 separate runs and still under 3 kB, while a whole
+    polymer chain collapses to a single range.
+
+    On a biological assembly the copies of the asymmetric unit **share their
+    atom ids**, so an atom-id predicate alone matches the named atom in every
+    copy. Where the set does not cover every copy identically, each copy gets
+    its own clause keyed on the symmetry operator::
+
+        (or (and (= atom.op-name `ASM_1`) <ids in copy 0>)
+            (and (= atom.op-name `ASM_2`) <ids in copy 1>))
+
+    A set that *is* symmetric across every copy is emitted as the bare atom-id
+    test, which means exactly the same thing and is what this has always sent.
+    """
+    if len(indices) == 0:
+        return "(sel.atom.empty)"
+    indices = np.asarray(indices)
+    ids = np.asarray(array.atom_id)
+    if not _multi_copy(array):
+        return f"(sel.atom.atom-groups :atom-test {_id_test(ids[indices])})"
+
+    sym = np.asarray(array.sym_id)
+    per_copy = {int(k): np.sort(ids[indices[sym[indices] == k]]) for k in np.unique(sym)}
+    present = {k: v for k, v in per_copy.items() if len(v)}
+    # Symmetric across every copy: the operator clauses would be n identical
+    # id tests, so the bare test is equivalent and far smaller. Emitting it
+    # keeps every existing handle byte-for-byte what it was.
+    first = next(iter(present.values()))
+    if len(present) == len(per_copy) and all(
+        np.array_equal(v, first) for v in present.values()
+    ):
+        return f"(sel.atom.atom-groups :atom-test {_id_test(first)})"
+
+    terms = [
+        f"(and (= atom.op-name `{operator_name(k)}`) {_id_test(v)})"
+        for k, v in sorted(present.items())
+    ]
     test = terms[0] if len(terms) == 1 else "(or " + " ".join(terms) + ")"
     return f"(sel.atom.atom-groups :atom-test {test})"

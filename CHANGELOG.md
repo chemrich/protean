@@ -5,6 +5,24 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Addressing one symmetry copy
+
+- `sym N` selects one copy of the asymmetric unit in a biological assembly,
+  numbered from 0. Copies share chain ids and residue numbers, so `chain A`
+  on an assembly means every copy of that chain and `chain A and sym 0` is
+  the single subunit. A selection with no `sym` term still means every copy.
+- Handles now carry the copy to the viewer. They travel as atom-id
+  predicates, which an assembly duplicates, so a set covering one copy could
+  not previously be drawn as one copy; each copy's ids are now keyed on its
+  Mol* symmetry operator. Sets that are symmetric across copies are emitted
+  exactly as before.
+- `interface()` takes `copy=N`, and with no copy named reports a `per_copy`
+  breakdown beside the total. On 1HHO the A-B total is 5530.2 A^2 where one
+  alpha-beta pair buries 1776.9 -- the same number the deposited asymmetric
+  unit gives.
+- `rank` is no longer refused on multi-copy assemblies; it was refused only
+  because the handle could not name a copy.
+
 ### Trajectories and animation (Phase 5)
 
 - `load_trajectory()` reads XTC, TRR, DCD and NetCDF onto the loaded structure,
