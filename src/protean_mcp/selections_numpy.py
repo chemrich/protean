@@ -614,6 +614,15 @@ def _property(node: Property, array: AtomArray[Any]) -> Mask:  # noqa: PLR0911
         # computes over is chosen inside the tools, not here.
         wanted = [_altloc_value(v) for v in node.values]
         _check_alt_is_available(array, wanted)
+        if "altloc_id" not in array.get_annotation_categories():
+            # No annotation at all, rather than an annotation full of ".".
+            # `has_altlocs` is False for both, so narrowing the guard to letters
+            # let this spelling through to `get_annotation`, which raises
+            # biotite's `ValueError` — not a `SelectionError`, so it escapes
+            # `select()` and `show()` as an internal error rather than a bad
+            # selection. The guard has already refused any letter here, so what
+            # is left asks for the unlabelled atoms, and every atom is one.
+            return np.ones(array.array_length(), dtype=bool)
         return np.isin(np.asarray(array.get_annotation("altloc_id")), wanted)
     if prop == "sym":
         # Which copy of the asymmetric unit an atom belongs to, 0-based, as

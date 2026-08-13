@@ -480,3 +480,20 @@ def test_serialising_a_trajectory_stack_labels_every_model(two_states):
 
     expected = [".", "A", "B", ".", ".", "A", "B"] * 3
     assert [row.split()[3] for row in rows] == expected
+
+
+def test_alt_on_an_array_with_no_altloc_annotation_at_all():
+    """`has_altlocs` is False for two different reasons, and they differ here.
+
+    An array with no `altloc_id` category is not the same as one whose column
+    is all ".". Narrowing the guard to letters let the second spelling through
+    to `get_annotation`, which raises biotite's `ValueError` — not a
+    `SelectionError`, so it escapes `select()` and `show()` as an internal
+    error instead of a bad selection.
+    """
+    bare = atom_array([_atom(1, "N", ".", [0.0, 0.0, 0.0])])
+    assert "altloc_id" not in bare.get_annotation_categories()
+
+    assert int(np.sum(select_mask("alt ''", bare))) == 1
+    with pytest.raises(SelectionError, match="no conformer A"):
+        select_mask("alt A", bare)
