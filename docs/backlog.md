@@ -467,7 +467,7 @@ sorts *before* `test_server.py`, and only runs when `PROTEAN_DIFFERENTIAL=1`
 — so it leaves `server._trajectory` set and the two refusals stop refusing.
 
 **CI cannot see it.** The fast job runs `pytest -q` with no gate, so the
-polluting file skips; the browser job names four files explicitly, so
+polluting file skips; the browser job names its files explicitly, so
 `test_server.py` never runs beside it. The two only meet in a local full run.
 Confirmed identical on `main` at `efc42e0`, so this is not new.
 
@@ -493,6 +493,14 @@ one symptom. `tests/test_session_isolation.py` therefore checks the fixture
 directly — one test leaks on purpose, the next asserts the leak was cleaned —
 and that pair does fail when the fixture is disabled.
 
-Worth noting as a class: `server.py` keeps `_structure`, `_trajectory` and
-`_handles` as module globals, and only `_handles` is cleared anywhere. Any
-test asserting "nothing is loaded" is at the mercy of whatever ran first.
+**Planned in [docs/session-state.md](session-state.md), which found a product
+bug underneath the test one.** `fetch_structure` clears `_handles` and
+`_conservation_scores` but not `_trajectory`, so loading a new structure leaves
+`rmsf()` answering about the previous one — `rmsf` reads the trajectory's own
+`stack[0]`, not `_structure`, so nothing mismatches and nothing complains while
+the viewer shows a different molecule.
+
+Worth noting as a class: `server.py` keeps `_structure`, `_trajectory`,
+`_keyframes` and `_handles` as module globals, and only `_handles` is cleared
+anywhere. Any test asserting "nothing is loaded" is at the mercy of whatever
+ran first.
