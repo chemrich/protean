@@ -456,3 +456,73 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
     same red-pixel count (5004 vs 4937) despite differing by 1167 atoms. That
     was occlusion, not a bug — but it means a pixel count from that angle is
     not evidence either way. Orbiting 90 degrees separates them.
+
+## Decisions (2026-08-13) — alternate conformers
+
+16. **Every alternate conformer is loaded; analysis resolves one state.**
+    Closes backlog item 8's open `alt` decision, planned and corrected in
+    `docs/alternate-conformers.md`.
+
+    An atom resolved in two positions is stored twice, tagged `A`/`B`, each
+    with an occupancy. The fact that governs the whole design is that **the
+    states never coexist**: each molecule in the crystal is in one of them.
+    The file describes a population, not a molecule.
+
+    Previously biotite kept one conformer per site, so no label survived and
+    `alt` was refused. Both halves now load every conformer, which makes the
+    viewer and the analysis hold the same atoms — 15929 on 5FJI, where the
+    Python side held 15712 and the 217-atom difference had to be explained in
+    every load message.
+
+    **The obvious implementation is wrong, and this is the part worth
+    keeping.** The plan first proposed putting the conformer into residue
+    identity, by analogy with decision 9 putting `sym_id` there so symmetry
+    copies could not merge. Symmetry copies *partition* the atoms; conformer
+    states **overlap**. Only the atoms that actually differ carry a letter, so
+    on 5FJI 13 of the 32 residues with alternates also hold shared atoms —
+    SER320 is 3 shared plus A and B variants of 3 more. Keying on the letter
+    would have split that residue into three fragments, none of them a
+    residue: worse than the double-counting it was meant to prevent.
+
+    So residue identity is unchanged, and instead every tool that reads
+    coordinates resolves a **conformer state** — the shared atoms plus one
+    letter — before computing, defaulting to the letter with the most
+    occupancy and saying which it used. Without that, both states land in one
+    residue entry and their areas sum: up to +48% on 5FJI's worst residues,
+    while the structure total moves 0.14%. Small where anyone would look.
+
+    **`alt` is literal**, as PyMOL means it: `alt A` is the 206 labelled atoms
+    on 5FJI, not the conformer. The state is `alt ''+A`, 15712 atoms — exactly
+    what the Python side used to hold. Making `alt A` mean the state was
+    rejected because both states contain the shared backbone, so `alt A and
+    alt B` would return it rather than nothing, and two labels that read as
+    mutually exclusive would overlap. `alt ''` and `alt .` both spell "no
+    alternate", PyMOL's way and biotite's.
+
+    **What PyMOL does, measured rather than recalled.** It loads everything,
+    exposes `alt`, and computes `get_area` over mutually exclusive conformers
+    without comment — 0.13% from the filtered answer, silently. The `alt ''+A`
+    filter is folklore the user is expected to know. Copying the surface was
+    right; copying the silence was not, because a model calling `interface()`
+    has not read a decade of forum posts.
+
+    **Three things only measurement found**, each recorded where it bites:
+
+    - Template topology cannot tell conformers apart and bonds them to each
+      other: 16 such bonds on 1AKE, `ARG167/CD(A)—NE(B)`, leaving CD(A) with
+      three bonds. They are dropped, so `extend 1`, `bound_to` and `neighbor`
+      stay inside a state. **`extend 2` can still cross** through a shared
+      atom, because the file genuinely bonds N to both alternate CAs and
+      removing one would invent topology rather than filter it. A caveat, not
+      a fix; analysis never walks bonds.
+    - `alt ''` returned nothing until the quotes were stripped. They survive
+      tokenisation, so the value arrives as a two-character string, and the
+      selection read as "this structure has no unlabelled atoms" — the
+      silent-empty answer the grammar exists to prevent.
+    - `altloc="occupancy"` is not `altloc="first"`: 70 atoms differ on 5FJI.
+      Choosing the dominant conformer rather than whichever came first moves
+      some existing answers, deliberately.
+
+    Handle transport is unaffected — every conformer row carries its own
+    `atom_site.id` — and that is asserted against a real viewer by atom
+    identity rather than assumed, because assuming it is what item 7 punished.
