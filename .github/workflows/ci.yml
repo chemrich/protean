@@ -85,12 +85,22 @@ jobs:
           PROTEAN_CHROME_FLAGS: >-
             --headless=new --no-sandbox --disable-dev-shm-usage
             --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
-        # An explicit file list, so a new browser suite has to be named here to
-        # run at all. tests/test_symmetry_differential.py proves a handle can
-        # name one symmetry copy, and every claim in it is a centroid read back
-        # from a real Mol* — nothing in the fast job can stand in for it.
-        run: >-
-          uv run pytest tests/test_selection_differential.py
-          tests/test_render_differential.py tests/test_packaging.py
-          tests/test_secondary_structure_reference.py
-          tests/test_symmetry_differential.py -q
+        # The whole suite, not a named list. Two reasons, both learned here:
+        #
+        # A list silently excludes any new browser suite until someone
+        # remembers to add it. That happened — PR 53's twenty centroid tests
+        # sat unexecuted behind three green ticks until the omission was
+        # spotted, and only because the suite was also run locally.
+        #
+        # And a list means files never meet, so nothing *between* them is
+        # tested. The fast job runs without the gate, so gated files skip
+        # there; this job ran five named files, so test_server.py never ran
+        # beside them. Backlog item 12 lived on main inside exactly that gap:
+        # two refusals that fail only when a gated file runs first, which no CI
+        # job ever did. It reproduced only in a local full run.
+        #
+        # Priced before adopting: the fast tests are ~8 s against this job's
+        # ~690 s, so about 1.3% more. The cost is that they now run in both
+        # jobs; the benefit is that a cross-file interaction has somewhere to
+        # show up.
+        run: uv run pytest tests/ -q
