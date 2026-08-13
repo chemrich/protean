@@ -85,17 +85,26 @@ def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
             f"Unsupported format {fmt!r} (expected 'pdb' or 'mmcif')"
         )
     try:
-        # `altloc="all"` and `EXTRA_FIELDS` to match the main loader, and both
-        # halves matter. `altloc="all"` makes a structure parsed here hold the
-        # same atoms as the same structure fetched normally, or
-        # `interface("5fji", ...)` and `interface(...)` after loading 5fji
-        # quietly answer about different molecules.
-        #
         # `EXTRA_FIELDS` carries occupancy, which is what conformer resolution
         # ranks a site's alternates by. Without it `conformer_state` falls back
         # to `np.zeros`, every alternate ties, and the winner is decided by
         # sort order — the letter. Same bytes, same atom count, different
         # state: 5FJI resolves to `A+B` through the loader and `A` here.
+        #
+        # `altloc="all"` for the same reason it is in the loader: every
+        # conformer is loaded and a state is resolved afterwards.
+        #
+        # **This is not parity with the loader, and an earlier version of this
+        # comment claimed it was.** `get_structure` reads the asymmetric unit
+        # while `load_structure` defaults to the biological assembly, so the
+        # two still hold different molecules: 1HHO is 2396 atoms here against
+        # 4792 loaded (2 copies), and 1AKE is 3816 here against 1966 loaded —
+        # the assembly is *smaller* than the deposited coordinates. So
+        # `interface("1hho", "A", "B")` standalone and `interface("A", "B")`
+        # after `fetch_structure("1hho")` still describe different things, and
+        # `sym_id` is absent here so `copy=N` refuses. Recorded rather than
+        # fixed: making this call `load_structure` changes what `superpose`
+        # superposes, which is a decision, not a repair.
         if fmt == "pdb":
             array = PDBFile.read(handle).get_structure(
                 model=1, extra_fields=EXTRA_FIELDS, altloc="all"
@@ -108,6 +117,20 @@ def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
     except Exception as exc:
         # Surface malformed coordinates as our own error rather than letting a
         # biotite exception type escape into the tool layer.
+        #
+        # A PDB whose occupancy and B-factor columns are blank — some modelling
+        # tools write them that way — fails here on "'' cannot be parsed into a
+        # number", which names neither the column nor the file. `load_structure`
+        # has always refused the same file with the same message, so this is a
+        # limitation of the loader rather than one this parser adds; naming it
+        # is what makes the two answerable at all.
+        if "cannot be parsed into a number" in str(exc):
+            raise SuperpositionError(
+                f"Could not parse {fmt} coordinates: {exc}. If this file leaves "
+                f"the occupancy or B-factor columns blank, fill them — occupancy "
+                f"is what decides between alternate conformers, and guessing it "
+                f"would pick a conformer without saying so."
+            ) from exc
         raise SuperpositionError(f"Could not parse {fmt} coordinates: {exc}") from exc
     return array
 
