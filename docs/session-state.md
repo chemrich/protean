@@ -9,6 +9,36 @@ and leave the reason they were able to fail.
 
 ---
 
+> ## Done, 2026-08-13 — and §3.1's check was itself a no-op
+>
+> Implemented in PR 55, CI change in PR 56. Backlog item 12 is closed. Kept as
+> the plan it was, with the one thing it got wrong marked.
+>
+> **§3.1 says to mutation-test the fixture by disabling it and confirming the
+> two original tests fail again. That mutation passes.** With the fixture
+> disabled the full gated suite is still green, because §2.1 *also* clears the
+> pollution — `test_server.py` fetches a structure long before it reaches
+> those two refusals. Two independent fixes mask one symptom, so no
+> full-suite run can say whether the fixture does anything at all.
+>
+> This is the same trap §3 was written to avoid, one level up: the plan
+> correctly insisted the fixture be mutation-tested, then specified a mutation
+> that could not fail. `tests/test_session_isolation.py` is the replacement —
+> one test leaks on purpose, the next asserts the leak was cleaned, and that
+> pair *does* fail when the fixture is disabled. **When two changes fix one
+> symptom, a test over the symptom cannot attribute the fix to either.**
+>
+> **§4's cost estimate was too pessimistic, in the useful direction.** It
+> priced the full suite in the browser job at ~1.3%. Measured in CI: 765 s for
+> `pytest tests/ -q` against 766 s for the old five-file list — no measurable
+> cost at all, because the fast tests are trivial beside the browser ones.
+>
+> The rest held. Keeping §2.1 and §2.2 as separate commits is what made the
+> no-op visible; bundled, a green suite would have taken credit for a fixture
+> that might have been doing nothing.
+
+---
+
 ## 1. What is actually wrong
 
 `server.py` keeps the session in module globals:
