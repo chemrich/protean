@@ -142,6 +142,49 @@ def helix_pdb():
     return "\n".join(lines) + "\nEND\n"
 
 
+def _renamed_chain(text: str, chain: str) -> str:
+    """Rewrite the chain id by column, not by string replacement.
+
+    A `.replace(" A ", " B ")` also hits the residue and element fields, which
+    produces a file biotite parses into something other than what was meant.
+    """
+    out = [
+        f"{line[:21]}{chain}{line[22:]}" if line.startswith("ATOM") else line
+        for line in text.splitlines()
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _with_alternate_ca(text: str, residue: int, offset: float = 1.2) -> str:
+    """Model one residue's CA in two positions, the way a real file does.
+
+    ``A`` keeps the true coordinates and ``B`` is displaced, so a
+    correspondence that picks up both CAs fits badly rather than merely
+    differently.
+
+    The occupancy columns are here to make the fixture look like a real file,
+    and **this test does not pin which rule chose the letter**: on this branch
+    `parse_structure` requests no occupancy, so the choice falls to sort order,
+    and swapping these two numbers changes nothing. `A` is written with the
+    higher value so the expected letter stays the same once occupancy is
+    actually read. What decides the letter is asserted in
+    `test_parse_structure_resolves_the_state_the_loader_would`.
+    """
+    out = []
+    for line in text.splitlines():
+        if not (
+            line.startswith("ATOM")
+            and line[12:16].strip() == "CA"
+            and int(line[22:26]) == residue
+        ):
+            out.append(line)
+            continue
+        out.append(f"{line[:16]}A{line[17:54]}  0.70{line[60:]}")
+        y = float(line[38:46]) + offset
+        out.append(f"{line[:16]}B{line[17:38]}{y:8.3f}{line[46:54]}  0.30{line[60:]}")
+    return "\n".join(out) + "\n"
+
+
 def test_identical_structures_superpose_exactly(helix_pdb):
     result = superpose(helix_pdb, "pdb", helix_pdb, "pdb")
     assert result.rmsd == pytest.approx(0.0, abs=1e-4)
@@ -149,6 +192,54 @@ def test_identical_structures_superpose_exactly(helix_pdb):
     # superimpose_homologs iteratively discards outlier anchors, so even a
     # structure against itself keeps most rather than all of them.
     assert 8 <= result.aligned_residues <= 12
+
+
+def test_an_alternate_backbone_does_not_shift_the_residue_correspondence(helix_pdb):
+    """One residue modelled twice must not pair every later residue off by one.
+
+    biotite's anchors are one entry per CA *atom*; the alignment columns they
+    index are one per *residue*. A residue carrying an alternate backbone
+    therefore contributes two anchors to one column, and everything after it
+    slides. The same structure still superposes onto itself at RMSD 0 under
+    that bug — both sides slide together — so the mobile side alone carries the
+    alternate here.
+
+    **RMSD is the wrong thing to assert on**, which is worth stating because it
+    is the obvious choice. `superimpose_homologs` iteratively discards anchors
+    that fit badly, so it throws away the mispaired ones and returns a clean
+    fit over what is left: measured, 0.000295 A against a 1e-4 tolerance, which
+    would make this test turn on a factor of three. Sequence identity is the
+    signal that actually discriminates — every residue paired with the wrong
+    residue's *type* — and it goes 1.0 to 0.0.
+    """
+    with_alt = _with_alternate_ca(helix_pdb, residue=3)
+    result = superpose(with_alt, "pdb", helix_pdb, "pdb")
+
+    assert result.sequence_identity == pytest.approx(1.0)
+    assert 8 <= result.aligned_residues <= 12
+    assert result.rmsd == pytest.approx(0.0, abs=1e-4)
+    # The reply must say what it kept, or the atoms an RMSD was computed over
+    # are not recoverable from it.
+    assert result.mobile_conformer == "A"
+    assert result.target_conformer == ""
+
+
+def test_the_conformer_label_describes_only_what_was_superposed(helix_pdb):
+    """An alternate in a chain nobody superposed must not label the result.
+
+    Resolution runs over the whole file on purpose, so the letter kept here
+    matches the one the load message named. The *label* is a claim about the
+    atoms this result was computed from, and a chain that was excluded before
+    fitting contributed none of them.
+    """
+    chain_b = _with_alternate_ca(_renamed_chain(helix_pdb, "B"), residue=3)
+    two_chains = helix_pdb.replace("END\n", "") + chain_b
+
+    result = superpose(
+        two_chains, "pdb", helix_pdb, "pdb", mobile_chain="A", target_chain="A"
+    )
+    assert result.mobile_conformer == ""
+    assert result.target_conformer == ""
 
 
 def test_a_pure_translation_is_undone(helix_pdb):
@@ -177,12 +268,17 @@ def test_result_dict_rounds_for_reporting(helix_pdb):
         "rmsd",
         "aligned_residues",
         "sequence_identity",
+        "mobile_conformer",
+        "target_conformer",
         "transform",
         "mobile_chains",
         "target_chains",
         "outliers",
     }
     assert payload["mobile_chains"] == ["A"]
+    # Empty rather than absent: a structure with no alternates still has to
+    # answer "which conformer is this?", and the answer is "there was no choice".
+    assert payload["mobile_conformer"] == ""
 
 
 def test_unrelated_structures_are_refused(helix_pdb):
