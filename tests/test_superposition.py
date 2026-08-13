@@ -22,6 +22,7 @@ from protean_mcp.analysis.superposition import (
     superpose,
 )
 from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections_numpy import load_structure, resolve_conformers
 
 NEEDS_NETWORK = pytest.mark.skipif(
     os.environ.get("PROTEAN_DIFFERENTIAL") != "1",
@@ -57,6 +58,106 @@ def test_malformed_coordinates_raise_our_error():
 def test_unknown_format_is_refused():
     with pytest.raises(SuperpositionError, match="Unsupported format"):
         parse_structure(TINY_PDB, "mol2")
+
+
+# A site whose *second* letter has the higher occupancy, which is the only
+# fixture that can tell "highest occupancy" from "first letter". Both rules
+# keep the shared N/C/O; they disagree about which CA.
+BACKWARDS_OCCUPANCY_PDB = """\
+ATOM      1  N   ALA A   1      0.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA AALA A   1      1.458   0.000   0.000  0.30  0.00           C
+ATOM      3  CA BALA A   1      1.458   0.900   0.000  0.70  0.00           C
+ATOM      4  C   ALA A   1      2.009   1.420   0.000  1.00  0.00           C
+ATOM      5  O   ALA A   1      1.251   2.390   0.000  1.00  0.00           O
+END
+"""
+
+# The same site as mmCIF. Both branches need covering and mmCIF is the one that
+# matters most: `fetch.py` requests `.cif` from RCSB and from AlphaFold, so
+# every fetched structure takes this path and a PDB-only test would leave the
+# dominant branch free to regress.
+BACKWARDS_OCCUPANCY_CIF = """\
+data_test
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_PDB_model_num
+ATOM 1 N N  . ALA A 1 1 A 0.000 0.000 0.000 1.00 0.00 1
+ATOM 2 C CA A ALA A 1 1 A 1.458 0.000 0.000 0.30 0.00 1
+ATOM 3 C CA B ALA A 1 1 A 1.458 0.900 0.000 0.70 0.00 1
+ATOM 4 C C  . ALA A 1 1 A 2.009 1.420 0.000 1.00 0.00 1
+ATOM 5 O O  . ALA A 1 1 A 1.251 2.390 0.000 1.00 0.00 1
+"""
+
+
+def test_parse_structure_resolves_the_state_the_loader_would():
+    """Both parsers must reach the same conformer state from the same bytes.
+
+    `parse_structure` requested no `extra_fields`, so occupancy was absent and
+    `conformer_state` fell back to `np.zeros`: every alternate at a site tied
+    and the winner was decided by sort order, i.e. the letter. The atom counts
+    matched either way, so `interface("5fji", ...)` standalone and
+    `interface(...)` after `fetch_structure("5fji")` computed buried areas over
+    different atoms while both reported the same totals.
+
+    Here B carries the higher occupancy, so the two rules disagree: occupancy
+    says B, alphabetical says A.
+
+    Scope, because the PR that added this overstated it: what this fixes is the
+    state `parse_structure` resolves, which is what `interface`'s standalone
+    path measures over. `superpose` resolves no state at all until the change
+    on `fix-superpose-conformer-state` lands, so the fit/viewer divergence
+    needs both.
+    """
+    here = parse_structure(BACKWARDS_OCCUPANCY_PDB, "pdb")
+    loaded = load_structure(BACKWARDS_OCCUPANCY_PDB, "pdb", "asymmetric").array
+
+    assert here.array_length() == loaded.array_length()
+    assert resolve_conformers(here)[1] == resolve_conformers(loaded)[1] == "B"
+
+
+def test_parse_structure_reads_occupancy_from_mmcif_too():
+    """The branch every fetched structure actually takes.
+
+    RCSB and AlphaFold both return mmCIF, so a PDB-only test would leave the
+    dominant path free to regress: dropping `extra_fields` from the mmCIF call
+    alone left the whole fast suite green.
+    """
+    here = parse_structure(BACKWARDS_OCCUPANCY_CIF, "mmcif")
+    loaded = load_structure(BACKWARDS_OCCUPANCY_CIF, "mmcif", "asymmetric").array
+
+    assert here.array_length() == loaded.array_length() == 5
+    assert resolve_conformers(here)[1] == resolve_conformers(loaded)[1] == "B"
+
+
+def test_a_blank_occupancy_column_says_which_column_is_missing():
+    """ "'' cannot be parsed into a number" names neither the file nor the field.
+
+    `load_structure` refuses the same file the same way, so this is a limit of
+    the loader rather than one this parser adds -- but a caller cannot act on
+    the biotite message, and occupancy is not something to guess at, since
+    guessing picks a conformer without saying so.
+    """
+    blank = (
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000"
+        "                       N\n"
+        "END\n"
+    )
+    with pytest.raises(SuperpositionError, match="occupancy or B-factor"):
+        parse_structure(blank, "pdb")
 
 
 def test_protein_atoms_drops_non_amino_acids():
