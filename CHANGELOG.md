@@ -5,6 +5,16 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Session state
+
+- Loading a structure now ends the session before it. A trajectory and any
+  saved keyframes belong to the molecule they were made for, and were
+  previously carried across: `rmsf()` kept answering about the old trajectory
+  while the viewer showed the new structure, with nothing to say so. The reply
+  now names what was discarded.
+- Tests restore the server's session globals between cases, so a test that
+  loads something no longer changes what the next test sees.
+
 ### Addressing one symmetry copy
 
 - `sym N` selects one copy of the asymmetric unit in a biological assembly,
