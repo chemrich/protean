@@ -22,7 +22,7 @@ from biotite.structure import (
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
-from ..selections_numpy import _normalise_altloc
+from ..selections_numpy import _normalise_altloc, resolve_conformers
 
 # A transform for a single model is 4x4; biotite returns a stack for multi-model
 # input, which we index into.
@@ -63,6 +63,12 @@ class SuperpositionResult:
     target_chains: list[str]
     outliers: list[ResidueDeviation]
     mode: str = "sequence"
+    #: Which conformer state each side was reduced to, empty when it had no
+    #: alternates. Reported for the same reason every other analysis reports
+    #: it: an RMSD is over particular atoms, and which ones were dropped is
+    #: not recoverable from the number.
+    mobile_conformer: str = ""
+    target_conformer: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +76,8 @@ class SuperpositionResult:
             "rmsd": round(self.rmsd, 3),
             "aligned_residues": self.aligned_residues,
             "sequence_identity": round(self.sequence_identity, 3),
+            "mobile_conformer": self.mobile_conformer,
+            "target_conformer": self.target_conformer,
             "transform": self.transform,
             "mobile_chains": self.mobile_chains,
             "target_chains": self.target_chains,
@@ -145,12 +153,21 @@ def superpose(
     """
     if mode not in MODES:
         raise SuperpositionError(f"Unknown mode {mode!r} ({', '.join(MODES)})")
-    mobile = protein_atoms(
-        parse_structure(mobile_text, mobile_format), mobile_chain, "mobile"
+    # Resolve a conformer state before anything reads coordinates, as every
+    # other analysis path does. It matters more here than elsewhere: biotite's
+    # anchors are one entry per CA *atom* while the alignment columns it maps
+    # them onto are one per *residue*, so a residue whose backbone is modelled
+    # twice contributes two anchors to one column and pairs off every residue
+    # after it by one. The rmsd, identity and outliers stay plausible, and the
+    # transform they produce is wrong with them.
+    mobile_state, mobile_conformer = resolve_conformers(
+        parse_structure(mobile_text, mobile_format)
     )
-    target = protein_atoms(
-        parse_structure(target_text, target_format), target_chain, "target"
+    target_state, target_conformer = resolve_conformers(
+        parse_structure(target_text, target_format)
     )
+    mobile = protein_atoms(mobile_state, mobile_chain, "mobile")
+    target = protein_atoms(target_state, target_chain, "target")
 
     # biotite's generic signatures do not narrow here, so name the parts.
     fitted: Any
@@ -204,4 +221,6 @@ def superpose(
         target_chains=sorted({str(c) for c in target.chain_id}),
         outliers=outliers,
         mode=mode,
+        mobile_conformer=mobile_conformer,
+        target_conformer=target_conformer,
     )
