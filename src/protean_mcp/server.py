@@ -454,6 +454,17 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
     A selection with no `sym` term keeps meaning every copy. Refused on a
     structure loaded as the asymmetric unit, which has only one.
 
+    `alt A` names an alternate conformer — an atom resolved in more than one
+    position — and means exactly the atoms carrying that label, as PyMOL does.
+    Only the atoms that actually differ carry one, so `alt A` is usually a
+    side chain with no backbone. **The whole conformer is `alt ''+A`**: the
+    shared atoms plus that letter. `alt ''` and `alt .` both mean "no
+    alternate". The labels are disjoint, so `alt A and alt B` is empty.
+
+    Analysis tools do not use `alt`. They resolve one conformer state on their
+    own — the one with the most occupancy — because the states never coexist
+    and geometry over both describes no molecule; each says which it used.
+
     Resolved in Python, so it works with no viewer open. Returns atom and
     residue counts, the chains touched, and the residue list.
     """
