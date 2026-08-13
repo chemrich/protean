@@ -498,24 +498,45 @@ _ATOM_IDS_JS = r"""(async () => {
     type: { name: 'script', params: { language: %s, expression: %s } },
     nullIfEmpty: false, label: 'ids',
   }, 'ids-key');
+  // `tryCreateComponent` returns null both for a selection that matched
+  // nothing and for one it could not compile, and `nullIfEmpty: false` does
+  // not change that -- measured, not assumed. So there is no error text to
+  // report and no way to tell the two apart from here. The Python side
+  // refuses to guess rather than attributing an empty result to either.
   const data = sel && (sel.data || (sel.cell && sel.cell.obj && sel.cell.obj.data));
-  if (!data) return JSON.stringify([]);
+  if (!data) return JSON.stringify({ ids: [] });
   const ids = [];
   for (const u of data.units) {
     const col = u.model.atomicConformation.atomId;
     const els = u.elements;
     for (let i = 0; i < els.length; i++) ids.push(col.value(els[i]));
   }
-  return JSON.stringify(ids);
+  return JSON.stringify({ ids });
 })()"""
 
 
 async def _viewer_atom_ids(pdb_id: str, language: str, expression: str) -> set[int]:
+    """Atom ids of what Mol* matched, refusing to report an empty result.
+
+    Every caller here expects a non-empty answer, and an empty one has two
+    possible causes Mol* does not distinguish: the selection matched nothing,
+    or its transpiler could not compile the expression. Returning the empty
+    set would let the assertion below read that as "the bond model changed",
+    which is the wrong diagnosis for half the causes.
+    """
     async with viewer_session(pdb_id, assembly="asymmetric") as session:
-        raw = await session.evaluate(
+        payload = await session.evaluate(
             _ATOM_IDS_JS % (json.dumps(language), json.dumps(expression))
         )
-    return {int(v) for v in (json.loads(raw) if isinstance(raw, str) else raw)}
+    ids = {int(v) for v in payload["ids"]}
+    if not ids:
+        pytest.fail(
+            f"Mol* returned no atoms for {language} {expression!r}. It does not "
+            "distinguish a selection that matched nothing from one its "
+            "transpiler could not compile, so this is not evidence about the "
+            "bond model either way."
+        )
+    return ids
 
 
 async def test_the_bond_model_divergence_is_exactly_metal_coordination():
