@@ -98,11 +98,50 @@ message stops needing to explain it.
 a handle travels as stays exact. This is the item-7 hazard and it does not
 apply here; assert it anyway, because that is what item 7 taught.
 
-### 4.2 `alt` becomes a leaf predicate
+### 4.2 `alt` becomes a leaf predicate, and it is literal
 
-`alt A` on the `altloc_id` annotation, with `alt ''` for the untagged atoms as
-in PyMOL. Refused with a named reason on a structure that has no alternates,
-the way `sym` is refused on an asymmetric unit.
+`alt A` on the `altloc_id` annotation. Refused with a named reason on a
+structure that has no alternates, the way `sym` is refused on an asymmetric
+unit.
+
+**Decided: `alt A` means the atoms labelled `A`, exactly as PyMOL means it —
+not the conformer state.** The distinction matters, and the file shows why.
+SER320 of chain A in 5FJI is stored as:
+
+```
+  N    .     1.00     <- shared (backbone)
+  CA   A     0.50
+  CA   B     0.50
+  C    .     1.00     <- shared
+  O    .     1.00     <- shared
+  CB   A     0.50
+  CB   B     0.50
+  OG   A     0.50
+  OG   B     0.50
+```
+
+Only the atoms that genuinely differ carry a letter. So `alt A` is three atoms
+— a side chain with no backbone, neither a residue nor a conformer. The
+conformer *state* is `alt ''+A`, six atoms, a complete serine. Structure-wide
+the same: `alt A` is 206 atoms where state A is **15712, which is exactly what
+protean analyses today**.
+
+The alternative — making `alt A` mean the state — was rejected because it
+destroys the one property the labels obviously have. Under it, `alt A` and
+`alt B` would both contain the shared backbone, so `alt A and alt B` returns
+N/C/O rather than nothing, and two labels that read as mutually exclusive
+overlap. Literal keeps them disjoint and keeps PyMOL scripts working.
+
+The useful case is not lost, it simply lives elsewhere: "analyse conformer A"
+is §4.3's state filter, inside the tools, which is where a caller wants it
+applied anyway. The selection keyword is for display and inspection.
+
+**"No alternate" is spelled `alt ''` or `alt .`.** PyMOL writes `''`; biotite
+stores `.`; both are accepted, because a caller arriving from either will
+reach for the one they know. So displaying a whole conformer is `alt ''+A`,
+and the two spellings must give identical sets — worth an assertion, since a
+value list containing an empty string is exactly the sort of thing a parser
+quietly drops.
 
 ### 4.3 Analysis resolves a conformer state first
 
@@ -178,8 +217,13 @@ The failure here is a plausible number, so counting is not enough.
 3. **No bond may join two conformers.** Assert directly over the derived
    topology that no bond has two different letters at its ends. Mutation:
    derive topology before filtering and watch 16 appear on 1AKE.
-4. **`alt A` and `alt B` must differ, and neither may be empty.** On 5FJI both
-   are 206 atoms; assert they are disjoint and that `alt ''` is neither.
+4. **`alt` is literal, and the numbers say which reading shipped.** On 5FJI
+   `alt A` is **206** atoms and `alt ''+A` is **15712** — three orders of
+   magnitude apart, so a test asserting both cannot be satisfied by the wrong
+   reading. Assert too that `alt A` and `alt B` are disjoint (they are not,
+   under the rejected state reading) and that `alt ''` and `alt .` give the
+   same set, since an empty string in a value list is the sort of token a
+   parser drops without complaining.
 5. **Handle transport for a one-conformer set**, read back from a real viewer by
    atom id, as item 7 does for symmetry copies. The claim is that a set of
    conformer-A atoms draws conformer A and not its twin.
@@ -201,11 +245,6 @@ over duplicated atoms, which is precisely the bug.
 
 ## 8. Open questions
 
-- **Should `alt` default to `''+A` semantics when a caller writes `alt A`?**
-  PyMOL's `alt A` returns *only* the tagged atoms, not the shared ones, so
-  `alt A` alone is a fragment of a residue. Matching PyMOL is probably right,
-  but it means the obvious-looking selection is not the conformer state.
-  The state is `alt ''+A`.
 - **Should the reply name the state per residue or once per call?** Once is
   simpler; per residue is honest about structures where the dominant conformer
   differs between sites.
