@@ -227,6 +227,18 @@ distinct from `index`, which is the file's own `atom_site.id`.
 `extend 0` and a fractional `extend` are refused, on the same argument as a
 non-positive radius in item 4.
 
+**`alt` — decided 2026-08-13: load every conformer.** Planned in
+[docs/alternate-conformers.md](alternate-conformers.md). The obvious
+implementation is wrong: conformer states *overlap* (13 of 32 residues with
+alternates on 5FJI also carry shared atoms), so altloc cannot go into the
+residue key the way `sym_id` did — it would split one residue into three.
+Analysis resolves a conformer state instead, and topology must be derived
+after that filter, since template matching otherwise bonds conformer A to
+conformer B (16 such bonds on 1AKE).
+
+The original entry, kept because the tradeoff it names is the one that was
+decided:
+
 **`alt` is still refused, but now by choice rather than impossibility.**
 `get_structure(altloc="all")` exists, so every conformer *can* be loaded — and
 doing so would make the viewer and analysis atom counts agree exactly, which is
