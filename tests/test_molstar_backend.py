@@ -13,7 +13,13 @@ exact failure `ColorByScalar`'s explicit domain exists to prevent.
 from __future__ import annotations
 
 import io
-import re
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import textwrap
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -416,38 +422,66 @@ async def test_colorflat_translates_a_pymol_name_and_an_rgb_triple(
     await backend.render(
         Scene([ColorFlat(Sel.all(), "grey70"), ColorFlat(Sel.all(), (1.0, 0.0, 0.5))])
     )
-    # A name and a triple go through one conversion, so 0.7 resolves to 0xb2
-    # both ways. Two paths had it as 0xb3 written as `grey70` and 0xb2 written
-    # as (0.7, 0.7, 0.7) — one colour with two answers.
-    assert [a["color"] for a in recorder.args_for("color")] == ["#b2b2b2", "#ff007f"]
+    # A name and a triple go through one conversion, so a colour resolves the
+    # same way whichever it was written as. Two paths once gave 0xb3 for
+    # `grey70` and 0xb2 for its triple — one colour with two answers.
+    #
+    # 0xb4, not the 0xb2 this asserted before: PyMOL's `grey70` is 0.707071
+    # (its grey ramp is n/99), which truncates to 180. The old expectation came
+    # from this table's own wrong 0.7, so it moved when the table was corrected
+    # against a running PyMOL — which is the guard working, not a regression.
+    assert [a["color"] for a in recorder.args_for("color")] == ["#b4b4b4", "#ff007f"]
 
 
-def test_the_colour_table_agrees_with_the_one_upstream_publishes() -> None:
-    """A divergence guard, not a style check.
+@pytest.mark.skipif(
+    os.environ.get("PROTEAN_PYMOL") != "1" or shutil.which("pymol") is None,
+    reason="needs a runnable PyMOL; set PROTEAN_PYMOL=1 to run",
+)
+def test_every_colour_matches_a_running_pymol() -> None:
+    """Check the table against PyMOL itself, not against a copy of it.
 
-    `wiggles_em.composition` keeps its own copy of PyMOL's RGB for the names it
-    interpolates between. Where the two tables name the same colour they must
-    agree, or one Scene draws two different pictures. `skyblue` did not: this
-    table had it as a pale (0.6, 0.8, 1.0) against upstream's mid
-    (0.34, 0.63, 0.83), and it is `_ALTLOC_COLOURS[0]` — the first alternate
-    conformer of every altloc_view.
+    **This test replaces one that could not fail.** The previous guard compared
+    this table to `wiggles_em.composition`'s, and they agreed — because one was
+    transcribed from the other. Both were wrong for four of the ten names:
+    `skyblue` was a lighter blue than PyMOL's, `lightblue` was a pale *cyan*,
+    and `grey50`/`grey70` ignored that PyMOL's grey ramp is `n/99` inclusive.
+    Two copies of a transcription agreeing is evidence of the copy.
+
+    So the reference here is a running PyMOL. It cannot be a CI dependency —
+    there is no wheel — which is why this is gated and why the values carry the
+    date they were read. Run it when the table changes:
+
+        PROTEAN_PYMOL=1 uv run pytest tests/test_molstar_backend.py -k pymol
+
+    `-k` in the PyMOL invocation matters: it skips pymolrc, so a user's own
+    colour redefinitions cannot make this pass or fail.
     """
-    import inspect  # noqa: PLC0415 - test-local, see docstring
+    script = textwrap.dedent("""
+        from pymol import cmd
+        import json, sys
+        names = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
+        out = {n: list(cmd.get_color_tuple(n)) for n in names}
+        print("COLOURS " + json.dumps(out))
+    """)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "dump.py"
+        path.write_text(
+            script.replace("sys.argv[1]", repr(json.dumps(list(_COLOUR_NAMES))))
+        )
+        proc = subprocess.run(
+            ["pymol", "-ckq", str(path)], capture_output=True, text=True, timeout=120
+        )
+    line = next(
+        (ln for ln in proc.stdout.splitlines() if ln.startswith("COLOURS ")), None
+    )
+    assert line, f"PyMOL produced no colours: {proc.stdout[-400:]} {proc.stderr[-400:]}"
+    theirs = json.loads(line.removeprefix("COLOURS "))
 
-    import wiggles_em.composition as upstream_module  # noqa: PLC0415
-
-    # Read upstream's table out of its source rather than pinning a copy of it
-    # here. A pinned copy would agree with itself forever, which is the failure
-    # this guard exists to catch.
-    source = inspect.getsource(upstream_module)
-    upstream = {
-        name: tuple(float(p) for p in body.split(","))
-        for name, body in re.findall(r'"(\w+)":\s*\(([^)]+)\)', source)
-    }
-    shared = {n: v for n, v in upstream.items() if n in _COLOUR_NAMES}
-    assert shared, "the two tables share no names, so this guard proves nothing"
-    for name, value in shared.items():
-        assert _COLOUR_NAMES[name] == pytest.approx(value), name
+    assert set(theirs) == set(_COLOUR_NAMES), "PyMOL did not know every name"
+    for name, value in theirs.items():
+        assert _COLOUR_NAMES[name] == pytest.approx(tuple(value), abs=5e-4), (
+            f"{name}: this table says {_COLOUR_NAMES[name]}, PyMOL says {tuple(value)}"
+        )
 
 
 async def test_an_unknown_colour_name_is_refused_rather_than_guessed(
