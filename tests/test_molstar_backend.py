@@ -26,6 +26,7 @@ from wiggles_em.scene import (
     Arrows,
     ColorByScalar,
     ColorFlat,
+    ColorSurfaceByMap,
     Delete,
     Frames,
     Granularity,
@@ -732,3 +733,32 @@ async def test_a_carve_is_refused_rather_than_drawn_whole(structure: Any) -> Non
             Scene([Isosurface("s", "emd", 3.0, Unit.SIGMA, carve_radius=2.0)])
         )
     assert recorder.args_for("isosurface") == []
+
+
+async def test_a_scene_that_cannot_finish_draws_nothing_at_all(structure: Any) -> None:
+    """The isosurface must not land before the colouring is refused.
+
+    `local_resolution_view` emits an `Isosurface` and then a
+    `ColorSurfaceByMap`. Now that the first one draws, rendering in order would
+    put a plain grey density surface on the canvas and *then* raise — and a
+    screenshot taken afterwards looks like a local-resolution figure while
+    carrying none of the resolution colouring. Refusing the whole scene first
+    is the only honest answer.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+
+    with pytest.raises(Refused, match="Nothing was drawn"):
+        await backend.render(
+            Scene(
+                [
+                    Isosurface("s", "emd", 3.0, Unit.SIGMA),
+                    ColorSurfaceByMap("s", "locres", (2.0, 6.0), ("blue", "red")),
+                ]
+            )
+        )
+
+    assert recorder.args_for("isosurface") == [], (
+        f"the surface was drawn before the scene was refused, so the canvas now "
+        f"shows a density map posing as a local-resolution figure: {recorder.calls}"
+    )

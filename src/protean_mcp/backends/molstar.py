@@ -46,11 +46,13 @@ up front**, before any op draws.
     The bridge's ``label`` draws structural labels — chain, residue or element
     names — and takes no text. A :class:`~wiggles_em.scene.Label` carries
     literal text plus atom fields to interpolate, which has nowhere to go.
-``Isosurface``, ``ColorSurfaceByMap``
-    Volumes now load (``load_volume``, ``volume_info``), but nothing contours
-    them: there is no isosurface action for these ops to call. See
-    ``docs/cryoem.md`` §1.2 — the next piece, and the last one refusing a
-    wiggles-em scene.
+``ColorSurfaceByMap``
+    The isosurface it would colour now exists, but the bridge exposes no volume
+    colour theme to put on it. ``docs/cryoem.md`` §1.3.
+``Isosurface`` **with a carve**
+    Contouring works; limiting it to within *n* A of a selection does not.
+    protean would crop the volume server-side rather than ask the viewer for
+    it — ``docs/cryoem.md`` §1.5.
 ``Frames``, ``Morph``, ``Arrows``, ``Scatter``
     No Mol\\* equivalent, no custom geometry channel, and ``Scatter`` is
     forbidden to every backend by invariant I2.
@@ -307,8 +309,50 @@ class MolstarBackend:
         if scalars:
             await self._send_display(scalars[0])
 
+        self._refuse_before_drawing(scene)
+
         for op in scene:
             await self.render_op(op)
+
+    def _refuse_before_drawing(self, scene: Scene) -> None:
+        """Refuse a scene that cannot complete, before any of it is on screen.
+
+        The op loop raises on the first thing it cannot honour, which used to
+        mean nothing was drawn — every volume op refused, so a scene containing
+        one produced no picture at all. Now that ``Isosurface`` draws,
+        ``local_resolution_view`` would put a plain grey density surface on the
+        canvas and *then* refuse the colouring that gives it its meaning. A
+        screenshot taken afterwards looks like a local-resolution figure and is
+        not one, which is the failure the carve refusal argues against in the
+        same breath.
+
+        Only statically decidable cases live here: an op with no lowering at
+        all, and the two that depend on a field rather than on viewer state.
+        The handlers keep their own raises, so this is a second line rather
+        than the only one.
+        """
+        for op in scene:
+            if getattr(self, f"_{type(op).__name__.lower()}", None) is None:
+                raise Refused(
+                    f"{type(op).__name__} has no Mol* lowering, and this scene "
+                    f"needs it — nothing was drawn."
+                )
+            if isinstance(op, Isosurface) and (
+                op.carve_around is not None or op.carve_radius is not None
+            ):
+                raise Refused(
+                    f"this scene carves {op.volume!r} to within {op.carve_radius}A "
+                    f"of a selection, and protean has no carve yet "
+                    f"(docs/cryoem.md §1.5). Nothing was drawn: the whole surface "
+                    f"instead would answer a different question."
+                )
+            if isinstance(op, ColorSurfaceByMap):
+                raise Refused(
+                    f"this scene colours a surface by {op.volume!r}, and the bridge "
+                    f"exposes no volume colour theme (docs/cryoem.md §1.3). Nothing "
+                    f"was drawn: the density surface without its colouring carries "
+                    f"none of the meaning the view exists to show."
+                )
 
     async def render_op(self, op: SceneOp) -> None:
         handler = getattr(self, f"_{type(op).__name__.lower()}", None)

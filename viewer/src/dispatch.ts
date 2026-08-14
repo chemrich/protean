@@ -591,6 +591,10 @@ export function createDispatcher(plugin: any): Handler {
       data: any;
       provenance: string;
       format: string;
+      /** Computed once at load. Deterministic for a given grid, and two full
+       *  linear passes over up to 10^8 voxels is not a thing to repeat on
+       *  every volume_info, list_volumes and contour adjustment. */
+      stats: ReturnType<typeof volumeStats>;
       /** The isosurface node, once one has been asked for. */
       reprRef?: string;
     }
@@ -1726,25 +1730,25 @@ export function createDispatcher(plugin: any): Handler {
         // undefined, because the absence of a declaration is itself the
         // answer and should read the same as declaring it.
         const declared = provenance ?? 'unknown';
-        volumes.set(name, { ref, downloadRef, data, provenance: declared, format });
+        volumes.set(name, { ref, downloadRef, data, provenance: declared, format, stats });
         return { name, format, provenance: declared, ...stats };
       },
     },
 
     volume_info: {
       async run({ name }: { name: string }) {
-        const { data, provenance } = requireVolume(name);
-        return { name, provenance, ...volumeStats(data) };
+        const { provenance, stats } = requireVolume(name);
+        return { name, provenance, ...stats };
       },
     },
 
     list_volumes: {
       async run() {
         return {
-          volumes: [...volumes.entries()].map(([name, { data, provenance }]) => ({
+          volumes: [...volumes.entries()].map(([name, { provenance, stats }]) => ({
             name,
             provenance,
-            ...volumeStats(data),
+            ...stats,
           })),
         };
       },
@@ -1766,7 +1770,7 @@ export function createDispatcher(plugin: any): Handler {
         opacity?: number;
       }) {
         const entry = requireVolume(name);
-        const stats = volumeStats(entry.data);
+        const stats = entry.stats;
 
         // **The conversion, and the reason this is not left to Mol\*.**
         // Mol* accepts `{kind:'relative'}` and converts with
@@ -1804,14 +1808,33 @@ export function createDispatcher(plugin: any): Handler {
             );
           }
           const cell = plugin.state.data.cells.get(entry.ref);
-          await provider.visuals(plugin, {
-            volume: { ref: entry.ref, cell, obj: cell?.obj },
-          });
+          const selector = { ref: entry.ref, cell, obj: cell?.obj };
+          // Both shapes, deliberately. The ccp4/dsn6/dx/cube providers read
+          // `data.volume`; the dscif one destructures `const { volumes } =
+          // data` and immediately reads `volumes.length`, so passing only
+          // `volume` gives a bare TypeError on a .bcif map rather than
+          // anything a caller could act on.
+          await provider.visuals(plugin, { volume: selector, volumes: [selector] });
           const added = [...plugin.state.data.cells.values()].filter(
             (c: any) => !before.has(c.transform.ref) && c.obj?.type?.name === 'Volume 3D'
           );
           if (!added.length) {
             throw new Error(`'${name}' produced no isosurface node to contour`);
+          }
+          if (added.length > 1) {
+            // Cube files get a +1 and a -1 lobe; a dscif difference map gets a
+            // green +3 and a red -3. Those levels are not one number, and
+            // moving only the first would leave the others at Mol*'s defaults
+            // while the reply named a single level as though it described the
+            // picture. Undo and say so rather than half-apply it.
+            const undo = plugin.state.data.build();
+            for (const c of added) undo.delete(c.transform.ref);
+            await undo.commit();
+            throw new Error(
+              `'${name}' draws as ${added.length} surfaces (a signed pair, or a ` +
+                `difference map), and one level cannot describe them. Contouring ` +
+                `this format is not supported yet.`
+            );
           }
           entry.reprRef = added[0].transform.ref;
         }

@@ -2912,11 +2912,10 @@ async def load_volume(
 
     path: an MRC/CCP4 (.map/.mrc/.ccp4, optionally .gz), DSN6, OpenDX, Gaussian
       cube or BinaryCIF volume. EMDB ships .map.gz and that is handled.
-    name: handle for `volume_info` and `remove_volume`. Defaults to the file
-      stem. Note there is no isosurface tool yet, and `color_by_potential`
-      still takes OpenDX text inline rather than a handle — so a map loaded
-      here is currently display-only. That is the next piece of this work, not
-      something this handle already reaches.
+    name: handle for `isosurface`, `volume_info` and `remove_volume`. Defaults
+      to the file stem. Note `color_by_potential` still takes OpenDX text
+      inline rather than a handle, so colouring a surface by a second map is
+      not reachable from here yet.
     format: "auto" detects from the MRC magic and then the extension. Pass one
       of ccp4, dsn6, dx, cube, dscif to override.
     provenance: how this map came to exist — one of `measured`, `sharpened`,
@@ -3003,7 +3002,7 @@ async def isosurface(
     level: float,
     unit: str = "sigma",
     style: str = "surface",
-    opacity: float = 1.0,
+    opacity: float | None = None,
 ) -> dict[str, Any]:
     """Contour a loaded volume at `level` and draw it.
 
@@ -3016,7 +3015,9 @@ async def isosurface(
       map rather than a unit error. Naming the unit is the only way that cannot
       happen, so there is no bare-number form of this call.
     style: `surface` (solid) or `mesh` (wireframe).
-    opacity: 0-1.
+    opacity: 0-1. Omit it to keep whatever the surface already has, so raising
+      a contour level on a surface you made translucent does not silently make
+      it solid again.
 
     A sigma level is converted here, against the sigma and mean measured off
     the voxels, and Mol\\* is handed an absolute value. It would otherwise
@@ -3036,20 +3037,20 @@ async def isosurface(
         raise ViewerError(f"unit must be 'sigma' or 'absolute', not {unit!r}")
     if style not in ("surface", "mesh"):
         raise ViewerError(f"style must be 'surface' or 'mesh', not {style!r}")
-    if not 0.0 <= opacity <= 1.0:
+    if opacity is not None and not 0.0 <= opacity <= 1.0:
         raise ViewerError(f"opacity must be between 0 and 1, not {opacity}")
-    return _with_caveat(
-        await _call(
-            "isosurface",
-            {
-                "name": name,
-                "level": level,
-                "unit": unit,
-                "style": style,
-                "opacity": opacity,
-            },
-        )
-    )
+    args: dict[str, Any] = {
+        "name": name,
+        "level": level,
+        "unit": unit,
+        "style": style,
+    }
+    # Omitted rather than defaulted, so the viewer's "keep the current alpha"
+    # branch is reachable. Sending 1.0 every time would make every level change
+    # silently reset a translucent surface to solid.
+    if opacity is not None:
+        args["opacity"] = opacity
+    return _with_caveat(await _call("isosurface", args))
 
 
 @mcp.tool()
