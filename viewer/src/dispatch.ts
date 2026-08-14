@@ -583,7 +583,10 @@ export function createDispatcher(plugin: any): Handler {
    * `downloadRef` is the ghost Download node holding the raw bytes. Deleting
    * only the parsed volume leaves those bytes resident, so load/remove cycles
    * would accumulate exactly the maps this feature exists not to hold. */
-  const volumes = new Map<string, { ref: string; downloadRef?: string; data: any }>();
+  const volumes = new Map<
+    string,
+    { ref: string; downloadRef?: string; data: any; provenance: string }
+  >();
 
   function requireVolume(name: string) {
     const entry = volumes.get(name);
@@ -1643,7 +1646,17 @@ export function createDispatcher(plugin: any): Handler {
     },
 
     load_volume: {
-      async run({ name, url, format }: { name: string; url: string; format: string }) {
+      async run({
+        name,
+        url,
+        format,
+        provenance,
+      }: {
+        name: string;
+        url: string;
+        format: string;
+        provenance?: string;
+      }) {
         const provider = plugin.dataFormats.get(format);
         if (!provider) {
           const known = plugin.dataFormats.list
@@ -1695,23 +1708,31 @@ export function createDispatcher(plugin: any): Handler {
           throw err;
         }
 
-        volumes.set(name, { ref, downloadRef, data });
-        return { name, format, ...stats };
+        // Held here rather than server-side so it shares the handle's
+        // lifetime exactly: every path that forgets a volume — plugin.clear(),
+        // load_session, remove_volume — drops its provenance with it, and
+        // there is no second registry to keep in step. 'unknown' rather than
+        // undefined, because the absence of a declaration is itself the
+        // answer and should read the same as declaring it.
+        const declared = provenance ?? 'unknown';
+        volumes.set(name, { ref, downloadRef, data, provenance: declared });
+        return { name, format, provenance: declared, ...stats };
       },
     },
 
     volume_info: {
       async run({ name }: { name: string }) {
-        const { data } = requireVolume(name);
-        return { name, ...volumeStats(data) };
+        const { data, provenance } = requireVolume(name);
+        return { name, provenance, ...volumeStats(data) };
       },
     },
 
     list_volumes: {
       async run() {
         return {
-          volumes: [...volumes.entries()].map(([name, { data }]) => ({
+          volumes: [...volumes.entries()].map(([name, { data, provenance }]) => ({
             name,
+            provenance,
             ...volumeStats(data),
           })),
         };

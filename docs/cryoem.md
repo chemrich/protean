@@ -17,7 +17,7 @@ Ordered by what unblocks the most. Each section says what already exists.
 
 | | | |
 |---|---|---|
-| 1.1 `load_volume` + HTTP route | **shipped** | PR 69, minus provenance |
+| 1.1 `load_volume` + HTTP route | **shipped** | PR 69; `provenance=` followed in PR 72 |
 | 1.4 `volume_info` | **shipped** | PR 69 — *and its advice here was wrong; see below* |
 | 1.2 `isosurface` | open | the headline gap, and now the only thing blocking wiggles-em's `Isosurface` |
 | 1.3 `color_surface_by_volume` | open | needs 1.2 |
@@ -80,17 +80,25 @@ comment: the two paths differ because of size, not because of format.
 `wiggles_em.analysis.mapinfo` already reads gzipped MRC headers; the same
 `gzip` handling belongs in the loader.
 
-**Provenance is a parameter, never inferred — STILL OPEN.** A measured
+**Provenance is a parameter, never inferred — SHIPPED (PR 72).** A measured
 reconstruction and a network-enhanced one are the same isosurface once drawn.
-`load_volume` should record what it was told and default to `UNKNOWN`; it should
-not guess from the filename. This is `wiggles-em`'s invariant I1 and protean
-should honour it rather than re-learn it — a viewer that labels a generated map
-as measured is the failure the whole package exists to prevent.
+`load_volume` records what it was told and defaults to `UNKNOWN`; it does not
+guess from the filename. This is `wiggles-em`'s invariant I1, and protean reuses
+that enum rather than defining a second one meaning the same thing — a viewer
+that labels a generated map as measured is the failure the whole package exists
+to prevent.
 
-PR 69 shipped without it. Nothing in the reply says where a map came from, so a
-`RunDDN`-sharpened volume and a raw reconstruction are today indistinguishable
-in protean's own output. Worth adding before an isosurface makes them look
-equally authoritative on a canvas.
+Two decisions worth carrying into §1.2:
+
+- **A typo is refused, not coerced to `unknown`.** Coercion turns a caller who
+  *did* declare their map into one who appears not to have, losing exactly what
+  the parameter carries while reporting success.
+- **The label lives on the viewer's handle**, so it shares that handle's
+  lifetime — every path that forgets a volume drops its provenance too, and
+  there is no second registry to fall out of step. The `caveat` prose is derived
+  from the stored value on the way out rather than stored beside it.
+
+Building it also produced a test that could not fail, which is recorded in §5.
 
 ### 1.2 `isosurface(volume, level, kind="sigma", style="surface", ...)` — OPEN, and now the critical path
 
@@ -371,6 +379,13 @@ not on the list above:
   answered in full, with correct dimensions, for a volume `plugin.clear()` had
   already deleted, because the statistics were computed from a `data` object the
   handle map itself kept alive.
+- **Test the invariant where it can actually be violated.** The provenance test
+  was written against the viewer, with a fixture named
+  `emd_30913_deepemhancer_sharpened.map` to bait a guess. Making the viewer
+  guess left it green — the viewer is only ever sent a handle and a URL and
+  never sees the path, so it *cannot* infer. The assertion had to move to the
+  server, which is the only component holding the filename. **A baited fixture
+  proves nothing if the code under test cannot see the bait.**
 
 ---
 
@@ -386,7 +401,7 @@ not on the list above:
 | 1.3 `color_surface_by_volume` | 1.2 | after 1.2 |
 | 1.5 carve | 1.1 ✓ | unblocked; server-side crop, independent of the viewer |
 | 3 scalar colouring, tools half | — | outstanding: the three MCP tools are still separate |
-| 1.1 `provenance=` | 1.1 ✓ | small, and wanted **before** 1.2 makes maps look authoritative |
+| 1.1 `provenance=` | 1.1 ✓ | **done** (PR 72) — landed before 1.2, as intended |
 | 4 size by scalar | 3 | smallest once 3 is finished |
 
 **Do 1.2 next.** Everything it needed is on `main`, and

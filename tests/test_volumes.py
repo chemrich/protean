@@ -15,7 +15,8 @@ from pathlib import Path
 import aiohttp
 import pytest
 
-from protean_mcp.connection import ViewerBridge
+from protean_mcp.connection import ViewerBridge, ViewerError
+from protean_mcp.server import _provenance, _with_caveat
 from protean_mcp.volumes import VolumeError, read_volume
 
 
@@ -191,3 +192,53 @@ async def test_forget_all_releases_every_published_volume(bridge):
 
 def test_forgetting_all_volumes_on_an_empty_bridge_is_not_an_error():
     ViewerBridge().forget_all_volumes()
+
+
+# -- provenance ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "declared", ["measured", "sharpened", "nn_enhanced", "generated", "unknown"]
+)
+def test_every_declared_provenance_is_accepted(declared):
+    assert _provenance(declared).value == declared
+
+
+@pytest.mark.parametrize("declared", ["  Measured  ", "NN_ENHANCED"])
+def test_case_and_padding_do_not_make_a_valid_declaration_fail(declared):
+    """A model filling a schema field should not be punished for capitalisation."""
+    assert _provenance(declared).value == declared.strip().lower()
+
+
+def test_an_unknown_provenance_is_refused_rather_than_defaulted():
+    """The important half: a typo must not silently become "unknown".
+
+    Coercing it would turn a caller who *did* declare their map into one who
+    appears not to have — losing exactly the information the parameter exists
+    to carry, while reporting success.
+    """
+    with pytest.raises(ViewerError) as excinfo:
+        _provenance("deepemhancer")
+    message = str(excinfo.value)
+    assert "deepemhancer" in message
+    # The refusal has to name the alternatives; a bare rejection leaves the
+    # caller guessing at a closed vocabulary.
+    for value in ("measured", "sharpened", "nn_enhanced", "generated", "unknown"):
+        assert value in message, message
+
+
+def test_the_caveat_matches_the_declaration():
+    """The prose is derived from the stored value, never stored separately."""
+    enhanced = _with_caveat({"provenance": "nn_enhanced"})
+    assert "NETWORK-ENHANCED" in enhanced["caveat"]
+
+    generated = _with_caveat({"provenance": "generated"})
+    assert "GENERATED, not observed" in generated["caveat"]
+
+    # And an undeclared map is not silently presented as fine.
+    assert "UNKNOWN" in _with_caveat({"provenance": "unknown"})["caveat"]
+
+
+def test_a_reply_without_provenance_is_passed_through_unharmed():
+    """`_with_caveat` runs over every volume reply, including ones predating it."""
+    assert _with_caveat({"name": "m"}) == {"name": "m"}

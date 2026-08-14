@@ -20,6 +20,12 @@ from biotite.structure.io.pdbx import CIFFile, set_structure
 from mcp.server.fastmcp import FastMCP, Image
 from PIL import Image as PILImage
 
+# Reused rather than redefined. wiggles-em is already a dependency, its
+# vocabulary is right for any density map and not only a cryo-EM one, and a
+# second enum meaning the same thing would let the two drift — the backend
+# lowers wiggles-em scenes onto this viewer, so they have to agree.
+from wiggles_em.provenance import Provenance
+
 from .analysis.conservation import ConservationError
 from .analysis.conservation import chain_sequence as _chain_sequence
 from .analysis.conservation import fetch_msa as _fetch_msa
@@ -2861,11 +2867,46 @@ def _ramp(palette: str, steps: int) -> list[str]:
     return out
 
 
+def _provenance(declared: str) -> Provenance:
+    """Parse a declared provenance, refusing anything not in the vocabulary.
+
+    Refused rather than coerced to UNKNOWN: a typo silently becoming "unknown"
+    would turn a caller who *did* declare their map into one who appears not to
+    have, which is the failure this parameter exists to prevent.
+    """
+    try:
+        return Provenance(declared.strip().lower())
+    except ValueError:
+        known = ", ".join(p.value for p in Provenance)
+        raise ViewerError(
+            f"unknown provenance {declared!r}. Known: {known}. This is never "
+            f"inferred from the filename, so an undeclared map is 'unknown'."
+        ) from None
+
+
+def _with_caveat(volume: dict[str, Any]) -> dict[str, Any]:
+    """Attach the one-line warning that belongs beside a picture of this map.
+
+    The viewer stores the provenance string and this derives the prose, so there
+    is one source of truth rather than two copies drifting apart.
+    """
+    declared = volume.get("provenance")
+    if isinstance(declared, str):
+        # Suppressed rather than raised: the viewer only ever echoes a value
+        # this module validated on the way in, so an unparseable one means the
+        # reply shape changed. Losing the caveat line is the right failure
+        # there; refusing to report a volume that loaded is not.
+        with contextlib.suppress(ValueError):
+            volume["caveat"] = Provenance(declared).caveat
+    return volume
+
+
 @mcp.tool()
 async def load_volume(
     path: str,
     name: str | None = None,
     format: str = "auto",
+    provenance: str = "unknown",
 ) -> dict[str, Any]:
     """Load a density map into the viewer and report what it actually holds.
 
@@ -2878,6 +2919,12 @@ async def load_volume(
       something this handle already reaches.
     format: "auto" detects from the MRC magic and then the extension. Pass one
       of ccp4, dsn6, dx, cube, dscif to override.
+    provenance: how this map came to exist — one of `measured`, `sharpened`,
+      `nn_enhanced`, `generated`, `unknown`. **Never inferred.** A filename
+      saying `deepemhancer` is not evidence, and guessing from one would make
+      the label less trustworthy than no label at all, so an undeclared map
+      stays `unknown`. The reply carries a `caveat` line to show alongside any
+      picture of it.
 
     The reply's statistics — min, max, mean, sigma and voxels — are computed by
     walking the voxels the viewer parsed, not echoed from the request and not
@@ -2894,6 +2941,7 @@ async def load_volume(
     is a quarter of a gigabyte and does not belong in a JSON message.
     """
     bridge = _require_viewer()
+    declared = _provenance(provenance)
     try:
         volume = read_volume(path, format)
     except VolumeError as exc:
@@ -2903,7 +2951,13 @@ async def load_volume(
     url = bridge.publish_volume(handle, volume.data)
     try:
         result = await _call(
-            "load_volume", {"name": handle, "url": url, "format": volume.format}
+            "load_volume",
+            {
+                "name": handle,
+                "url": url,
+                "format": volume.format,
+                "provenance": declared.value,
+            },
         )
     except ViewerError:
         # Scoped to the handle this call created: never a sweep of the session.
@@ -2911,7 +2965,7 @@ async def load_volume(
         raise
     result["source"] = str(volume.source)
     result["gzipped"] = volume.was_compressed
-    return result
+    return _with_caveat(result)
 
 
 @mcp.tool()
@@ -2930,14 +2984,17 @@ async def volume_info(name: str) -> dict[str, Any]:
     place while every call still returned cleanly.
     """
     _require_viewer()
-    return await _call("volume_info", {"name": name})
+    return _with_caveat(await _call("volume_info", {"name": name}))
 
 
 @mcp.tool()
 async def list_volumes() -> dict[str, Any]:
-    """List the volumes currently loaded, with their statistics."""
+    """List the volumes currently loaded, with their statistics and provenance."""
     _require_viewer()
-    return await _call("list_volumes")
+    result = await _call("list_volumes")
+    for volume in result.get("volumes", []):
+        _with_caveat(volume)
+    return result
 
 
 @mcp.tool()
