@@ -9,10 +9,18 @@ wheels/
 .pytest_cache/
 
 # Viewer
-viewer/node_modules/
-viewer/dist/
+#
+# No trailing slashes, deliberately. A trailing slash matches a directory and
+# *not* a symlink to one, and `git add -A` then stages the symlink as a
+# mode-120000 blob holding whatever absolute path it points at. That is not
+# hypothetical: it is how the `cryoem-volumes` branch came to commit
+# `viewer/node_modules` as an absolute path on one machine, straight past a
+# `viewer/node_modules/` rule. Symlinking these in is a normal thing to do when
+# working across checkouts, so the rule has to cover both shapes.
+viewer/node_modules
+viewer/dist
 viewer/public/molstar.*
-src/protean_mcp/static/
+src/protean_mcp/static
 
 # Misc
 .DS_Store
