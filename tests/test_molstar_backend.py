@@ -12,12 +12,15 @@ exact failure `ColorByScalar`'s explicit domain exists to prevent.
 
 from __future__ import annotations
 
+import io
+import re
 from typing import Any
 
 import numpy as np
 import pytest
 from biotite.structure import Atom as BiotiteAtom
 from biotite.structure import array as atom_array
+from biotite.structure.io.pdbx import CIFFile, get_structure
 from wiggles_em.occupancy import occupancy_view
 from wiggles_em.scene import (
     Arrows,
@@ -44,6 +47,8 @@ from wiggles_em.scene import (
 )
 
 from protean_mcp.backends.molstar import (
+    _COLOUR_NAMES,
+    AUTO,
     B_FACTOR_FULL,
     MolstarBackend,
     atoms_for,
@@ -275,19 +280,24 @@ def test_a_non_pymol_dialect_is_refused(backend: MolstarBackend) -> None:
 # -- what gets sent ---------------------------------------------------------
 
 
+def _bfactors_of(mmcif: str) -> list[float]:
+    """Read the B-factor column back out of what was actually sent.
+
+    The point of reading the wire format rather than the array: the column has
+    to survive serialisation to mean anything, and `_structure_as_mmcif` is
+    where a per-atom annotation has been mangled before.
+    """
+    handle = CIFFile.read(io.StringIO(mmcif))
+    # `altloc="all"`, or biotite keeps only the first conformer of each residue
+    # and the column comes back a row short — which would read as the backend
+    # having dropped an atom rather than the reader having filtered one.
+    array = get_structure(handle, model=1, extra_fields=["b_factor"], altloc="all")
+    return [round(float(v), 1) for v in array.b_factor]
+
+
 async def test_colorbyscalar_sends_a_display_copy_and_the_uncertainty_theme(
-    structure: Any, monkeypatch: pytest.MonkeyPatch
+    structure: Any,
 ) -> None:
-    sent: dict[str, Any] = {}
-
-    async def fake_send_structure(array: Any, label: str) -> dict[str, Any]:
-        sent["b_factor"] = np.asarray(array.b_factor).copy()
-        sent["label"] = label
-        return {}
-
-    monkeypatch.setattr(
-        "protean_mcp.server._send_structure", fake_send_structure, raising=True
-    )
     recorder = Recorder()
     backend = MolstarBackend(recorder, structure, model=MODEL)
     atoms = atoms_for(structure, MODEL)
@@ -295,21 +305,79 @@ async def test_colorbyscalar_sends_a_display_copy_and_the_uncertainty_theme(
 
     await backend.render(Scene([ColorByScalar(Sel.obj("x"), field, domain=(0.0, 1.0))]))
 
-    # The occupancies, on the theme's span, in array order.
-    assert [round(float(v), 1) for v in sent["b_factor"]] == [
-        100.0,
-        60.0,
-        40.0,
-        100.0,
-        100.0,
-        95.0,
-    ]
+    # The occupancies, on the theme's span, in array order — read back out of
+    # the mmCIF that went over the wire, not off the array we built.
+    loaded = recorder.args_for("load_structure")
+    assert len(loaded) == 1
+    assert _bfactors_of(loaded[0]["data"]) == [100.0, 60.0, 40.0, 100.0, 100.0, 95.0]
     # The analysis copy is untouched: this is the whole difference from PyMOL.
     assert list(np.asarray(structure.b_factor)) == [42.0] * 6
-    show = recorder.args_for("show")
-    assert len(show) == 1
-    assert show[0]["color"] == "uncertainty"
+    # Nothing had been drawn, so the theme goes on the viewer's own preset.
+    assert recorder.args_for("color") == [{"name": AUTO, "color": "uncertainty"}]
     assert any("display copy" in note for note in backend.notes)
+
+
+async def test_the_display_copy_goes_through_the_injected_transport(
+    structure: Any,
+) -> None:
+    """Everything this backend sends must go through `send`.
+
+    It briefly reached into `server._send_structure`, which uses the module
+    global bridge. A backend handed any other transport then sent its structure
+    to a different place from its ops, and in a real session with a viewer
+    attached it died on "No viewer connected".
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    field = ScalarField.per_atom([(a.key, a.q) for a in atoms_for(structure, MODEL)])
+    await backend.render(Scene([ColorByScalar(Sel.all(), field, domain=(0.0, 1.0))]))
+    assert "load_structure" in recorder.actions()
+
+
+async def test_the_expression_uses_the_ids_the_display_copy_will_carry(
+    structure: Any,
+) -> None:
+    """biotite renumbers `atom_site.id` on write, so the selection must follow.
+
+    An expression built from the analysis array's ids names different atoms in
+    the file the viewer parses, and the counts still agree — so nothing looks
+    wrong. Here the analysis ids are pushed far away from 1..N; the expression
+    that follows the load must use the renumbered ones.
+    """
+    structure.atom_id = np.arange(1, structure.array_length() + 1) + 10_000
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    field = ScalarField.per_atom([(a.key, a.q) for a in atoms_for(structure, MODEL)])
+    await backend.render(
+        Scene(
+            [
+                ColorByScalar(Sel.all(), field, domain=(0.0, 1.0)),
+                Show(Sel.prop("chain", "B"), Rep.STICKS),
+            ]
+        )
+    )
+    expression = recorder.args_for("show")[0]["expression"]
+    # Chain B is rows 4 and 5, which the display copy numbers 5 and 6.
+    assert "10005" not in expression and "10006" not in expression
+    assert "5" in expression and "6" in expression
+
+
+async def test_two_scalar_ops_refuse_rather_than_overwrite_one_column(
+    structure: Any,
+) -> None:
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    field = ScalarField.per_atom([(a.key, a.q) for a in atoms_for(structure, MODEL)])
+    with pytest.raises(Refused, match="one B-factor column"):
+        await backend.render(
+            Scene(
+                [
+                    ColorByScalar(Sel.all(), field, domain=(0.0, 1.0)),
+                    ColorByScalar(Sel.all(), field, domain=(0.0, 0.5)),
+                ]
+            )
+        )
+    assert recorder.calls == []
 
 
 async def test_colorbyscalar_refuses_when_the_field_misses_selected_atoms(
@@ -347,11 +415,38 @@ async def test_colorflat_translates_a_pymol_name_and_an_rgb_triple(
     await backend.render(
         Scene([ColorFlat(Sel.all(), "grey70"), ColorFlat(Sel.all(), (1.0, 0.0, 0.5))])
     )
-    # 0.5 -> 0x7f, not 0x80: `int(v * 255)` truncates, which is exactly what
-    # `wiggles_em.backends.pymol._colour_name` does. The two backends must
-    # agree on a channel value or one scene draws two different pictures, and
-    # matching upstream is what makes that true by construction.
-    assert [a["color"] for a in recorder.args_for("color")] == ["#b3b3b3", "#ff007f"]
+    # A name and a triple go through one conversion, so 0.7 resolves to 0xb2
+    # both ways. Two paths had it as 0xb3 written as `grey70` and 0xb2 written
+    # as (0.7, 0.7, 0.7) — one colour with two answers.
+    assert [a["color"] for a in recorder.args_for("color")] == ["#b2b2b2", "#ff007f"]
+
+
+def test_the_colour_table_agrees_with_the_one_upstream_publishes() -> None:
+    """A divergence guard, not a style check.
+
+    `wiggles_em.composition` keeps its own copy of PyMOL's RGB for the names it
+    interpolates between. Where the two tables name the same colour they must
+    agree, or one Scene draws two different pictures. `skyblue` did not: this
+    table had it as a pale (0.6, 0.8, 1.0) against upstream's mid
+    (0.34, 0.63, 0.83), and it is `_ALTLOC_COLOURS[0]` — the first alternate
+    conformer of every altloc_view.
+    """
+    import inspect  # noqa: PLC0415 - test-local, see docstring
+
+    import wiggles_em.composition as upstream_module  # noqa: PLC0415
+
+    # Read upstream's table out of its source rather than pinning a copy of it
+    # here. A pinned copy would agree with itself forever, which is the failure
+    # this guard exists to catch.
+    source = inspect.getsource(upstream_module)
+    upstream = {
+        name: tuple(float(p) for p in body.split(","))
+        for name, body in re.findall(r'"(\w+)":\s*\(([^)]+)\)', source)
+    }
+    shared = {n: v for n, v in upstream.items() if n in _COLOUR_NAMES}
+    assert shared, "the two tables share no names, so this guard proves nothing"
+    for name, value in shared.items():
+        assert _COLOUR_NAMES[name] == pytest.approx(value), name
 
 
 async def test_an_unknown_colour_name_is_refused_rather_than_guessed(
@@ -362,11 +457,91 @@ async def test_an_unknown_colour_name_is_refused_rather_than_guessed(
         await backend.render(Scene([ColorFlat(Sel.all(), "chartreuse")]))
 
 
-async def test_hide_everything_hides_the_component(structure: Any) -> None:
+async def test_a_colour_op_over_undrawn_atoms_refuses(structure: Any) -> None:
+    """Mol* colours representations, so nothing drawn means nothing to colour.
+
+    The viewer accepts this and changes nothing — `color` over a component with
+    no representation commits an empty transaction and reports success. Drawing
+    a representation here to have something to colour would invent geometry the
+    scene never asked for, so it refuses instead.
+    """
     recorder = Recorder()
     backend = MolstarBackend(recorder, structure, model=MODEL)
-    await backend.render(Scene([Hide(Sel.all(), Rep.EVERYTHING)]))
-    assert recorder.actions() == ["select", "hide"]
+    with pytest.raises(Refused, match="nothing has drawn"):
+        await backend.render(Scene([ColorFlat(Sel.prop("chain", "B"), "grey70")]))
+
+
+async def test_a_show_then_a_colour_reuse_one_component(structure: Any) -> None:
+    """The fix for three silent no-ops, asserted on the names.
+
+    A fresh component per op meant `color` always named something a `Show` had
+    never drawn. The browser test is what proves the picture changes; this is
+    what pins the mechanism that makes it change.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    target = Sel.prop("chain", "B")
+    await backend.render(Scene([Show(target, Rep.STICKS), ColorFlat(target, "grey70")]))
+    assert recorder.actions() == ["select", "show", "color"]
+    created = recorder.args_for("select")[0]["name"]
+    assert recorder.args_for("show")[0]["name"] == created
+    assert recorder.args_for("color")[0]["name"] == created
+
+
+async def test_a_colour_reaches_every_drawing_of_those_atoms(structure: Any) -> None:
+    """`show` layers a component *on top of* the preset, it does not replace it.
+
+    So after a Show, two coincident cartoons cover the same atoms and colouring
+    only ours leaves the preset's drawn over it. Measured on a real canvas:
+    Show + ColorFlat put 0.0000 of the requested colour on screen, and the same
+    scene with a Hide in front put 0.0029 there.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    await backend.render(
+        Scene([Show(Sel.all(), Rep.CARTOON), ColorFlat(Sel.all(), "grey70")])
+    )
+    coloured = [a["name"] for a in recorder.args_for("color")]
+    assert AUTO in coloured, "the preset was left in its default colours"
+    assert recorder.args_for("show")[0]["name"] in coloured
+
+
+async def test_a_hidden_preset_is_not_coloured_afterwards(structure: Any) -> None:
+    """Once hidden, the preset is not a thing to colour.
+
+    Colouring a hidden representation changes nothing and reports success,
+    which is the shape of every defect this backend has already had.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    await backend.render(
+        Scene(
+            [
+                Hide(Sel.all(), Rep.EVERYTHING),
+                Show(Sel.all(), Rep.CARTOON),
+                ColorFlat(Sel.all(), "grey70"),
+            ]
+        )
+    )
+    assert AUTO not in [a["name"] for a in recorder.args_for("color")]
+
+
+async def test_hide_everything_clears_the_preset_and_what_was_drawn(
+    structure: Any,
+) -> None:
+    """Hiding only this backend's components leaves the preset's cartoon up.
+
+    That is what `Hide` is normally emitted to clear, and it is why hiding a
+    freshly created component measured no change on the canvas at all.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    await backend.render(
+        Scene([Show(Sel.all(), Rep.CARTOON), Hide(Sel.all(), Rep.EVERYTHING)])
+    )
+    hidden = [a["name"] for a in recorder.args_for("hide")]
+    assert AUTO in hidden, "the viewer's own preset was left drawn"
+    assert recorder.args_for("show")[0]["name"] in hidden
 
 
 async def test_hiding_one_representation_refuses_rather_than_over_hiding(
@@ -377,12 +552,43 @@ async def test_hiding_one_representation_refuses_rather_than_over_hiding(
         await backend.render(Scene([Hide(Sel.all(), Rep.CARTOON)]))
 
 
-async def test_opacity_and_delete_reach_their_actions(structure: Any) -> None:
+async def test_a_partial_hide_refuses_because_the_preset_cannot_be_split(
+    structure: Any,
+) -> None:
+    backend = MolstarBackend(Recorder(), structure, model=MODEL)
+    with pytest.raises(Refused, match="in part"):
+        await backend.render(Scene([Hide(Sel.prop("chain", "B"), Rep.EVERYTHING)]))
+
+
+async def test_opacity_needs_something_drawn(structure: Any) -> None:
     recorder = Recorder()
     backend = MolstarBackend(recorder, structure, model=MODEL)
-    await backend.render(Scene([Opacity(Sel.all(), 0.4), Delete(("gone",))]))
-    assert recorder.args_for("opacity")[0]["opacity"] == 0.4
-    assert recorder.args_for("remove")[0]["name"] == "gone"
+    await backend.render(Scene([Opacity(Sel.all(), 0.4)]))
+    assert recorder.args_for("opacity")[0] == {"name": AUTO, "opacity": 0.4}
+
+    with pytest.raises(Refused, match="nothing has drawn"):
+        await backend.render(Scene([Opacity(Sel.prop("chain", "B"), 0.4)]))
+
+
+async def test_delete_removes_what_this_backend_made_and_refuses_the_rest(
+    structure: Any,
+) -> None:
+    """Scene `Delete` names PyMOL objects, which do not exist here.
+
+    `remove` requires a component this session created, so a map or CGO name
+    would fail deep in the bridge as `No selection named 'X'` — which reads as
+    a bad argument rather than as an op this viewer has no equivalent for.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+    with pytest.raises(Refused, match="did not create"):
+        await backend.render(Scene([Delete(("wgf_map",))]))
+
+    await backend.render(Scene([Show(Sel.all(), Rep.CARTOON)]))
+    made = recorder.args_for("select")[0]["name"]
+    backend.created.append(made)
+    await backend.render_op(Delete((made,)))
+    assert recorder.args_for("remove")[0]["name"] == made
 
 
 async def test_a_legend_draws_nothing(structure: Any) -> None:
@@ -433,23 +639,12 @@ async def test_unhonourable_ops_refuse_and_name_what_is_missing(
 # -- end to end -------------------------------------------------------------
 
 
-async def test_occupancy_view_renders_through_this_backend(
-    structure: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_occupancy_view_renders_through_this_backend(structure: Any) -> None:
     """The first time a view written for PyMOL has been drawn by anything else.
 
     The view is not adapted, imported specially, or handed a port: it takes the
     atoms this array yields and returns a Scene, and the backend lowers it.
     """
-    sent: dict[str, Any] = {}
-
-    async def fake_send_structure(array: Any, label: str) -> dict[str, Any]:
-        sent["b_factor"] = np.asarray(array.b_factor).copy()
-        return {}
-
-    monkeypatch.setattr(
-        "protean_mcp.server._send_structure", fake_send_structure, raising=True
-    )
     recorder = Recorder()
     backend = MolstarBackend(recorder, structure, model=MODEL)
 
@@ -457,16 +652,12 @@ async def test_occupancy_view_renders_through_this_backend(
     assert scene.draws
     await backend.render(scene)
 
-    # Occupancy on the fixed (0, 1) domain, not stretched over 0.4-1.0.
-    assert [round(float(v), 1) for v in sent["b_factor"]] == [
-        100.0,
-        60.0,
-        40.0,
-        100.0,
-        100.0,
-        95.0,
-    ]
-    assert "uncertainty" in [a.get("color") for a in recorder.args_for("show")]
+    # Occupancy on the fixed (0, 1) domain, not stretched over 0.4-1.0, read
+    # back off the mmCIF that went over the wire.
+    loaded = recorder.args_for("load_structure")
+    assert _bfactors_of(loaded[0]["data"]) == [100.0, 60.0, 40.0, 100.0, 100.0, 95.0]
+    # The whole object, so the theme lands on the viewer's own preset.
+    assert recorder.args_for("color") == [{"name": AUTO, "color": "uncertainty"}]
     # The partial atoms get sticks; the view's second op.
     assert "ball-and-stick" in [a["representation"] for a in recorder.args_for("show")]
     assert "SENSE 1" in report

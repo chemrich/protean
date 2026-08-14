@@ -19,6 +19,22 @@ crystallographic values before overwriting them, while this backend builds a
 nothing to restore and no warning to issue. ``scene.py`` predicted exactly
 this — "they differ in destructiveness, not mechanism".
 
+Two properties of Mol\\* shape everything below, and both were established by
+measuring pixels rather than by reading the bridge's action list:
+
+**Mol\\* colours representations, not atoms.** A component created by ``select``
+carries no representation, so ``color`` against it updates nothing and reports
+success, ``hide`` toggles something that was never on screen, and ``opacity``
+refuses. Colour is not independent of geometry here; in PyMOL it is. So a
+component is created **once per selection** and reused, ``Show`` records that it
+now carries a representation, and a colour or visibility op against atoms
+nothing has drawn **refuses** rather than inventing geometry to colour.
+
+**Loading a structure clears the scene.** ``load_structure`` calls
+``components.clear()`` and ``plugin.clear()``, so a display copy sent part-way
+through a render erases every op before it. The copy is therefore sent **once,
+up front**, before any op draws.
+
 **What this viewer cannot do**, refused rather than approximated:
 
 ``SizeByScalar``
@@ -88,6 +104,11 @@ from ..selections_numpy import evaluate as _evaluate
 #: two copies of a rule that must not drift.
 B_FACTOR_FULL = 100.0
 
+#: The viewer's handle for the representations its preset builds on load. The
+#: only geometry that exists before this backend draws anything, and therefore
+#: the only thing a whole-structure colour or hide has to act on.
+AUTO = "auto"
+
 #: Scene representations in Mol\*'s vocabulary. ``MESH`` is absent for the same
 #: reason it is absent from the PyMOL backend — a mesh is a property of an
 #: isosurface, not of a selection — and ``EVERYTHING`` is absent because Mol\*
@@ -101,28 +122,39 @@ _REPS: dict[Rep, str] = {
     Rep.LINES: "line",
 }
 
-#: PyMOL colour names the wiggles views emit, as hex.
+#: PyMOL colour names the wiggles views emit, as RGB in 0-1.
 #:
 #: ``Colour`` is ``str | tuple[float, float, float]``, and every string a view
 #: emits today is a **PyMOL** colour name — ``grey70``, ``skyblue``. That is a
 #: gap in the seam rather than a fact about this viewer: a viewer-neutral value
 #: that names one viewer's palette can only be honoured by a second viewer that
-#: reimplements the first one's table, which is this dictionary.
+#: reimplements the first one's table, which is this dictionary. Views emitting
+#: RGB triples would close it, and two of them already do.
 #:
-#: Values are PyMOL's own RGB definitions scaled to 8-bit. Unknown names are
-#: refused rather than guessed — a wrong colour renders as an ordinary picture
-#: and is invisible in review.
-_COLOUR_NAMES: dict[str, str] = {
-    "grey50": "#808080",
-    "grey70": "#b3b3b3",
-    "skyblue": "#99ccff",
-    "salmon": "#ff9999",
-    "palegreen": "#a5e6a5",
-    "wheat": "#fcd1a5",
-    "lightpink": "#ffbfdd",
-    "paleyellow": "#ffff80",
-    "lightblue": "#bfffff",
-    "lightorange": "#ffcc80",
+#: Stored as RGB rather than as hex so a name goes through the same conversion
+#: as a triple. Two paths meant ``grey70`` resolved to ``#b3b3b3`` written as a
+#: name and ``#b2b2b2`` written as a triple — one rounding, one truncating, for
+#: one colour.
+#:
+#: ``skyblue`` is taken from ``wiggles_em.composition``'s own copy of PyMOL's
+#: table, and a test asserts every shared name agrees with it. It had been
+#: guessed at ``(0.6, 0.8, 1.0)`` — a pale blue against PyMOL's mid blue —
+#: which would have drawn the first alternate conformer of every
+#: ``altloc_view`` a different colour in the two viewers from one Scene, which
+#: is the divergence this table exists to prevent. The rest are PyMOL's
+#: documented values and have **no** second source; an unknown name is refused
+#: rather than guessed.
+_COLOUR_NAMES: dict[str, tuple[float, float, float]] = {
+    "grey50": (0.5, 0.5, 0.5),
+    "grey70": (0.7, 0.7, 0.7),
+    "skyblue": (0.34, 0.63, 0.83),
+    "salmon": (1.0, 0.6, 0.6),
+    "palegreen": (0.65, 0.9, 0.65),
+    "wheat": (0.99, 0.82, 0.65),
+    "lightpink": (1.0, 0.75, 0.87),
+    "paleyellow": (1.0, 1.0, 0.5),
+    "lightblue": (0.75, 1.0, 1.0),
+    "lightorange": (1.0, 0.8, 0.5),
 }
 
 #: ``(action, args)`` in, viewer reply out. Exactly ``server._call``'s shape.
@@ -193,6 +225,10 @@ class MolstarBackend:
 
     Args:
         send: The bridge call — ``server._call``, or a recorder in a test.
+            **Everything** goes through it, the display copy included. A
+            backend given one transport must not reach for another; this one
+            briefly did, and every caller that was not the module-global bridge
+            got "No viewer connected" from a session that had one.
         array: The analysis array the view's atoms were read from. Selections
             resolve against it and a display copy is built from it; it is never
             modified.
@@ -219,17 +255,56 @@ class MolstarBackend:
         #: to the view's report, exactly as the PyMOL backend's ``notes`` are
         #: appended to it there.
         self.notes: list[str] = []
-        #: Component names created this render, in order. Lets a host clean up,
-        #: and lets a test see what was built without reading the canvas.
+        #: Component names created this render, in order.
         self.created: list[str] = []
+        #: One component per distinct selection, keyed by the selection's repr.
+        #: Minting a fresh one per op is what made three ops no-ops: the
+        #: component a ``color`` named was never the one a ``Show`` had drawn.
+        self._components: dict[str, str] = {}
+        #: Components that carry a representation. Mol\* can only colour, hide
+        #: or fade something that is drawn, so this is what a colour op checks
+        #: before it refuses.
+        self._drawn: set[str] = set()
+        #: The array whose ``atom_id``s match what the viewer currently holds.
+        #: Starts as the analysis array — the viewer parsed the same file — and
+        #: becomes the renumbered display copy once one has been sent, because
+        #: biotite's writer numbers ``atom_site.id`` from 1 and discards what
+        #: the array carried. An expression built from the wrong one names
+        #: different atoms while the counts still agree.
+        self._viewer_array: AtomArray[Any] = array
+        #: Whether the viewer's own preset has been hidden this render. Once
+        #: it has, it is no longer a thing to colour — colouring a hidden
+        #: representation changes nothing and reports success.
+        self._auto_hidden = False
         self._serial = 0
 
     # -- entry point -------------------------------------------------------
 
     async def render(self, scene: Scene) -> None:
-        """Draw every op in order. Raises on the first one it cannot honour."""
+        """Draw every op, in order. Raises on the first one it cannot honour.
+
+        The display copy a scalar op needs is sent **before** anything draws.
+        ``load_structure`` clears the plugin, so sending it at the op's own
+        position would erase every earlier op in the same scene and leave
+        :attr:`created` naming components the viewer had just forgotten.
+        """
         self.created.clear()
+        self._components.clear()
+        self._drawn.clear()
+        self._viewer_array = self.array
+        self._auto_hidden = False
         self._serial = 0
+
+        scalars = [op for op in scene if isinstance(op, ColorByScalar)]
+        if len(scalars) > 1:
+            raise Refused(
+                f"this scene carries {len(scalars)} ColorByScalar ops, and a display "
+                f"copy has one B-factor column to carry them in. The second would "
+                f"overwrite the first, and both legends would describe the result."
+            )
+        if scalars:
+            await self._send_display(scalars[0])
+
         for op in scene:
             await self.render_op(op)
 
@@ -372,22 +447,83 @@ class MolstarBackend:
                 f"{sel.value!r}: {exc}"
             ) from exc
 
-    async def _component(self, sel: Sel, hint: str) -> tuple[str, int]:
-        """Create a named viewer component for ``sel``. Returns name and count.
+    # -- components --------------------------------------------------------
+
+    def covers_everything(self, sel: Sel) -> bool:
+        """Does this selection name every atom in the structure?
+
+        Decides whether an op may act on the viewer's own preset, which is the
+        only geometry that exists before this backend draws anything.
+        """
+        return bool(len(self.indices(sel)) == self.array.array_length())
+
+    async def _component_for(self, sel: Sel, hint: str) -> str:
+        """The named viewer component for ``sel``, created once and reused.
 
         Every component-scoped action the bridge exposes — ``color``, ``hide``,
-        ``opacity``, ``remove`` — takes a *name*, not an expression, so a Scene
-        selection has to become a named component before any of them applies.
+        ``opacity``, ``remove`` — takes a *name*, so a Scene selection has to
+        become a named component. Reusing it is what makes a later ``ColorFlat``
+        act on what an earlier ``Show`` drew; a fresh name per op left every
+        colour updating a component with no representation, which Mol\\* accepts
+        and reports as a success.
         """
+        key = repr(sel)
+        existing = self._components.get(key)
+        if existing is not None:
+            return existing
         self._serial += 1
         name = f"{self.component}_{hint}_{self._serial}"
-        indices = self.indices(sel)
         await self.send(
             "select",
-            {"name": name, "expression": to_molscript(self.array, indices), "limit": 0},
+            {
+                "name": name,
+                "expression": to_molscript(self._viewer_array, self.indices(sel)),
+                "limit": 0,
+            },
         )
+        self._components[key] = name
         self.created.append(name)
-        return name, len(indices)
+        return name
+
+    def _drawn_targets(self, sel: Sel) -> list[str]:
+        """Every component drawing these atoms. Empty means refuse.
+
+        Mol\\* applies a colour or an opacity to a component's *representations*,
+        so this returns all of them rather than one. Both halves are load-bearing
+        and each was measured:
+
+        * The **preset** draws the whole structure and is what is on screen
+          before this backend does anything, so a whole-structure colour has to
+          reach it. `occupancy_view` colours by a scalar without ever emitting a
+          `Show`, and that is the only thing there is to colour.
+        * ``show`` **layers a new component on top of the preset** rather than
+          replacing it (dispatch.ts says so of hiding; it is equally true of
+          colouring). A `Show` followed by a `ColorFlat` over the same atoms
+          therefore left our cartoon coloured underneath the preset's, drawn
+          coincident with it, and the canvas came back with 0.0000 of the
+          requested colour on it. Colouring both is what "colour these atoms"
+          means.
+
+        Nothing drawn at all means nothing to act on — and the viewer says so
+        only for ``opacity``; ``color`` accepts it and changes nothing.
+        """
+        targets = []
+        name = self._components.get(repr(sel))
+        if name is not None and name in self._drawn:
+            targets.append(name)
+        if self.covers_everything(sel) and not self._auto_hidden:
+            targets.append(AUTO)
+        return targets
+
+    def _undrawn(self, what: str) -> Refused:
+        return Refused(
+            f"{what} names atoms that nothing has drawn. Mol* applies a colour to a "
+            f"representation rather than to atoms, so there is nothing here to "
+            f"change — and the viewer would accept the request and alter nothing. "
+            f"Emit a Show for these atoms first: drawing a representation here to "
+            f"have something to colour would invent geometry the scene never asked "
+            f"for."
+        )
 
     # -- scalars -----------------------------------------------------------
 
@@ -407,7 +543,21 @@ class MolstarBackend:
                 f"backend is drawing {self.model!r}. Applying it would colour by "
                 f"whatever the B-factor column already held."
             )
-        return int(rank)
+        try:
+            index = int(rank)
+        except ValueError:
+            raise Refused(
+                f"scalar field key {key!r} carries a rank that is not a whole "
+                f"number. Per-atom keys come from `atom.key`; a key of any other "
+                f"shape matches no atom at all."
+            ) from None
+        if not 0 <= index < self.array.array_length():
+            raise Refused(
+                f"scalar field key {key!r} names atom {index} of a structure that "
+                f"has {self.array.array_length()}. The field was built against a "
+                f"different structure carrying the same model name."
+            )
+        return index
 
     def _scaled(self, field: ScalarField, domain: tuple[float, float]) -> Any:
         """The B-factor column a display copy needs, over the theme's span.
@@ -441,25 +591,21 @@ class MolstarBackend:
             column[self._index_of(key)] = clipped * B_FACTOR_FULL
         return column
 
-    async def _send_display(self, column: Any, label: str) -> None:
-        """Send a display copy carrying ``column`` in its B-factor slot.
+    async def _send_display(self, op: ColorByScalar) -> None:
+        """Send a display copy carrying the scalar in its B-factor slot.
 
         The analysis array keeps its crystallographic values. That is the whole
         difference from the PyMOL backend, which has one copy and must stash.
+
+        Called once, from :meth:`render`, before any op draws — see there.
         """
-        display = self.array.copy()
-        display.atom_id = np.arange(1, display.array_length() + 1)
-        display.b_factor = column
-        # Imported lazily, for when `server` imports this module back — the
-        # tool that renders a view will, and a module-scope import here would
-        # make that a cycle. Reused rather than reimplemented because
-        # `_structure_as_mmcif` carries the altloc-column fix-up, and a second
-        # copy of that is exactly the divergence this project keeps paying for.
-        from ..server import _send_structure  # noqa: PLC0415 - breaks an import cycle
+        # Granularity before anything reads a key. `_index_of` takes a key's
+        # first element as a model name, so a per-residue field's
+        # `(chain, resi)` would be diagnosed as "built against model 'A'" —
+        # the wrong answer for every Q-score render, and a ValueError on an
+        # insertion code where the chain happens to match this model's name.
+        column = self._scaled(op.field, op.domain)
 
-        await _send_structure(display, label)
-
-    async def _colorbyscalar(self, op: ColorByScalar) -> None:
         targets = self.indices(op.sel)
         covered = {self._index_of(key) for key in op.field.keys}
         missing = [int(i) for i in targets if int(i) not in covered]
@@ -470,30 +616,52 @@ class MolstarBackend:
                 f"from whatever the B-factor column held, on this quantity's ramp, "
                 f"under this quantity's legend."
             )
-        column = self._scaled(op.field, op.domain)
-        label = f"{self.component}_scalar"
-        await self._send_display(column, label)
+
+        display = self.array.copy()
+        # The ids the viewer will end up parsing: biotite's writer numbers
+        # atom_site.id from 1 and discards what the array carried, so an
+        # expression built from the analysis array's ids names different atoms
+        # in the file the viewer receives — silently, because the counts agree.
+        display.atom_id = np.arange(1, display.array_length() + 1)
+        display.b_factor = column
+        # Imported lazily, for when `server` imports this module back — the
+        # tool that renders a view will, and a module-scope import here would
+        # make that a cycle. Reused rather than reimplemented because
+        # `_structure_as_mmcif` carries the altloc-column fix-up, and a second
+        # copy of that is exactly the divergence this project keeps paying for.
+        from ..server import _structure_as_mmcif  # noqa: PLC0415 - breaks a cycle
+
         await self.send(
-            "show",
+            "load_structure",
             {
-                "name": label,
-                "expression": to_molscript(self.array, targets),
-                "representation": "cartoon",
-                "color": "uncertainty",
-                "limit": 0,
+                "name": f"{self.component}_scalar",
+                "format": "mmcif",
+                "data": _structure_as_mmcif(display),
+                "assembly": "asymmetric",
             },
         )
-        self.created.append(label)
+        # Everything the viewer holds is now this copy, so every selection from
+        # here on has to be expressed over its ids.
+        self._viewer_array = display
+        self.notes.append(
+            "  Drawn on a display copy, so the analysis structure keeps its "
+            "crystallographic B-factors. Nothing needs restoring."
+        )
+
+    async def _colorbyscalar(self, op: ColorByScalar) -> None:
+        # The display copy went out before anything drew; all that is left here
+        # is to point the theme at what is on screen.
+        targets = self._drawn_targets(op.sel)
+        if not targets:
+            raise self._undrawn("ColorByScalar")
+        for target in targets:
+            await self.send("color", {"name": target, "color": "uncertainty"})
         if op.palette != "red_white_blue":
             self.notes.append(
                 f"  Palette {op.palette!r} was not applied: Mol*'s uncertainty theme "
                 f"carries its own ramp and takes no colour list. The ordering and "
                 f"the domain are honoured; the exact hues are the theme's."
             )
-        self.notes.append(
-            "  Drawn on a display copy, so the analysis structure keeps its "
-            "crystallographic B-factors. Nothing needs restoring."
-        )
 
     async def _sizebyscalar(self, op: SizeByScalar) -> None:
         raise Refused(
@@ -508,27 +676,32 @@ class MolstarBackend:
     # -- colour, visibility ------------------------------------------------
 
     def _hex(self, colour: Colour) -> str:
-        if not isinstance(colour, str):
-            r, g, b = colour
-            return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        if colour.startswith("#"):
-            return colour
-        try:
-            return _COLOUR_NAMES[colour]
-        except KeyError:
-            raise Refused(
-                f"{colour!r} is a PyMOL colour name this backend has no value for. "
-                f"Known names: {', '.join(sorted(_COLOUR_NAMES))}. A scene that "
-                f"names one viewer's palette can only be honoured by another that "
-                f"reimplements it, so an unknown name is refused rather than "
-                f"approximated."
-            ) from None
+        """A Mol\\* colour literal. One conversion, so two spellings agree."""
+        if isinstance(colour, str):
+            if colour.startswith("#"):
+                return colour
+            try:
+                colour = _COLOUR_NAMES[colour]
+            except KeyError:
+                raise Refused(
+                    f"{colour!r} is a PyMOL colour name this backend has no value "
+                    f"for. Known names: {', '.join(sorted(_COLOUR_NAMES))}. A scene "
+                    f"that names one viewer's palette can only be honoured by "
+                    f"another that reimplements it, so an unknown name is refused "
+                    f"rather than approximated."
+                ) from None
+        r, g, b = colour
+        return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
     async def _colorflat(self, op: ColorFlat) -> None:
-        name, count = await self._component(op.sel, "flat")
-        if not count:
-            return
-        await self.send("color", {"name": name, "color": self._hex(op.colour)})
+        # Resolved before the target is looked up, so an unknown colour name
+        # refuses as a colour problem rather than as "nothing is drawn".
+        colour = self._hex(op.colour)
+        targets = self._drawn_targets(op.sel)
+        if not targets:
+            raise self._undrawn("ColorFlat")
+        for target in targets:
+            await self.send("color", {"name": target, "color": colour})
 
     def _rep(self, rep: Rep) -> str:
         try:
@@ -539,40 +712,68 @@ class MolstarBackend:
             ) from None
 
     async def _show(self, op: Show) -> None:
-        name, _ = await self._component(op.sel, "show")
+        representation = self._rep(op.rep)
+        name = await self._component_for(op.sel, "sel")
         await self.send(
             "show",
             {
                 "name": name,
-                "expression": to_molscript(self.array, self.indices(op.sel)),
-                "representation": self._rep(op.rep),
+                "expression": to_molscript(self._viewer_array, self.indices(op.sel)),
+                "representation": representation,
                 "limit": 0,
             },
         )
+        self._drawn.add(name)
 
     async def _hide(self, op: Hide) -> None:
-        # Rep.EVERYTHING is the common case — a view clearing a slate before
-        # drawing — and it is the one Mol* answers most directly: hiding a
-        # component hides it whatever it is drawn as. A *specific*
-        # representation cannot be hidden while leaving its siblings, so that
-        # is refused rather than over-hiding, which would silently remove more
-        # of the picture than was asked for.
+        # A specific representation cannot be hidden while its siblings stay
+        # drawn, so that refuses rather than over-hiding, which would remove
+        # more of the picture than was asked for.
         if op.rep is not Rep.EVERYTHING:
             raise Refused(
                 f"the bridge hides a whole component, so {op.rep.value!r} cannot be "
                 f"hidden while leaving other representations of the same atoms "
                 f"drawn. Hiding everything instead would remove more than was asked."
             )
-        name, _ = await self._component(op.sel, "hide")
-        await self.send("hide", {"name": name})
+        if not self.covers_everything(op.sel):
+            raise Refused(
+                "the bridge hides a whole component, and part of this structure is "
+                "drawn by the viewer's own preset, which cannot be hidden in part. "
+                "A Hide over the whole object is honoured; a partial one would "
+                "leave the preset's representation of those atoms on screen and "
+                "report success."
+            )
+        # The preset's representations *and* anything drawn so far. Hiding only
+        # this backend's own components leaves the automatic cartoon standing,
+        # which is the thing a Hide is normally emitted to clear.
+        await self.send("hide", {"name": AUTO})
+        self._auto_hidden = True
+        for name in list(self._drawn):
+            await self.send("hide", {"name": name})
+        self._drawn.clear()
 
     async def _opacity(self, op: Opacity) -> None:
-        name, count = await self._component(op.sel, "opacity")
-        if not count:
-            return
-        await self.send("opacity", {"name": name, "opacity": float(op.value)})
+        targets = self._drawn_targets(op.sel)
+        if not targets:
+            raise self._undrawn("Opacity")
+        for target in targets:
+            await self.send("opacity", {"name": target, "opacity": float(op.value)})
 
     async def _delete(self, op: Delete) -> None:
+        # `remove` takes a component this session created. Scene `Delete` names
+        # are the view's own object names — maps, CGO arrows, morphs — which
+        # are PyMOL objects and never Mol* components. Removing one this
+        # backend did create is honest; anything else would fail deep in the
+        # bridge as `No selection named 'X'`, which reads as a bad argument
+        # rather than as an op with no equivalent here.
+        unknown = [name for name in op.names if name not in self.created]
+        if unknown:
+            raise Refused(
+                f"Delete names {unknown}, which this backend did not create. Those "
+                f"are viewer objects a PyMOL scene makes — maps, CGO geometry, "
+                f"morphs — and none of them exists here, so there is nothing to "
+                f"remove."
+            )
         for name in op.names:
             await self.send("remove", {"name": name})
 
@@ -594,15 +795,20 @@ class MolstarBackend:
     async def _isosurface(self, op: Isosurface) -> None:
         raise Refused(
             f"contouring {op.volume!r} needs a volume action, and the bridge has "
-            f"none yet — that work is on the `cryoem-volumes` branch. Mol* takes "
-            f"absolute iso-values natively, so no sigma conversion will be needed "
-            f"here when it lands."
+            f"none yet — that work is on the `cryoem-volumes` branch. Note for "
+            f"whoever lands it: this op carries a unit and it is {op.unit.value!r} "
+            f"here. Mol* takes absolute iso-values, so a level in sigma has to be "
+            f"converted against that map's own header before it is sent. Passing "
+            f"the number through is the trap the seam was moved up a layer to "
+            f"prevent."
         )
 
     async def _colorsurfacebymap(self, op: ColorSurfaceByMap) -> None:
         raise Refused(
             f"colouring a surface by {op.volume!r} needs the volume actions the "
-            f"`cryoem-volumes` branch adds."
+            f"`cryoem-volumes` branch adds. Its breakpoints are in the second "
+            f"volume's own units and convert against that volume's header, which is "
+            f"a different sigma scale from the density map's contour level."
         )
 
     async def _frames(self, op: Frames) -> None:
@@ -636,4 +842,11 @@ class MolstarBackend:
         )
 
 
-__all__ = ["B_FACTOR_FULL", "MolstarBackend", "Send", "atoms_for", "resi_of"]
+__all__ = [
+    "AUTO",
+    "B_FACTOR_FULL",
+    "MolstarBackend",
+    "Send",
+    "atoms_for",
+    "resi_of",
+]
