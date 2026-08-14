@@ -140,24 +140,36 @@ _REPS: dict[Rep, str] = {
 #: name and ``#b2b2b2`` written as a triple — one rounding, one truncating, for
 #: one colour.
 #:
-#: ``skyblue`` is taken from ``wiggles_em.composition``'s own copy of PyMOL's
-#: table, and a test asserts every shared name agrees with it. It had been
-#: guessed at ``(0.6, 0.8, 1.0)`` — a pale blue against PyMOL's mid blue —
-#: which would have drawn the first alternate conformer of every
-#: ``altloc_view`` a different colour in the two viewers from one Scene, which
-#: is the divergence this table exists to prevent. The rest are PyMOL's
-#: documented values and have **no** second source; an unknown name is refused
-#: rather than guessed.
+#: **Every value here was read out of a running PyMOL 3.1 with
+#: ``cmd.get_color_tuple``**, on 2026-08-14. That is not fussiness. Four of the
+#: ten were wrong before, because they had been transcribed from
+#: ``wiggles_em.composition``'s copy of PyMOL's table — and a test asserted the
+#: two agreed, which they did, because one was copied from the other. Two
+#: copies of a transcription agreeing is evidence of the copy, not of the
+#: colour.
+#:
+#: What was wrong, and what it drew:
+#:
+#: - ``skyblue`` was ``(0.34, 0.63, 0.83)``; PyMOL's is ``(0.2, 0.5, 0.8)``.
+#: - ``lightblue`` was ``(0.75, 1.0, 1.0)`` — a pale **cyan** — against PyMOL's
+#:   ``(0.75, 0.75, 1.0)``.
+#: - ``grey50``/``grey70`` were ``0.5``/``0.7``. PyMOL's grey ramp is ``n/99``
+#:   inclusive, so they are ``0.50505``/``0.707071`` and ``grey99`` is white.
+#:
+#: Each drew the same Scene a different colour in the two viewers, which is the
+#: divergence this table exists to prevent. An unknown name is refused rather
+#: than guessed.
 _COLOUR_NAMES: dict[str, tuple[float, float, float]] = {
-    "grey50": (0.5, 0.5, 0.5),
-    "grey70": (0.7, 0.7, 0.7),
-    "skyblue": (0.34, 0.63, 0.83),
+    # PyMOL's grey ramp is n/99, inclusive at both ends.
+    "grey50": (0.50505, 0.50505, 0.50505),
+    "grey70": (0.707071, 0.707071, 0.707071),
+    "skyblue": (0.2, 0.5, 0.8),
     "salmon": (1.0, 0.6, 0.6),
     "palegreen": (0.65, 0.9, 0.65),
     "wheat": (0.99, 0.82, 0.65),
     "lightpink": (1.0, 0.75, 0.87),
     "paleyellow": (1.0, 1.0, 0.5),
-    "lightblue": (0.75, 1.0, 1.0),
+    "lightblue": (0.75, 0.75, 1.0),
     "lightorange": (1.0, 0.8, 0.5),
 }
 
@@ -705,8 +717,11 @@ class MolstarBackend:
         if op.palette != "red_white_blue":
             self.notes.append(
                 f"  Palette {op.palette!r} was not applied: Mol*'s uncertainty theme "
-                f"carries its own ramp and takes no colour list. The ordering and "
-                f"the domain are honoured; the exact hues are the theme's."
+                f"carries its own ramp and takes no colour list. The domain is "
+                f"honoured. **The direction may not be** — the theme ramps one fixed "
+                f"way, and a scene asking for the opposite one is drawn reversed, so "
+                f"high reads as low. Check the legend against the picture before "
+                f"reading values off it."
             )
 
     async def _sizebyscalar(self, op: SizeByScalar) -> None:
