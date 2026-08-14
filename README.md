@@ -34,8 +34,9 @@ and the decisions behind it.
 - **Trajectories** — XTC/TRR/DCD/NetCDF, frame stepping, RMSF and RMSD series,
   turntables, keyframed camera moves, and ffmpeg encoding.
 - **Volumes** — MRC/CCP4 (gzipped or not), DSN6, OpenDX, Gaussian cube and
-  BinaryCIF maps, with the statistics read back off the parsed volume rather
-  than echoed from the file header.
+  BinaryCIF maps, contoured as a surface or mesh, with the statistics read off
+  the voxels rather than echoed from the file header and the contour unit
+  named rather than assumed.
 
 ## Install
 
@@ -76,7 +77,7 @@ not built.
 
 ## Tools
 
-53 tools. `capabilities()` reports the live lists — representations, colour
+54 tools. `capabilities()` reports the live lists — representations, colour
 themes, lighting rigs, shading styles, material finishes, gradients, presets,
 path-trace quality, and whether ffmpeg is installed.
 
@@ -91,7 +92,7 @@ path-trace quality, and whether ffmpeg is installed.
 | Style | `background`, `lighting`, `effects`, `shading`, `material`, `path_trace`, `preset` |
 | Capture | `screenshot`, `snapshot`, `turntable`, `record_trajectory`, `record_timeline`, `movie` |
 | Trajectories | `load_trajectory`, `frame`, `rmsf`, `rmsd_series` |
-| Volumes | `load_volume`, `volume_info`, `list_volumes`, `remove_volume` |
+| Volumes | `load_volume`, `isosurface`, `volume_info`, `list_volumes`, `remove_volume` |
 
 ## How it compares to PyMOL
 

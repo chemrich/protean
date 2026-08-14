@@ -585,7 +585,15 @@ export function createDispatcher(plugin: any): Handler {
    * would accumulate exactly the maps this feature exists not to hold. */
   const volumes = new Map<
     string,
-    { ref: string; downloadRef?: string; data: any; provenance: string }
+    {
+      ref: string;
+      downloadRef?: string;
+      data: any;
+      provenance: string;
+      format: string;
+      /** The isosurface node, once one has been asked for. */
+      reprRef?: string;
+    }
   >();
 
   function requireVolume(name: string) {
@@ -603,7 +611,10 @@ export function createDispatcher(plugin: any): Handler {
     volumes.delete(name);
     if (!entry) return;
     const build = plugin.state.data.build();
-    for (const ref of [entry.ref, entry.downloadRef]) {
+    // The isosurface first: it is a child of the volume node, and deleting a
+    // parent leaves nothing to hang a stale handle on either way, but naming
+    // it keeps the intent visible.
+    for (const ref of [entry.reprRef, entry.ref, entry.downloadRef]) {
       if (ref) build.delete(ref);
     }
     await build.commit();
@@ -1715,7 +1726,7 @@ export function createDispatcher(plugin: any): Handler {
         // undefined, because the absence of a declaration is itself the
         // answer and should read the same as declaring it.
         const declared = provenance ?? 'unknown';
-        volumes.set(name, { ref, downloadRef, data, provenance: declared });
+        volumes.set(name, { ref, downloadRef, data, provenance: declared, format });
         return { name, format, provenance: declared, ...stats };
       },
     },
@@ -1735,6 +1746,108 @@ export function createDispatcher(plugin: any): Handler {
             provenance,
             ...volumeStats(data),
           })),
+        };
+      },
+    },
+
+    isosurface: {
+      render: true,
+      async run({
+        name,
+        level,
+        unit,
+        style,
+        opacity,
+      }: {
+        name: string;
+        level: number;
+        unit: 'sigma' | 'absolute';
+        style: 'surface' | 'mesh';
+        opacity?: number;
+      }) {
+        const entry = requireVolume(name);
+        const stats = volumeStats(entry.data);
+
+        // **The conversion, and the reason this is not left to Mol\*.**
+        // Mol* accepts `{kind:'relative'}` and converts with
+        // `relativeValue * grid.stats.sigma + grid.stats.mean` — and for
+        // CCP4/MRC `grid.stats` is the file header, which is routinely stale.
+        // Its own default isosurface is 2 relative, so out of the box a map
+        // with a bad header contours in the wrong place and looks fine. We
+        // convert here against the sigma and mean measured off the voxels, and
+        // hand Mol* an absolute value it cannot reinterpret.
+        const absolute = unit === 'sigma' ? level * stats.sigma + stats.mean : level;
+
+        // What the header would have produced, for the same request. Reported
+        // rather than hidden: a large gap is the signal that the file's own
+        // statistics disagree with its contents.
+        const st = entry.data.grid?.stats;
+        const headerAbsolute =
+          unit === 'sigma' && st && typeof st.sigma === 'number'
+            ? level * st.sigma + st.mean
+            : null;
+
+        if (!Number.isFinite(absolute)) {
+          throw new Error(
+            `contour level ${level} in ${unit} is not a finite value for '${name}' ` +
+              `(sigma ${stats.sigma}, mean ${stats.mean})`
+          );
+        }
+
+        if (!entry.reprRef) {
+          const before = new Set<string>(plugin.state.data.cells.keys());
+          const provider = plugin.dataFormats.get(entry.format);
+          if (!provider?.visuals) {
+            throw new Error(
+              `this Mol* build has no volume visuals for '${entry.format}', so ` +
+                `'${name}' cannot be contoured`
+            );
+          }
+          const cell = plugin.state.data.cells.get(entry.ref);
+          await provider.visuals(plugin, {
+            volume: { ref: entry.ref, cell, obj: cell?.obj },
+          });
+          const added = [...plugin.state.data.cells.values()].filter(
+            (c: any) => !before.has(c.transform.ref) && c.obj?.type?.name === 'Volume 3D'
+          );
+          if (!added.length) {
+            throw new Error(`'${name}' produced no isosurface node to contour`);
+          }
+          entry.reprRef = added[0].transform.ref;
+        }
+
+        await plugin.state.data
+          .build()
+          .to(entry.reprRef)
+          .update((old: any) => ({
+            ...old,
+            type: {
+              ...old.type,
+              params: {
+                ...old.type.params,
+                // A plain object, deliberately: the prebuilt Mol* bundle
+                // exposes only `Viewer`, so `Volume.IsoValue.absolute()` is
+                // not reachable — but this is exactly the shape it returns.
+                isoValue: { kind: 'absolute', absoluteValue: absolute },
+                visuals: [style === 'mesh' ? 'wireframe' : 'solid'],
+                alpha: opacity ?? old.type.params.alpha ?? 1,
+              },
+            },
+          }))
+          .commit();
+
+        return {
+          volume: name,
+          level,
+          unit,
+          style,
+          absolute,
+          provenance: entry.provenance,
+          // The statistics the conversion actually used, so the number above
+          // can be checked rather than trusted.
+          sigma: stats.sigma,
+          mean: stats.mean,
+          stated_absolute: headerAbsolute,
         };
       },
     },

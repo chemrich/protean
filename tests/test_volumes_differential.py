@@ -33,6 +33,7 @@ from protean_mcp.connection import ViewerError
 from protean_mcp.fetch import fetch_structure_data
 
 from .browser import BROWSER_MARKS, viewer_session
+from .pixels import Render, decode, difference
 
 pytestmark = BROWSER_MARKS
 
@@ -295,3 +296,109 @@ async def test_the_viewer_lists_what_it_holds_and_forgets_what_it_removes(tmp_pa
         info = await session.request("volume_info", {"name": "two"})
         assert info["dimensions"] == [NX, NY, NZ], info
         assert info["sigma"] == pytest.approx(float(data.std()), abs=1e-5), info
+
+
+# -- contouring ------------------------------------------------------------
+
+# Big enough to be worth looking at. The stats fixtures above are 5x7x9 voxels
+# in a 5x7x9 A box, which is correct for arithmetic and invisible on a canvas
+# next to a 747-atom peptide — an isosurface of it could be perfectly right and
+# draw nothing the camera can see, which is a test that fails for the wrong
+# reason.
+BLOB_N = 32
+BLOB_CELL = 64.0
+
+
+def _blob() -> np.ndarray:
+    """A single Gaussian blob, indexed ``[z][y][x]``.
+
+    A blob rather than noise: contouring noise at 1 sigma paints most of the
+    box and at 3 sigma paints speckle, and neither reads as a shape. This has
+    an unambiguous inside.
+    """
+    axis = np.arange(BLOB_N) - (BLOB_N - 1) / 2
+    z, y, x = np.meshgrid(axis, axis, axis, indexing="ij")
+    blob: np.ndarray = np.exp(-(x**2 + y**2 + z**2) / (2 * 5.0**2)).astype("<f4")
+    return blob
+
+
+def _write_blob(path) -> bytes:
+    data = _blob()
+    header = bytearray(1024)
+    struct.pack_into("<iii", header, 0, BLOB_N, BLOB_N, BLOB_N)
+    struct.pack_into("<i", header, 12, 2)
+    struct.pack_into("<iii", header, 28, BLOB_N, BLOB_N, BLOB_N)
+    struct.pack_into("<fff", header, 40, BLOB_CELL, BLOB_CELL, BLOB_CELL)
+    struct.pack_into("<fff", header, 52, 90.0, 90.0, 90.0)
+    struct.pack_into("<iii", header, 64, 1, 2, 3)
+    # Header statistics deliberately false, as everywhere else in this file.
+    struct.pack_into("<fff", header, 76, FALSE_DMIN, FALSE_DMAX, FALSE_DMEAN)
+    struct.pack_into("<i", header, 88, 1)
+    header[208:212] = b"MAP "
+    header[212:216] = b"\x44\x44\x00\x00"
+    struct.pack_into("<f", header, 216, FALSE_RMS)
+    raw = bytes(header) + data.tobytes(order="C")
+    path.write_bytes(raw)
+    return raw
+
+
+async def _shot(session) -> Render:
+    return decode((await session.request("screenshot", {}))["data_uri"])
+
+
+@pytest.mark.asyncio
+async def test_an_isosurface_draws_and_its_units_agree(tmp_path):
+    """The headline claim, and the regression §5 of docs/cryoem.md asks for.
+
+    Contouring at a sigma level and at the *same* level expressed absolutely
+    must put identical geometry on the canvas. That is the test that would have
+    caught the EMD-30913 trap, where a published absolute level typed in as
+    sigma contours noise and looks like an ordinary bad map.
+    """
+    data = _blob()
+    raw = _write_blob(tmp_path / "blob.map")
+    sigma, mean = float(data.std()), float(data.mean())
+
+    async with viewer_session(STRUCTURE) as session:
+        await _load(session, "blob", raw)
+        await session.request("reset_view")
+        before = await _shot(session)
+
+        in_sigma = await session.request(
+            "isosurface",
+            {"name": "blob", "level": 3.0, "unit": "sigma", "style": "surface"},
+        )
+        await session.request("reset_view")
+        drawn = await _shot(session)
+
+        # It drew *something*: a successful call over a blank canvas is the
+        # default failure for this feature, not an unlucky one.
+        assert difference(before, drawn) > 0.005, (
+            f"contouring changed {difference(before, drawn):.4%} of the frame, "
+            f"which is indistinguishable from having drawn nothing"
+        )
+
+        # The conversion used the voxels, not the header's -999/999/42/7.
+        assert in_sigma["absolute"] == pytest.approx(3.0 * sigma + mean, rel=1e-4)
+        assert in_sigma["sigma"] == pytest.approx(sigma, abs=1e-5)
+        assert in_sigma["stated_absolute"] == pytest.approx(3.0 * FALSE_RMS + FALSE_DMEAN)
+        assert abs(in_sigma["stated_absolute"] - in_sigma["absolute"]) > 1.0, in_sigma
+
+        # Now the same contour, named in the other unit.
+        await session.request(
+            "isosurface",
+            {
+                "name": "blob",
+                "level": in_sigma["absolute"],
+                "unit": "absolute",
+                "style": "surface",
+            },
+        )
+        await session.request("reset_view")
+        same = await _shot(session)
+
+    assert difference(drawn, same) < 0.002, (
+        f"the same contour named in sigma and in absolute drew differently "
+        f"({difference(drawn, same):.4%} of the frame), so one of the two "
+        f"conversions is wrong"
+    )

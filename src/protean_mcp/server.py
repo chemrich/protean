@@ -2998,6 +2998,61 @@ async def list_volumes() -> dict[str, Any]:
 
 
 @mcp.tool()
+async def isosurface(
+    name: str,
+    level: float,
+    unit: str = "sigma",
+    style: str = "surface",
+    opacity: float = 1.0,
+) -> dict[str, Any]:
+    """Contour a loaded volume at `level` and draw it.
+
+    name: a handle from `load_volume`.
+    level: the contour value.
+    unit: **`sigma` or `absolute`, and it is not a detail.** EMDB publishes
+      author-recommended levels as ABSOLUTE map values while most viewers
+      contour in sigma. EMD-30913 publishes 0.05, which is 3.16 sigma for that
+      map; typed in as sigma it contours noise and looks like an ordinary bad
+      map rather than a unit error. Naming the unit is the only way that cannot
+      happen, so there is no bare-number form of this call.
+    style: `surface` (solid) or `mesh` (wireframe).
+    opacity: 0-1.
+
+    A sigma level is converted here, against the sigma and mean measured off
+    the voxels, and Mol\\* is handed an absolute value. It would otherwise
+    convert using the file header's own statistics, which for CCP4/MRC are
+    stored fields and routinely stale — Mol\\*'s default isosurface is 2 sigma
+    against exactly those. The reply reports `sigma` and `mean` used, and
+    `stated_absolute`: what the header's numbers would have given for the same
+    request. A large gap between that and `absolute` says the file disagrees
+    with itself.
+
+    The reply also carries the volume's `provenance` and `caveat`, because a
+    contour makes a generated map look exactly as authoritative as a measured
+    one.
+    """
+    _require_viewer()
+    if unit not in ("sigma", "absolute"):
+        raise ViewerError(f"unit must be 'sigma' or 'absolute', not {unit!r}")
+    if style not in ("surface", "mesh"):
+        raise ViewerError(f"style must be 'surface' or 'mesh', not {style!r}")
+    if not 0.0 <= opacity <= 1.0:
+        raise ViewerError(f"opacity must be between 0 and 1, not {opacity}")
+    return _with_caveat(
+        await _call(
+            "isosurface",
+            {
+                "name": name,
+                "level": level,
+                "unit": unit,
+                "style": style,
+                "opacity": opacity,
+            },
+        )
+    )
+
+
+@mcp.tool()
 async def remove_volume(name: str) -> str:
     """Remove one loaded volume from the viewer."""
     bridge = _require_viewer()

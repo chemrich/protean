@@ -795,26 +795,41 @@ class MolstarBackend:
         )
 
     async def _isosurface(self, op: Isosurface) -> None:
-        raise Refused(
-            f"contouring {op.volume!r} needs an isosurface action, and the bridge "
-            f"has none — volumes load, but nothing draws them. See docs/cryoem.md "
-            f"§1.2. Note for whoever lands it: this op carries a unit and it is "
-            f"{op.unit.value!r} here. Mol* takes absolute iso-values, so a level "
-            f"in sigma has to be converted against the map's sigma before it is "
-            f"sent — the *computed* one that `volume_info` reports as `sigma`, "
-            f"never the file's own claim under `stated`. For CCP4/MRC those header "
-            f"fields are frequently stale, and a contour placed against a stale "
-            f"sigma lands in the wrong place while every call returns cleanly. "
-            f"Passing the number through unconverted is the trap the seam was "
-            f"moved up a layer to prevent."
+        """Contour a volume the bridge already holds.
+
+        The unit travels rather than the number alone. protean converts a sigma
+        level against the sigma *measured off the voxels*, not the file header's
+        stored RMS — for CCP4/MRC those are frequently stale, and Mol\\*'s own
+        `relative` iso-value converts against exactly them. So `op.equivalent`
+        is not needed here: this backend can always reach the honest sigma
+        itself, which is the situation that field exists to work around.
+        """
+        if op.carve_around is not None or op.carve_radius is not None:
+            raise Refused(
+                f"contouring {op.volume!r} within {op.carve_radius}A of a selection "
+                f"needs a carve, and protean has none yet — docs/cryoem.md §1.5, "
+                f"which crops the volume server-side before the bytes are sent "
+                f"rather than asking the viewer for it. Drawing the whole surface "
+                f"instead would answer a different question: the point of a carve "
+                f"is that the density around one site is what is being judged."
+            )
+        await self.send(
+            "isosurface",
+            {
+                "name": op.volume,
+                "level": op.level,
+                "unit": op.unit.value,
+                "style": "mesh" if op.style is Rep.MESH else "surface",
+            },
         )
 
     async def _colorsurfacebymap(self, op: ColorSurfaceByMap) -> None:
         raise Refused(
-            f"colouring a surface by {op.volume!r} needs an isosurface to colour, "
-            f"and the bridge has no isosurface action — see docs/cryoem.md §1.3, "
-            f"which waits on §1.2. Its breakpoints are in the second volume's own "
-            f"units and convert against *that* volume's computed sigma, which is a "
+            f"colouring a surface by {op.volume!r} needs a volume colour theme, "
+            f"and the bridge exposes none — the isosurface it would colour now "
+            f"exists, so this is docs/cryoem.md §1.3 and nothing else. Note for "
+            f"whoever lands it: the breakpoints are in the *second* volume's own "
+            f"units and convert against that volume's computed sigma, which is a "
             f"different scale from the density map's contour level."
         )
 

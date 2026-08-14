@@ -7,6 +7,24 @@ nothing is released yet, so everything below is unreleased.
 
 ### Volumes
 
+- **Density maps can be contoured.** `isosurface(name, level, unit, style,
+  opacity)` draws a volume as a solid surface or a wireframe mesh. The unit is
+  named, never assumed: EMDB publishes author-recommended levels as ABSOLUTE
+  values while most viewers contour in sigma, and EMD-30913's published 0.05 is
+  3.16 sigma for that map — typed in as sigma it contours noise and looks like
+  an ordinary bad map rather than a unit error.
+
+  **A sigma level is converted against the sigma measured off the voxels**, and
+  Mol\* is handed an absolute value it cannot reinterpret. Left to itself Mol\*
+  converts using `grid.stats`, which for CCP4/MRC is the file header — its own
+  default isosurface is 2 sigma against exactly those stored fields. The reply
+  reports the `sigma` and `mean` used, and `stated_absolute`: what the header
+  would have given for the same request. A large gap between the two says the
+  file disagrees with itself.
+
+  The wiggles-em backend no longer refuses an `Isosurface` op; it lowers it,
+  carrying the unit rather than the number alone. A carve is still refused.
+
 - **A volume can say where it came from, and protean never guesses.**
   `load_volume(..., provenance=)` takes one of `measured`, `sharpened`,
   `nn_enhanced`, `generated`, `unknown`, and every volume reply carries a
