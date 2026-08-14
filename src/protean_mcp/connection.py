@@ -17,6 +17,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import WSMsgType, web
 
@@ -49,6 +50,16 @@ class ViewerBridge:
         self._connected = asyncio.Event()
         self._runner: web.AppRunner | None = None
         self._visibility: str | None = None
+        #: Volumes the viewer may fetch, by handle. Values are either a path
+        #: on disk (streamed) or bytes held in memory.
+        #:
+        #: Structures travel inline in the RPC message; volumes do not. A 110³
+        #: float32 reconstruction is ~5 MB and a 400³ one ~256 MB, and
+        #: base64 through a JSON WebSocket frame is the wrong pipe for that.
+        #: This server already serves the viewer's own files, so a volume gets
+        #: a URL and the viewer downloads it. The two paths differ because of
+        #: size, not because of format.
+        self._volumes: dict[str, Path | bytes] = {}
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -61,6 +72,13 @@ class ViewerBridge:
         app = web.Application()
         app.router.add_get("/ws", self._ws_handler)
         app.router.add_get("/", self._index_handler)
+        # Registered before the catch-all for readability, not for
+        # correctness: aiohttp 3.14 indexes routes by their longest static
+        # prefix, so `/volumes/{handle}` wins over `/{filename:.+}` whichever
+        # order they go in — checked, because the obvious assumption
+        # (registration order) is wrong and would have been a comment nobody
+        # could falsify by reading.
+        app.router.add_get("/volumes/{handle}", self._volume_handler)
         app.router.add_get("/{filename:.+}", self._file_handler)
 
         last_error: OSError | None = None
@@ -166,6 +184,51 @@ class ViewerBridge:
         if self.static_dir and (self.static_dir / "index.html").exists():
             return web.FileResponse(self.static_dir / "index.html")
         return web.Response(text=PLACEHOLDER_HTML, content_type="text/html")
+
+    def publish_volume(self, handle: str, source: Path | bytes) -> str:
+        """Make a volume fetchable by the viewer. Returns the URL to fetch.
+
+        Bytes are held in memory; a path is streamed from disk instead. Nothing
+        is decompressed here: callers hand over data the viewer can parse, which
+        is why `load_volume` takes the bytes branch — it has already had to
+        gunzip in order to identify the format.
+
+        The handle is percent-encoded into the URL and kept raw as the dict key.
+        A handle containing `/` would otherwise build a URL that `{handle}`
+        cannot match, so the request would fall through to the static catch-all
+        and 404 — which the viewer reports as a parse failure rather than as the
+        bad name it is. aiohttp decodes `match_info` on the way back in, so the
+        two halves still meet.
+        """
+        self._volumes[handle] = source
+        return f"/volumes/{quote(handle, safe='')}"
+
+    def forget_volume(self, handle: str) -> None:
+        """Stop serving a volume. Unknown handles are not an error."""
+        self._volumes.pop(handle, None)
+
+    def forget_all_volumes(self) -> None:
+        """Stop serving every volume, releasing the bytes held for them.
+
+        Clearing the viewer leaves nothing that could fetch these, so keeping
+        them is pure retention: three 400-cubed maps is ~750 MB held by a server
+        displaying nothing.
+        """
+        self._volumes.clear()
+
+    async def _volume_handler(self, request: web.Request) -> web.StreamResponse:
+        source = self._volumes.get(request.match_info["handle"])
+        if source is None:
+            raise web.HTTPNotFound()
+        if isinstance(source, bytes):
+            return web.Response(body=source, content_type="application/octet-stream")
+        if not source.is_file():
+            # Registered and then moved or deleted. Say so rather than serving
+            # nothing, which the viewer would report as an empty volume.
+            raise web.HTTPNotFound()
+        return web.FileResponse(
+            source, headers={"Content-Type": "application/octet-stream"}
+        )
 
     async def _file_handler(self, request: web.Request) -> web.StreamResponse:
         if self.static_dir is None:
