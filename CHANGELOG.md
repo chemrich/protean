@@ -7,6 +7,16 @@ nothing is released yet, so everything below is unreleased.
 
 ### Volumes
 
+- **A volume can say where it came from, and protean never guesses.**
+  `load_volume(..., provenance=)` takes one of `measured`, `sharpened`,
+  `nn_enhanced`, `generated`, `unknown`, and every volume reply carries a
+  `caveat` line to show beside a picture of the map. A filename saying
+  `deepemhancer` is not evidence: a guessed label is believed, where a missing
+  one prompts a question, so an undeclared map stays `unknown`. A typo is
+  refused rather than coerced, since coercion would turn a caller who declared
+  their map into one who appears not to have. The vocabulary is wiggles-em's
+  `Provenance`, reused rather than duplicated, because the backend lowers its
+  scenes onto this viewer and the two have to agree.
 - Density maps load into the viewer: MRC/CCP4 (gzipped or not), DSN6, OpenDX,
   Gaussian cube and BinaryCIF. Four tools — `load_volume`, `volume_info`,
   `list_volumes`, `remove_volume` — taking the tool count from 49 to 53.
