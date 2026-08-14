@@ -560,3 +560,134 @@ Worth noting as a class: `server.py` keeps `_structure`, `_trajectory`,
 `_keyframes` and `_handles` as module globals, and only `_handles` is cleared
 anywhere. Any test asserting "nothing is loaded" is at the mercy of whatever
 ran first.
+
+## Six defects in the alternate-conformer work — five fixed, one open
+
+Found 2026-08-13 by a code review aimed at `chemrich/MCPymol#59` that resolved
+`59` against this repo instead. Nobody asked for it and it was not briefed, so
+every finding was reproduced before being believed. All six were real.
+
+They are worth reading together rather than as six bugs. **Four of them are the
+same shape: an index or a state resolved in one place and used in another.**
+The altloc work necessarily created "two arrays that look alike and are not" in
+several places at once, and every failure is silent — correct-looking numbers
+attached to the wrong atoms. Wherever a resolved-state array and a full array
+are both in scope, the question to ask is which one an index belongs to.
+`analysis/contacts.py`'s `origin_index` is the existing answer.
+
+### 13. `conservation()` registers handles indexed into the wrong array — fixed
+
+PR 61. Scoring reads a resolved conformer state — 15712 atoms on 5FJI — and
+computed its handle indices there, while `_register` and `_display` resolve
+indices against `_require_structure()`, the full 15929. Every residue past the
+first alternate site was off by however many alternate rows preceded it.
+
+```
+40 residues of 5FJI chain A: 171 of 317 atoms landed on a different residue
+```
+
+The scores were right, the atom count was right, and the handle drew a
+neighbouring residue. Fixed with the `origin_index` pattern, both arrays taken
+off one mask — deriving the state twice would be two enumerations assumed to
+agree, which is the `sym_id`/`ASM` bug from item 7.
+
+`conservation()` now also refuses if `_structure` changed while the alignment
+was being fetched. Nothing locks the session globals, and that await runs for
+minutes.
+
+### 14. `superpose` never resolved a conformer state — fixed
+
+PR 62. The one coordinate path PR 59 did not reach. biotite's anchors are one
+entry per CA **atom** while the alignment columns they index are one per
+**residue**, so a residue with an alternate backbone contributed two anchors to
+one column and paired every later residue off by one — rmsd, sequence identity,
+aligned count, outliers and the transform all wrong together.
+
+**RMSD is nearly useless for detecting this**, which is the part worth keeping.
+`superimpose_homologs` iteratively discards anchors that fit badly, so it throws
+the mispaired ones away and reports a clean fit over the rest:
+
+```
+              rmsd       aligned  identity
+correct       0.000000   9        1.0000
+bug           0.000295   7        0.0000
+```
+
+Sequence identity is what discriminates. The reply now also states which
+conformer each side was reduced to, labelled over the atoms actually
+superposed rather than over the whole file.
+
+### 15. `parse_structure` ranked conformers with no occupancy to rank them by — fixed
+
+PR 63. It matched the main loader on `altloc="all"` but not on `extra_fields`,
+so occupancy was absent, `conformer_state` fell back to `np.zeros`, every
+alternate tied, and the winner was decided by sort order — the letter.
+
+```
+5FJI, same bytes:  load_structure 'A+B'  vs  parse_structure 'A'
+```
+
+So `interface("5fji", "A", "B")` standalone and `interface("A", "B")` after
+`fetch_structure("5fji")` measured different conformer states while reporting
+the same totals. The old comment claimed the two paths "must hold the same
+atoms" — they did; that was never the failure.
+
+### 16. Every re-sent structure reached the viewer as one blob — fixed
+
+PR 64. biotite's mmCIF writer emits `_atom_site.label_alt_id` as `.` for every
+row whatever the array holds. So `color_by_conservation(mode="gradient")`,
+`rmsf` and trajectory display — everything that writes a scalar into the
+B-factor column and re-sends — handed Mol\* 15929 atoms sitting on top of each
+other with nothing to separate them: template bonds inferred across conformer
+states, doubled spheres, no `alt` selection possible in the picture.
+`viewer_atom_count` still agreed, which was the only cross-check those paths
+had.
+
+Fixed by writing the column, not by dropping conformers: sending one state
+would make the viewer hold fewer atoms than the analysis, which is the
+divergence decision 9 exists to prevent, and would break handles, which travel
+as `atom.id` into an array numbered from the full structure.
+
+A trajectory is an `AtomArrayStack`, and biotite writes one row per atom **per
+model**, so the column is tiled to the rows actually written. The first version
+was not, and killed every trajectory and `rmsf` render — invisible to the fast
+suite, since both paths are gated.
+
+### 17. `alt ''` was refused where it has an answer — fixed
+
+PR 64. The guard fired for any `alt` term on a structure with no alternates,
+but "atoms carrying no alternate label" is every atom there.
+`select("chain A and alt ''")` failed on 4HHB while `select("chain A")`
+succeeded, for a selection that means the same thing. It now applies only to
+letters, and names the letter it refused.
+
+### 18. `parse_structure` and `load_structure` still hold different molecules — open
+
+**Not fixed.** Found while reviewing item 15, and unrelated to occupancy:
+`parse_structure` reads the asymmetric unit while `load_structure` defaults to
+the biological assembly.
+
+```
+1HHO: parse_structure 2396  vs  load_structure 4792   (2 copies)
+1AKE: parse_structure 3816  vs  load_structure 1966   (assembly < ASU)
+```
+
+So `interface("1hho", "A", "B")` standalone and `interface("A", "B")` after a
+fetch still describe different things, and `sym_id` is absent on the standalone
+path, so `copy=N` refuses there for a structure the loaded path accepts.
+
+**Wants a decision, because the obvious fix changes behaviour.** Making
+`parse_structure` call `load_structure` would superpose the biological assembly
+— a monomer rather than the deposited pair on 1AKE — which is a choice about
+what `superpose` means, not a repair. The comment at
+`analysis/superposition.py` states the divergence with these numbers rather
+than claiming a parity that does not hold.
+
+### What the review is worth
+
+Every fix above is mutation-tested, and **a review ran on each of the four
+PRs and found something on every one** — six further findings, several in code
+written specifically to fix the findings above. The most valuable were about
+tests that could not fail: PR 61's compared residue sets while its fixture's
+only alternate sat outside the conserved quartile, so the obvious wrong
+implementation passed it.
