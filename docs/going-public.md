@@ -132,10 +132,11 @@ is the read-and-deserialize shape this kind of pass exists to catch. Note also
 that several of these *write* rather than read, so the question for them is what
 can be overwritten, not what can be disclosed.
 
-The third piece is **a secret scan over history, not just the tree** — the §2
-row is backed only by an eyeball pass and a `secrets.*` grep of `ci.yml`. Run
-`gitleaks detect` or equivalent across all refs and record the output. History
-is the part the flip publishes that no later commit can retract.
+The third piece is **an entropy-based secret scan over history**. §2's pattern
+sweep only catches credentials with a recognisable prefix; a bare 40-character
+token matches nothing it looked for. Run `gitleaks detect` or equivalent across
+all refs and record the output. History is the part the flip publishes that no
+later commit can retract.
 
 The repo has a `/security-review` skill; this is what it is for. The output
 should be a statement of what *is* reachable, not a clean bill — "no findings"
