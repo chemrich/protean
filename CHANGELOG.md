@@ -5,6 +5,34 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Volumes
+
+- Density maps load into the viewer: MRC/CCP4 (gzipped or not), DSN6, OpenDX,
+  Gaussian cube and BinaryCIF. Four tools — `load_volume`, `volume_info`,
+  `list_volumes`, `remove_volume` — taking the tool count from 49 to 53.
+  protean could parse exactly one volume format before this, OpenDX, because
+  that is what APBS writes.
+- Format is detected from the MRC magic at byte 208 first and the extension
+  second, on the *decompressed* bytes — `emd_30913.map.gz` has suffixes
+  `['.map', '.gz']` and carries its magic only once unwrapped.
+- Volumes travel over HTTP, not inline in the RPC message. A 110³ float32
+  reconstruction is ~5 MB and a 400³ one ~256 MB, and base64 through a JSON
+  WebSocket frame is the wrong pipe. The bridge serves them from a
+  handle-keyed table, so only what was explicitly published is reachable.
+- **The reported statistics are computed from the voxels, not read from the
+  file header.** Mol\*'s `grid.stats` passes through MRC's stored DMIN, DMAX,
+  DMEAN and RMS, which are not always true: a cropped or rescaled map keeps
+  whatever header nobody updated. Since those numbers exist to convert a
+  published absolute contour into sigma, a stale header would put the contour
+  in the wrong place while every call returned cleanly. The header's own
+  claims are still reported, under `stated`, because a large disagreement says
+  the file has been through something.
+
+  Found by a browser test written so it could not pass on the old behaviour:
+  its fixture writes deliberately false header statistics (−999/999/42/7) and
+  requires the reply to match the data instead. On its first run it failed with
+  `min came back as the header's false value -999.0`.
+
 ### Alternate conformers
 
 - Every alternate conformer is loaded, so the viewer and the analysis hold the

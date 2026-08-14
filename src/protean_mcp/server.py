@@ -64,6 +64,7 @@ from .selections_numpy import evaluate as _evaluate
 from .selections_numpy import labelled_atom_count as _labelled_atom_count
 from .selections_numpy import load_structure as _load_structure
 from .selections_numpy import resolve_conformers as _resolve_conformers
+from .volumes import VolumeError, read_volume
 
 logger = logging.getLogger(__name__)
 
@@ -2858,6 +2859,91 @@ def _ramp(palette: str, steps: int) -> list[str]:
         ]
         out.append("#" + "".join(f"{v:02x}" for v in channels))
     return out
+
+
+@mcp.tool()
+async def load_volume(
+    path: str,
+    name: str | None = None,
+    format: str = "auto",
+) -> dict[str, Any]:
+    """Load a density map into the viewer and report what it actually holds.
+
+    path: an MRC/CCP4 (.map/.mrc/.ccp4, optionally .gz), DSN6, OpenDX, Gaussian
+      cube or BinaryCIF volume. EMDB ships .map.gz and that is handled.
+    name: handle for later isosurface/colouring calls. Defaults to the file
+      stem.
+    format: "auto" detects from the MRC magic and then the extension. Pass one
+      of ccp4, dsn6, dx, cube, dscif to override.
+
+    The reply's statistics — min, max, mean, sigma and voxels — are computed by
+    walking the voxels the viewer parsed, not echoed from the request and not
+    taken from the file header. They are the only way to convert a published
+    absolute contour level into sigma, so they have to describe the data.
+
+    `stated` carries the header's own four numbers alongside. For MRC/CCP4 those
+    are stored fields, and they are not always true: a cropped or rescaled map
+    keeps whatever header nobody updated. A large disagreement between the two
+    is information — it says the file has been through something — which is why
+    both are reported rather than one silently winning.
+
+    Volumes travel over HTTP rather than inline in this call: a 400-cubed map
+    is a quarter of a gigabyte and does not belong in a JSON message.
+    """
+    bridge = _require_viewer()
+    try:
+        volume = read_volume(path, format)
+    except VolumeError as exc:
+        raise ViewerError(str(exc)) from exc
+
+    handle = name or Path(path).name.removesuffix(".gz").rsplit(".", 1)[0]
+    url = bridge.publish_volume(handle, volume.data)
+    try:
+        result = await _call(
+            "load_volume", {"name": handle, "url": url, "format": volume.format}
+        )
+    except ViewerError:
+        # Scoped to the handle this call created: never a sweep of the session.
+        bridge.forget_volume(handle)
+        raise
+    result["source"] = str(volume.source)
+    result["gzipped"] = volume.was_compressed
+    return result
+
+
+@mcp.tool()
+async def volume_info(name: str) -> dict[str, Any]:
+    """Report a loaded volume's dimensions and value statistics.
+
+    Computed from the voxels in the viewer, not read from the file header, so it
+    describes what is actually being drawn. The header's own claims come back
+    under `stated`, for comparison rather than for use.
+
+    The sigma here is what converts a published contour level into the units a
+    viewer contours in. EMDB publishes author-recommended levels as ABSOLUTE
+    map values while most viewers contour in sigma — EMD-30913 publishes 0.05,
+    which is 3.16 sigma for that map, and used as sigma it contours noise.
+    Taking that sigma from a stale header would put the contour in the wrong
+    place while every call still returned cleanly.
+    """
+    _require_viewer()
+    return await _call("volume_info", {"name": name})
+
+
+@mcp.tool()
+async def list_volumes() -> dict[str, Any]:
+    """List the volumes currently loaded, with their statistics."""
+    _require_viewer()
+    return await _call("list_volumes")
+
+
+@mcp.tool()
+async def remove_volume(name: str) -> str:
+    """Remove one loaded volume from the viewer."""
+    bridge = _require_viewer()
+    result = await _call("remove_volume", {"name": name})
+    bridge.forget_volume(name)
+    return f"Removed volume {result['removed']}."
 
 
 @mcp.tool()

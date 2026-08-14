@@ -578,6 +578,86 @@ export function createDispatcher(plugin: any): Handler {
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
 
+  /** Loaded volumes by handle: the parsed data plus its state ref. */
+  const volumes = new Map<string, { ref: string; data: any }>();
+
+  function requireVolume(name: string) {
+    const entry = volumes.get(name);
+    if (!entry) {
+      const known = [...volumes.keys()].sort().join(', ') || '(none)';
+      throw new Error(`No volume named '${name}'. Known: ${known}`);
+    }
+    return entry;
+  }
+
+  /** Grid statistics computed from the voxels, plus whatever the file claimed.
+   *
+   * These are the only way a caller can convert a published absolute contour
+   * into sigma, so they have to describe the data being drawn.
+   *
+   * `grid.stats` does NOT do that for CCP4/MRC: those four numbers are stored
+   * fields in the file header, and Mol* passes them through. A file whose
+   * header says one thing and whose voxels say another — a cropped or rescaled
+   * map, or a header nobody updated — reports the header and looks healthy.
+   * That was not a hypothesis: a fixture written with deliberately false header
+   * statistics reported them back verbatim, dimensions and all, while the
+   * voxels said something else entirely.
+   *
+   * So the voxels are walked. Two passes rather than one, because a
+   * sum-of-squares pass computed against a running mean loses precision on the
+   * ~10^7-voxel grids this is for, and 2x a linear scan is cheap next to the
+   * download and parse that just happened.
+   *
+   * `stated` is kept alongside rather than dropped: a large disagreement is
+   * itself information — it says the file has been through something. */
+  function volumeStats(data: any) {
+    const grid = data.grid;
+    const space = grid.cells.space;
+    const [nx, ny, nz] = space.dimensions;
+    const values = grid.cells.data;
+    const n = values.length;
+
+    if (!n) {
+      throw new Error(
+        'volume parsed to a grid with no voxels — the bytes were accepted but hold nothing'
+      );
+    }
+
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const v = values[i];
+      if (v < min) min = v;
+      if (v > max) max = v;
+      sum += v;
+    }
+    const mean = sum / n;
+
+    let squares = 0;
+    for (let i = 0; i < n; i++) {
+      const d = values[i] - mean;
+      squares += d * d;
+    }
+    const sigma = Math.sqrt(squares / n);
+
+    const stated = grid.stats ?? {};
+    return {
+      dimensions: [nx, ny, nz],
+      voxels: n,
+      min,
+      max,
+      mean,
+      sigma,
+      stated: {
+        min: stated.min ?? null,
+        max: stated.max ?? null,
+        mean: stated.mean ?? null,
+        sigma: stated.sigma ?? null,
+      },
+    };
+  }
+
   const currentStructure = () => {
     const current = plugin.managers.structure.hierarchy.current.structures[0];
     if (!current) throw new Error('No structure loaded — call fetch_structure first.');
@@ -1531,6 +1611,66 @@ export function createDispatcher(plugin: any): Handler {
           };
         });
         return { selections };
+      },
+    },
+
+    load_volume: {
+      async run({ name, url, format }: { name: string; url: string; format: string }) {
+        const provider = plugin.dataFormats.get(format);
+        if (!provider) {
+          const known = plugin.dataFormats.list
+            .map((f: any) => f.name)
+            .sort()
+            .join(', ');
+          throw new Error(`This Mol* build cannot parse '${format}'. Known: ${known}`);
+        }
+        if (volumes.has(name)) {
+          await plugin.state.data.build().delete(volumes.get(name)!.ref).commit();
+          volumes.delete(name);
+        }
+
+        // download(), not rawData(): the bytes come over HTTP from the same
+        // server that serves this page, because a 256 MB map does not belong
+        // in a JSON RPC frame.
+        const raw = await plugin.builders.data.download(
+          { url, isBinary: format !== 'dx' && format !== 'cube' },
+          { state: { isGhost: true } }
+        );
+        const parsed = await provider.parse(plugin, raw);
+        const cell = parsed.volume ?? parsed.volumes?.[0] ?? parsed;
+        const data = cell?.obj?.data ?? cell?.cell?.obj?.data;
+        if (!data) throw new Error(`'${name}' parsed to nothing`);
+        const ref = cell.ref ?? cell.cell?.transform?.ref;
+
+        volumes.set(name, { ref, data });
+        return { name, format, ...volumeStats(data) };
+      },
+    },
+
+    volume_info: {
+      async run({ name }: { name: string }) {
+        const { data } = requireVolume(name);
+        return { name, ...volumeStats(data) };
+      },
+    },
+
+    list_volumes: {
+      async run() {
+        return {
+          volumes: [...volumes.entries()].map(([name, { data }]) => ({
+            name,
+            ...volumeStats(data),
+          })),
+        };
+      },
+    },
+
+    remove_volume: {
+      async run({ name }: { name: string }) {
+        const { ref } = requireVolume(name);
+        await plugin.state.data.build().delete(ref).commit();
+        volumes.delete(name);
+        return { removed: name };
       },
     },
 
