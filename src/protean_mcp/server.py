@@ -2912,11 +2912,10 @@ async def load_volume(
 
     path: an MRC/CCP4 (.map/.mrc/.ccp4, optionally .gz), DSN6, OpenDX, Gaussian
       cube or BinaryCIF volume. EMDB ships .map.gz and that is handled.
-    name: handle for `volume_info` and `remove_volume`. Defaults to the file
-      stem. Note there is no isosurface tool yet, and `color_by_potential`
-      still takes OpenDX text inline rather than a handle — so a map loaded
-      here is currently display-only. That is the next piece of this work, not
-      something this handle already reaches.
+    name: handle for `isosurface`, `volume_info` and `remove_volume`. Defaults
+      to the file stem. Note `color_by_potential` still takes OpenDX text
+      inline rather than a handle, so colouring a surface by a second map is
+      not reachable from here yet.
     format: "auto" detects from the MRC magic and then the extension. Pass one
       of ccp4, dsn6, dx, cube, dscif to override.
     provenance: how this map came to exist — one of `measured`, `sharpened`,
@@ -2995,6 +2994,63 @@ async def list_volumes() -> dict[str, Any]:
     for volume in result.get("volumes", []):
         _with_caveat(volume)
     return result
+
+
+@mcp.tool()
+async def isosurface(
+    name: str,
+    level: float,
+    unit: str = "sigma",
+    style: str = "surface",
+    opacity: float | None = None,
+) -> dict[str, Any]:
+    """Contour a loaded volume at `level` and draw it.
+
+    name: a handle from `load_volume`.
+    level: the contour value.
+    unit: **`sigma` or `absolute`, and it is not a detail.** EMDB publishes
+      author-recommended levels as ABSOLUTE map values while most viewers
+      contour in sigma. EMD-30913 publishes 0.05, which is 3.16 sigma for that
+      map; typed in as sigma it contours noise and looks like an ordinary bad
+      map rather than a unit error. Naming the unit is the only way that cannot
+      happen, so there is no bare-number form of this call.
+    style: `surface` (solid) or `mesh` (wireframe).
+    opacity: 0-1. Omit it to keep whatever the surface already has, so raising
+      a contour level on a surface you made translucent does not silently make
+      it solid again.
+
+    A sigma level is converted here, against the sigma and mean measured off
+    the voxels, and Mol\\* is handed an absolute value. It would otherwise
+    convert using the file header's own statistics, which for CCP4/MRC are
+    stored fields and routinely stale — Mol\\*'s default isosurface is 2 sigma
+    against exactly those. The reply reports `sigma` and `mean` used, and
+    `stated_absolute`: what the header's numbers would have given for the same
+    request. A large gap between that and `absolute` says the file disagrees
+    with itself.
+
+    The reply also carries the volume's `provenance` and `caveat`, because a
+    contour makes a generated map look exactly as authoritative as a measured
+    one.
+    """
+    _require_viewer()
+    if unit not in ("sigma", "absolute"):
+        raise ViewerError(f"unit must be 'sigma' or 'absolute', not {unit!r}")
+    if style not in ("surface", "mesh"):
+        raise ViewerError(f"style must be 'surface' or 'mesh', not {style!r}")
+    if opacity is not None and not 0.0 <= opacity <= 1.0:
+        raise ViewerError(f"opacity must be between 0 and 1, not {opacity}")
+    args: dict[str, Any] = {
+        "name": name,
+        "level": level,
+        "unit": unit,
+        "style": style,
+    }
+    # Omitted rather than defaulted, so the viewer's "keep the current alpha"
+    # branch is reachable. Sending 1.0 every time would make every level change
+    # silently reset a translucent surface to solid.
+    if opacity is not None:
+        args["opacity"] = opacity
+    return _with_caveat(await _call("isosurface", args))
 
 
 @mcp.tool()

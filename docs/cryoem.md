@@ -1,15 +1,15 @@
 # Cryo-EM and conformational heterogeneity — what to build
 
-Planned 2026-08-12. **Corrected against `main` on 2026-08-14, after §1.1, §1.4
-and §2 shipped.** What protean needs in order to show density maps, local
+Planned 2026-08-12. **Corrected against `main` on 2026-08-14, and kept current as
+§1.1, §1.2, §1.4 and §2 shipped.** What protean needs in order to show density maps, local
 resolution, and the parts of a model that are not a single rigid conformer.
 
 The immediate driver is
 [`wiggles-em`](https://github.com/chemrich/wiggles-em) — a viewer-neutral
 package of cryo-EM views hosted by both MCPymol and protean. But every feature
 below is worth building on its own: any map at all — cryo-EM, crystallographic
-2Fo-Fc, a segmentation — was out of reach until volume loading landed, and an
-isosurface still is.
+2Fo-Fc, a segmentation — was out of reach until volume loading and contouring
+landed.
 
 Ordered by what unblocks the most. Each section says what already exists.
 
@@ -19,8 +19,8 @@ Ordered by what unblocks the most. Each section says what already exists.
 |---|---|---|
 | 1.1 `load_volume` + HTTP route | **shipped** | PR 69; `provenance=` followed in PR 72 |
 | 1.4 `volume_info` | **shipped** | PR 69 — *and its advice here was wrong; see below* |
-| 1.2 `isosurface` | open | the headline gap, and now the only thing blocking wiggles-em's `Isosurface` |
-| 1.3 `color_surface_by_volume` | open | needs 1.2 |
+| 1.2 `isosurface` | **shipped** | PR 73 — the backend no longer refuses an `Isosurface` op |
+| 1.3 `color_surface_by_volume` | open | unblocked now 1.2 is done |
 | 1.5 carve | open | server-side; independent of the viewer |
 | 2 altlocs | **shipped** | PRs 58-64, decision 16 |
 | 3 scalar colouring | half | the *backend* has `ColorByScalar` (PR 68); the three MCP tools are still separate |
@@ -34,24 +34,26 @@ the errors are more instructive than the plan:
    **is** the header — Mol\* passes DMIN/DMAX/DMEAN/RMS straight through. The
    principle was right and the implementation it prescribed would have produced
    exactly the failure it was warning about. Corrected in §1.4.
-2. **§1.1's provenance parameter was not built.** `load_volume(path, name,
-   format)` shipped without it. It is still the right idea and it is now a gap,
-   not a plan.
-3. Line references had drifted by ~200 lines, and the `wiggles-em` link pointed
+2. **§1.1's provenance parameter was not built** at first; PR 72 closed that.
+3. **§1.2's Mol\* API sketch was not reachable.** `VolumeRepresentation3D` and
+   `Volume.IsoValue` are not exposed by the prebuilt bundle the viewer loads.
+   The working path — `provider.visuals` plus a plain `{kind, absoluteValue}`
+   object — is in §1.2, found by asking a real browser what the global actually
+   holds.
+4. Line references had drifted by ~200 lines, and the `wiggles-em` link pointed
    at `chemrich/wiggles`, which is a **different and private** repository.
 
 ---
 
 ## 1. Volumes
 
-### 1.1 `load_volume(source, format="auto", provenance=...)` — SHIPPED (PR 69), except provenance
+### 1.1 `load_volume(source, format="auto", provenance=...)` — SHIPPED (PRs 69, 72)
 
 Shipped as `load_volume(path, name=None, format="auto")`, with `volume_info`,
 `list_volumes` and `remove_volume` alongside. Formats: MRC/CCP4 (gzipped or
 not), DSN6, OpenDX, Gaussian cube, BinaryCIF.
 
-**`provenance=` was not built.** Everything below about it still stands and is
-now an open gap rather than a plan — see the end of this section.
+`provenance=` followed in PR 72 — see the end of this section.
 
 The original reasoning, which held up:
 
@@ -100,36 +102,46 @@ Two decisions worth carrying into §1.2:
 
 Building it also produced a test that could not fail, which is recorded in §5.
 
-### 1.2 `isosurface(volume, level, kind="sigma", style="surface", ...)` — OPEN, and now the critical path
+### 1.2 `isosurface(volume, level, unit="sigma", style="surface", ...)` — SHIPPED (PR 73)
 
-Still does not exist in any form, and it is now the **only** thing standing
-between wiggles-em and a working protean backend. PR 68's `ProteanBackend`
-already recognises the `Isosurface` op and refuses it
-(`backends/molstar.py:795`) because the bridge has no volume action to call.
-With §1.1 shipped, that refusal is the last gap.
+Shipped as `isosurface(name, level, unit, style, opacity)`, and the backend no
+longer refuses a wiggles-em `Isosurface` op — it lowers it, passing the unit
+along rather than the number alone. A carve is still refused, which is §1.5.
 
-**Convert σ against the computed statistics, not the header.** The backend's
-refusal message currently says a σ level "has to be converted against that map's
-own header" — that is the §1.4 mistake restated, and it must not be what gets
-built. `volume_info` reports the computed σ under `sigma` and the file's claim
-under `stated`; the conversion uses the former. A map whose header RMS is stale
-would otherwise contour in the wrong place while every call returned cleanly,
-which is the exact failure this section's EMD-30913 warning is about.
+**Convert σ against the computed statistics, not the header — and this is the
+whole feature.** Mol\* accepts `{kind:'relative'}` and converts with
+`relativeValue * grid.stats.sigma + grid.stats.mean`; for CCP4/MRC `grid.stats`
+is the file header. **Its default isosurface is `relative: 2`**, so out of the
+box a map with a stale header contours in the wrong place and looks entirely
+normal. protean converts against the sigma and mean measured off the voxels and
+hands Mol\* an absolute value it cannot reinterpret. The reply reports the
+`sigma` and `mean` used and `stated_absolute` — what the header's numbers would
+have given — so a file disagreeing with itself is visible rather than silent.
+
+**The API sketched here was not reachable.** This section proposed
+`VolumeRepresentation3D` with `Volume.IsoValue.absolute(v)`. The viewer loads a
+**prebuilt Mol\* bundle** (bundling from source needs >4 GB RAM), and that
+bundle's global exposes `Viewer` and little else — no `StateTransforms`, no
+`Volume` namespace. Checked in a real browser rather than assumed.
+
+What works instead, and is what shipped:
 
 ```
-VolumeRepresentation3D    # mol-plugin-state/transforms/representation
-  type: 'isosurface'
-  typeParams: {
-    isoValue: Volume.IsoValue.absolute(v)   // or .relative(sigma)
-    alpha: 1.0
-    visuals: ['solid'] | ['wireframe']      // surface vs mesh
-  }
+provider.visuals(plugin, { volume: selector })   // the provider from dataFormats.get(fmt)
+  → creates a `ms-plugin.volume-representation-3d` node, type 'isosurface'
+
+then update that node's params:
+  isoValue: { kind: 'absolute', absoluteValue: v }   // a plain object literal —
+  visuals: ['solid'] | ['wireframe']                 // which is all IsoValue is
+  alpha:   0..1
 ```
 
-**Expose `kind` explicitly and make it required in spirit.** Mol\* carries the
-distinction natively — `Volume.IsoValue.absolute()` and `.relative()`, with
-`Volume.adjustedIsoValue(volume, value, kind)` to convert — and this is the
-single most valuable thing protean can do here.
+The useful discovery: `IsoValue` is a plain `{kind, absoluteValue}` object, so
+the unreachable namespace is not needed to build one.
+
+**Name the unit; never take a bare number.** Mol\* carries the distinction
+natively, and making the caller name it is the single most valuable thing
+protean can do here.
 
 The reason is worth stating plainly, because it is not obvious and it silently
 produces wrong pictures. EMDB publishes author-recommended contour levels as

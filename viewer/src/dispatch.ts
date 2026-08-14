@@ -585,7 +585,19 @@ export function createDispatcher(plugin: any): Handler {
    * would accumulate exactly the maps this feature exists not to hold. */
   const volumes = new Map<
     string,
-    { ref: string; downloadRef?: string; data: any; provenance: string }
+    {
+      ref: string;
+      downloadRef?: string;
+      data: any;
+      provenance: string;
+      format: string;
+      /** Computed once at load. Deterministic for a given grid, and two full
+       *  linear passes over up to 10^8 voxels is not a thing to repeat on
+       *  every volume_info, list_volumes and contour adjustment. */
+      stats: ReturnType<typeof volumeStats>;
+      /** The isosurface node, once one has been asked for. */
+      reprRef?: string;
+    }
   >();
 
   function requireVolume(name: string) {
@@ -603,7 +615,10 @@ export function createDispatcher(plugin: any): Handler {
     volumes.delete(name);
     if (!entry) return;
     const build = plugin.state.data.build();
-    for (const ref of [entry.ref, entry.downloadRef]) {
+    // The isosurface first: it is a child of the volume node, and deleting a
+    // parent leaves nothing to hang a stale handle on either way, but naming
+    // it keeps the intent visible.
+    for (const ref of [entry.reprRef, entry.ref, entry.downloadRef]) {
       if (ref) build.delete(ref);
     }
     await build.commit();
@@ -1715,26 +1730,147 @@ export function createDispatcher(plugin: any): Handler {
         // undefined, because the absence of a declaration is itself the
         // answer and should read the same as declaring it.
         const declared = provenance ?? 'unknown';
-        volumes.set(name, { ref, downloadRef, data, provenance: declared });
+        volumes.set(name, { ref, downloadRef, data, provenance: declared, format, stats });
         return { name, format, provenance: declared, ...stats };
       },
     },
 
     volume_info: {
       async run({ name }: { name: string }) {
-        const { data, provenance } = requireVolume(name);
-        return { name, provenance, ...volumeStats(data) };
+        const { provenance, stats } = requireVolume(name);
+        return { name, provenance, ...stats };
       },
     },
 
     list_volumes: {
       async run() {
         return {
-          volumes: [...volumes.entries()].map(([name, { data, provenance }]) => ({
+          volumes: [...volumes.entries()].map(([name, { provenance, stats }]) => ({
             name,
             provenance,
-            ...volumeStats(data),
+            ...stats,
           })),
+        };
+      },
+    },
+
+    isosurface: {
+      render: true,
+      async run({
+        name,
+        level,
+        unit,
+        style,
+        opacity,
+      }: {
+        name: string;
+        level: number;
+        unit: 'sigma' | 'absolute';
+        style: 'surface' | 'mesh';
+        opacity?: number;
+      }) {
+        const entry = requireVolume(name);
+        const stats = entry.stats;
+
+        // **The conversion, and the reason this is not left to Mol\*.**
+        // Mol* accepts `{kind:'relative'}` and converts with
+        // `relativeValue * grid.stats.sigma + grid.stats.mean` — and for
+        // CCP4/MRC `grid.stats` is the file header, which is routinely stale.
+        // Its own default isosurface is 2 relative, so out of the box a map
+        // with a bad header contours in the wrong place and looks fine. We
+        // convert here against the sigma and mean measured off the voxels, and
+        // hand Mol* an absolute value it cannot reinterpret.
+        const absolute = unit === 'sigma' ? level * stats.sigma + stats.mean : level;
+
+        // What the header would have produced, for the same request. Reported
+        // rather than hidden: a large gap is the signal that the file's own
+        // statistics disagree with its contents.
+        const st = entry.data.grid?.stats;
+        const headerAbsolute =
+          unit === 'sigma' && st && typeof st.sigma === 'number'
+            ? level * st.sigma + st.mean
+            : null;
+
+        if (!Number.isFinite(absolute)) {
+          throw new Error(
+            `contour level ${level} in ${unit} is not a finite value for '${name}' ` +
+              `(sigma ${stats.sigma}, mean ${stats.mean})`
+          );
+        }
+
+        if (!entry.reprRef) {
+          const before = new Set<string>(plugin.state.data.cells.keys());
+          const provider = plugin.dataFormats.get(entry.format);
+          if (!provider?.visuals) {
+            throw new Error(
+              `this Mol* build has no volume visuals for '${entry.format}', so ` +
+                `'${name}' cannot be contoured`
+            );
+          }
+          const cell = plugin.state.data.cells.get(entry.ref);
+          const selector = { ref: entry.ref, cell, obj: cell?.obj };
+          // Both shapes, deliberately. The ccp4/dsn6/dx/cube providers read
+          // `data.volume`; the dscif one destructures `const { volumes } =
+          // data` and immediately reads `volumes.length`, so passing only
+          // `volume` gives a bare TypeError on a .bcif map rather than
+          // anything a caller could act on.
+          await provider.visuals(plugin, { volume: selector, volumes: [selector] });
+          const added = [...plugin.state.data.cells.values()].filter(
+            (c: any) => !before.has(c.transform.ref) && c.obj?.type?.name === 'Volume 3D'
+          );
+          if (!added.length) {
+            throw new Error(`'${name}' produced no isosurface node to contour`);
+          }
+          if (added.length > 1) {
+            // Cube files get a +1 and a -1 lobe; a dscif difference map gets a
+            // green +3 and a red -3. Those levels are not one number, and
+            // moving only the first would leave the others at Mol*'s defaults
+            // while the reply named a single level as though it described the
+            // picture. Undo and say so rather than half-apply it.
+            const undo = plugin.state.data.build();
+            for (const c of added) undo.delete(c.transform.ref);
+            await undo.commit();
+            throw new Error(
+              `'${name}' draws as ${added.length} surfaces (a signed pair, or a ` +
+                `difference map), and one level cannot describe them. Contouring ` +
+                `this format is not supported yet.`
+            );
+          }
+          entry.reprRef = added[0].transform.ref;
+        }
+
+        await plugin.state.data
+          .build()
+          .to(entry.reprRef)
+          .update((old: any) => ({
+            ...old,
+            type: {
+              ...old.type,
+              params: {
+                ...old.type.params,
+                // A plain object, deliberately: the prebuilt Mol* bundle
+                // exposes only `Viewer`, so `Volume.IsoValue.absolute()` is
+                // not reachable — but this is exactly the shape it returns.
+                isoValue: { kind: 'absolute', absoluteValue: absolute },
+                visuals: [style === 'mesh' ? 'wireframe' : 'solid'],
+                alpha: opacity ?? old.type.params.alpha ?? 1,
+              },
+            },
+          }))
+          .commit();
+
+        return {
+          volume: name,
+          level,
+          unit,
+          style,
+          absolute,
+          provenance: entry.provenance,
+          // The statistics the conversion actually used, so the number above
+          // can be checked rather than trusted.
+          sigma: stats.sigma,
+          mean: stats.mean,
+          stated_absolute: headerAbsolute,
         };
       },
     },

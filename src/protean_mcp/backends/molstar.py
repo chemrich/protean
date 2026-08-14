@@ -46,11 +46,13 @@ up front**, before any op draws.
     The bridge's ``label`` draws structural labels — chain, residue or element
     names — and takes no text. A :class:`~wiggles_em.scene.Label` carries
     literal text plus atom fields to interpolate, which has nowhere to go.
-``Isosurface``, ``ColorSurfaceByMap``
-    Volumes now load (``load_volume``, ``volume_info``), but nothing contours
-    them: there is no isosurface action for these ops to call. See
-    ``docs/cryoem.md`` §1.2 — the next piece, and the last one refusing a
-    wiggles-em scene.
+``ColorSurfaceByMap``
+    The isosurface it would colour now exists, but the bridge exposes no volume
+    colour theme to put on it. ``docs/cryoem.md`` §1.3.
+``Isosurface`` **with a carve**
+    Contouring works; limiting it to within *n* A of a selection does not.
+    protean would crop the volume server-side rather than ask the viewer for
+    it — ``docs/cryoem.md`` §1.5.
 ``Frames``, ``Morph``, ``Arrows``, ``Scatter``
     No Mol\\* equivalent, no custom geometry channel, and ``Scatter`` is
     forbidden to every backend by invariant I2.
@@ -307,8 +309,50 @@ class MolstarBackend:
         if scalars:
             await self._send_display(scalars[0])
 
+        self._refuse_before_drawing(scene)
+
         for op in scene:
             await self.render_op(op)
+
+    def _refuse_before_drawing(self, scene: Scene) -> None:
+        """Refuse a scene that cannot complete, before any of it is on screen.
+
+        The op loop raises on the first thing it cannot honour, which used to
+        mean nothing was drawn — every volume op refused, so a scene containing
+        one produced no picture at all. Now that ``Isosurface`` draws,
+        ``local_resolution_view`` would put a plain grey density surface on the
+        canvas and *then* refuse the colouring that gives it its meaning. A
+        screenshot taken afterwards looks like a local-resolution figure and is
+        not one, which is the failure the carve refusal argues against in the
+        same breath.
+
+        Only statically decidable cases live here: an op with no lowering at
+        all, and the two that depend on a field rather than on viewer state.
+        The handlers keep their own raises, so this is a second line rather
+        than the only one.
+        """
+        for op in scene:
+            if getattr(self, f"_{type(op).__name__.lower()}", None) is None:
+                raise Refused(
+                    f"{type(op).__name__} has no Mol* lowering, and this scene "
+                    f"needs it — nothing was drawn."
+                )
+            if isinstance(op, Isosurface) and (
+                op.carve_around is not None or op.carve_radius is not None
+            ):
+                raise Refused(
+                    f"this scene carves {op.volume!r} to within {op.carve_radius}A "
+                    f"of a selection, and protean has no carve yet "
+                    f"(docs/cryoem.md §1.5). Nothing was drawn: the whole surface "
+                    f"instead would answer a different question."
+                )
+            if isinstance(op, ColorSurfaceByMap):
+                raise Refused(
+                    f"this scene colours a surface by {op.volume!r}, and the bridge "
+                    f"exposes no volume colour theme (docs/cryoem.md §1.3). Nothing "
+                    f"was drawn: the density surface without its colouring carries "
+                    f"none of the meaning the view exists to show."
+                )
 
     async def render_op(self, op: SceneOp) -> None:
         handler = getattr(self, f"_{type(op).__name__.lower()}", None)
@@ -795,26 +839,41 @@ class MolstarBackend:
         )
 
     async def _isosurface(self, op: Isosurface) -> None:
-        raise Refused(
-            f"contouring {op.volume!r} needs an isosurface action, and the bridge "
-            f"has none — volumes load, but nothing draws them. See docs/cryoem.md "
-            f"§1.2. Note for whoever lands it: this op carries a unit and it is "
-            f"{op.unit.value!r} here. Mol* takes absolute iso-values, so a level "
-            f"in sigma has to be converted against the map's sigma before it is "
-            f"sent — the *computed* one that `volume_info` reports as `sigma`, "
-            f"never the file's own claim under `stated`. For CCP4/MRC those header "
-            f"fields are frequently stale, and a contour placed against a stale "
-            f"sigma lands in the wrong place while every call returns cleanly. "
-            f"Passing the number through unconverted is the trap the seam was "
-            f"moved up a layer to prevent."
+        """Contour a volume the bridge already holds.
+
+        The unit travels rather than the number alone. protean converts a sigma
+        level against the sigma *measured off the voxels*, not the file header's
+        stored RMS — for CCP4/MRC those are frequently stale, and Mol\\*'s own
+        `relative` iso-value converts against exactly them. So `op.equivalent`
+        is not needed here: this backend can always reach the honest sigma
+        itself, which is the situation that field exists to work around.
+        """
+        if op.carve_around is not None or op.carve_radius is not None:
+            raise Refused(
+                f"contouring {op.volume!r} within {op.carve_radius}A of a selection "
+                f"needs a carve, and protean has none yet — docs/cryoem.md §1.5, "
+                f"which crops the volume server-side before the bytes are sent "
+                f"rather than asking the viewer for it. Drawing the whole surface "
+                f"instead would answer a different question: the point of a carve "
+                f"is that the density around one site is what is being judged."
+            )
+        await self.send(
+            "isosurface",
+            {
+                "name": op.volume,
+                "level": op.level,
+                "unit": op.unit.value,
+                "style": "mesh" if op.style is Rep.MESH else "surface",
+            },
         )
 
     async def _colorsurfacebymap(self, op: ColorSurfaceByMap) -> None:
         raise Refused(
-            f"colouring a surface by {op.volume!r} needs an isosurface to colour, "
-            f"and the bridge has no isosurface action — see docs/cryoem.md §1.3, "
-            f"which waits on §1.2. Its breakpoints are in the second volume's own "
-            f"units and convert against *that* volume's computed sigma, which is a "
+            f"colouring a surface by {op.volume!r} needs a volume colour theme, "
+            f"and the bridge exposes none — the isosurface it would colour now "
+            f"exists, so this is docs/cryoem.md §1.3 and nothing else. Note for "
+            f"whoever lands it: the breakpoints are in the *second* volume's own "
+            f"units and convert against that volume's computed sigma, which is a "
             f"different scale from the density map's contour level."
         )
 

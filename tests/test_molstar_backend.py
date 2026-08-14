@@ -26,6 +26,7 @@ from wiggles_em.scene import (
     Arrows,
     ColorByScalar,
     ColorFlat,
+    ColorSurfaceByMap,
     Delete,
     Frames,
     Granularity,
@@ -613,7 +614,6 @@ async def test_a_legend_draws_nothing(structure: Any) -> None:
             "size theme",
         ),
         (Label(Sel.all(), "%.2f", fields=("q",)), "takes no text"),
-        (Isosurface("s", "v", 0.05, Unit.ABSOLUTE), "isosurface action"),
         (Frames(("a", "b"), (1, 2)), "latent traversals"),
         (Morph("m", "obj"), "morph action"),
         (Arrows(()), "custom-geometry"),
@@ -676,3 +676,89 @@ async def test_occupancy_view_on_a_fully_occupied_model_draws_nothing(
     await backend.render(scene)
     assert recorder.calls == []
     assert "Nothing to show" in report
+
+
+# -- contouring ----------------------------------------------------------------
+
+
+async def test_an_isosurface_is_lowered_with_its_unit_intact(structure: Any) -> None:
+    """The op carries a unit; the wire has to carry it too.
+
+    Sending the bare number would leave the viewer to guess, and guessing wrong
+    between 0.05 absolute and 0.05 sigma is the EMD-30913 trap this seam was
+    moved up a layer to prevent.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+
+    await backend.render(Scene([Isosurface("s", "emd", 0.05, Unit.ABSOLUTE)]))
+
+    assert recorder.args_for("isosurface") == [
+        {"name": "emd", "level": 0.05, "unit": "absolute", "style": "mesh"}
+    ]
+
+
+async def test_a_sigma_level_stays_sigma_over_the_wire(structure: Any) -> None:
+    """Not converted here: protean converts against the sigma it measured.
+
+    A backend converting against the file header — which is what `equivalent`
+    exists to route around — is exactly the stale-RMS failure. This backend can
+    always reach the honest number, so it passes the unit along and lets the
+    server do it.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+
+    await backend.render(
+        Scene([Isosurface("s", "emd", 3.0, Unit.SIGMA, style=Rep.SURFACE)])
+    )
+
+    assert recorder.args_for("isosurface") == [
+        {"name": "emd", "level": 3.0, "unit": "sigma", "style": "surface"}
+    ]
+
+
+async def test_a_carve_is_refused_rather_than_drawn_whole(structure: Any) -> None:
+    """Drawing the whole surface would answer a different question.
+
+    The point of a carve is that the density around one site is what is being
+    judged; a full surface instead is not a degraded version of that, it is a
+    different picture that looks fine.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+
+    with pytest.raises(Refused, match="carve"):
+        await backend.render(
+            Scene([Isosurface("s", "emd", 3.0, Unit.SIGMA, carve_radius=2.0)])
+        )
+    assert recorder.args_for("isosurface") == []
+
+
+async def test_a_scene_that_cannot_finish_draws_nothing_at_all(structure: Any) -> None:
+    """The isosurface must not land before the colouring is refused.
+
+    `local_resolution_view` emits an `Isosurface` and then a
+    `ColorSurfaceByMap`. Now that the first one draws, rendering in order would
+    put a plain grey density surface on the canvas and *then* raise — and a
+    screenshot taken afterwards looks like a local-resolution figure while
+    carrying none of the resolution colouring. Refusing the whole scene first
+    is the only honest answer.
+    """
+    recorder = Recorder()
+    backend = MolstarBackend(recorder, structure, model=MODEL)
+
+    with pytest.raises(Refused, match="Nothing was drawn"):
+        await backend.render(
+            Scene(
+                [
+                    Isosurface("s", "emd", 3.0, Unit.SIGMA),
+                    ColorSurfaceByMap("s", "locres", (2.0, 6.0), ("blue", "red")),
+                ]
+            )
+        )
+
+    assert recorder.args_for("isosurface") == [], (
+        f"the surface was drawn before the scene was refused, so the canvas now "
+        f"shows a density map posing as a local-resolution figure: {recorder.calls}"
+    )
