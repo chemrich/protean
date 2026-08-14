@@ -6,7 +6,13 @@ const PROTOCOL_VERSION = 1;
 const RECONNECT_MS = 1500;
 
 export function connectBridge(handle: Handler): void {
-  const url = `ws://${location.host}/ws`;
+  // The token the page was opened with, handed straight to the socket. The
+  // server demands it, because a WebSocket is not subject to the same-origin
+  // policy: without it any site the user is visiting could connect to
+  // 127.0.0.1 on a guessable port, send `protean_ping`, displace this tab and
+  // answer for it.
+  const token = new URLSearchParams(location.search).get('token') ?? '';
+  const url = `ws://${location.host}/ws?token=${encodeURIComponent(token)}`;
   const status = document.getElementById('status');
 
   // Tracked so the visibilitychange listener (registered once) can reach the

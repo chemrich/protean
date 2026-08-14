@@ -5,6 +5,27 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Security
+
+- **The viewer handshake is authenticated.** The bridge's WebSocket accepted any
+  connection: no `Origin` check, no token. A WebSocket is not subject to the
+  same-origin policy and the port is `DEFAULT_PORT` plus a small scan range, so
+  any site the user was visiting could connect, send `protean_ping` — which is
+  designed to displace the incumbent — and from then on receive every action and
+  answer every one of them. Demonstrated with a socket carrying
+  `Origin: https://evil.example`: accepted, and the real viewer was superseded
+  and closed.
+
+  A spoofed viewer returning fabricated counts defeats the one guarantee this
+  project exists to make, while every call returns cleanly.
+
+  Now a per-bridge token (`secrets.token_urlsafe(32)`, compared with
+  `compare_digest`) plus an `Origin` check, both **before** `prepare()` so a
+  refused caller never reaches the message loop. `ViewerBridge.viewer_url` is the
+  single place the URL is built, so a viewer cannot be opened that its own socket
+  would refuse. Found by the going-public security pass, which is the argument
+  for running that pass before the flip rather than after.
+
 ### Volumes
 
 - **Density maps can be contoured.** `isosurface(name, level, unit, style,
