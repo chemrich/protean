@@ -1729,7 +1729,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.2.0,<2" },
     { name = "pdb2pqr", specifier = ">=3.7" },
     { name = "pillow", specifier = ">=11.0" },
-    { name = "wiggles-em", git = "https://github.com/chemrich/wiggles-em?rev=9381dbe7cd8894b7720d3833cdbd68fe66387169" },
+    { name = "wiggles-em", git = "https://github.com/chemrich/wiggles-em?rev=df2252e" },
 ]
 
 [package.metadata.requires-dev]
@@ -2471,7 +2471,7 @@ wheels = [
 [[package]]
 name = "wiggles-em"
 version = "0.1.0"
-source = { git = "https://github.com/chemrich/wiggles-em?rev=9381dbe7cd8894b7720d3833cdbd68fe66387169#9381dbe7cd8894b7720d3833cdbd68fe66387169" }
+source = { git = "https://github.com/chemrich/wiggles-em?rev=df2252e#df2252e160c3b41b85a538ef47ad91fda431bebc" }
 
 [[package]]
 name = "yarl"

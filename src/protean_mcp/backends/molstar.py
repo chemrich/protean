@@ -67,6 +67,8 @@ import numpy as np
 from biotite.structure import AtomArray
 from wiggles_em.atoms import Atom
 from wiggles_em.scene import (
+    BLUE_WHITE_RED,
+    RED_WHITE_BLUE,
     Arrows,
     ColorByScalar,
     ColorFlat,
@@ -714,14 +716,26 @@ class MolstarBackend:
             raise self._undrawn("ColorByScalar")
         for target in targets:
             await self.send("color", {"name": target, "color": "uncertainty"})
-        if op.palette != "red_white_blue":
+        # Compared as stops, not as a name. This read `op.palette !=
+        # "red_white_blue"` when a palette was a string; since wiggles-em df2252e
+        # it is a tuple of RGB stops, low value first, and that comparison became
+        # *always true* — every scene got the note, including the ones whose ramp
+        # the theme actually matches, and it could no longer tell RED_WHITE_BLUE
+        # from BLUE_WHITE_RED. Failing open on the one distinction it existed to
+        # make is worse than not checking.
+        if tuple(op.palette) != tuple(RED_WHITE_BLUE):
+            reversed_ramp = tuple(op.palette) == tuple(BLUE_WHITE_RED)
             self.notes.append(
                 f"  Palette {op.palette!r} was not applied: Mol*'s uncertainty theme "
                 f"carries its own ramp and takes no colour list. The domain is "
-                f"honoured. **The direction may not be** — the theme ramps one fixed "
-                f"way, and a scene asking for the opposite one is drawn reversed, so "
-                f"high reads as low. Check the legend against the picture before "
-                f"reading values off it."
+                f"honoured."
+                + (
+                    " **This ramp is the exact reverse of the theme's stops, so "
+                    "high may be drawn as low.** Check the legend against the "
+                    "picture before reading values off it."
+                    if reversed_ramp
+                    else " The exact hues are the theme's."
+                )
             )
 
     async def _sizebyscalar(self, op: SizeByScalar) -> None:
