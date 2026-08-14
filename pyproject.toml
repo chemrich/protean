@@ -122,6 +122,15 @@ module = ["pdb2pqr.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# wiggles-em is fully annotated but ships no py.typed marker, so mypy will not
+# read its types. This is an upstream one-line fix (a `py.typed` file plus the
+# package-data entry); until it lands and the pin moves, its Scene vocabulary
+# arrives here as Any. `backends/molstar.py` is written as though the types
+# were visible, so nothing has to change when they become so.
+module = ["wiggles_em.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # Test bodies stay unannotated; they are still type-checked internally.
 module = "tests.*"
 disallow_untyped_defs = false
