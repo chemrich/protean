@@ -42,6 +42,7 @@ from protean_mcp.server import (
     interface,
     lighting,
     load_session,
+    load_volume,
     material,
     mcp,
     near,
@@ -60,6 +61,8 @@ from protean_mcp.server import (
     spin,
     turntable,
 )
+
+from .test_volumes import write_mrc
 
 # 1x1 transparent PNG
 PNG_B64 = (
@@ -2179,3 +2182,85 @@ async def test_one_keyframe_is_not_pluralised(wired_bridge, tmp_path, monkeypatc
     monkeypatch.setattr(server_mod, "_keyframes", {"only": {"position": [0, 0, 1]}})
     message = await _load_toy(wired_bridge, _toy_pdb(tmp_path))
     assert "1 keyframe" in message and "1 keyframes" not in message
+
+
+# -- volume provenance ---------------------------------------------------------
+
+
+def _volume_reply(args: dict[str, Any]) -> dict[str, Any]:
+    """What the viewer answers a load_volume with. Shape only; stats are §1.4's."""
+    return {
+        "name": args["name"],
+        "format": args.get("format", "ccp4"),
+        "provenance": args.get("provenance", "unknown"),
+        "dimensions": [2, 2, 2],
+        "voxels": 8,
+        "min": 0.0,
+        "max": 1.0,
+        "mean": 0.5,
+        "sigma": 0.25,
+        "stated": {"min": None, "max": None, "mean": None, "sigma": None},
+    }
+
+
+async def test_load_volume_never_infers_provenance_from_the_filename(
+    wired_bridge, tmp_path
+):
+    """The invariant, tested where the filename is actually visible.
+
+    The viewer never sees the path — only a handle and a URL — so it *cannot*
+    guess, and a test driving the viewer action directly cannot fail for this
+    reason. The server is the only place with the filename, so this is the only
+    place the guess could happen and the only place worth asserting it does not.
+
+    The fixture is named to bait exactly that guess.
+    """
+    baited = write_mrc(tmp_path / "emd_30913_deepemhancer_sharpened.map")
+
+    sent: dict[str, Any] = {}
+
+    def on_load(args: dict[str, Any]) -> dict[str, Any]:
+        sent.update(args)
+        return _volume_reply(args)
+
+    async with _serving(wired_bridge, load_volume=on_load):
+        result = await load_volume(str(baited))
+
+    assert sent["provenance"] == "unknown", (
+        f"the filename says deepemhancer and sharpened; neither is evidence, and "
+        f"a guessed label is believed where a missing one prompts a question: {sent}"
+    )
+    assert result["provenance"] == "unknown"
+    assert "UNKNOWN" in result["caveat"]
+
+
+async def test_a_declared_provenance_reaches_the_viewer_with_its_caveat(
+    wired_bridge, tmp_path
+):
+    sent: dict[str, Any] = {}
+
+    def on_load(args: dict[str, Any]) -> dict[str, Any]:
+        sent.update(args)
+        return _volume_reply(args)
+
+    async with _serving(wired_bridge, load_volume=on_load):
+        result = await load_volume(
+            str(write_mrc(tmp_path / "m.map")), provenance="nn_enhanced"
+        )
+
+    assert sent["provenance"] == "nn_enhanced"
+    assert "NETWORK-ENHANCED" in result["caveat"]
+
+
+async def test_an_unknown_provenance_is_refused_before_anything_is_read(
+    wired_bridge, tmp_path
+):
+    """Refused ahead of the file, so a bad declaration cannot half-load a map."""
+    missing = tmp_path / "does-not-exist.map"
+
+    with pytest.raises(ViewerError, match="unknown provenance"):
+        await load_volume(str(missing), provenance="deepemhancer")
+
+    # And the refusal is about the provenance, not the missing file — proof the
+    # check ran first rather than the read failing for its own reasons.
+    assert not missing.exists()

@@ -202,6 +202,58 @@ async def test_loading_a_structure_does_not_leave_a_volume_handle_behind(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_provenance_is_carried_by_the_handle_and_defaults_to_unknown(tmp_path):
+    """The viewer half: a declared provenance sticks to the handle.
+
+    **What this test cannot check**, despite the baited filename below: that the
+    filename is never used as evidence. The viewer is only ever sent a handle
+    and a URL — it never sees the path — so it *cannot* guess, and a mutation
+    that makes it try passes this test unchanged. That was verified, not
+    assumed. The invariant is asserted in
+    ``test_server.py::test_load_volume_never_infers_provenance_from_the_filename``,
+    which drives the real tool, where the filename is visible and a guess is
+    therefore possible.
+
+    What this does check: an undeclared volume reads `unknown` rather than
+    absent, a declared one survives into `volume_info` and `list_volumes`, and
+    two volumes keep their own answers rather than the last one written.
+    """
+    data = _grid()
+    baited = tmp_path / "emd_30913_deepemhancer_sharpened.map"
+    _write_mrc(baited, data)
+
+    async with viewer_session(STRUCTURE) as session:
+        url = session.bridge.publish_volume("baited", baited.read_bytes())
+        undeclared = await session.request(
+            "load_volume", {"name": "baited", "url": url, "format": "ccp4"}
+        )
+        assert undeclared["provenance"] == "unknown", (
+            f"an undeclared volume must read 'unknown' rather than come back "
+            f"without the field, so a caller cannot mistake silence for a "
+            f"measurement: {undeclared}"
+        )
+
+        # A declared one is carried through, and survives into volume_info —
+        # the handle has to remember it, not just the call that set it.
+        url2 = session.bridge.publish_volume("declared", baited.read_bytes())
+        await session.request(
+            "load_volume",
+            {
+                "name": "declared",
+                "url": url2,
+                "format": "ccp4",
+                "provenance": "nn_enhanced",
+            },
+        )
+        info = await session.request("volume_info", {"name": "declared"})
+        assert info["provenance"] == "nn_enhanced", info
+
+        listed = await session.request("list_volumes")
+        by_name = {v["name"]: v["provenance"] for v in listed["volumes"]}
+        assert by_name == {"baited": "unknown", "declared": "nn_enhanced"}, listed
+
+
+@pytest.mark.asyncio
 async def test_a_handle_with_a_slash_still_reaches_the_viewer(tmp_path):
     """The handle is percent-encoded into the URL.
 
