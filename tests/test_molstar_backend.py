@@ -613,7 +613,7 @@ async def test_a_legend_draws_nothing(structure: Any) -> None:
             "size theme",
         ),
         (Label(Sel.all(), "%.2f", fields=("q",)), "takes no text"),
-        (Isosurface("s", "v", 0.05, Unit.ABSOLUTE), "volume action"),
+        (Isosurface("s", "v", 0.05, Unit.ABSOLUTE), "isosurface action"),
         (Frames(("a", "b"), (1, 2)), "latent traversals"),
         (Morph("m", "obj"), "morph action"),
         (Arrows(()), "custom-geometry"),
