@@ -47,8 +47,10 @@ up front**, before any op draws.
     names — and takes no text. A :class:`~wiggles_em.scene.Label` carries
     literal text plus atom fields to interpolate, which has nowhere to go.
 ``Isosurface``, ``ColorSurfaceByMap``
-    Volumes have no bridge actions yet; they arrive with the ``cryoem-volumes``
-    work.
+    Volumes now load (``load_volume``, ``volume_info``), but nothing contours
+    them: there is no isosurface action for these ops to call. See
+    ``docs/cryoem.md`` §1.2 — the next piece, and the last one refusing a
+    wiggles-em scene.
 ``Frames``, ``Morph``, ``Arrows``, ``Scatter``
     No Mol\\* equivalent, no custom geometry channel, and ``Scatter`` is
     forbidden to every backend by invariant I2.
@@ -794,21 +796,26 @@ class MolstarBackend:
 
     async def _isosurface(self, op: Isosurface) -> None:
         raise Refused(
-            f"contouring {op.volume!r} needs a volume action, and the bridge has "
-            f"none yet — that work is on the `cryoem-volumes` branch. Note for "
-            f"whoever lands it: this op carries a unit and it is {op.unit.value!r} "
-            f"here. Mol* takes absolute iso-values, so a level in sigma has to be "
-            f"converted against that map's own header before it is sent. Passing "
-            f"the number through is the trap the seam was moved up a layer to "
-            f"prevent."
+            f"contouring {op.volume!r} needs an isosurface action, and the bridge "
+            f"has none — volumes load, but nothing draws them. See docs/cryoem.md "
+            f"§1.2. Note for whoever lands it: this op carries a unit and it is "
+            f"{op.unit.value!r} here. Mol* takes absolute iso-values, so a level "
+            f"in sigma has to be converted against the map's sigma before it is "
+            f"sent — the *computed* one that `volume_info` reports as `sigma`, "
+            f"never the file's own claim under `stated`. For CCP4/MRC those header "
+            f"fields are frequently stale, and a contour placed against a stale "
+            f"sigma lands in the wrong place while every call returns cleanly. "
+            f"Passing the number through unconverted is the trap the seam was "
+            f"moved up a layer to prevent."
         )
 
     async def _colorsurfacebymap(self, op: ColorSurfaceByMap) -> None:
         raise Refused(
-            f"colouring a surface by {op.volume!r} needs the volume actions the "
-            f"`cryoem-volumes` branch adds. Its breakpoints are in the second "
-            f"volume's own units and convert against that volume's header, which is "
-            f"a different sigma scale from the density map's contour level."
+            f"colouring a surface by {op.volume!r} needs an isosurface to colour, "
+            f"and the bridge has no isosurface action — see docs/cryoem.md §1.3, "
+            f"which waits on §1.2. Its breakpoints are in the second volume's own "
+            f"units and convert against *that* volume's computed sigma, which is a "
+            f"different scale from the density map's contour level."
         )
 
     async def _frames(self, op: Frames) -> None:
