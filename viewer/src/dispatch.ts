@@ -578,8 +578,12 @@ export function createDispatcher(plugin: any): Handler {
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
 
-  /** Loaded volumes by handle: the parsed data plus its state ref. */
-  const volumes = new Map<string, { ref: string; data: any }>();
+  /** Loaded volumes by handle: the parsed data plus the state refs behind it.
+   *
+   * `downloadRef` is the ghost Download node holding the raw bytes. Deleting
+   * only the parsed volume leaves those bytes resident, so load/remove cycles
+   * would accumulate exactly the maps this feature exists not to hold. */
+  const volumes = new Map<string, { ref: string; downloadRef?: string; data: any }>();
 
   function requireVolume(name: string) {
     const entry = volumes.get(name);
@@ -588,6 +592,29 @@ export function createDispatcher(plugin: any): Handler {
       throw new Error(`No volume named '${name}'. Known: ${known}`);
     }
     return entry;
+  }
+
+  /** Delete a volume's state nodes, parsed and raw, and forget the handle. */
+  async function dropVolume(name: string) {
+    const entry = volumes.get(name);
+    volumes.delete(name);
+    if (!entry) return;
+    const build = plugin.state.data.build();
+    for (const ref of [entry.ref, entry.downloadRef]) {
+      if (ref) build.delete(ref);
+    }
+    await build.commit();
+  }
+
+  /** Forget every volume handle, for the paths that wipe the state tree.
+   *
+   * `plugin.clear()` removes the volume nodes but cannot know about this Map,
+   * and the statistics are computed from a `data` object the Map keeps alive.
+   * Without this, `volume_info` answers fully and plausibly about a volume the
+   * viewer no longer holds — the exact "returns cleanly, describes nothing"
+   * failure these tools were written to refuse. */
+  function forgetVolumes() {
+    volumes.clear();
   }
 
   /** Grid statistics computed from the voxels, plus whatever the file claimed.
@@ -806,6 +833,7 @@ export function createDispatcher(plugin: any): Handler {
       render: true,
       async run({ name, format, data, assembly }: LoadStructureArgs) {
         components.clear();
+        forgetVolumes();
         // Everything downstream reads structures[0], so a second load without
         // clearing leaves every later answer describing the *first* structure.
         // That is how a reload with different assembly settings silently kept
@@ -1624,10 +1652,7 @@ export function createDispatcher(plugin: any): Handler {
             .join(', ');
           throw new Error(`This Mol* build cannot parse '${format}'. Known: ${known}`);
         }
-        if (volumes.has(name)) {
-          await plugin.state.data.build().delete(volumes.get(name)!.ref).commit();
-          volumes.delete(name);
-        }
+        if (volumes.has(name)) await dropVolume(name);
 
         // download(), not rawData(): the bytes come over HTTP from the same
         // server that serves this page, because a 256 MB map does not belong
@@ -1636,14 +1661,42 @@ export function createDispatcher(plugin: any): Handler {
           { url, isBinary: format !== 'dx' && format !== 'cube' },
           { state: { isGhost: true } }
         );
-        const parsed = await provider.parse(plugin, raw);
-        const cell = parsed.volume ?? parsed.volumes?.[0] ?? parsed;
-        const data = cell?.obj?.data ?? cell?.cell?.obj?.data;
-        if (!data) throw new Error(`'${name}' parsed to nothing`);
-        const ref = cell.ref ?? cell.cell?.transform?.ref;
+        const downloadRef = raw?.ref ?? raw?.cell?.transform?.ref;
 
-        volumes.set(name, { ref, data });
-        return { name, format, ...volumeStats(data) };
+        // Everything from here can throw, and the Download node is already in
+        // the state tree holding the bytes. Nothing else has a handle on it, so
+        // failing without this cleanup strands a map-sized buffer per attempt.
+        let ref: string | undefined;
+        let stats: ReturnType<typeof volumeStats>;
+        let data: any;
+        try {
+          const parsed = await provider.parse(plugin, raw);
+          const cell = parsed.volume ?? parsed.volumes?.[0] ?? parsed;
+          data = cell?.obj?.data ?? cell?.cell?.obj?.data;
+          if (!data) throw new Error(`'${name}' parsed to nothing`);
+          ref = cell.ref ?? cell.cell?.transform?.ref;
+          if (!ref) {
+            // Without a ref there is no way to delete this later; registering
+            // it would mean remove_volume silently frees nothing.
+            throw new Error(`'${name}' parsed but Mol* gave it no state ref`);
+          }
+          // Before the Map, not after: volumeStats throws on a zero-voxel grid,
+          // and an entry registered first would poison every later
+          // list_volumes, which maps over all of them.
+          stats = volumeStats(data);
+        } catch (err) {
+          if (downloadRef) {
+            try {
+              await plugin.state.data.build().delete(downloadRef).commit();
+            } catch {
+              // The cleanup failing must not replace the real error.
+            }
+          }
+          throw err;
+        }
+
+        volumes.set(name, { ref, downloadRef, data });
+        return { name, format, ...stats };
       },
     },
 
@@ -1667,9 +1720,8 @@ export function createDispatcher(plugin: any): Handler {
 
     remove_volume: {
       async run({ name }: { name: string }) {
-        const { ref } = requireVolume(name);
-        await plugin.state.data.build().delete(ref).commit();
-        volumes.delete(name);
+        requireVolume(name);
+        await dropVolume(name);
         return { removed: name };
       },
     },
@@ -1865,6 +1917,10 @@ export function createDispatcher(plugin: any): Handler {
       async run({ snapshot, handles }: { snapshot: any; handles: Record<string, string[]> }) {
         await plugin.state.setSnapshot(snapshot);
         components.clear();
+        // Volume handles are not saved, so none can survive a restore. Keeping
+        // them would leave `volume_info` answering from a `data` object this
+        // Map holds alive, describing a volume the restored state never had.
+        forgetVolumes();
         // Keep only refs the restored state actually contains, so a stale or
         // hand-edited session degrades to fewer handles rather than to handles
         // that point at nothing.
@@ -1890,6 +1946,7 @@ export function createDispatcher(plugin: any): Handler {
       render: true,
       async run() {
         components.clear();
+        forgetVolumes();
         await plugin.clear();
         return {};
       },

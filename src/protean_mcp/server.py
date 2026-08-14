@@ -2871,8 +2871,11 @@ async def load_volume(
 
     path: an MRC/CCP4 (.map/.mrc/.ccp4, optionally .gz), DSN6, OpenDX, Gaussian
       cube or BinaryCIF volume. EMDB ships .map.gz and that is handled.
-    name: handle for later isosurface/colouring calls. Defaults to the file
-      stem.
+    name: handle for `volume_info` and `remove_volume`. Defaults to the file
+      stem. Note there is no isosurface tool yet, and `color_by_potential`
+      still takes OpenDX text inline rather than a handle — so a map loaded
+      here is currently display-only. That is the next piece of this work, not
+      something this handle already reaches.
     format: "auto" detects from the MRC magic and then the extension. Pass one
       of ccp4, dsn6, dx, cube, dscif to override.
 
@@ -2948,9 +2951,12 @@ async def remove_volume(name: str) -> str:
 
 @mcp.tool()
 async def clear_viewer() -> str:
-    """Remove all loaded structures from the viewer."""
+    """Remove all loaded structures and volumes from the viewer."""
     bridge = _require_viewer()
     await bridge.request("clear")
+    # The viewer has dropped its volume handles, so nothing can fetch these any
+    # more; holding the bytes past that point is retention with no reader.
+    bridge.forget_all_volumes()
     return "Viewer cleared."
 
 

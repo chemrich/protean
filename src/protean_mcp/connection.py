@@ -17,6 +17,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import WSMsgType, web
 
@@ -187,16 +188,33 @@ class ViewerBridge:
     def publish_volume(self, handle: str, source: Path | bytes) -> str:
         """Make a volume fetchable by the viewer. Returns the URL to fetch.
 
-        A path is streamed from disk; bytes are held in memory, which is what a
-        cropped volume is — small by construction. Nothing is decompressed
-        here: callers hand over data the viewer can parse.
+        Bytes are held in memory; a path is streamed from disk instead. Nothing
+        is decompressed here: callers hand over data the viewer can parse, which
+        is why `load_volume` takes the bytes branch — it has already had to
+        gunzip in order to identify the format.
+
+        The handle is percent-encoded into the URL and kept raw as the dict key.
+        A handle containing `/` would otherwise build a URL that `{handle}`
+        cannot match, so the request would fall through to the static catch-all
+        and 404 — which the viewer reports as a parse failure rather than as the
+        bad name it is. aiohttp decodes `match_info` on the way back in, so the
+        two halves still meet.
         """
         self._volumes[handle] = source
-        return f"/volumes/{handle}"
+        return f"/volumes/{quote(handle, safe='')}"
 
     def forget_volume(self, handle: str) -> None:
         """Stop serving a volume. Unknown handles are not an error."""
         self._volumes.pop(handle, None)
+
+    def forget_all_volumes(self) -> None:
+        """Stop serving every volume, releasing the bytes held for them.
+
+        Clearing the viewer leaves nothing that could fetch these, so keeping
+        them is pure retention: three 400-cubed maps is ~750 MB held by a server
+        displaying nothing.
+        """
+        self._volumes.clear()
 
     async def _volume_handler(self, request: web.Request) -> web.StreamResponse:
         source = self._volumes.get(request.match_info["handle"])

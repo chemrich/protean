@@ -157,3 +157,37 @@ async def test_forgetting_a_volume_stops_serving_it(bridge):
 
 def test_forgetting_an_unknown_volume_is_not_an_error():
     ViewerBridge().forget_volume("never-registered")
+
+
+async def test_a_handle_with_a_slash_is_encoded_into_the_url(bridge):
+    """An unquoted `/` builds a URL the `{handle}` route cannot match.
+
+    It falls through to the static catch-all and 404s, which the viewer then
+    reports as a parse failure rather than as the bad name it is — so the URL
+    is percent-encoded while the dict keeps the raw handle.
+    """
+    url = bridge.publish_volume("run 1/final", b"\x01\x02")
+    assert url == "/volumes/run%201%2Ffinal"
+
+    status, body, _ = await fetch(bridge, url)
+    assert status == 200
+    assert body == b"\x01\x02"
+
+
+async def test_forget_all_releases_every_published_volume(bridge):
+    """`clear_viewer` must drop the bytes, not only the viewer's handles.
+
+    Nothing can fetch them once the viewer has cleared, so keeping them is
+    retention with no reader — three 400-cubed maps is ~750 MB of it.
+    """
+    bridge.publish_volume("one", b"\x01")
+    bridge.publish_volume("two", b"\x02")
+
+    bridge.forget_all_volumes()
+
+    assert (await fetch(bridge, "/volumes/one"))[0] == 404
+    assert (await fetch(bridge, "/volumes/two"))[0] == 404
+
+
+def test_forgetting_all_volumes_on_an_empty_bridge_is_not_an_error():
+    ViewerBridge().forget_all_volumes()

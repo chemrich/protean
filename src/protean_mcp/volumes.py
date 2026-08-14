@@ -108,6 +108,12 @@ def read_volume(path: str | Path, format: str = "auto") -> Volume:
                 f"{path} looks gzipped but will not decompress: {exc}"
             ) from exc
 
+    # Before detection, not after: an empty file — or a valid gzip of nothing —
+    # would otherwise be reported as "cannot tell what format this is", which
+    # sends the caller looking for the wrong problem entirely.
+    if not raw:
+        raise VolumeError(f"{path} is empty")
+
     if format != "auto":
         if format not in FORMATS:
             raise VolumeError(f"unknown format {format!r}. Known: {', '.join(FORMATS)}")
@@ -123,9 +129,6 @@ def read_volume(path: str | Path, format: str = "auto") -> Volume:
                 f"Pass format= explicitly if you know what it is."
             )
         detected = found
-
-    if not raw:
-        raise VolumeError(f"{path} is empty")
 
     return Volume(data=raw, format=detected, was_compressed=was_compressed, source=path)
 

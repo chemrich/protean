@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from protean_mcp.connection import ViewerError
+from protean_mcp.fetch import fetch_structure_data
 
 from .browser import BROWSER_MARKS, viewer_session
 
@@ -154,6 +155,70 @@ async def test_a_volume_that_parsed_to_nothing_is_not_reported_as_loaded(tmp_pat
         # And it must not be left listed as though it had worked.
         listed = await session.request("list_volumes")
         assert [v["name"] for v in listed["volumes"]] == [], listed
+
+
+@pytest.mark.asyncio
+async def test_loading_a_structure_does_not_leave_a_volume_handle_behind(tmp_path):
+    """A handle must not outlive the state tree it points into.
+
+    `load_structure` calls `plugin.clear()`, which deletes every volume node.
+    The handle map lives in the dispatcher and Mol\\* cannot know about it, so
+    without an explicit forget the statistics keep answering — computed from a
+    ``data`` object the map itself holds alive — for a volume the viewer no
+    longer has. Full marks, plausible numbers, nothing there.
+
+    **Order is the whole test.** The volume has to be loaded *after* the session
+    is up, because ``viewer_session`` loads its structure during setup, and
+    structure-then-volume is the one ordering that cannot fail.
+    """
+    data = _grid()
+    raw = _write_mrc(tmp_path / "orphan.map", data)
+
+    async with viewer_session(STRUCTURE) as session:
+        await _load(session, "orphan", raw)
+        assert (await session.request("volume_info", {"name": "orphan"}))["voxels"] == (
+            NX * NY * NZ
+        )
+
+        structure = await fetch_structure_data(STRUCTURE)
+        await session.request(
+            "load_structure",
+            {
+                "name": STRUCTURE,
+                "format": structure.format,
+                "data": structure.data,
+                "assembly": "asymmetric",
+            },
+            timeout=120,
+        )
+
+        listed = await session.request("list_volumes")
+        assert listed["volumes"] == [], (
+            f"the volume survived a structure load as a handle into a state tree "
+            f"that no longer contains it: {listed}"
+        )
+        with pytest.raises(ViewerError, match="No volume named"):
+            await session.request("volume_info", {"name": "orphan"})
+
+
+@pytest.mark.asyncio
+async def test_a_handle_with_a_slash_still_reaches_the_viewer(tmp_path):
+    """The handle is percent-encoded into the URL.
+
+    An unquoted `/` builds `/volumes/run 1/final`, which the `{handle}` route
+    cannot match; the request falls through to the static catch-all, 404s, and
+    surfaces as a parse failure rather than as the bad name it is.
+    """
+    data = _grid()
+    raw = _write_mrc(tmp_path / "slashed.map", data)
+
+    async with viewer_session(STRUCTURE) as session:
+        reply = await _load(session, "run 1/final", raw)
+        assert reply["dimensions"] == [NX, NY, NZ], reply
+        assert reply["sigma"] == pytest.approx(float(data.std()), abs=1e-5), reply
+
+        info = await session.request("volume_info", {"name": "run 1/final"})
+        assert info["voxels"] == NX * NY * NZ, info
 
 
 @pytest.mark.asyncio
