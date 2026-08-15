@@ -151,7 +151,10 @@ What came out, attacked with a canary secret file as the target:
   Demonstrated with an outbound GET to a stand-in attacker server, which then
   chose the molecule on screen while `load_session` replied normally. The
   format exists to be shared, so "a session someone sent you" is its ordinary
-  use. **Fixed** — backlog 19.
+  use. **Fixed** — backlog 19, and note that the *first* fix was refuted by a
+  review the same day: it enumerated the param names Mol\* fetches from, and
+  Mol\* fetches from a `PD.Text` the enumeration could not see. A guard built
+  from a list of the attacker's options inherits that list's gaps.
 - **The readers hold.** `load_volume`, `load_trajectory`, `fetch_structure`,
   `color_by_potential` and `background` refuse by format or extension before
   reading anything interesting, and none echoes file content into an error the

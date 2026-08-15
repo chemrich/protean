@@ -15,12 +15,14 @@ from typing import Any
 
 import pytest
 
+from protean_mcp import server
 from protean_mcp.connection import ViewerError
 from protean_mcp.server import (
     SESSION_FORMAT,
     SESSION_VERSION,
     _decompress_session,
     _remote_references,
+    _unknown_transformers,
     load_session,
 )
 
@@ -112,6 +114,175 @@ def test_a_url_buried_in_a_list_is_found():
     assert len(_remote_references(snapshot)) == 1
 
 
+def test_a_bare_string_in_a_list_is_found():
+    """A URL inside a list has no key, so a key-name check cannot see it.
+
+    This was a live bypass of the first version of the guard, found by review.
+    """
+    assert _remote_references({"url": ["http://evil.example/x"]}) == [
+        "snapshot.url[0] = http://evil.example/x"
+    ]
+
+
+def test_a_fetching_param_that_is_not_named_url_is_found():
+    """`serverUrl` on create-volume-streaming-info is a PD.Text, not a PD.Url.
+
+    So it is invisible to a grep for PD.Url — which is exactly how the first
+    version of this guard was built, and exactly how it was bypassed. Mol*
+    fetches from it all the same (volume-streaming/transformers.js:163).
+    """
+    snapshot = tree(
+        {
+            "transformer": "ms-plugin.create-volume-streaming-info",
+            "params": {"serverUrl": "http://evil.example/ds"},
+            "version": "new",
+        }
+    )
+    assert _remote_references(snapshot) == [
+        "snapshot.data.tree.transforms[0].params.serverUrl = http://evil.example/ds"
+    ]
+
+
+# Written out rather than read from _SESSION_DEFAULT_URLS: looping over the set
+# under test passes when the set is empty, which is a test that cannot fail.
+MOLSTAR_DEFAULTS = [
+    "https://www.ebi.ac.uk/pdbe/api/validation/residuewise_outlier_summary/entry/",
+    "https://files.rcsb.org/pub/pdb/validation_reports",
+    "https://data.rcsb.org/graphql",
+]
+
+
+@pytest.mark.parametrize("url", MOLSTAR_DEFAULTS)
+def test_molstars_own_serialised_defaults_are_allowed_by_exact_value(url):
+    """A real session carries three third-party URLs it never asked for.
+
+    Mol* serialises the defaults of the custom-property providers the prebuilt
+    bundle registers. Measured from real sessions — so the guard cannot simply
+    refuse every absolute URL, and cannot allow the *key* either, since those
+    providers do fetch from whatever value is there.
+    """
+    allowed = tree(
+        {
+            "transformer": "ms-plugin.custom-structure-properties",
+            "params": {"properties": {"p": {"serverUrl": url}}},
+        }
+    )
+    assert _remote_references(allowed) == []
+
+
+def test_the_default_list_is_the_one_that_was_measured():
+    """Guards the parametrised test above against the set being emptied."""
+    assert frozenset(MOLSTAR_DEFAULTS) == server._SESSION_DEFAULT_URLS
+
+
+def test_a_default_url_swapped_for_another_host_is_found():
+    swapped = tree(
+        {
+            "transformer": "ms-plugin.custom-structure-properties",
+            "params": {
+                "properties": {"p": {"serverUrl": "https://evil.example/graphql"}}
+            },
+        }
+    )
+    assert len(_remote_references(swapped)) == 1
+
+
+def test_a_url_inside_a_longer_string_is_not_a_reference():
+    """The match is anchored, so text that merely mentions a URL is not one.
+
+    This is what keeps every real session loadable: an mmCIF header cites
+    http://mmcif.pdb.org/... in audit_conform. A Mol* param that gets fetched
+    holds the URL as its whole value, never embedded in prose.
+    """
+    snapshot = tree(
+        {
+            "transformer": "ms-plugin.raw-data",
+            "params": {"data": "_audit_conform.dict_location http://mmcif.pdb.org/x.dic"},
+        }
+    )
+    assert _remote_references(snapshot) == []
+
+
+def test_embedded_file_content_is_skipped_even_when_it_starts_with_a_url():
+    """`data` carries file bytes, which are parsed and never fetched.
+
+    Anchoring alone does not cover this: a payload can begin with something
+    URL-shaped, and refusing a session over the first line of its own
+    structure file would be a false positive on a legitimate file.
+    """
+    snapshot = tree(
+        {
+            "transformer": "ms-plugin.raw-data",
+            "params": {"data": "http://mmcif.pdb.org/x.dic is where this came from"},
+        }
+    )
+    assert _remote_references(snapshot) == []
+    # The same string anywhere else is a reference, which is what makes the
+    # skip specific to embedded content rather than a hole.
+    assert (
+        len(_remote_references(tree({"params": {"url": "http://mmcif.pdb.org/x.dic"}})))
+        == 1
+    )
+
+
+def test_a_transformer_protean_never_writes_is_refused():
+    """The half of the check that does not depend on spotting a URL.
+
+    create-volume-streaming-info fetches from Mol*'s own public default when
+    the file names no URL at all, so there is nothing for the URL walk to find.
+    """
+    snapshot = tree(
+        {"transformer": "ms-plugin.create-volume-streaming-info", "params": {}}
+    )
+    assert _remote_references(snapshot) == []  # nothing to see, by construction
+    assert _unknown_transformers(snapshot) == ["ms-plugin.create-volume-streaming-info"]
+
+
+def test_the_transformers_a_real_session_uses_are_all_allowed():
+    """Measured by building a scene with every state-adding tool and saving it."""
+    measured = [
+        "build-in.root",
+        "ms-plugin.raw-data",
+        "ms-plugin.parse-cif",
+        "ms-plugin.trajectory-from-mmcif",
+        "ms-plugin.model-from-trajectory",
+        "ms-plugin.custom-model-properties",
+        "ms-plugin.structure-from-model",
+        "ms-plugin.custom-structure-properties",
+        "ms-plugin.structure-component",
+        "ms-plugin.structure-representation-3d",
+        "ms-plugin.model-unitcell-3d",
+        "ms-plugin.create-group",
+        "ms-plugin.structure-multi-selection-from-bundle",
+        "ms-plugin.structure-selections-distance-3d",
+        "ms-plugin.download",
+        "ms-plugin.parse-ccp4",
+        "ms-plugin.volume-from-ccp4",
+        "ms-plugin.volume-representation-3d",
+    ]
+    snapshot = tree(*({"transformer": name} for name in measured))
+    assert _unknown_transformers(snapshot) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ms-plugin.parse-dx",
+        "ms-plugin.parse-dsn6",
+        "ms-plugin.parse-cube",
+        "ms-plugin.volume-from-dx",
+        "ms-plugin.volume-from-density-server-cif",
+    ],
+)
+def test_the_decoder_families_are_allowed_by_pattern(name):
+    """Which decoder appears depends on the volume format the caller loaded.
+
+    Safe as a family: neither transforms/data.js nor transforms/volume.js
+    fetches outside Download and DownloadBlob, which are checked by URL.
+    """
+    assert _unknown_transformers(tree({"transformer": name})) == []
+
+
 async def test_load_session_refuses_a_file_that_reaches_outside_itself(tmp_path):
     """The end-to-end refusal, and it must land before the viewer is called.
 
@@ -143,26 +314,57 @@ async def test_the_refusal_names_the_url_it_objected_to(tmp_path):
     assert "http://evil/x" in str(caught.value)
 
 
-def test_a_small_file_that_decompresses_enormously_is_refused(tmp_path):
-    """9 kB of gzip reaches 2 GB; gzip.decompress() would allocate all of it."""
+def test_a_small_file_that_decompresses_enormously_is_refused(tmp_path, monkeypatch):
+    """9 kB of gzip reaches 2 GB; gzip.decompress() would allocate all of it.
+
+    The bound is shrunk rather than the payload grown: asserting the property
+    against the real 512 MB bound costs over a GB of RSS per test to prove
+    something about the comparison, not about the size.
+    """
+    monkeypatch.setattr(server, "_MAX_SESSION_BYTES", 4096)
     bomb = tmp_path / "bomb.protean"
-    bomb.write_bytes(gzip.compress(b"A" * (600 * 1024 * 1024)))
-    assert bomb.stat().st_size < 1024 * 1024  # small on disk, by construction
+    bomb.write_bytes(gzip.compress(b"A" * (64 * 1024)))
+    assert bomb.stat().st_size < 1024  # small on disk, by construction
     with pytest.raises(ViewerError, match="decompresses to more than"):
         _decompress_session(bomb)
 
 
-async def test_the_bomb_is_refused_through_load_session_too(tmp_path):
+async def test_the_bomb_is_refused_through_load_session_too(tmp_path, monkeypatch):
     """The bound has to survive load_session's own except clause.
 
     ViewerError is a RuntimeError, so it passes through the (OSError,
     BadGzipFile, JSONDecodeError) handler around the parse rather than being
     reworded into "not a readable protean session".
     """
+    monkeypatch.setattr(server, "_MAX_SESSION_BYTES", 4096)
     bomb = tmp_path / "bomb.protean"
-    bomb.write_bytes(gzip.compress(b"A" * (600 * 1024 * 1024)))
+    bomb.write_bytes(gzip.compress(b"A" * (64 * 1024)))
     with pytest.raises(ViewerError, match="decompresses to more than"):
         await load_session(str(bomb))
+
+
+async def test_json_that_is_not_an_object_is_refused(tmp_path):
+    """`[1, 2, 3]` reached .get() and raised a bare AttributeError."""
+    odd = tmp_path / "odd.protean"
+    odd.write_bytes(gzip.compress(b"[1, 2, 3]"))
+    with pytest.raises(ViewerError, match="not a protean session"):
+        await load_session(str(odd))
+
+
+async def test_a_session_with_no_scene_is_refused(tmp_path):
+    """Format and version say session; the scene is simply absent.
+
+    This raised KeyError: 'molstar' from the call site, because the guard read
+    it with .get() and the line after it did not.
+    """
+    empty = tmp_path / "empty.protean"
+    empty.write_bytes(
+        gzip.compress(
+            json.dumps({"format": SESSION_FORMAT, "version": SESSION_VERSION}).encode()
+        )
+    )
+    with pytest.raises(ViewerError, match="carries no scene"):
+        await load_session(str(empty))
 
 
 async def test_a_deeply_nested_file_is_refused_rather_than_traced(tmp_path):
