@@ -37,6 +37,39 @@ export function connectBridge(handle: Handler): void {
   let attempts = 0;
   let gaveUp = false;
 
+  // Requests received and not yet answered, and replies that were ready while
+  // no socket was open to carry them.
+  //
+  // A long action blocks this thread — Mol*'s image pass at figure resolution
+  // renders in one synchronous call, tens of seconds of it — and the socket can
+  // die in that window. Nothing here notices until the render returns, and by
+  // then `ws.send` on the closed socket is a silent no-op: the reply is dropped,
+  // the server waits out the request's whole budget, and reports a stall for
+  // work that had actually succeeded. Observed against a 68 s journal-figure
+  // capture, whose socket closed 62 s in.
+  //
+  // So a reply that cannot be sent is kept and delivered on the next
+  // authenticated socket, and the ids are declared on the handshake so the
+  // server can tell "still coming" from "that page is gone".
+  const running = new Set<string>();
+  const outbox = new Map<string, string>();
+
+  const deliver = (id: string, payload: string) => {
+    running.delete(id);
+    if (current && current.readyState === WebSocket.OPEN) {
+      current.send(payload);
+      return;
+    }
+    outbox.set(id, payload);
+  };
+
+  const flushOutbox = (ws: WebSocket) => {
+    for (const [id, payload] of outbox) {
+      ws.send(payload);
+      outbox.delete(id);
+    }
+  };
+
   const setStatus = (connected: boolean) => {
     if (!status) return;
     if (superseded) {
@@ -71,6 +104,10 @@ export function connectBridge(handle: Handler): void {
           action: 'protean_ping',
           version: PROTOCOL_VERSION,
           visibility: document.visibilityState,
+          // What this page still owes an answer for. A reconnecting page that
+          // claims nothing has lost the work — it reloaded — and the server
+          // can say so at once instead of waiting out the timeout.
+          inflight: [...running, ...outbox.keys()],
         })
       );
     };
@@ -79,9 +116,12 @@ export function connectBridge(handle: Handler): void {
       const msg = JSON.parse(ev.data);
       if (msg.action === 'protean_pong') {
         // A completed handshake, not merely an open socket: the server closes
-        // an unauthenticated one without ever answering.
+        // an unauthenticated one without ever answering. Replies held while
+        // the socket was down go now, for the same reason — an unauthenticated
+        // socket would never carry them.
         attempts = 0;
         setStatus(true);
+        flushOutbox(ws);
         return;
       }
       if (msg.action === 'protean_superseded') {
@@ -90,13 +130,14 @@ export function connectBridge(handle: Handler): void {
         return;
       }
       const { id, action, args } = msg;
+      running.add(id);
       try {
         const result = await handle(action, args ?? {});
-        ws.send(JSON.stringify({ id, ok: true, result: result ?? {} }));
+        deliver(id, JSON.stringify({ id, ok: true, result: result ?? {} }));
       } catch (e) {
         const error = e instanceof Error ? e.message : String(e);
         console.error(`protean action '${action}' failed:`, e);
-        ws.send(JSON.stringify({ id, ok: false, error }));
+        deliver(id, JSON.stringify({ id, ok: false, error }));
       }
     };
 

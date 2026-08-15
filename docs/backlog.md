@@ -863,14 +863,30 @@ and passed when the same commit was re-run. All three failed the same way —
 `Viewer timed out on 'snapshot' after 300.0s` — which is a timeout, not an
 assertion: nothing had computed a wrong answer.
 
-**It was chased rather than re-run, and the first thing the evidence did was
-contradict the obvious explanation.** "A slow runner" was the working theory;
-the re-run that passed took 32:58 against the failure's 34:56, so the runner
-was not having a bad day. What had happened is visible only across runs: every
-browser job before `declutter-the-viewer` merged took 15–17 minutes and every
-one after takes 31–34. The collapsed panels give Mol\* a much larger canvas,
-every render in the suite costs more, and a capture that had been finishing
-inside 300 s stopped reliably doing so.
+**It was chased rather than re-run, and the evidence contradicted two
+explanations in a row — including the one this entry was first written
+around.** Keeping both wrong turns, because each was plausible enough to have
+been shipped as the answer.
+
+*"A slow runner"* died first: the re-run that passed took 32:58 against the
+failure's 34:56.
+
+*"The declutter made every render more expensive"* died second, and it is the
+one that had already been written down here as fact. It rested on a number
+nobody had measured — the canvas is **722x311, 0.22 MP**, far too small for
+viewport rendering to double a fifteen-minute suite. What is true is that the
+job stepped at that merge: 15-17 minutes before, 31-34 after. What changed with
+it is that **skips fell from 31 to 28**. Three tests stopped skipping and
+started running, and the suite has only three runtime skip sites — two of them
+the wheel build and ffmpeg, which a viewer-layout change cannot touch. The
+third is `_figure_or_skip`, "this renderer cannot capture at 4323px", and it
+guards exactly three tests: these ones. So the extra time is real work that had
+been silently absent, not waste. **Inferred, not proven** — the flip could not
+be reproduced locally, where every capture completes.
+
+The lesson that outlives the specific answer: **`pytest -q` prints a skip
+count and no reasons, so a test can stop running and the job stays green.**
+The suite was passing while its Phase 4 exit criterion never executed.
 
 Measured under SwiftShader on the development machine, one capture per width:
 
@@ -907,14 +923,66 @@ before declutter-the-viewer merged   15–17 min per browser job
 after                                31–34 min
 ```
 
-The cause is the fix working: collapsing Mol\*'s panels hands the canvas the
-space they were using, and under SwiftShader cost follows pixels. The browser
-job was already **76.5% of the Actions bill** (measured 2026-08-12), so this
-roughly doubles CI spend — still small in dollars, and worth stating before it
-is noticed as a surprise.
+**Most of it is probably not waste.** Three tests began running at that merge
+(item 23), and three journal-figure captures at CI speed account for the bulk
+of the difference. Buying that time back means choosing not to run the Phase 4
+exit criterion on every PR — a legitimate choice, but a coverage decision
+rather than an efficiency one.
 
-The obvious lever is to give the differential harness an explicit, smaller
-window rather than accepting the headless default. It is not a free change:
-several pixel-fraction thresholds in `test_render_differential.py` are
-calibrated per renderer and some are close to their limits, so a resolution
-change wants them re-derived rather than re-tuned until green.
+**Shrinking the window is the wrong lever**, and this is the measurement that
+says so rather than an argument:
+
+```
+headless default   canvas 722x311   0.22 MP
+--window-size=800,600     766x355   0.27 MP
+--window-size=640,480     606x235   0.14 MP
+```
+
+Even the aggressive setting removes 0.08 MP per viewport render — a fraction of
+a second each — while moving every pixel-fraction threshold in
+`test_render_differential.py`, several of which are calibrated per renderer and
+close to their limits. Setup dominates many of those tests anyway: browser
+launch and structure load run 13–33 s apiece, against captures of 2–3 s.
+
+The levers that cost no fidelity at all come first, and neither is about
+pixels: **41 of 100 runs were post-merge pushes to `main` re-testing a tree the
+PR had just verified** (~a quarter of all spend), and docs-only PRs could be
+path-filtered. The dollars are small either way and go to zero if a public repo
+gets free Actions minutes; what survives the flip is the 15→33 min feedback
+loop, which is the thing actually worth buying back.
+
+### 25. A capture's reply could be lost with its socket — fixed
+
+Found by the failure in item 23 finally being legible. During a figure-sized
+capture the page's main thread is blocked for tens of seconds, and in that
+window the WebSocket can die: observed twice out of two runs of
+`test_render_differential.py`, closing **62 s into a 68 s capture** with
+
+```
+close_code = ABNORMAL_CLOSURE (1006)
+exception  = ClientConnectionResetError('Cannot write to closing transport')
+```
+
+1006 means no close frame — the connection died rather than either side
+choosing to end it. No renderer crash appears in Chrome's own log, so the page
+survives it.
+
+**The reply was then dropped in silence.** `bridge.ts` replied on the socket
+captured when the request arrived, and `send` on a closed socket is a no-op, so
+the answer went nowhere while the work had actually succeeded. The server, with
+nothing failing a pending request, waited out the entire budget and reported a
+stall — *"Viewer timed out on 'snapshot' after 300.0s"*, which is exactly what
+CI printed on PR 84. **The timeout was never the bug; it was the only
+instrument pointed at it.**
+
+Three changes, and the order matters:
+
+1. the page keeps a reply it cannot send and delivers it on the next
+   authenticated socket;
+2. the handshake declares what the page still owes (`inflight`), so a page that
+   reconnects mid-render keeps its request alive while one that reloaded ends
+   it at once;
+3. a plain disconnect deliberately fails nothing. The first version of this
+   work did fail on disconnect, which reads as obviously right and destroys a
+   reply that is still coming — it turned a recoverable drop into a certain
+   failure.

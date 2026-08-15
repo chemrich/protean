@@ -49,11 +49,10 @@ nothing is released yet, so everything below is unreleased.
   capture shared one fixed 300 s budget, which the range of sizes makes
   meaningless: 12000×9000 takes about 20 s on a real GPU, while under software
   rendering the same machine takes 6.5 s for a 1200 px capture and 105 s for a
-  4323 px one — 183 mm at 600 dpi, an ordinary journal figure. On a CI runner,
-  roughly three times slower again, that figure landed either side of 300 s
-  depending on the day: the same commit failed three tests on one run and
-  passed on the next. Above about 5000 px the fixed budget could not be met on
-  any renderer that slow, including locally.
+  4323 px one — 183 mm at 600 dpi, an ordinary journal figure. A CI runner is
+  roughly three times slower again. Above about 5000 px the fixed budget could
+  not be met on any renderer that slow, including locally, for sizes the tool
+  accepts without complaint.
 
   The budget is now 60 s per megapixel of the requested size, with a 300 s
   floor for small captures — about 10x what the development machine needs for a
@@ -68,14 +67,27 @@ nothing is released yet, so everything below is unreleased.
   Silence is what a healthy large capture looks like, and only the pixel count
   separates it from a stall.
 
-- **A viewer that goes away ends the requests it was holding.** Nothing failed
-  an in-flight request when the page disconnected, so a closed or reloaded tab
-  left the call waiting out its entire timeout — now minutes, for a figure —
-  and then blaming a stall, which is the wrong diagnosis for a viewer that
-  simply left. The same held when a second protean tab won the handshake and
-  displaced the first: the reply was lost with the page that had been asked,
-  while `viewer_connected` went on reporting a viewer. Requests now fail as
-  soon as the reply becomes impossible, and say which of the three happened.
+  This is not what made the journal-figure test flaky in CI — that was a lost
+  reply, below — but the two share a cause worth naming: a long render is
+  indistinguishable from a stall from the outside, so both the budget and the
+  failure reporting were guessing.
+
+- **A capture's reply is no longer lost with its socket.** During a
+  figure-sized capture the page's main thread is blocked for tens of seconds,
+  and the WebSocket can die inside that window — observed closing 62 s into a
+  68 s capture, abnormally (1006, no close frame), with the page itself
+  surviving. The page then replied on the socket the request had arrived on,
+  and `send` on a closed socket does nothing, so the answer vanished although
+  the work had succeeded. Nothing failed the waiting request either, so it ran
+  out its whole budget and reported a stall — *"Viewer timed out on
+  'snapshot'"*, which is what CI had been printing.
+
+  The page now keeps a reply it cannot send and delivers it on the next
+  authenticated socket, and the handshake declares what that page still owes.
+  A viewer that reconnects mid-render keeps its request alive; one that
+  reloaded, or a second tab that takes the connection, ends it immediately with
+  the reason rather than at the end of the budget. A plain disconnect
+  deliberately fails nothing: the reply may still be on its way.
 
 - **`screenshot` works again through an MCP client.** It failed for every
   caller with `Unable to serialize unknown type: Image`, while the test suite

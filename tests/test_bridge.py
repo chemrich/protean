@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import socket
+from typing import Any
 
 import aiohttp
 import pytest
@@ -56,46 +58,105 @@ async def test_request_timeout(bridge, viewer):
         await bridge.request("slow", timeout=0.2)
 
 
-# -- a reply that can never arrive -------------------------------------------
+# -- a socket that dies under an in-flight request -----------------------------
 #
-# Each of these starts a request whose timeout is far longer than the test is
-# allowed to take, so passing means the wait ended because the reply became
-# impossible and not because the clock ran out. That is the point: a capture's
-# budget is minutes long now, and spending it waiting on a page that has
-# already gone would report a stall for a viewer that simply left.
+# A figure-sized capture blocks the page's main thread for tens of seconds, and
+# the socket can die inside that window — observed at 62 s into a 68 s capture,
+# abnormally, with the page surviving. Two things must hold: a reply that
+# arrives late on a new socket still counts, and a page that comes back without
+# the work ends the wait rather than leaving it to the budget.
+#
+# Each request below is given a timeout far longer than the test may take, so
+# passing means the wait ended for the right reason rather than on the clock.
 
 
 async def _inflight(bridge, action: str = "slow"):
-    """Start a request nobody will answer, and let it reach the socket."""
+    """Start a request nobody has answered yet, and let it reach the socket."""
     task = asyncio.create_task(bridge.request(action, timeout=300))
     await asyncio.sleep(0.1)
     return task
 
 
-async def test_a_closed_viewer_ends_an_inflight_request(bridge, viewer):
+async def _reconnect(bridge, inflight: list[str] | None = None) -> MockViewer:
+    """A viewer connecting afresh, declaring what it still owes an answer for."""
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token={bridge.token}")
+    successor = MockViewer(session, ws)
+    ping: dict[str, Any] = {"action": "protean_ping", "version": 1}
+    if inflight is not None:
+        ping["inflight"] = inflight
+    await ws.send_json(ping)
+    await ws.receive()  # pong
+    return successor
+
+
+async def test_a_reply_delivered_after_a_reconnect_still_counts(bridge, viewer):
+    """The recovery the whole design exists for.
+
+    The socket dies mid-render, the page finishes the work, reconnects and
+    hands over the reply it could not send. Failing the request on the
+    disconnect — which reads as obviously right — would throw this answer away.
+    """
+    task = asyncio.create_task(bridge.request("snapshot", timeout=300))
+    await asyncio.sleep(0.1)
+    rid_holder = list(bridge._pending)
+    assert rid_holder, "the request should be pending"
+
+    # The socket dies under it, and the page comes back still owing the reply.
+    await viewer.ws.close()
+    await asyncio.sleep(0.1)
+    successor = await _reconnect(bridge, inflight=rid_holder)
+    try:
+        await successor.ws.send_json(
+            {"id": rid_holder[0], "ok": True, "result": {"recovered": True}}
+        )
+        assert await asyncio.wait_for(task, timeout=5) == {"recovered": True}
+    finally:
+        await successor.close()
+
+
+async def test_a_disconnect_alone_does_not_end_the_wait(bridge, viewer):
+    """Because the page may be mid-render with the socket dead under it."""
     task = await _inflight(bridge)
     await viewer.ws.close()
+    await asyncio.sleep(0.5)
 
-    with pytest.raises(ViewerError, match="disconnected"):
-        await asyncio.wait_for(task, timeout=5)
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_a_reloaded_viewer_ends_the_wait_at_once(bridge, viewer):
+    """A page that comes back claiming nothing has lost the work.
+
+    This is what keeps the fast, accurate failure without the destructive part:
+    the caller hears immediately instead of at the end of a figure's budget.
+    """
+    task = await _inflight(bridge)
+    await viewer.ws.close()
+    await asyncio.sleep(0.1)
+    successor = await _reconnect(bridge, inflight=[])
+
+    try:
+        with pytest.raises(ViewerError, match="reloaded"):
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        await successor.close()
 
 
 async def test_a_displaced_viewer_ends_an_inflight_request(bridge, viewer):
-    """A second tab wins the socket, and the first one's reply is lost with it.
+    """A second tab wins the socket while the first was working.
 
     Worse than a plain disconnect, because the bridge still has a viewer
     afterwards: only the page that was asked has gone, so nothing about
     `viewer_connected` says anything is wrong.
     """
     task = await _inflight(bridge)
-
-    session = aiohttp.ClientSession()
-    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token={bridge.token}")
-    successor = MockViewer(session, ws)
-    await successor.handshake()
+    successor = await _reconnect(bridge)
 
     try:
-        with pytest.raises(ViewerError, match="replaced by another protean tab"):
+        with pytest.raises(ViewerError, match="another protean tab"):
             await asyncio.wait_for(task, timeout=5)
     finally:
         await successor.close()
