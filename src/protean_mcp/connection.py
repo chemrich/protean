@@ -139,10 +139,29 @@ class ViewerBridge:
         One place builds this so no caller can open a viewer that cannot then
         connect. The page reads the token out of its own query string and
         appends it to the WebSocket URL.
+
+        **This value is a credential.** Anything holding it can drive the
+        viewer: the Origin check is no second line of defence here, because
+        `_allowed_origin` allows an *absent* Origin so that non-browser clients
+        can connect at all. Hand it to a browser, not to a reply — see
+        `display_url` for the one that is safe to show.
         """
         if self.port is None:
             raise ViewerError("bridge is not running, so it has no URL yet")
         return f"http://127.0.0.1:{self.port}/?token={quote(self.token, safe='')}"
+
+    @property
+    def display_url(self) -> str:
+        """The same address with the token left off, for showing to a caller.
+
+        A reply from an MCP tool is read by a model, kept in a transcript and
+        often written to a log, so a token in one is a credential in all three.
+        Opening this URL gives a viewer that cannot connect, which is the
+        correct failure: the page says so rather than half-working.
+        """
+        if self.port is None:
+            raise ViewerError("bridge is not running, so it has no URL yet")
+        return f"http://127.0.0.1:{self.port}/"
 
     @property
     def viewer_connected(self) -> bool:

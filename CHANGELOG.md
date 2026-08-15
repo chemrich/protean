@@ -7,6 +7,17 @@ nothing is released yet, so everything below is unreleased.
 
 ### Fixed
 
+- **`load_session` no longer leaves the analysis describing the previous
+  molecule.** It restored the viewer and never touched the Python side, so
+  every count, distance and selection afterwards answered about whatever was
+  loaded before — measured at viewer 100 atoms against `_structure`'s 660,
+  with the identifier still reading `1ubq` and nothing reporting a
+  discrepancy. The analysis state is now cleared and the reply says so, along
+  with anything discarded, so measurements refuse rather than answer wrongly.
+  Restoring the analysis side from the session's own embedded structure is the
+  better answer and comes next; refusing is the honest one until then, because
+  the alternative was not "no analysis" but "analysis of the wrong molecule".
+
 - **A viewer that cannot connect now says why, instead of retrying forever.**
   The WebSocket API hides the handshake's HTTP status from the page, so a
   refused socket and an unreachable server arrive as the same event — and the
@@ -21,6 +32,15 @@ nothing is released yet, so everything below is unreleased.
   capped.
 
 ### Security
+
+- **`open_viewer` no longer hands the handshake token to the model.** The URL
+  it returned carried the token, so the credential that authenticates a viewer
+  socket landed in the model's context, in transcripts and in any log of tool
+  results — and the `Origin` check is no backstop for a leaked token, because
+  an *absent* Origin is allowed so non-browser clients can connect at all. The
+  address now comes back without it while the real one goes straight to the
+  browser; `reveal_url=True` asks for it deliberately, for a second browser or
+  a forwarded port. All three of `open_viewer`'s return paths were leaking it.
 
 - **A session file is no longer trusted to say where the viewer should look.**
   `load_session` handed the file's embedded Mol\* state tree straight to
