@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import math
+import re
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from .analysis.electrostatics import prepare as _prepare_charges
 from .analysis.electrostatics import run_apbs as _run_apbs
 from .analysis.electrostatics import sample as _sample_grid
 from .analysis.electrostatics import write_dx as _write_dx
+from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
@@ -247,6 +249,41 @@ async def _call(action: str, args: dict[str, Any] | None = None) -> dict[str, An
     return result
 
 
+def _writable(out: Path, writes: tuple[str, ...], *, overwrite: bool) -> Path:
+    """Refuse to change what an existing file *is*, unless asked outright.
+
+    Every tool here writes wherever it is pointed, creating parent directories
+    on the way. The caller is a model, so the realistic route to a destructive
+    write is a tool call it was talked into, and the demonstrated ones were not
+    subtle: `save_session` replacing a 21-byte JSON file with 32 kB of gzip,
+    and `electrostatics(path=…)` — an *output* path that reads like an input —
+    writing an OpenDX grid over a file named `secret.key`.
+
+    The rule is narrower than "never overwrite", because overwriting is half of
+    how these tools are used: capture a figure, adjust the scene, capture it
+    again over the same name. What is never intended is a write that changes a
+    file from one kind of thing into another, and that is exactly the shape
+    both demonstrations had. So an existing file is replaced only when it
+    already holds what this tool writes.
+
+    `overwrite=True` says do it anyway. That is a smaller barrier than it looks
+    against a hostile tool call — anything that can set the path can set the
+    flag — and it is still worth having: it moves destruction from something
+    that happens invisibly to something a caller has to ask for by name, in a
+    call a reader can see.
+    """
+    if out.is_dir():
+        raise ViewerError(f"{out} is a directory, so there is no file to write there")
+    if not out.exists() or overwrite or out.suffix.lower() in writes:
+        return out
+    raise ViewerError(
+        f"{out} already exists and is not {'/'.join(writes)}, so writing here "
+        f"would replace a {out.suffix or 'extensionless'} file with something "
+        "else entirely. Pass overwrite=True to do that on purpose, or choose "
+        "another path."
+    )
+
+
 def _visibility_note(bridge: ViewerBridge) -> str:
     """Flag a backgrounded tab: loads still work there, but only via the pump."""
     visibility = bridge.viewer_visibility
@@ -256,26 +293,38 @@ def _visibility_note(bridge: ViewerBridge) -> str:
 
 
 @mcp.tool()
-async def open_viewer(timeout: float = 20) -> str:
+async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
 
     Idempotent: if a viewer is already connected, reports its address instead
     of opening a new tab.
+
+    reveal_url: include the handshake token in the address reported back. The
+      token is what authenticates a socket, and an *absent* Origin is allowed
+      so non-browser clients can connect at all — so whatever holds this URL
+      can drive the viewer and answer for it. This reply is read by a model,
+      kept in a transcript and often written to a log, so by default the
+      address comes back without it and the real one goes straight to the
+      browser. Set this only to open the viewer somewhere the launch could not
+      reach: a second browser, or another machine forwarding the port.
     """
     bridge = get_bridge()
-    port = await bridge.start()
-    url = f"http://127.0.0.1:{port}/"
+    await bridge.start()
+    # Carries the handshake token; the bridge builds it so no caller can open a
+    # viewer that is then refused by its own socket.
+    launch_url = bridge.viewer_url
+    shown = launch_url if reveal_url else bridge.display_url
     if bridge.viewer_connected:
-        return f"Viewer already connected at {url}{_visibility_note(bridge)}"
+        return f"Viewer already connected at {shown}{_visibility_note(bridge)}"
     if _static_dir() is None:
         return (
-            f"Bridge is listening at {url}, but the viewer app is not built. "
+            f"Bridge is listening at {shown}, but the viewer app is not built. "
             "Run `npm install && npm run build` in the viewer/ directory, "
             "then call open_viewer again."
         )
-    webbrowser.open(url)
+    webbrowser.open(launch_url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {url}{_visibility_note(bridge)}"
+    return f"Viewer connected at {shown}{_visibility_note(bridge)}"
 
 
 @mcp.tool()
@@ -850,6 +899,7 @@ async def snapshot(
     format: str = "png",
     transparent: bool | None = None,
     crop: bool = False,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """Save a publication-resolution figure at a real physical size.
 
@@ -867,6 +917,10 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
+    overwrite: replace the file at `path` even when it holds something other
+      than what this tool writes. Off by default so a call cannot quietly turn
+      one kind of file into another — the shape of every destructive write
+      found in the security pass.
 
     Returns the path, the pixel dimensions, the DPI written into the file, and
     the size on disk. Height follows the viewport's aspect ratio.
@@ -904,6 +958,7 @@ async def snapshot(
     out = Path(path).expanduser()
     if not out.suffix:
         out = out.with_suffix(_SNAPSHOT_FORMATS[chosen])
+    out = _writable(out, tuple(_SNAPSHOT_FORMATS.values()), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     image = _open_snapshot(png)
@@ -1381,7 +1436,9 @@ async def record_timeline(
 
 
 @mcp.tool()
-async def movie(directory: str, path: str, fps: int = 30) -> dict[str, Any]:
+async def movie(
+    directory: str, path: str, fps: int = 30, overwrite: bool = False
+) -> dict[str, Any]:
     """Encode a directory of captured frames into a movie.
 
     Reads frame_0000.png upward — what turntable() and record_trajectory()
@@ -1396,6 +1453,11 @@ async def movie(directory: str, path: str, fps: int = 30) -> dict[str, Any]:
     ffmpeg has to be installed; it is checked before anything is written, and
     the frames are ordinary PNGs if you would rather encode them elsewhere.
     """
+    # Encoding over a previous encode is the ordinary case, so the containers
+    # encode.py accepts are what may be replaced. Shared with it rather than
+    # listed again: a second copy of a table is the thing this repo keeps
+    # getting caught by.
+    _writable(Path(path).expanduser(), tuple(MOVIE_CONTAINERS), overwrite=overwrite)
     try:
         return dict(_encode_movie(directory, path, fps))
     except EncodeError as exc:
@@ -1946,14 +2008,239 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 SESSION_FORMAT = "protean-session"
 SESSION_VERSION = 1
 
+# A session is mostly embedded mmCIF, which compresses about 5x, so a real one
+# is a few MB. The bound is on the *decompressed* size because that is what a
+# crafted file controls: 9 kB of gzip expands to 2 GB at a ratio a text
+# document reaches easily, and load_session decompresses before it can check
+# anything about the contents.
+_MAX_SESSION_BYTES = 512 * 1024 * 1024
+
+# The only URL protean itself puts in a session: a relative path to this
+# bridge's own volume route, which is how a volume reaches the viewer.
+# `/volumes/{handle}` is a dict lookup in connection.py, not a filesystem path,
+# so allowing this prefix cannot be turned into a read.
+#
+# `\Z` rather than `$`, and no whitespace in the handle: `$` matches before a
+# trailing newline and `[^/]` admits one, so "/volumes/x\n" would have passed
+# as this bridge's own route. The emitter percent-encodes handles, so a real
+# one never carries whitespace.
+_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/\s]+\Z")
+
+# Anything naming a location to fetch: a scheme, a protocol-relative //host, or
+# a leading /, which the browser resolves against the viewer's own origin — so
+# `/volumes/../../x` is a request to this bridge that is not the volumes route.
+# Measured: the only /-leading strings in real sessions are the volume URLs.
+_SESSION_URL_LIKE = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?/")
+
+# Mol* serialises its *own* defaults for the custom-property providers the
+# prebuilt bundle registers, so a legitimate session carries these three third-
+# party URLs without protean ever asking for anything. They are allowed by
+# exact value only: the same key holding a different host is a session telling
+# the viewer to fetch from someone else, and those providers do fetch.
+# Measured from real sessions — re-measure when the molstar pin moves, and
+# expect the failure to be a loud refusal naming the URL.
+_SESSION_DEFAULT_URLS = frozenset(
+    {
+        "https://www.ebi.ac.uk/pdbe/api/validation/residuewise_outlier_summary/entry/",
+        "https://files.rcsb.org/pub/pdb/validation_reports",
+        "https://data.rcsb.org/graphql",
+    }
+)
+
+# What protean's own save_session writes, measured by building a scene with
+# every state-adding tool (structures, representations, labels, measurements,
+# presets, superposition, volumes, isosurfaces) and taking the union.
+#
+# This is an allowlist rather than a hunt for fetching params, because the
+# fetching ones cannot be enumerated reliably: `create-volume-streaming-info`
+# fetches from `serverUrl`, which is a PD.Text and so invisible to a PD.Url
+# grep, and it would fetch from Mol*'s public default even with no URL in the
+# file at all. A name protean never writes has no business in a protean
+# session.
+_SESSION_TRANSFORMERS = frozenset(
+    {
+        "build-in.root",
+        "ms-plugin.create-group",
+        "ms-plugin.custom-model-properties",
+        "ms-plugin.custom-structure-properties",
+        "ms-plugin.download",
+        "ms-plugin.model-from-trajectory",
+        "ms-plugin.model-unitcell-3d",
+        "ms-plugin.raw-data",
+        "ms-plugin.structure-component",
+        "ms-plugin.structure-from-model",
+        "ms-plugin.structure-multi-selection-from-bundle",
+        "ms-plugin.structure-representation-3d",
+        "ms-plugin.structure-selections-angle-3d",
+        "ms-plugin.structure-selections-dihedral-3d",
+        "ms-plugin.structure-selections-distance-3d",
+        "ms-plugin.volume-representation-3d",
+        # trajectory-from-mmcif is covered by the decoder pattern below, along
+        # with trajectory-from-pdb; naming one of the pair here would read as
+        # if it were the only one allowed.
+    }
+)
+
+# The decoder families, allowed by pattern because which one appears depends on
+# the format the caller loaded rather than on anything protean chooses: a .pdb
+# file gives `trajectory-from-pdb` where an mmCIF gives `trajectory-from-mmcif`,
+# and each volume format has its own pair. Naming them one by one is how this
+# check came to refuse a session protean had just written — the census behind
+# the list above used structures fetched from RCSB, which arrive as mmCIF, so
+# no PDB file was ever in it.
+#
+# Safe to admit as families, on a claim narrower than it is tempting to write:
+# **no `parse-*`, `volume-from-*` or `trajectory-from-*` transform fetches** —
+# each consumes the object its parent produced. That is not the same as saying
+# their files do not fetch, and the difference matters when re-measuring:
+# transforms/model.js *does* fetch, in `custom-model-properties` and
+# `custom-structure-properties` (it hands `assetManager` to the property
+# providers at model.js:1150 and :1206), which is exactly what reaches the
+# three URLs pinned by value above. Those two are allowlisted by name, not by
+# this pattern. In transforms/data.js the fetching transforms are Download —
+# named above, and its URL checked — and DownloadBlob, which is in neither
+# list and so is refused outright.
+#
+# `\Z`, not `$`: `$` also matches before a trailing newline, so
+# "ms-plugin.parse-cif\n" would be admitted as a known decoder and reach the
+# viewer to fail there as a raw Mol* error, rather than being refused here by
+# name. `_SESSION_LOCAL_URL` above is anchored the same way and for the same
+# reason.
+_SESSION_DECODERS = re.compile(
+    r"^ms-plugin\.(?:parse|volume-from|trajectory-from)-[a-z0-9-]+\Z"
+)
+
 
 def _session_path(path: str) -> Path:
     out = Path(path).expanduser()
     return out if out.suffix else out.with_suffix(".protean")
 
 
+def _decompress_session(src: Path) -> bytes:
+    """Gunzip *src*, refusing to expand past _MAX_SESSION_BYTES.
+
+    gzip.decompress() will happily allocate whatever the file decodes to, and
+    the file is chosen by whoever wrote the session rather than by the user
+    opening it.
+    """
+    with gzip.open(src, "rb") as handle:
+        raw = handle.read(_MAX_SESSION_BYTES + 1)
+    if len(raw) > _MAX_SESSION_BYTES:
+        raise ViewerError(
+            f"{src} decompresses to more than "
+            f"{_MAX_SESSION_BYTES // 1024 // 1024} MB, which no scene this "
+            "viewer can hold produces. Refusing to read it."
+        )
+    return raw
+
+
+def _remote_references(node: Any, path: str = "snapshot") -> list[str]:
+    """Every string in *node* that names somewhere the viewer would fetch from.
+
+    A protean session embeds its own data — that is the point of the format —
+    so the only URL protean writes is the relative /volumes path above, plus
+    the third-party defaults Mol* serialises for its own custom-property
+    providers. Anything else means the file is telling the viewer to fetch from
+    a host of its author's choosing, and Mol* will do it: the state tree is
+    applied as given, so whoever wrote the file decides what ends up on screen
+    while load_session still reports success.
+
+    **Every string, not every string under a `url` key.** The key names cannot
+    be enumerated: `serverUrl` on `create-volume-streaming-info` is a PD.Text,
+    so a grep for PD.Url does not find it, and a URL sitting inside a list has
+    no key at all. Both were live bypasses of the first version of this check.
+
+    Strings under a `data` key are skipped: that is embedded file content —
+    an mmCIF cites `http://mmcif.pdb.org/...` in its own header — and it is
+    parsed, never fetched.
+
+    Returns the offending locations rather than raising, so the refusal can
+    name all of them at once.
+    """
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "data" and isinstance(value, str):
+                continue
+            found.extend(_remote_references(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_remote_references(value, f"{path}[{index}]"))
+    elif (
+        isinstance(node, str)
+        and _SESSION_URL_LIKE.search(node)
+        and not _SESSION_LOCAL_URL.match(node)
+        and node not in _SESSION_DEFAULT_URLS
+    ):
+        found.append(f"{path} = {node[:120]}")
+    return found
+
+
+def _session_transforms(snapshot: Any) -> list[Any]:
+    """The state tree's transform list, or [] if the shape is not what we expect."""
+    tree = snapshot.get("data", {}) if isinstance(snapshot, dict) else {}
+    transforms = (
+        tree.get("tree", {}).get("transforms", []) if isinstance(tree, dict) else []
+    )
+    return transforms if isinstance(transforms, list) else []
+
+
+def _embedded_structure(snapshot: Any) -> tuple[str, str] | None:
+    """The structure text a session carries, and the format it is in.
+
+    A session embeds its structure rather than referencing it — that is the
+    whole design of the format — so the analysis half can be rebuilt from the
+    file without refetching anything, and without the network being involved in
+    a restore.
+
+    There is exactly one such node even after a superpose, which sends the
+    combined structure as a single blob, so there is nothing to guess about
+    which molecule the analysis subject is. The format follows the trajectory
+    transform Mol* used: `dispatch.ts` collapses everything that is not 'pdb'
+    to 'mmcif', and the tree records which one it picked.
+    """
+    transforms = _session_transforms(snapshot)
+    text: str | None = None
+    fmt = "mmcif"
+    for transform in transforms:
+        if not isinstance(transform, dict):
+            continue
+        if transform.get("transformer") == "ms-plugin.trajectory-from-pdb":
+            fmt = "pdb"
+        if transform.get("transformer") != "ms-plugin.raw-data":
+            continue
+        params = transform.get("params")
+        data = params.get("data") if isinstance(params, dict) else None
+        # A volume travels by URL, so a raw-data node holding bytes rather than
+        # text is not the structure.
+        if isinstance(data, str) and text is None:
+            text = data
+    return None if text is None else (text, fmt)
+
+
+def _unknown_transformers(snapshot: Any) -> list[str]:
+    """Transformer names in *snapshot* that save_session never writes.
+
+    The second half of the check, and the half that does not depend on
+    spotting a URL: `create-volume-streaming-info` fetches from Mol*'s own
+    public default when the file names no URL at all, so a session carrying it
+    reaches the network with nothing for _remote_references() to find.
+    """
+    unknown = []
+    for transform in _session_transforms(snapshot):
+        if not isinstance(transform, dict):
+            continue
+        name = transform.get("transformer")
+        if not isinstance(name, str):
+            continue
+        if name in _SESSION_TRANSFORMERS or _SESSION_DECODERS.match(name):
+            continue
+        unknown.append(name)
+    return sorted(set(unknown))
+
+
 @mcp.tool()
-async def save_session(path: str) -> dict[str, Any]:
+async def save_session(path: str, overwrite: bool = False) -> dict[str, Any]:
     """Save the whole scene to a .protean file.
 
     The file embeds the structure data along with representations, colours,
@@ -1961,7 +2248,7 @@ async def save_session(path: str) -> dict[str, Any]:
     scene exactly without refetching anything.
     """
     payload = await _call("save_session")
-    out = _session_path(path)
+    out = _writable(_session_path(path), (".protean",), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "format": SESSION_FORMAT,
@@ -1987,14 +2274,29 @@ async def load_session(path: str) -> dict[str, Any]:
 
     Reports which named handles came back, and which were dropped because the
     restored state no longer contains them.
+
+    A session file is untrusted input — it is a file, and files get shared —
+    so one that reaches outside itself is refused rather than restored. See
+    _remote_references().
     """
     src = _session_path(path)
     if not src.is_file():
         raise ViewerError(f"No session file at {src}")
     try:
-        document = json.loads(gzip.decompress(src.read_bytes()))
+        document = json.loads(_decompress_session(src))
     except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
         raise ViewerError(f"{src} is not a readable protean session: {exc}") from exc
+    except RecursionError as exc:
+        # 155 bytes of nested brackets reach this, and an unhandled
+        # RecursionError is a stack trace where a refusal belongs.
+        raise ViewerError(f"{src} is nested too deeply to be a session") from exc
+    if not isinstance(document, dict):
+        # Valid JSON is not a session: `[1, 2, 3]` reached .get() and raised a
+        # bare AttributeError, which is a stack trace where a refusal belongs.
+        raise ViewerError(
+            f"{src} is not a protean session (it holds a "
+            f"{type(document).__name__}, not an object)"
+        )
     if document.get("format") != SESSION_FORMAT:
         raise ViewerError(
             f"{src} is not a protean session (format={document.get('format')!r})"
@@ -2004,11 +2306,115 @@ async def load_session(path: str) -> dict[str, Any]:
             f"{src} is session version {document.get('version')!r}; "
             f"this build reads version {SESSION_VERSION}"
         )
+    snapshot = document.get("molstar")
+    if snapshot is None:
+        # Truncated or hand-built: the format and version said session, and the
+        # scene is simply absent.
+        raise ViewerError(f"{src} carries no scene to restore")
+    try:
+        remote = _remote_references(snapshot)
+    except RecursionError as exc:
+        # A document that parsed can still out-nest this walk, and a guard that
+        # cannot finish must refuse rather than fall through to the viewer.
+        raise ViewerError(f"{src} is nested too deeply to check") from exc
+    if remote:
+        raise ViewerError(
+            f"{src} tells the viewer to fetch from somewhere else, so it was "
+            "not written by save_session() and is refused: " + "; ".join(remote[:5])
+        )
+    unknown = _unknown_transformers(snapshot)
+    if unknown:
+        raise ViewerError(
+            f"{src} holds state save_session() never writes, so it was not "
+            "written by protean and is refused: " + ", ".join(unknown[:5])
+        )
+    global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
     result = await _call(
         "load_session",
-        {"snapshot": document["molstar"], "handles": document.get("handles", {})},
+        {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
-    return {"path": str(src), "created": document.get("created"), **result}
+    # Both halves, or neither. The viewer now holds the session's molecule; if
+    # the analysis kept the one loaded before, every measurement afterwards
+    # would describe a different structure from the picture and say nothing
+    # about it — measured at viewer 100 atoms against 660 here, with the
+    # identifier still naming the old molecule.
+    discarded = _discard_session_state()
+    _structure, _structure_error, _structure_identifier = None, None, None
+    analysis, agreement = _restore_analysis(snapshot, result.get("atom_count"))
+    _structure_identifier = str(src) if _structure is not None else None
+    return {
+        "path": str(src),
+        "created": document.get("created"),
+        **result,
+        "analysis": analysis + discarded,
+        **agreement,
+    }
+
+
+def _restore_analysis(snapshot: Any, viewer_atoms: Any) -> tuple[str, dict[str, Any]]:
+    """Rebuild the analysis structure from the session's own embedded copy.
+
+    Sets `_structure` and returns what to tell the caller. The session carries
+    the structure text, so this needs no network and cannot disagree with the
+    viewer about *which file* — only about how it was built.
+
+    **The viewer's own atom count decides how to build it**, rather than a
+    default chosen here. A session saved from `assembly="biological"` and one
+    saved from `assembly="asymmetric"` embed the same deposited text and differ
+    only in what Mol\\* assembled from it, and nothing in the file records which
+    was chosen. On 1HHO the two readings are 4792 and 2396, so guessing would
+    be wrong half the time and silently: the count that matches the viewer is
+    the one that describes the picture.
+
+    If neither matches, the analysis is left empty. A structure that disagrees
+    with the viewer is the failure this whole change exists to remove, and
+    keeping it with a caveat attached would be that failure with a note on it.
+    """
+    global _structure, _structure_error  # noqa: PLW0603 - session state
+    embedded = _embedded_structure(snapshot)
+    if embedded is None:
+        return (
+            "unavailable — this session carries no structure to analyse, so "
+            "selections and measurements need a fetch_structure first",
+            {},
+        )
+    text, fmt = embedded
+    readings: dict[str, int] = {}
+    failures: dict[str, str] = {}
+    for assembly in ("biological", "asymmetric"):
+        try:
+            loaded = _load_structure(text, fmt, assembly)
+        except SelectionError as exc:
+            # Only one reading needs to work: a structure carrying no assembly
+            # records cannot be built as one, and its asymmetric reading is the
+            # whole molecule anyway. A failure here is not the answer until
+            # both have failed.
+            failures[assembly] = str(exc)
+            continue
+        atoms = int(loaded.array.array_length())
+        readings[assembly] = atoms
+        if not isinstance(viewer_atoms, int) or atoms == viewer_atoms:
+            _structure, _structure_error = loaded.array, None
+            return (
+                f"restored from the session's own copy ({atoms} atoms, "
+                f"{assembly} assembly)",
+                {"analysis_atoms": atoms, "agrees_with_viewer": atoms == viewer_atoms},
+            )
+    if not readings:
+        _structure_error = "; ".join(f"{a}: {m}" for a, m in failures.items())
+        return (
+            "unavailable — the session's structure could not be parsed for "
+            f"analysis ({_structure_error}); the viewer is unaffected",
+            {},
+        )
+    return (
+        "unavailable — the session's structure reads as "
+        + " and ".join(f"{n} atoms {a}" for a, n in readings.items())
+        + f", neither of which is the {viewer_atoms} the viewer is showing. "
+        "Rather than analyse a molecule that is not the one on screen, "
+        "analysis is left empty",
+        {"analysis_atoms": None, "agrees_with_viewer": False},
+    )
 
 
 @mcp.tool()
@@ -2309,6 +2715,7 @@ async def electrostatics(
     handle: str | None = None,
     path: str | None = None,
     limit: int = 50,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """Electrostatic potential around the loaded structure, in kT/e.
 
@@ -2320,7 +2727,11 @@ async def electrostatics(
     ionic_strength: mol/L; sets the Debye screening length.
     handle: sample the potential over this set and report it per residue, which
       answers "is this interface acidic?" without rendering anything.
-    path: where to write the OpenDX grid; defaults to the protean cache.
+    path: where to write the OpenDX grid; defaults to the protean cache. This
+      is an *output*, which is easy to misread from the name — pointed at an
+      existing file it used to overwrite it without a word, and did, over a
+      file named secret.key during the security pass.
+    overwrite: replace the file at `path` even when it is not an OpenDX grid.
 
     On the Coulombic field: it assumes one uniform dielectric, so it has no
     protein interior and no reaction field at the solvent boundary. Measured
@@ -2367,6 +2778,7 @@ async def electrostatics(
         raise ViewerError(str(exc)) from exc
 
     out = Path(path).expanduser() if path else default_cache_dir() / "potential.dx"
+    out = _writable(out, (".dx",), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_write_dx(grid))
 
@@ -3074,7 +3486,7 @@ async def clear_viewer() -> str:
 
 
 @mcp.tool()
-async def screenshot(path: str | None = None) -> list[Any]:
+async def screenshot(path: str | None = None, overwrite: bool = False) -> list[Any]:
     """Capture the current viewport as a PNG.
 
     path: optional output file path; defaults to a timestamped file in
@@ -3094,7 +3506,7 @@ async def screenshot(path: str | None = None) -> list[Any]:
     png = base64.b64decode(payload)
 
     if path:
-        out = Path(path).expanduser()
+        out = _writable(Path(path).expanduser(), (".png",), overwrite=overwrite)
     else:
         stamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d-%H%M%S")
         out = Path.home() / ".cache" / "protean" / "screenshots" / f"protean-{stamp}.png"

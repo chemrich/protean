@@ -84,7 +84,7 @@ class MockViewer:
 @pytest.fixture
 async def viewer(bridge):
     session = aiohttp.ClientSession()
-    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws")
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token={bridge.token}")
     v = MockViewer(session, ws)
     await v.handshake()
     await bridge.wait_for_viewer(timeout=5)

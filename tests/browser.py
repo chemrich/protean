@@ -168,8 +168,10 @@ async def viewer_session(
     """Launch a throwaway browser with *pdb_id* loaded, and clean up after."""
     structure = await fetch_structure_data(pdb_id)
     bridge = ViewerBridge(port=free_port(), static_dir=STATIC)
-    viewer_port = await bridge.start()
-    url = f"http://127.0.0.1:{viewer_port}/"
+    await bridge.start()
+    # Through the bridge, so the page carries the handshake token. Chrome is
+    # launched at this URL and the page hands the token to its socket.
+    url = bridge.viewer_url
     cdp_port = free_port()
     profile = tempfile.mkdtemp(prefix="protean-diff-")
 

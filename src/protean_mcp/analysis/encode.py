@@ -16,7 +16,8 @@ FRAME_PATTERN = "frame_%04d.png"
 
 # H.264 in a .mp4 is what plays everywhere without a codec argument; GIF is what
 # drops into a slide or an issue. WebM is neither, but it keeps transparency.
-_CONTAINERS = {".mp4", ".gif", ".webm"}
+CONTAINERS = {".mp4", ".gif", ".webm"}
+_CONTAINERS = CONTAINERS  # the private name this module already used
 
 
 class EncodeError(Exception):

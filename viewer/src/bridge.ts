@@ -4,9 +4,22 @@ export type Handler = (action: string, args: Record<string, unknown>) => Promise
 
 const PROTOCOL_VERSION = 1;
 const RECONNECT_MS = 1500;
+// Roughly thirty seconds of retrying before the page says why it is not
+// connecting. Retrying forever is what a page with a stale token used to do:
+// the bridge mints a token per process, so restarting the server leaves an
+// open tab refused on every attempt, and the only thing on screen was the word
+// "disconnected". Silence for half a minute is a hiccup; silence for an hour
+// is a bug the user cannot diagnose.
+const MAX_ATTEMPTS = 20;
 
 export function connectBridge(handle: Handler): void {
-  const url = `ws://${location.host}/ws`;
+  // The token the page was opened with, handed straight to the socket. The
+  // server demands it, because a WebSocket is not subject to the same-origin
+  // policy: without it any site the user is visiting could connect to
+  // 127.0.0.1 on a guessable port, send `protean_ping`, displace this tab and
+  // answer for it.
+  const token = new URLSearchParams(location.search).get('token') ?? '';
+  const url = `ws://${location.host}/ws?token=${encodeURIComponent(token)}`;
   const status = document.getElementById('status');
 
   // Tracked so the visibilitychange listener (registered once) can reach the
@@ -16,11 +29,28 @@ export function connectBridge(handle: Handler): void {
   // that would take the connection straight back off the tab that now owns it,
   // and the two would trade it on every retry timer.
   let superseded = false;
+  // Consecutive failed attempts, reset by a pong. A refused handshake is
+  // indistinguishable from an unreachable server here: the WebSocket API
+  // deliberately hides the HTTP status, so a 403 and a closed port arrive as
+  // the same event. The message therefore names both causes rather than
+  // guessing at one.
+  let attempts = 0;
+  let gaveUp = false;
 
   const setStatus = (connected: boolean) => {
     if (!status) return;
     if (superseded) {
       status.textContent = 'superseded — reload to take over';
+      status.classList.remove('connected');
+      return;
+    }
+    if (gaveUp) {
+      status.textContent = token
+        ? 'not connected — the bridge is not running, or this tab’s handshake ' +
+          'token is no longer the one it expects (a restart mints a new one). ' +
+          'Call open_viewer for a fresh tab.'
+        : 'not connected — this page was opened without a handshake token, so ' +
+          'its socket is refused. Call open_viewer and use the URL it opens.';
       status.classList.remove('connected');
       return;
     }
@@ -48,6 +78,9 @@ export function connectBridge(handle: Handler): void {
     ws.onmessage = async (ev: MessageEvent) => {
       const msg = JSON.parse(ev.data);
       if (msg.action === 'protean_pong') {
+        // A completed handshake, not merely an open socket: the server closes
+        // an unauthenticated one without ever answering.
+        attempts = 0;
         setStatus(true);
         return;
       }
@@ -69,8 +102,13 @@ export function connectBridge(handle: Handler): void {
 
     ws.onclose = () => {
       if (current === ws) current = null;
+      // A page opened with no token at all cannot succeed on any attempt, so
+      // it says so immediately rather than after thirty seconds of pretending
+      // the server might come up.
+      attempts += 1;
+      if (attempts >= MAX_ATTEMPTS || !token) gaveUp = true;
       setStatus(false);
-      if (!superseded) setTimeout(open, RECONNECT_MS);
+      if (!superseded && !gaveUp) setTimeout(open, RECONNECT_MS);
     };
     ws.onerror = () => ws.close();
   };

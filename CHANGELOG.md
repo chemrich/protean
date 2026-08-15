@@ -5,6 +5,105 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- **`load_session` no longer leaves the analysis describing the previous
+  molecule.** It restored the viewer and never touched the Python side, so
+  every count, distance and selection afterwards answered about whatever was
+  loaded before — measured at viewer 100 atoms against `_structure`'s 660,
+  with the identifier still reading `1ubq` and nothing reporting a
+  discrepancy.
+
+  Both halves are restored now, or neither is. The analysis structure is
+  rebuilt from the session's own embedded copy — no network, and no question
+  about which file, since it is the same bytes the viewer parsed. **The
+  viewer's atom count decides how to build it**: the same deposited text
+  assembles two ways and nothing in the file records which was chosen (1HHO
+  reads 4792 biological, 2396 asymmetric), so a fixed default would have been
+  silently wrong for half of all sessions. If neither reading matches the
+  viewer, the analysis is left empty and the reply says so with both numbers,
+  because a structure that disagrees with the picture is the failure this fixes
+  rather than a caveat to attach.
+
+- **A viewer that cannot connect now says why, instead of retrying forever.**
+  The WebSocket API hides the handshake's HTTP status from the page, so a
+  refused socket and an unreachable server arrive as the same event — and the
+  page retried every 1.5 s indefinitely, showing only "disconnected". Two cases
+  make that a silent failure rather than a hiccup: the bridge mints a token per
+  process, so restarting the server leaves an open tab refused on every attempt
+  for as long as it lives; and a page opened by hand at
+  `http://127.0.0.1:9878/` has no token at all, loads, looks alive, and can
+  never connect. The page now stops after ~30 s and names both causes, or says
+  immediately that it was opened without a token, and points at `open_viewer`
+  either way. A completed handshake resets the budget, so a long session is not
+  capped.
+
+- **A writing tool will no longer turn one kind of file into another.**
+  `snapshot`, `screenshot`, `save_session`, `movie` and `electrostatics` wrote
+  wherever they were pointed, with no check: during the security pass
+  `save_session` replaced a 21-byte JSON file with 32 kB of gzip, and
+  `electrostatics(path=…)` — an *output* path that reads like an input — wrote
+  an OpenDX grid over a file named `secret.key`. An existing file is now
+  replaced only when it already holds what that tool writes, so capturing a
+  figure over its own earlier version still works while replacing prose,
+  a key or a config file is refused. `overwrite=True` asks for it explicitly.
+
+### Security
+
+- **`open_viewer` no longer hands the handshake token to the model.** The URL
+  it returned carried the token, so the credential that authenticates a viewer
+  socket landed in the model's context, in transcripts and in any log of tool
+  results — and the `Origin` check is no backstop for a leaked token, because
+  an *absent* Origin is allowed so non-browser clients can connect at all. The
+  address now comes back without it while the real one goes straight to the
+  browser; `reveal_url=True` asks for it deliberately, for a second browser or
+  a forwarded port. All three of `open_viewer`'s return paths were leaking it.
+
+- **A session file is no longer trusted to say where the viewer should look.**
+  `load_session` handed the file's embedded Mol\* state tree straight to
+  `setSnapshot`, which applies it as given, so a `.protean` file could name a
+  URL and the browser would fetch it — and then draw whatever came back, while
+  `load_session` returned a normal reply naming the atom count it had been
+  handed. Demonstrated against a live viewer with an outbound GET to a stand-in
+  attacker server. The format exists to be shared, so a session someone sent
+  you is its ordinary use, not an exotic one.
+
+  A session is now checked two ways, because neither alone is enough:
+
+  - **No string in it may name a location to fetch from**, except this bridge's
+    own relative `/volumes/<handle>` route and — by exact value — the three
+    third-party URLs Mol\* serialises as its own custom-property defaults. Both
+    exceptions were measured from real sessions; a blanket "no URLs" rule would
+    have refused every session, and allowing the *key* would have permitted the
+    same providers to fetch from anywhere.
+  - **No transformer may appear that `save_session` never writes.** This is the
+    half that does not depend on spotting a URL: `create-volume-streaming-info`
+    fetches from Mol\*'s own public default when the file names no URL at all,
+    so there is nothing for the first check to find.
+
+  Decompression is bounded at 512 MB as well: 9 kB of gzip reaches 2 GB, and
+  the file was read whole before anything checked it. Malformed files now
+  refuse rather than raising `AttributeError`, `KeyError` or `RecursionError`.
+
+- **The viewer handshake is authenticated.** The bridge's WebSocket accepted any
+  connection: no `Origin` check, no token. A WebSocket is not subject to the
+  same-origin policy and the port is `DEFAULT_PORT` plus a small scan range, so
+  any site the user was visiting could connect, send `protean_ping` — which is
+  designed to displace the incumbent — and from then on receive every action and
+  answer every one of them. Demonstrated with a socket carrying
+  `Origin: https://evil.example`: accepted, and the real viewer was superseded
+  and closed.
+
+  A spoofed viewer returning fabricated counts defeats the one guarantee this
+  project exists to make, while every call returns cleanly.
+
+  Now a per-bridge token (`secrets.token_urlsafe(32)`, compared with
+  `compare_digest`) plus an `Origin` check, both **before** `prepare()` so a
+  refused caller never reaches the message loop. `ViewerBridge.viewer_url` is the
+  single place the URL is built, so a viewer cannot be opened that its own socket
+  would refuse. Found by the going-public security pass, which is the argument
+  for running that pass before the flip rather than after.
+
 ### Volumes
 
 - **Density maps can be contoured.** `isosurface(name, level, unit, style,

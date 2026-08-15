@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import uuid
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,20 @@ class ViewerBridge:
         self._requested_port = port or int(os.environ.get(PORT_ENV_VAR, DEFAULT_PORT))
         self.port: int | None = None
         self.static_dir = static_dir
+        #: Minted per bridge, and required on the WebSocket handshake.
+        #:
+        #: Without it any page the user happens to be visiting can open
+        #: `ws://127.0.0.1:<port>/ws` — a WebSocket is not subject to the
+        #: same-origin policy, the port is `DEFAULT_PORT` plus a small scan
+        #: range and so guessable, and the handshake is *designed* to displace:
+        #: a `protean_ping` closes the incumbent and takes the socket. Every
+        #: action would then go to that page and every reply the model reads
+        #: would come from it, which defeats the one guarantee this project
+        #: exists to make — that the viewer and the analysis describe the same
+        #: molecule. Demonstrated before this was added, with a socket carrying
+        #: `Origin: https://evil.example`: it was accepted and the real viewer
+        #: received `protean_superseded` and a close.
+        self.token = secrets.token_urlsafe(32)
         self._ws: web.WebSocketResponse | None = None
         self._pending: dict[str, asyncio.Future[Any]] = {}
         self._connected = asyncio.Event()
@@ -116,6 +131,37 @@ class ViewerBridge:
     @property
     def running(self) -> bool:
         return self._runner is not None
+
+    @property
+    def viewer_url(self) -> str:
+        """The page URL, carrying the token the socket will demand.
+
+        One place builds this so no caller can open a viewer that cannot then
+        connect. The page reads the token out of its own query string and
+        appends it to the WebSocket URL.
+
+        **This value is a credential.** Anything holding it can drive the
+        viewer: the Origin check is no second line of defence here, because
+        `_allowed_origin` allows an *absent* Origin so that non-browser clients
+        can connect at all. Hand it to a browser, not to a reply — see
+        `display_url` for the one that is safe to show.
+        """
+        if self.port is None:
+            raise ViewerError("bridge is not running, so it has no URL yet")
+        return f"http://127.0.0.1:{self.port}/?token={quote(self.token, safe='')}"
+
+    @property
+    def display_url(self) -> str:
+        """The same address with the token left off, for showing to a caller.
+
+        A reply from an MCP tool is read by a model, kept in a transcript and
+        often written to a log, so a token in one is a credential in all three.
+        Opening this URL gives a viewer that cannot connect, which is the
+        correct failure: the page says so rather than half-working.
+        """
+        if self.port is None:
+            raise ViewerError("bridge is not running, so it has no URL yet")
+        return f"http://127.0.0.1:{self.port}/"
 
     @property
     def viewer_connected(self) -> bool:
@@ -239,7 +285,44 @@ class ViewerBridge:
             raise web.HTTPNotFound()
         return web.FileResponse(target)
 
+    def _allowed_origin(self, origin: str | None) -> bool:
+        """Is this Origin one our own page could have been served from?
+
+        Absent is allowed: a non-browser client (the test harness, a script)
+        sends no Origin, and the token is what authenticates it. A *present*
+        Origin that is not ours is a browser on some other site, and no such
+        page has any business here.
+        """
+        if origin is None:
+            return True
+        return origin in {
+            f"http://127.0.0.1:{self.port}",
+            f"http://localhost:{self.port}",
+            f"http://[::1]:{self.port}",
+        }
+
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
+        # Both checks happen *before* prepare(), so a rejected caller gets an
+        # HTTP error and never reaches the message loop — it cannot send a
+        # `protean_ping` and displace the real viewer on the way past.
+        if not self._allowed_origin(request.headers.get("Origin")):
+            logger.warning(
+                "Refused a viewer socket from origin %r", request.headers.get("Origin")
+            )
+            raise web.HTTPForbidden(text="origin not permitted")
+        # compare_digest, not ==: the comparison is against a secret and a
+        # timing side channel is free to avoid here.
+        #
+        # Compared as bytes, because compare_digest raises TypeError on str
+        # arguments carrying non-ASCII — and the query string is percent-decoded
+        # before it reaches here, so `?token=%C3%A9` is one request away. That
+        # made the refusal path an attacker controls the one returning 500 and a
+        # traceback, where a merely wrong token returned a clean 403.
+        offered = request.query.get("token", "").encode()
+        if not secrets.compare_digest(offered, self.token.encode()):
+            logger.warning("Refused a viewer socket with a bad or missing token")
+            raise web.HTTPForbidden(text="bad or missing token")
+
         ws = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024)
         await ws.prepare(request)
         registered = False
