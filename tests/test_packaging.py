@@ -71,6 +71,29 @@ def test_the_wheel_carries_the_viewer(wheel):
     assert any("/static/assets/" in name for name in static)
 
 
+@needs_viewer
+def test_the_wheel_carries_molstars_licence_notice(wheel):
+    """MIT requires the notice to travel with the copy, and this wheel is a copy.
+
+    `artifacts` puts the built viewer in the wheel, so a `pip install` ships
+    Mol\\* and everything webpack bundled into it — React, immutable,
+    safe-buffer. The bundle's own first line reads "For license information
+    please see molstar.js.LICENSE.txt", and `sync-molstar` copied the script
+    and the stylesheet but not that file: the artifact shipped a dangling
+    reference to the notice it is obliged to carry.
+    """
+    names = zipfile.ZipFile(wheel).namelist()
+    assert any(name.endswith("static/molstar.js.LICENSE.txt") for name in names), (
+        "the wheel ships Mol* without the notice its own bundle points at"
+    )
+    with zipfile.ZipFile(wheel) as archive:
+        entry = next(n for n in names if n.endswith("static/molstar.js.LICENSE.txt"))
+        notice = archive.read(entry).decode()
+    # Present is not enough: it has to be the notice rather than a stub.
+    assert "MIT License" in notice
+    assert "Copyright" in notice
+
+
 def test_the_wheel_exposes_the_command(wheel):
     """`protean-mcp` is how an MCP client starts the server."""
     with zipfile.ZipFile(wheel) as archive:

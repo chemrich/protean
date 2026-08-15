@@ -5,6 +5,20 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Packaging
+
+- **The wheel ships Mol\*'s licence notice, which it is obliged to carry.** The
+  built viewer travels inside the wheel, so `pip install protean-mcp` delivers
+  `molstar.js` and everything bundled into it — React, immutable, safe-buffer,
+  all MIT. The bundle's first line points at `molstar.js.LICENSE.txt`, and the
+  sync step copied the script and the stylesheet but not that file, so the
+  artifact carried a dangling reference to the notice MIT requires. A packaging
+  test now fails if the wheel loses it.
+- **protean's own licence is machine-readable.** `license = { file = "LICENSE" }`
+  left `License` empty in installed metadata — an audit of the dependency tree
+  read protean-mcp itself as `UNSTATED`. Now an SPDX expression (PEP 639), so
+  the wheel reports `License-Expression: MIT`.
+
 ### Fixed
 
 - **`load_session` no longer leaves the analysis describing the previous
