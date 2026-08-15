@@ -155,4 +155,4 @@ disallow_incomplete_defs = false
 #
 # Bump `rev` when a wiggles-em change needs to reach CI or another clone.
 [tool.uv.sources]
-wiggles-em = { git = "https://github.com/chemrich/wiggles-em", rev = "9381dbe7cd8894b7720d3833cdbd68fe66387169" }
+wiggles-em = { git = "https://github.com/chemrich/wiggles-em", rev = "df2252e" }

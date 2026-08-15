@@ -29,6 +29,8 @@ from biotite.structure import array as atom_array
 from biotite.structure.io.pdbx import CIFFile, get_structure
 from wiggles_em.occupancy import occupancy_view
 from wiggles_em.scene import (
+    BLUE_WHITE_RED,
+    RED_WHITE_BLUE,
     Arrows,
     ColorByScalar,
     ColorFlat,
@@ -796,3 +798,40 @@ async def test_a_scene_that_cannot_finish_draws_nothing_at_all(structure: Any) -
         f"the surface was drawn before the scene was refused, so the canvas now "
         f"shows a density map posing as a local-resolution figure: {recorder.calls}"
     )
+
+
+# -- palette stops -------------------------------------------------------------
+
+
+def _scalar_scene(palette: Any, structure: Any) -> Scene:
+    atoms = atoms_for(structure, MODEL)
+    field = ScalarField.per_atom([(a.key, a.q) for a in atoms])
+    return Scene([ColorByScalar(Sel.obj("x"), field, domain=(0.0, 1.0), palette=palette)])
+
+
+async def test_the_theme_matching_ramp_draws_no_note(structure: Any) -> None:
+    """The guard has to be able to say "this one is fine".
+
+    It compared `op.palette != "red_white_blue"` when a palette was a string.
+    Since wiggles-em df2252e a palette is a tuple of RGB stops, so that
+    comparison is **always true** — every scene gained a "was not applied" note,
+    including `occupancy_view`, whose ramp is the default.
+    """
+    backend = MolstarBackend(Recorder(), structure, model=MODEL)
+    await backend.render(_scalar_scene(RED_WHITE_BLUE, structure))
+    assert not [n for n in backend.notes if "was not applied" in n], backend.notes
+
+
+async def test_the_reversed_ramp_says_high_may_read_as_low(structure: Any) -> None:
+    """The distinction the guard exists to make, and the one it lost.
+
+    `BLUE_WHITE_RED` is the exact reverse of the theme's stops. Mol*'s
+    uncertainty theme ramps one fixed way, so this one is drawn backwards and
+    every number on screen reads inverted — while looking entirely normal. A
+    note that cannot tell the two apart is worse than no note.
+    """
+    backend = MolstarBackend(Recorder(), structure, model=MODEL)
+    await backend.render(_scalar_scene(BLUE_WHITE_RED, structure))
+    notes = " ".join(backend.notes)
+    assert "was not applied" in notes
+    assert "reverse" in notes and "high may be drawn as low" in notes, backend.notes
