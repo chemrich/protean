@@ -35,8 +35,19 @@ async function init() {
     // clicks set a focus the Python side never hears about.
     layoutShowSequence: false,
     layoutShowLog: false,
-    viewportShowExpand: true,
-    viewportShowSelectionMode: true,
+    // The viewport's own buttons: expand, settings, selection mode, animation,
+    // trajectory transport. Each duplicates something protean drives through a
+    // tool, and the trajectory transport in particular steps frames without
+    // telling the analysis, which then reports on the frame it thinks is
+    // current. Mol*'s "Reset Zoom" has no config gate and stays; it moves the
+    // camera and nothing else, which is the one thing a watcher wants and
+    // cannot break.
+    viewportShowExpand: false,
+    viewportShowControls: false,
+    viewportShowSettings: false,
+    viewportShowSelectionMode: false,
+    viewportShowAnimation: false,
+    viewportShowTrajectoryControls: false,
   });
   // Exposed for debugging and for the render pump's introspection hooks.
   (window as any).__protean = Object.assign((window as any).__protean ?? {}, {
