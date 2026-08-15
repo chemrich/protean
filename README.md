@@ -112,6 +112,10 @@ one glycoprotein.
 
 ## Development
 
+[CONTRIBUTING.md](CONTRIBUTING.md) has what CI enforces, every test gate, and
+the habits that keep this codebase honest; [SECURITY.md](SECURITY.md) has the
+trust model and how to report a vulnerability. The short version:
+
 ```bash
 uv sync
 uv run pytest                      # fast: no browser

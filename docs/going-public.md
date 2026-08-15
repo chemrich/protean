@@ -258,6 +258,23 @@ meeting.
 
 ### 3.2 `SECURITY.md` and `CONTRIBUTING.md`
 
+> **Done 2026-08-15.** Both exist. `SECURITY.md` states the trust model the
+> §3.1 pass established rather than boilerplate — what the bridge assumes about
+> the browser, what it assumes about files, and a "known limits" section naming
+> the four things worth attacking first. `CONTRIBUTING.md` says what this repo
+> enforces and a newcomer cannot guess.
+>
+> Two claims were written from memory and were wrong; both were caught by
+> checking them against the tree before the PR, which is the habit this
+> document exists to enforce. The code compares tokens with
+> `secrets.compare_digest`, not `hmac`'s — the same function, but a reader
+> grepping for `hmac` finds nothing. And "replies say so" about pdb2pqr's
+> rebuilt sidechains was false: protean *silences* those warnings and reports
+> the method rather than the repairs. That is now a stated limit instead of a
+> claim, which is more useful anyway.
+>
+> The plan for this section follows.
+
 Neither exists. For a tool that launches a browser and shells out to APBS and
 pdb2pqr, a stated disclosure path matters more than for an ordinary library.
 `CONTRIBUTING.md` should say the things this repo actually enforces and a
