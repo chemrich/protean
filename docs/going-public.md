@@ -81,6 +81,58 @@ rule this repo applies to everything else.
 
 ### 3.1 A security pass on the file-serving paths — do this first
 
+> **Run 2026-08-15. It found one blocker, now fixed; the file-serving paths
+> themselves came out clean.** What follows is the plan; the results are
+> recorded inline under each part.
+
+#### Result: an unauthenticated viewer takeover (fixed)
+
+**The worst finding was not on the paths this section names.** The bridge's
+WebSocket accepted any connection: `_ws_handler` called `ws.prepare()` with no
+`Origin` check and no token.
+
+A WebSocket is not subject to the same-origin policy, so any page the user
+happens to be visiting can open `ws://127.0.0.1:<port>/ws`, and the port is
+`DEFAULT_PORT` (9878) plus a small scan range — guessable in a few tries. Worse,
+the handshake is *designed* to displace: a `protean_ping` from any connection
+closes the incumbent and takes the socket.
+
+Demonstrated before the fix, with a socket carrying
+`Origin: https://evil.example`: it was accepted, and the real viewer received
+`protean_superseded` and a close. Every action would then go to that page, and
+every number the model read would come from it.
+
+The impact lands precisely on this project's thesis. protean exists to
+guarantee the viewer and the analysis describe the same molecule; a spoofed
+viewer returning fabricated counts defeats that entirely, while every call
+returns cleanly.
+
+**Fixed**: a per-bridge token, minted with `secrets.token_urlsafe(32)`, required
+on the handshake and compared with `compare_digest`; plus an `Origin` check that
+refuses a present-but-foreign origin. Both run *before* `prepare()`, so a
+refused caller never reaches the message loop and cannot land a `protean_ping`
+on the way past. `ViewerBridge.viewer_url` is now the single place the URL is
+built, so a viewer cannot be opened that its own socket would refuse.
+
+**This is the argument for doing the pass before the flip, not after.** The
+vulnerability predates it, but the repo was private; publishing ships the port,
+the handshake string and the message schema, turning "someone would have to
+reverse-engineer this" into "the README explains it".
+
+#### Result: the file-serving paths held
+
+The static route was attacked with 15 traversal attempts — `..`, `%2e%2e`,
+double-encoded, backslashes, absolute paths, `..;/`, and **symlinks planted
+inside `static_dir`** pointing out. All returned 404; nothing escaped. The guard
+below is as strict as it claims.
+
+Still open from this section: the nine path-taking tools have been enumerated
+but not individually attacked, and the entropy-based secret scan has not run.
+
+---
+
+The original plan for this section follows.
+
 The server reads local files named by a model and serves bytes over HTTP. That
 is the design, and on loopback it is defensible. The question for the pass is
 whether a path *outside* the intended roots can be published.
@@ -208,7 +260,9 @@ constraint disappears.
 ## 6. What would make this plan wrong
 
 - **If §3.1 finds a path that escapes its root**, this stops being preparation
-  and becomes a fix, and the flip waits for it.
+  and becomes a fix, and the flip waits for it. *(It found something adjacent —
+  an unauthenticated WebSocket takeover — and that is exactly what happened:
+  the flip waited and the fix landed first.)*
 - **If the history scan finds a secret**, the whole premise inverts. That is not
   a fix but a history rewrite plus a credential rotation, and it is the one
   outcome that has to complete before the flip rather than alongside it.

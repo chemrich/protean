@@ -263,8 +263,10 @@ async def open_viewer(timeout: float = 20) -> str:
     of opening a new tab.
     """
     bridge = get_bridge()
-    port = await bridge.start()
-    url = f"http://127.0.0.1:{port}/"
+    await bridge.start()
+    # Carries the handshake token; the bridge builds it so no caller can open a
+    # viewer that is then refused by its own socket.
+    url = bridge.viewer_url
     if bridge.viewer_connected:
         return f"Viewer already connected at {url}{_visibility_note(bridge)}"
     if _static_dir() is None:
