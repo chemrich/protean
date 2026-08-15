@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import math
+import re
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -1948,10 +1949,78 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 SESSION_FORMAT = "protean-session"
 SESSION_VERSION = 1
 
+# A session is mostly embedded mmCIF, which compresses about 5x, so a real one
+# is a few MB. The bound is on the *decompressed* size because that is what a
+# crafted file controls: 9 kB of gzip expands to 2 GB at a ratio a text
+# document reaches easily, and load_session decompresses before it can check
+# anything about the contents.
+_MAX_SESSION_BYTES = 512 * 1024 * 1024
+
+# The only URL a session written here ever contains: a relative path to this
+# bridge's own volume route, which is how a volume reaches the viewer.
+_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/]+$")
+
+# The param names Mol* declares as PD.Url, which are the ones it will fetch:
+# `url` across mol-plugin-state's transforms, and `uri` in the MVS extension,
+# which the prebuilt bundle registers. Grepped rather than assumed —
+# `grep -rn "PD.Url(" node_modules/molstar/lib/` is the check to redo when the
+# molstar pin moves.
+_SESSION_URL_KEYS = frozenset({"url", "uri"})
+
 
 def _session_path(path: str) -> Path:
     out = Path(path).expanduser()
     return out if out.suffix else out.with_suffix(".protean")
+
+
+def _decompress_session(src: Path) -> bytes:
+    """Gunzip *src*, refusing to expand past _MAX_SESSION_BYTES.
+
+    gzip.decompress() will happily allocate whatever the file decodes to, and
+    the file is chosen by whoever wrote the session rather than by the user
+    opening it.
+    """
+    with gzip.open(src, "rb") as handle:
+        raw = handle.read(_MAX_SESSION_BYTES + 1)
+    if len(raw) > _MAX_SESSION_BYTES:
+        raise ViewerError(
+            f"{src} decompresses to more than "
+            f"{_MAX_SESSION_BYTES // 1024 // 1024} MB, which no scene this "
+            "viewer can hold produces. Refusing to read it."
+        )
+    return raw
+
+
+def _remote_references(node: Any, path: str = "snapshot") -> list[str]:
+    """Every URL in *node* that points somewhere other than this bridge.
+
+    A protean session embeds its own data — that is the point of the format —
+    so the only URL it carries is the relative /volumes path above. Anything
+    absolute means the file is telling the viewer to fetch from a host of its
+    author's choosing, and Mol* will do it: the state tree is applied as
+    given, so whoever wrote the file decides what ends up on screen while
+    load_session still reports success.
+
+    Returns the offending locations rather than raising, so the refusal can
+    name all of them at once.
+    """
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}"
+            # Mol* carries a URL either as a plain string or as an Asset.Url,
+            # which is a dict holding the string under the same key name — so
+            # checking every string under a "url" key, at any depth, covers
+            # both without having to know which shape a transform used.
+            if key in _SESSION_URL_KEYS and isinstance(value, str):
+                if not _SESSION_LOCAL_URL.match(value):
+                    found.append(f"{here} = {value[:120]}")
+                continue
+            found.extend(_remote_references(value, here))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_remote_references(value, f"{path}[{index}]"))
+    return found
 
 
 @mcp.tool()
@@ -1989,14 +2058,22 @@ async def load_session(path: str) -> dict[str, Any]:
 
     Reports which named handles came back, and which were dropped because the
     restored state no longer contains them.
+
+    A session file is untrusted input — it is a file, and files get shared —
+    so one that reaches outside itself is refused rather than restored. See
+    _remote_references().
     """
     src = _session_path(path)
     if not src.is_file():
         raise ViewerError(f"No session file at {src}")
     try:
-        document = json.loads(gzip.decompress(src.read_bytes()))
+        document = json.loads(_decompress_session(src))
     except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
         raise ViewerError(f"{src} is not a readable protean session: {exc}") from exc
+    except RecursionError as exc:
+        # 155 bytes of nested brackets reach this, and an unhandled
+        # RecursionError is a stack trace where a refusal belongs.
+        raise ViewerError(f"{src} is nested too deeply to be a session") from exc
     if document.get("format") != SESSION_FORMAT:
         raise ViewerError(
             f"{src} is not a protean session (format={document.get('format')!r})"
@@ -2005,6 +2082,17 @@ async def load_session(path: str) -> dict[str, Any]:
         raise ViewerError(
             f"{src} is session version {document.get('version')!r}; "
             f"this build reads version {SESSION_VERSION}"
+        )
+    try:
+        remote = _remote_references(document.get("molstar"))
+    except RecursionError as exc:
+        # A document that parsed can still out-nest this walk, and a guard that
+        # cannot finish must refuse rather than fall through to the viewer.
+        raise ViewerError(f"{src} is nested too deeply to check") from exc
+    if remote:
+        raise ViewerError(
+            f"{src} tells the viewer to fetch from somewhere else, so it was "
+            "not written by save_session() and is refused: " + "; ".join(remote[:5])
         )
     result = await _call(
         "load_session",
