@@ -14,9 +14,21 @@ declare const molstar: {
 };
 
 async function init() {
+  // The side panels are gone deliberately, and not only for the room.
+  //
+  // The left one loads structures by hand and the right one edits the state
+  // tree — delete a component, swap a representation. Either changes the
+  // picture and nothing else: the analysis half lives in the Python process,
+  // so the model goes on answering, correctly, about the molecule it loaded
+  // and no longer about the one on screen. That is this project's oldest
+  // failure mode, offered as a button.
+  //
+  // Anything that changes what is loaded goes through a tool call instead,
+  // where both halves see it.
   const viewer = await molstar.Viewer.create('app', {
-    layoutIsExpanded: true,
-    layoutShowControls: true,
+    layoutIsExpanded: false,
+    layoutShowControls: false,
+    layoutShowLeftPanel: false,
     layoutShowRemoteState: false,
     layoutShowSequence: true,
     layoutShowLog: false,
