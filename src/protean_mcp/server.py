@@ -40,6 +40,7 @@ from .analysis.electrostatics import prepare as _prepare_charges
 from .analysis.electrostatics import run_apbs as _run_apbs
 from .analysis.electrostatics import sample as _sample_grid
 from .analysis.electrostatics import write_dx as _write_dx
+from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
@@ -246,6 +247,41 @@ async def _call(action: str, args: dict[str, Any] | None = None) -> dict[str, An
             f"Viewer returned {type(result).__name__} for {action!r}, expected an object"
         )
     return result
+
+
+def _writable(out: Path, writes: tuple[str, ...], *, overwrite: bool) -> Path:
+    """Refuse to change what an existing file *is*, unless asked outright.
+
+    Every tool here writes wherever it is pointed, creating parent directories
+    on the way. The caller is a model, so the realistic route to a destructive
+    write is a tool call it was talked into, and the demonstrated ones were not
+    subtle: `save_session` replacing a 21-byte JSON file with 32 kB of gzip,
+    and `electrostatics(path=…)` — an *output* path that reads like an input —
+    writing an OpenDX grid over a file named `secret.key`.
+
+    The rule is narrower than "never overwrite", because overwriting is half of
+    how these tools are used: capture a figure, adjust the scene, capture it
+    again over the same name. What is never intended is a write that changes a
+    file from one kind of thing into another, and that is exactly the shape
+    both demonstrations had. So an existing file is replaced only when it
+    already holds what this tool writes.
+
+    `overwrite=True` says do it anyway. That is a smaller barrier than it looks
+    against a hostile tool call — anything that can set the path can set the
+    flag — and it is still worth having: it moves destruction from something
+    that happens invisibly to something a caller has to ask for by name, in a
+    call a reader can see.
+    """
+    if out.is_dir():
+        raise ViewerError(f"{out} is a directory, so there is no file to write there")
+    if not out.exists() or overwrite or out.suffix.lower() in writes:
+        return out
+    raise ViewerError(
+        f"{out} already exists and is not {'/'.join(writes)}, so writing here "
+        f"would replace a {out.suffix or 'extensionless'} file with something "
+        "else entirely. Pass overwrite=True to do that on purpose, or choose "
+        "another path."
+    )
 
 
 def _visibility_note(bridge: ViewerBridge) -> str:
@@ -863,6 +899,7 @@ async def snapshot(
     format: str = "png",
     transparent: bool | None = None,
     crop: bool = False,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """Save a publication-resolution figure at a real physical size.
 
@@ -880,6 +917,10 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
+    overwrite: replace the file at `path` even when it holds something other
+      than what this tool writes. Off by default so a call cannot quietly turn
+      one kind of file into another — the shape of every destructive write
+      found in the security pass.
 
     Returns the path, the pixel dimensions, the DPI written into the file, and
     the size on disk. Height follows the viewport's aspect ratio.
@@ -917,6 +958,7 @@ async def snapshot(
     out = Path(path).expanduser()
     if not out.suffix:
         out = out.with_suffix(_SNAPSHOT_FORMATS[chosen])
+    out = _writable(out, tuple(_SNAPSHOT_FORMATS.values()), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     image = _open_snapshot(png)
@@ -1394,7 +1436,9 @@ async def record_timeline(
 
 
 @mcp.tool()
-async def movie(directory: str, path: str, fps: int = 30) -> dict[str, Any]:
+async def movie(
+    directory: str, path: str, fps: int = 30, overwrite: bool = False
+) -> dict[str, Any]:
     """Encode a directory of captured frames into a movie.
 
     Reads frame_0000.png upward — what turntable() and record_trajectory()
@@ -1409,6 +1453,11 @@ async def movie(directory: str, path: str, fps: int = 30) -> dict[str, Any]:
     ffmpeg has to be installed; it is checked before anything is written, and
     the frames are ordinary PNGs if you would rather encode them elsewhere.
     """
+    # Encoding over a previous encode is the ordinary case, so the containers
+    # encode.py accepts are what may be replaced. Shared with it rather than
+    # listed again: a second copy of a table is the thing this repo keeps
+    # getting caught by.
+    _writable(Path(path).expanduser(), tuple(MOVIE_CONTAINERS), overwrite=overwrite)
     try:
         return dict(_encode_movie(directory, path, fps))
     except EncodeError as exc:
@@ -2191,7 +2240,7 @@ def _unknown_transformers(snapshot: Any) -> list[str]:
 
 
 @mcp.tool()
-async def save_session(path: str) -> dict[str, Any]:
+async def save_session(path: str, overwrite: bool = False) -> dict[str, Any]:
     """Save the whole scene to a .protean file.
 
     The file embeds the structure data along with representations, colours,
@@ -2199,7 +2248,7 @@ async def save_session(path: str) -> dict[str, Any]:
     scene exactly without refetching anything.
     """
     payload = await _call("save_session")
-    out = _session_path(path)
+    out = _writable(_session_path(path), (".protean",), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "format": SESSION_FORMAT,
@@ -2666,6 +2715,7 @@ async def electrostatics(
     handle: str | None = None,
     path: str | None = None,
     limit: int = 50,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     """Electrostatic potential around the loaded structure, in kT/e.
 
@@ -2677,7 +2727,11 @@ async def electrostatics(
     ionic_strength: mol/L; sets the Debye screening length.
     handle: sample the potential over this set and report it per residue, which
       answers "is this interface acidic?" without rendering anything.
-    path: where to write the OpenDX grid; defaults to the protean cache.
+    path: where to write the OpenDX grid; defaults to the protean cache. This
+      is an *output*, which is easy to misread from the name — pointed at an
+      existing file it used to overwrite it without a word, and did, over a
+      file named secret.key during the security pass.
+    overwrite: replace the file at `path` even when it is not an OpenDX grid.
 
     On the Coulombic field: it assumes one uniform dielectric, so it has no
     protein interior and no reaction field at the solvent boundary. Measured
@@ -2724,6 +2778,7 @@ async def electrostatics(
         raise ViewerError(str(exc)) from exc
 
     out = Path(path).expanduser() if path else default_cache_dir() / "potential.dx"
+    out = _writable(out, (".dx",), overwrite=overwrite)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_write_dx(grid))
 
@@ -3431,7 +3486,7 @@ async def clear_viewer() -> str:
 
 
 @mcp.tool()
-async def screenshot(path: str | None = None) -> list[Any]:
+async def screenshot(path: str | None = None, overwrite: bool = False) -> list[Any]:
     """Capture the current viewport as a PNG.
 
     path: optional output file path; defaults to a timestamped file in
@@ -3451,7 +3506,7 @@ async def screenshot(path: str | None = None) -> list[Any]:
     png = base64.b64decode(payload)
 
     if path:
-        out = Path(path).expanduser()
+        out = _writable(Path(path).expanduser(), (".png",), overwrite=overwrite)
     else:
         stamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d-%H%M%S")
         out = Path.home() / ".cache" / "protean" / "screenshots" / f"protean-{stamp}.png"

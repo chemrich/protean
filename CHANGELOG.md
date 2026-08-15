@@ -38,6 +38,16 @@ nothing is released yet, so everything below is unreleased.
   either way. A completed handshake resets the budget, so a long session is not
   capped.
 
+- **A writing tool will no longer turn one kind of file into another.**
+  `snapshot`, `screenshot`, `save_session`, `movie` and `electrostatics` wrote
+  wherever they were pointed, with no check: during the security pass
+  `save_session` replaced a 21-byte JSON file with 32 kB of gzip, and
+  `electrostatics(path=…)` — an *output* path that reads like an input — wrote
+  an OpenDX grid over a file named `secret.key`. An existing file is now
+  replaced only when it already holds what that tool writes, so capturing a
+  figure over its own earlier version still works while replacing prose,
+  a key or a config file is refused. `overwrite=True` asks for it explicitly.
+
 ### Security
 
 - **`open_viewer` no longer hands the handshake token to the model.** The URL

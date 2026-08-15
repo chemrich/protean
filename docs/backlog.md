@@ -775,7 +775,7 @@ The fix wants a decision: parse the session's embedded mmCIF back into
 `_structure` (the data is right there), or clear `_structure` so analysis
 refuses loudly rather than answering about the wrong molecule.
 
-### 21. Every writing tool overwrites any path it is given — open
+### 21. Every writing tool overwrites any path it is given — fixed
 
 `save_session`, `snapshot`, `screenshot`, `movie(path=)` and
 `electrostatics(path=)` write wherever they are pointed, creating parent
@@ -786,10 +786,22 @@ named `secret.key`. `record_trajectory`/`turntable` create arbitrary directory
 trees for their frames.
 
 The caller is the model, so the realistic route is a tool call the model was
-talked into. Wants a policy decision rather than a patch: refuse to overwrite
-an existing file that protean did not write, require the extension to match
-what is being written, or confine writes to a cache directory unless the user
-named the path.
+talked into.
+
+**Fixed with a rule narrower than "never overwrite".** Overwriting is half of
+how these tools are used — capture a figure, adjust the scene, capture it again
+over the same name — so a blanket refusal would have been reverted within a
+week. What is never intended is a write that changes what a file *is*, and that
+is the shape both demonstrations had. So an existing file is replaced only when
+it already holds what that tool writes, and `overwrite=True` says do it anyway.
+
+Confining writes to a cache directory was the other candidate and was not used:
+"save this figure to ~/paper/figs" is a core workflow for a PyMOL replacement.
+
+**What the flag does and does not buy.** Anything that can set the path can set
+the flag, so this is not a barrier against a hostile call. It moves destruction
+from something that happens invisibly to something a caller has to ask for by
+name, in a call a reader can see.
 
 ### What the review is worth
 
