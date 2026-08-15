@@ -2089,6 +2089,48 @@ def _remote_references(node: Any, path: str = "snapshot") -> list[str]:
     return found
 
 
+def _session_transforms(snapshot: Any) -> list[Any]:
+    """The state tree's transform list, or [] if the shape is not what we expect."""
+    tree = snapshot.get("data", {}) if isinstance(snapshot, dict) else {}
+    transforms = (
+        tree.get("tree", {}).get("transforms", []) if isinstance(tree, dict) else []
+    )
+    return transforms if isinstance(transforms, list) else []
+
+
+def _embedded_structure(snapshot: Any) -> tuple[str, str] | None:
+    """The structure text a session carries, and the format it is in.
+
+    A session embeds its structure rather than referencing it — that is the
+    whole design of the format — so the analysis half can be rebuilt from the
+    file without refetching anything, and without the network being involved in
+    a restore.
+
+    There is exactly one such node even after a superpose, which sends the
+    combined structure as a single blob, so there is nothing to guess about
+    which molecule the analysis subject is. The format follows the trajectory
+    transform Mol* used: `dispatch.ts` collapses everything that is not 'pdb'
+    to 'mmcif', and the tree records which one it picked.
+    """
+    transforms = _session_transforms(snapshot)
+    text: str | None = None
+    fmt = "mmcif"
+    for transform in transforms:
+        if not isinstance(transform, dict):
+            continue
+        if transform.get("transformer") == "ms-plugin.trajectory-from-pdb":
+            fmt = "pdb"
+        if transform.get("transformer") != "ms-plugin.raw-data":
+            continue
+        params = transform.get("params")
+        data = params.get("data") if isinstance(params, dict) else None
+        # A volume travels by URL, so a raw-data node holding bytes rather than
+        # text is not the structure.
+        if isinstance(data, str) and text is None:
+            text = data
+    return None if text is None else (text, fmt)
+
+
 def _unknown_transformers(snapshot: Any) -> list[str]:
     """Transformer names in *snapshot* that save_session never writes.
 
@@ -2097,14 +2139,8 @@ def _unknown_transformers(snapshot: Any) -> list[str]:
     public default when the file names no URL at all, so a session carrying it
     reaches the network with nothing for _remote_references() to find.
     """
-    tree = snapshot.get("data", {}) if isinstance(snapshot, dict) else {}
-    transforms = (
-        tree.get("tree", {}).get("transforms", []) if isinstance(tree, dict) else []
-    )
-    if not isinstance(transforms, list):
-        return []
     unknown = []
-    for transform in transforms:
+    for transform in _session_transforms(snapshot):
         if not isinstance(transform, dict):
             continue
         name = transform.get("transformer")
@@ -2205,33 +2241,93 @@ async def load_session(path: str) -> dict[str, Any]:
             f"{src} holds state save_session() never writes, so it was not "
             "written by protean and is refused: " + ", ".join(unknown[:5])
         )
-    global _structure, _structure_error, _structure_identifier  # session state
+    global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
     result = await _call(
         "load_session",
         {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
-    # The viewer now holds the session's molecule and the analysis still holds
-    # whatever was loaded before it, so every measurement would describe a
-    # different structure from the picture — and say nothing about it. Measured
-    # before this: viewer 100 atoms, `_structure` 660, identifier still
-    # '1ubq'. Restoring the analysis side is the better answer and is the next
-    # change; refusing is the honest one until then, because the alternative is
-    # not "no analysis" but "analysis of the wrong molecule".
-    previous = _structure_identifier
+    # Both halves, or neither. The viewer now holds the session's molecule; if
+    # the analysis kept the one loaded before, every measurement afterwards
+    # would describe a different structure from the picture and say nothing
+    # about it — measured at viewer 100 atoms against 660 here, with the
+    # identifier still naming the old molecule.
     discarded = _discard_session_state()
     _structure, _structure_error, _structure_identifier = None, None, None
+    analysis, agreement = _restore_analysis(snapshot, result.get("atom_count"))
+    _structure_identifier = str(src) if _structure is not None else None
     return {
         "path": str(src),
         "created": document.get("created"),
         **result,
-        "analysis": (
-            "cleared — load_session restores the viewer only, so selections and "
-            "measurements are unavailable until fetch_structure loads this "
-            "molecule for analysis too"
-            + (f" (was holding {previous})" if previous else "")
-            + discarded
-        ),
+        "analysis": analysis + discarded,
+        **agreement,
     }
+
+
+def _restore_analysis(snapshot: Any, viewer_atoms: Any) -> tuple[str, dict[str, Any]]:
+    """Rebuild the analysis structure from the session's own embedded copy.
+
+    Sets `_structure` and returns what to tell the caller. The session carries
+    the structure text, so this needs no network and cannot disagree with the
+    viewer about *which file* — only about how it was built.
+
+    **The viewer's own atom count decides how to build it**, rather than a
+    default chosen here. A session saved from `assembly="biological"` and one
+    saved from `assembly="asymmetric"` embed the same deposited text and differ
+    only in what Mol\\* assembled from it, and nothing in the file records which
+    was chosen. On 1HHO the two readings are 4792 and 2396, so guessing would
+    be wrong half the time and silently: the count that matches the viewer is
+    the one that describes the picture.
+
+    If neither matches, the analysis is left empty. A structure that disagrees
+    with the viewer is the failure this whole change exists to remove, and
+    keeping it with a caveat attached would be that failure with a note on it.
+    """
+    global _structure, _structure_error  # noqa: PLW0603 - session state
+    embedded = _embedded_structure(snapshot)
+    if embedded is None:
+        return (
+            "unavailable — this session carries no structure to analyse, so "
+            "selections and measurements need a fetch_structure first",
+            {},
+        )
+    text, fmt = embedded
+    readings: dict[str, int] = {}
+    failures: dict[str, str] = {}
+    for assembly in ("biological", "asymmetric"):
+        try:
+            loaded = _load_structure(text, fmt, assembly)
+        except SelectionError as exc:
+            # Only one reading needs to work: a structure carrying no assembly
+            # records cannot be built as one, and its asymmetric reading is the
+            # whole molecule anyway. A failure here is not the answer until
+            # both have failed.
+            failures[assembly] = str(exc)
+            continue
+        atoms = int(loaded.array.array_length())
+        readings[assembly] = atoms
+        if not isinstance(viewer_atoms, int) or atoms == viewer_atoms:
+            _structure, _structure_error = loaded.array, None
+            return (
+                f"restored from the session's own copy ({atoms} atoms, "
+                f"{assembly} assembly)",
+                {"analysis_atoms": atoms, "agrees_with_viewer": atoms == viewer_atoms},
+            )
+    if not readings:
+        _structure_error = "; ".join(f"{a}: {m}" for a, m in failures.items())
+        return (
+            "unavailable — the session's structure could not be parsed for "
+            f"analysis ({_structure_error}); the viewer is unaffected",
+            {},
+        )
+    return (
+        "unavailable — the session's structure reads as "
+        + " and ".join(f"{n} atoms {a}" for a, n in readings.items())
+        + f", neither of which is the {viewer_atoms} the viewer is showing. "
+        "Rather than analyse a molecule that is not the one on screen, "
+        "analysis is left empty",
+        {"analysis_atoms": None, "agrees_with_viewer": False},
+    )
 
 
 @mcp.tool()

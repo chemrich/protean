@@ -738,14 +738,24 @@ set it was testing, so emptying the set passed it, and one relied on a skip
 that the anchored match had already made unreachable. Both were caught by
 mutating the guard, not by reading the tests.
 
-### 20. Viewer and analysis are different molecules after `load_session` — half fixed
+### 20. Viewer and analysis are different molecules after `load_session` — fixed
 
-**The wrong answer is gone; the restore is not built yet.** `load_session` now
-clears the analysis side and says so, so measurements refuse instead of
-describing the previous molecule. Restoring it properly — parsing the session's
-own embedded mmCIF back into `_structure` — is the next change, and is
-tractable: a session carries exactly one structure blob even after a superpose,
-so there is nothing to guess about which molecule the analysis subject is.
+**Both halves are restored now, or neither is.** `load_session` rebuilds the
+analysis structure from the session's own embedded copy — no network, and no
+question about which file, since it is the same bytes the viewer parsed.
+
+**The viewer's atom count decides how to build it**, which is the part worth
+keeping. The same deposited text assembles two ways, and *nothing in the file
+records which was chosen*: 1HHO reads 4792 atoms as a biological assembly and
+2396 as the asymmetric unit. A fixed default would have been silently wrong for
+half of all sessions, so both readings are tried and the one matching the
+viewer wins. Verified live on both: a session saved from `assembly="biological"`
+restores 4792/4792, one saved from `assembly="asymmetric"` restores 2396/2396.
+
+If neither reading matches, the analysis is left empty and the reply says so
+with both numbers. A structure that disagrees with the picture is the failure
+this item exists to remove, and keeping it with a caveat attached would be that
+failure with a note on it.
 
 **The original finding.** No attacker needed. `load_session` restores the viewer and never
 touches the Python side, so every measurement afterwards describes whatever was
