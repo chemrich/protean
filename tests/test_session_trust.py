@@ -52,6 +52,14 @@ def test_a_session_that_embeds_its_data_carries_no_references():
     assert _remote_references(snapshot) == []
 
 
+def test_a_volume_url_with_a_newline_is_not_this_bridge():
+    """Anchored with \\Z for the same reason the decoder pattern is."""
+    snapshot = tree(
+        {"transformer": "ms-plugin.download", "params": {"url": "/volumes/fixture\n"}}
+    )
+    assert len(_remote_references(snapshot)) == 1
+
+
 def test_a_volume_route_is_this_bridge_and_is_allowed():
     """Measured from a real session: a loaded volume is a relative /volumes path.
 
@@ -280,11 +288,32 @@ def test_the_transformers_a_real_session_uses_are_all_allowed():
 def test_the_decoder_families_are_allowed_by_pattern(name):
     """Which decoder appears depends on the format the caller loaded.
 
-    Safe as a family: transforms/model.js holds no fetch at all, and neither
-    transforms/data.js nor transforms/volume.js fetches outside Download and
-    DownloadBlob, which are checked by URL.
+    Safe as a family because none of these fetch: each consumes the object its
+    parent produced. Note that is a claim about the *transforms*, not their
+    files — model.js does fetch, in the two custom-property transforms, which
+    are allowlisted by name and have their URLs pinned by value.
+
+    gro and xyz are not reachable today: `fetch.py` maps only .pdb/.ent and
+    .cif/.mmcif, and `dispatch.ts` collapses everything but 'pdb' to 'mmcif'.
+    They are here because the family is admitted as a family, so the next
+    format protean learns does not repeat the PDB regression below.
     """
     assert _unknown_transformers(tree({"transformer": name})) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["ms-plugin.parse-cif\n", "ms-plugin.trajectory-from-pdb\n", "\nms-plugin.parse-dx"],
+)
+def test_a_decoder_name_with_a_newline_is_not_a_decoder(name):
+    """`$` matches before a trailing newline; `\\Z` is what was meant.
+
+    Not exploitable — Mol* has no transformer registered under that name, so
+    the tree fails to apply — but it defeats the stated contract: a name
+    save_session never writes would pass this check and surface as a raw Mol*
+    error rather than protean's refusal naming the transformer.
+    """
+    assert _unknown_transformers(tree({"transformer": name})) == [name]
 
 
 def test_a_session_from_a_pdb_file_is_not_refused():

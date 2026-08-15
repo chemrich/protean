@@ -716,17 +716,19 @@ What replaced it checks two things, because neither alone is enough:
   URLs" rule would have refused every real session; allowing the key would have
   let those same providers fetch from anywhere.
 - **No transformer may appear that `save_session` never writes**, measured by
-  building a scene with every state-adding tool. **The first version of that
-  list was already too narrow when it landed**: naming the transformers one by
-  one meant a session saved from a `.pdb` file was refused by protean seconds
-  after protean wrote it, because a PDB reaches Mol\* through
-  `trajectory-from-pdb` where an mmCIF uses `trajectory-from-mmcif` — and every
-  structure in the census came from RCSB, which serves mmCIF. The
-  `trajectory-from-*` family is now admitted by pattern like the decoders. This is the half that does not
+  building a scene with every state-adding tool. **That list was already too
+  narrow when it landed.** Naming the transformers one by one meant a session
+  saved from a `.pdb` file was refused by protean seconds after protean wrote
+  it: a PDB reaches Mol\* through `trajectory-from-pdb` where an mmCIF uses
+  `trajectory-from-mmcif`, and every structure in the census came from RCSB,
+  which serves mmCIF. This is the half that does not
   depend on spotting a URL: `create-volume-streaming-info` fetches Mol\*'s own
-  public default when the file names no URL at all. The `parse-*` and
-  `volume-from-*` decoder families are admitted by pattern, since which one
-  appears depends on the volume format and neither family fetches.
+  public default when the file names no URL at all. The `parse-*`,
+  `volume-from-*` and `trajectory-from-*` decoder families are admitted by
+  pattern, since which one appears depends on the format the caller loaded and
+  none of those transforms fetches — a narrower claim than "their files do not
+  fetch", since `model.js` fetches in the two custom-property transforms, which
+  are allowlisted by name with their URLs pinned by value.
 
 The match is anchored, so text that merely mentions a URL — an mmCIF header
 cites `http://mmcif.pdb.org/...` — is not a reference. Decompression is bounded

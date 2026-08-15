@@ -1960,7 +1960,12 @@ _MAX_SESSION_BYTES = 512 * 1024 * 1024
 # bridge's own volume route, which is how a volume reaches the viewer.
 # `/volumes/{handle}` is a dict lookup in connection.py, not a filesystem path,
 # so allowing this prefix cannot be turned into a read.
-_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/]+$")
+#
+# `\Z` rather than `$`, and no whitespace in the handle: `$` matches before a
+# trailing newline and `[^/]` admits one, so "/volumes/x\n" would have passed
+# as this bridge's own route. The emitter percent-encodes handles, so a real
+# one never carries whitespace.
+_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/\s]+\Z")
 
 # Anything naming a location to fetch: a scheme, a protocol-relative //host, or
 # a leading /, which the browser resolves against the viewer's own origin — so
@@ -2010,8 +2015,10 @@ _SESSION_TRANSFORMERS = frozenset(
         "ms-plugin.structure-selections-angle-3d",
         "ms-plugin.structure-selections-dihedral-3d",
         "ms-plugin.structure-selections-distance-3d",
-        "ms-plugin.trajectory-from-mmcif",
         "ms-plugin.volume-representation-3d",
+        # trajectory-from-mmcif is covered by the decoder pattern below, along
+        # with trajectory-from-pdb; naming one of the pair here would read as
+        # if it were the only one allowed.
     }
 )
 
@@ -2023,12 +2030,25 @@ _SESSION_TRANSFORMERS = frozenset(
 # the list above used structures fetched from RCSB, which arrive as mmCIF, so
 # no PDB file was ever in it.
 #
-# Safe to admit as families: every `parse-*`, `volume-from-*` and
-# `trajectory-from-*` transform consumes the object its parent produced.
-# transforms/model.js holds no fetch at all, and transforms/data.js fetches only
-# in Download and DownloadBlob, both named above and checked by URL.
+# Safe to admit as families, on a claim narrower than it is tempting to write:
+# **no `parse-*`, `volume-from-*` or `trajectory-from-*` transform fetches** —
+# each consumes the object its parent produced. That is not the same as saying
+# their files do not fetch, and the difference matters when re-measuring:
+# transforms/model.js *does* fetch, in `custom-model-properties` and
+# `custom-structure-properties` (it hands `assetManager` to the property
+# providers at model.js:1150 and :1206), which is exactly what reaches the
+# three URLs pinned by value above. Those two are allowlisted by name, not by
+# this pattern. In transforms/data.js the fetching transforms are Download —
+# named above, and its URL checked — and DownloadBlob, which is in neither
+# list and so is refused outright.
+#
+# `\Z`, not `$`: `$` also matches before a trailing newline, so
+# "ms-plugin.parse-cif\n" would be admitted as a known decoder and reach the
+# viewer to fail there as a raw Mol* error, rather than being refused here by
+# name. `_SESSION_LOCAL_URL` above is anchored the same way and for the same
+# reason.
 _SESSION_DECODERS = re.compile(
-    r"^ms-plugin\.(?:parse|volume-from|trajectory-from)-[a-z0-9-]+$"
+    r"^ms-plugin\.(?:parse|volume-from|trajectory-from)-[a-z0-9-]+\Z"
 )
 
 
