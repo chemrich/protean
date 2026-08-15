@@ -853,3 +853,68 @@ written specifically to fix the findings above. The most valuable were about
 tests that could not fail: PR 61's compared residue sets while its fixture's
 only alternate sat outside the conserved quartile, so the obvious wrong
 implementation passed it.
+
+## Two findings from chasing a flaky test, 2026-08-16
+
+### 23. A capture's budget did not depend on the capture — fixed
+
+`test_a_real_journal_figure_reaches_disk` (png/tiff/jpeg) failed CI on PR 84
+and passed when the same commit was re-run. All three failed the same way —
+`Viewer timed out on 'snapshot' after 300.0s` — which is a timeout, not an
+assertion: nothing had computed a wrong answer.
+
+**It was chased rather than re-run, and the first thing the evidence did was
+contradict the obvious explanation.** "A slow runner" was the working theory;
+the re-run that passed took 32:58 against the failure's 34:56, so the runner
+was not having a bad day. What had happened is visible only across runs: every
+browser job before `declutter-the-viewer` merged took 15–17 minutes and every
+one after takes 31–34. The collapsed panels give Mol\* a much larger canvas,
+every render in the suite costs more, and a capture that had been finishing
+inside 300 s stopped reliably doing so.
+
+Measured under SwiftShader on the development machine, one capture per width:
+
+```
+ 1200 px   0.6 MP     6.5 s   10.4 s/MP
+ 2000 px   1.7 MP    17.7 s   10.3
+ 3000 px   3.9 MP    42.9 s   11.1
+ 4323 px   8.1 MP   105.2 s   13.1     <- 183 mm at 600 dpi
+ 6000 px  15.5 MP   209.7 s   13.5
+ 8000 px  27.6 MP   467.3 s   16.9
+```
+
+Nearly linear in the pixel count. So the fixed 300 s was never a statement
+about health: it was ample below 2000 px, a coin toss for the journal figure on
+a CI runner, and **unreachable above about 5000 px on any renderer this slow,
+including this one** — a size the tool accepts without complaint. The budget is
+now 60 s per megapixel of the requested size with a 300 s floor, and scene
+positioning keeps the old flat value under its own name.
+
+**Why not a heartbeat, which would be the better answer.** Mol\*'s ordinary
+image pass renders in one synchronous call — `MultiSamplePass.render`, with no
+`runtime.update` between samples — so the page's main thread is blocked for the
+whole capture and cannot send anything. Silence is what a healthy large capture
+looks like. Only the illumination path reports progress, and CI does not take
+it.
+
+### 24. The browser job takes twice as long since the viewer was decluttered — open
+
+Found while chasing the above, and it wants a decision rather than a patch.
+Measured from the run history of 2026-08-15:
+
+```
+before declutter-the-viewer merged   15–17 min per browser job
+after                                31–34 min
+```
+
+The cause is the fix working: collapsing Mol\*'s panels hands the canvas the
+space they were using, and under SwiftShader cost follows pixels. The browser
+job was already **76.5% of the Actions bill** (measured 2026-08-12), so this
+roughly doubles CI spend — still small in dollars, and worth stating before it
+is noticed as a surprise.
+
+The obvious lever is to give the differential harness an explicit, smaller
+window rather than accepting the headless default. It is not a free change:
+several pixel-fraction thresholds in `test_render_differential.py` are
+calibrated per renderer and some are close to their limits, so a resolution
+change wants them re-derived rather than re-tuned until green.

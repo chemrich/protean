@@ -1498,6 +1498,97 @@ async def test_width_mm_is_the_escape_hatch(wired_bridge, tmp_path):
     assert sent["width"] == 1181  # 100 mm at 300 dpi
 
 
+# -- what a capture is allowed to cost -----------------------------------------
+
+
+def _spy_on_budgets(monkeypatch) -> dict[str, list[float]]:
+    """Record the timeout every request is actually given, per action.
+
+    The timeout never goes on the wire and no reply reflects it, so a correct
+    `_capture_timeout` wired to nothing would satisfy an assertion about the
+    helper alone and leave the behaviour exactly as it was.
+
+    Every call is kept rather than the last one. A turntable orbits once per
+    frame and once more to close the loop, so keeping only the last would let
+    that final call paper over a wrong budget on all the others — which it
+    did, until a mutation that should have failed this suite did not.
+    """
+    budgets: dict[str, list[float]] = {}
+    bridge = server_mod._bridge
+    assert bridge is not None  # the wired_bridge fixture installed it
+    original = bridge.request
+
+    async def spy(action: str, args: Any = None, timeout: float = 60.0) -> Any:
+        budgets.setdefault(action, []).append(timeout)
+        return await original(action, args, timeout)
+
+    monkeypatch.setattr(bridge, "request", spy)
+    return budgets
+
+
+def test_a_small_capture_keeps_a_flat_budget():
+    """Below a megapixel, the render is not where the time goes."""
+    assert server_mod._capture_timeout(1200) == server_mod._CAPTURE_TIMEOUT_FLOOR
+
+
+def test_a_bigger_capture_gets_a_bigger_budget():
+    assert server_mod._capture_timeout(6000) > server_mod._capture_timeout(4323)
+    assert server_mod._capture_timeout(4323) > server_mod._capture_timeout(1200)
+
+
+def test_the_journal_figure_gets_more_than_the_budget_that_failed_it():
+    """The capture a fixed number was replaced for.
+
+    183 mm at 600 dpi is 4323 px, and against the old flat 300 s it timed out
+    in CI on one run and finished on the next, from the same commit. Measured
+    at 105 s under SwiftShader on the development machine, and a CI runner is
+    about three times slower again, so the budget has to clear ~315 s by
+    enough that a slow runner is not a coin toss.
+    """
+    assert server_mod._capture_timeout(4323) > 900
+
+
+async def test_the_budget_that_reaches_the_bridge_follows_the_size_asked_for(
+    wired_bridge, tmp_path, monkeypatch
+):
+    budgets = _spy_on_budgets(monkeypatch)
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, 4323, 1860)
+    task = wired_bridge.serve(1)
+    await snapshot(str(tmp_path / "fig"), column="double", dpi=600)
+    await task
+
+    assert sent["width"] == 4323
+    assert budgets["snapshot"] == [server_mod._capture_timeout(4323)]
+    assert budgets["snapshot"][0] > server_mod._CAPTURE_TIMEOUT_FLOOR
+
+
+async def test_positioning_the_scene_is_not_charged_as_a_capture(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """A camera move borrowed the capture's budget when there was only one.
+
+    Keeping them apart is the point: a figure-sized capture is allowed minutes
+    now, and an orbit that never answers should not be.
+
+    Captured wide enough to clear the floor deliberately. At a small width the
+    two budgets are both 300 s and the assertions below hold whichever way the
+    call sites are wired, which is a test that cannot fail.
+    """
+    budgets = _spy_on_budgets(monkeypatch)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    await turntable(str(tmp_path / "turn"), frames=2, width=3000)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert set(budgets["orbit"]) == {server_mod._VIEWER_ACTION_TIMEOUT}
+    assert set(budgets["snapshot"]) == {server_mod._capture_timeout(3000)}
+    assert set(budgets["snapshot"]) != set(budgets["orbit"])
+
+
 async def test_snapshot_needs_exactly_one_width():
     with pytest.raises(ViewerError, match="exactly one of column"):
         await snapshot("/tmp/x.png")

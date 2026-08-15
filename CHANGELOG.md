@@ -45,6 +45,29 @@ nothing is released yet, so everything below is unreleased.
 
 ### Fixed
 
+- **A capture is allowed time in proportion to the pixels it asks for.** Every
+  capture shared one fixed 300 s budget, which the range of sizes makes
+  meaningless: 12000×9000 takes about 20 s on a real GPU, while under software
+  rendering the same machine takes 6.5 s for a 1200 px capture and 105 s for a
+  4323 px one — 183 mm at 600 dpi, an ordinary journal figure. On a CI runner,
+  roughly three times slower again, that figure landed either side of 300 s
+  depending on the day: the same commit failed three tests on one run and
+  passed on the next. Above about 5000 px the fixed budget could not be met on
+  any renderer that slow, including locally.
+
+  The budget is now 60 s per megapixel of the requested size, with a 300 s
+  floor for small captures — about 10x what the development machine needs for a
+  journal figure and 3x what a CI runner needs. Positioning the scene (a
+  trajectory frame, a camera move, an orbit step) borrowed the capture's budget
+  when there was only one, and keeps the old 300 s under its own name, so a
+  camera move that never answers is not given a render's patience.
+
+  There is no progress signal to use instead: Mol\*'s ordinary image pass
+  renders in a single synchronous call, so the page's main thread is blocked
+  for the whole capture and could not send a heartbeat if asked for one.
+  Silence is what a healthy large capture looks like, and only the pixel count
+  separates it from a stall.
+
 - **A viewer that goes away ends the requests it was holding.** Nothing failed
   an in-flight request when the page disconnected, so a closed or reloaded tab
   left the call waiting out its entire timeout — now minutes, for a figure —
