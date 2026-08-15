@@ -803,6 +803,48 @@ the flag, so this is not a barrier against a hostile call. It moves destruction
 from something that happens invisibly to something a caller has to ask for by
 name, in a call a reader can see.
 
+### 22. Nothing says which vintage of protean you are talking to — open
+
+**Found by being bitten, 2026-08-15.** `open_viewer` timed out, and twenty
+minutes went into finding out why: the MCP server process had been started
+three days earlier, so it was running none of that day's code, while serving
+that day's viewer page off disk. New page, old server, no handshake in common.
+
+The diagnosis had to be done from the outside, and the decisive evidence was a
+hand-rolled WebSocket:
+
+```
+GET /ws with no token  ->  HTTP/1.1 101 Switching Protocols
+```
+
+That is a server predating the token, still accepting anything — **which is
+the second half of the problem.** A long-lived MCP server keeps running the code it
+started with, so a security fix is not in effect on a machine until someone
+restarts the process, and nothing anywhere reports that. Rebuilding does not
+help; the Python was loaded at start.
+
+**What to build.** `open_viewer` should report the server's own version, and
+the handshake should compare it against the page's. The mechanism is already
+on the wire and unused: `bridge.ts` sends `{action: 'protean_ping', version:
+PROTOCOL_VERSION}` and the server answers `{action: 'protean_pong', version:
+PROTOCOL_VERSION}` — **neither side reads the other's number.** `__version__`
+exists in `__init__.py` and is reported nowhere.
+
+Three pieces, smallest first:
+
+1. `open_viewer`'s reply states the server's `__version__`. One line, and it
+   would have turned this into a glance.
+2. The page compares the pong's version with its own and says so in the status
+   pill when they differ — the pill already exists and already explains the
+   other refusal cases.
+3. A build stamp, since `__version__` will read `0.1.0.dev0` across dozens of
+   incompatible builds. The viewer bundle's asset hash is one candidate; the
+   server has no equivalent, so this needs a decision rather than a patch.
+
+Worth doing before the flip, or soon after: a public repo means users running
+whatever they installed weeks ago and reporting bugs against a version neither
+of you can identify.
+
 ### What the review is worth
 
 Every fix above is mutation-tested, and **a review ran on each of the four
