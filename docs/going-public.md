@@ -28,7 +28,7 @@ Checked directly against the tree rather than recalled.
 | | |
 |---|---|
 | `LICENSE` | MIT, © 2026 Charlie Emrich |
-| Secrets in source, viewer, or CI | none found — see the scope note below |
+| Secrets in source, viewer, or CI | none, by pattern **and** entropy scan over all history — §3.1 |
 | Absolute local paths committed | none on `main`; **one on `cryoem-volumes`** |
 | History size | 6.3 MB; largest tracked file is `uv.lock` |
 | Bridge bind address | `127.0.0.1` (`connection.py`), not `0.0.0.0` |
@@ -41,13 +41,14 @@ Four of those deserve a sentence.
 **"No secrets" is narrower than it looks, and this is the claim that cannot be
 withdrawn.** Precisely what was checked: `ci.yml` references no `secrets.*`, and
 a *pattern* scan across all 187 commits on all refs — AWS keys, GitHub PATs,
-`sk-` keys, `BEGIN PRIVATE KEY` headers, Slack tokens — returned nothing. What
-has **not** run is an entropy-based tool, which is what catches a credential
-that matches no known prefix. An unqualified "none" resting on a prefix grep is
-the exact silent-success shape §3.1 warns about, so the row says "none found"
-rather than "none". **Fold a real scan into §3.1** before treating it as
-settled; `gitleaks` is not currently installed on the dev machine, so that is an
-install step and not a one-liner.
+`sk-` keys, `BEGIN PRIVATE KEY` headers, Slack tokens — returned nothing. That
+left the row reading "none found" rather than "none", because a prefix grep
+cannot see a credential that matches no known prefix.
+
+**Settled 2026-08-15.** `gitleaks` was installed and run across all history,
+including the merge-commit content a `--no-merges` scan skips, and its entropy
+rules were canary-tested first so that "no leaks found" is evidence rather than
+a silence. Nothing. The scope, and why each part of it is there, is under §3.1.
 
 **One absolute path is in flight, and `main` being clean will not stop it.** The
 `cryoem-volumes` branch commits `viewer/node_modules` as a mode-120000 symlink
@@ -126,8 +127,65 @@ double-encoded, backslashes, absolute paths, `..;/`, and **symlinks planted
 inside `static_dir`** pointing out. All returned 404; nothing escaped. The guard
 below is as strict as it claims.
 
-Still open from this section: the nine path-taking tools have been enumerated
-but not individually attacked, and the entropy-based secret scan has not run.
+#### Result: the path-taking tools, attacked 2026-08-15
+
+**There are fourteen, not nine.** Taken from the live tool registry rather than
+by reading the file, which is how the count moved: `background(image=)` and
+`turntable`/`record_timeline`'s `directory` are missing from the table below,
+and `fetch_structure`'s path argument is `identifier`, not `source`. The lesson
+the first draft of this document recorded — a partial list silently narrows the
+review — survived being written down and recurred anyway, so **enumerate from
+the registry**:
+
+```python
+tools = await mcp.list_tools()   # then read each inputSchema["properties"]
+```
+
+What came out, attacked with a canary secret file as the target:
+
+- **`load_session` was the blocker, as predicted, but not for the reason
+  given.** The arbitrary *read* is harmless: errors disclose two bytes of gzip
+  magic and nothing else. What matters is what happens after the parse — the
+  embedded Mol\* state tree goes to `plugin.state.setSnapshot`, which applies
+  it as given, so a session file can name a URL and the browser will fetch it.
+  Demonstrated with an outbound GET to a stand-in attacker server, which then
+  chose the molecule on screen while `load_session` replied normally. The
+  format exists to be shared, so "a session someone sent you" is its ordinary
+  use. **Fixed** — backlog 19.
+- **The readers hold.** `load_volume`, `load_trajectory`, `fetch_structure`,
+  `color_by_potential` and `background` refuse by format or extension before
+  reading anything interesting, and none echoes file content into an error the
+  model can read. Pillow's `verify()` blocks a non-image.
+- **No shell injection anywhere.** Both `subprocess.run` sites — APBS
+  (`analysis/electrostatics.py:516`) and ffmpeg (`analysis/encode.py:123`) —
+  take an argv list, never `shell=True`, and build their filenames themselves
+  inside a temp directory. No caller-supplied path reaches an argv position
+  where ffmpeg would read it as an option or a protocol handler.
+- **The writers do not hold, and want a policy** — backlog 21. Every writing
+  tool overwrites any path, creating parent directories, with no check.
+- **A finding fell out that is not a security one at all**: viewer and analysis
+  become different molecules after any `load_session` — backlog 20.
+
+#### Result: the secret scan, run 2026-08-15
+
+`gitleaks` 8.30.1, installed for this. "No findings" is worth exactly what its
+scope was, so the scope:
+
+- 117 commits — every non-merge commit on **all** refs, local and remote.
+- The 95 merge commits `--no-merges` skips: 11 introduce content present in
+  neither parent, so `git log --all --merges --cc -p` was scanned separately
+  (138 KB). Nothing.
+- **The scanner was canary-tested.** A bare 40-character token committed to a
+  throwaway clone was caught by `generic-api-key` at entropy 4.92. Without
+  that, "no leaks found" is a statement about whether the rules ran, not about
+  the history.
+
+**No leaks.** §2's row can now read "none found by pattern *and* entropy scan
+across all history", which is as strong as this claim can honestly be made.
+
+**Nothing is still open from this section.** §3.1 is done; the two findings it
+left unfixed are backlog 20 and 21, and both are decisions rather than
+oversights.
 
 ---
 

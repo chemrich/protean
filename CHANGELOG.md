@@ -7,6 +7,21 @@ nothing is released yet, so everything below is unreleased.
 
 ### Security
 
+- **A session file is no longer trusted to say where the viewer should look.**
+  `load_session` handed the file's embedded Mol\* state tree straight to
+  `setSnapshot`, which applies it as given, so a `.protean` file could name a
+  URL and the browser would fetch it — and then draw whatever came back, while
+  `load_session` returned a normal reply naming the atom count it had been
+  handed. Demonstrated against a live viewer with an outbound GET to a stand-in
+  attacker server. The format exists to be shared, so a session someone sent
+  you is its ordinary use, not an exotic one.
+
+  A session may now only reference this bridge's own relative
+  `/volumes/<handle>` route, which is the only URL `save_session` writes —
+  measured from a real session with a volume in it, since a blanket "no URLs"
+  rule would refuse those. Decompression is bounded at 512 MB as well: 9 kB of
+  gzip reaches 2 GB, and the file was read whole before anything checked it.
+
 - **The viewer handshake is authenticated.** The bridge's WebSocket accepted any
   connection: no `Origin` check, no token. A WebSocket is not subject to the
   same-origin policy and the port is `DEFAULT_PORT` plus a small scan range, so
