@@ -12,11 +12,18 @@ nothing is released yet, so everything below is unreleased.
   every count, distance and selection afterwards answered about whatever was
   loaded before — measured at viewer 100 atoms against `_structure`'s 660,
   with the identifier still reading `1ubq` and nothing reporting a
-  discrepancy. The analysis state is now cleared and the reply says so, along
-  with anything discarded, so measurements refuse rather than answer wrongly.
-  Restoring the analysis side from the session's own embedded structure is the
-  better answer and comes next; refusing is the honest one until then, because
-  the alternative was not "no analysis" but "analysis of the wrong molecule".
+  discrepancy.
+
+  Both halves are restored now, or neither is. The analysis structure is
+  rebuilt from the session's own embedded copy — no network, and no question
+  about which file, since it is the same bytes the viewer parsed. **The
+  viewer's atom count decides how to build it**: the same deposited text
+  assembles two ways and nothing in the file records which was chosen (1HHO
+  reads 4792 biological, 2396 asymmetric), so a fixed default would have been
+  silently wrong for half of all sessions. If neither reading matches the
+  viewer, the analysis is left empty and the reply says so with both numbers,
+  because a structure that disagrees with the picture is the failure this fixes
+  rather than a caveat to attach.
 
 ### Security
 
