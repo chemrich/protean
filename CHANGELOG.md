@@ -5,6 +5,44 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### The viewer
+
+- **The viewer opens as a canvas, with Mol\*'s panels collapsed to slices.**
+  Both were shown in full by default, and they are Mol\*'s controls for a
+  person driving Mol\* directly: the left one loads structures, the right one
+  edits the state tree. Used here they change the picture and nothing else —
+  the analysis half lives in the Python process, so the model goes on
+  answering, correctly, about the molecule it loaded rather than the one now on
+  screen.
+
+  They are collapsed rather than removed, because a viewer you cannot inspect
+  is its own kind of opaque: when the picture looks wrong, the state tree is
+  where the answer is. Mol\* collapses its left region to a 32 px icon rail on
+  its own; its right region has no collapsed state, so protean supplies a 16 px
+  tab that opens the panel and moves to sit against its edge. Measured on a
+  1280×800 window: Mol\*'s panel greys fell from 42% of it to 0.5%, and the
+  molecule rose from 20.5% to 36%.
+
+  The sequence strip stays — it is the one panel that *reports* rather than
+  acts, and reading along while a model works is most of why a person has the
+  viewer open. The viewport's buttons go, except Mol\*'s camera reset and the
+  controls toggle. The status pill moves to the lower right, the one corner
+  Mol\* leaves empty.
+
+### Packaging
+
+- **The wheel ships Mol\*'s licence notice, which it is obliged to carry.** The
+  built viewer travels inside the wheel, so `pip install protean-mcp` delivers
+  `molstar.js` and everything bundled into it — React, immutable, safe-buffer,
+  all MIT. The bundle's first line points at `molstar.js.LICENSE.txt`, and the
+  sync step copied the script and the stylesheet but not that file, so the
+  artifact carried a dangling reference to the notice MIT requires. A packaging
+  test now fails if the wheel loses it.
+- **protean's own licence is machine-readable.** `license = { file = "LICENSE" }`
+  left `License` empty in installed metadata — an audit of the dependency tree
+  read protean-mcp itself as `UNSTATED`. Now an SPDX expression (PEP 639), so
+  the wheel reports `License-Expression: MIT`.
+
 ### Fixed
 
 - **`load_session` no longer leaves the analysis describing the previous
