@@ -45,6 +45,15 @@ nothing is released yet, so everything below is unreleased.
 
 ### Fixed
 
+- **A viewer that goes away ends the requests it was holding.** Nothing failed
+  an in-flight request when the page disconnected, so a closed or reloaded tab
+  left the call waiting out its entire timeout — now minutes, for a figure —
+  and then blaming a stall, which is the wrong diagnosis for a viewer that
+  simply left. The same held when a second protean tab won the handshake and
+  displaced the first: the reply was lost with the page that had been asked,
+  while `viewer_connected` went on reporting a viewer. Requests now fail as
+  soon as the reply becomes impossible, and say which of the three happened.
+
 - **`screenshot` works again through an MCP client.** It failed for every
   caller with `Unable to serialize unknown type: Image`, while the test suite
   stayed green. FastMCP derives an output schema from the return annotation,

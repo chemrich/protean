@@ -56,6 +56,59 @@ async def test_request_timeout(bridge, viewer):
         await bridge.request("slow", timeout=0.2)
 
 
+# -- a reply that can never arrive -------------------------------------------
+#
+# Each of these starts a request whose timeout is far longer than the test is
+# allowed to take, so passing means the wait ended because the reply became
+# impossible and not because the clock ran out. That is the point: a capture's
+# budget is minutes long now, and spending it waiting on a page that has
+# already gone would report a stall for a viewer that simply left.
+
+
+async def _inflight(bridge, action: str = "slow"):
+    """Start a request nobody will answer, and let it reach the socket."""
+    task = asyncio.create_task(bridge.request(action, timeout=300))
+    await asyncio.sleep(0.1)
+    return task
+
+
+async def test_a_closed_viewer_ends_an_inflight_request(bridge, viewer):
+    task = await _inflight(bridge)
+    await viewer.ws.close()
+
+    with pytest.raises(ViewerError, match="disconnected"):
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_a_displaced_viewer_ends_an_inflight_request(bridge, viewer):
+    """A second tab wins the socket, and the first one's reply is lost with it.
+
+    Worse than a plain disconnect, because the bridge still has a viewer
+    afterwards: only the page that was asked has gone, so nothing about
+    `viewer_connected` says anything is wrong.
+    """
+    task = await _inflight(bridge)
+
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token={bridge.token}")
+    successor = MockViewer(session, ws)
+    await successor.handshake()
+
+    try:
+        with pytest.raises(ViewerError, match="replaced by another protean tab"):
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        await successor.close()
+
+
+async def test_a_stopped_bridge_ends_an_inflight_request(bridge, viewer):
+    task = await _inflight(bridge)
+    await bridge.stop()
+
+    with pytest.raises(ViewerError, match="shut down"):
+        await asyncio.wait_for(task, timeout=5)
+
+
 async def test_port_scan_increments_on_conflict():
     base = free_port()
     blocker = socket.socket()

@@ -119,6 +119,10 @@ class ViewerBridge:
         )
 
     async def stop(self) -> None:
+        # Before the close, not after: closing the socket wakes the handler,
+        # which would fail these as an ordinary disconnect and bury the more
+        # specific reason.
+        self._fail_pending("The viewer bridge was shut down while this was in flight.")
         if self._ws is not None:
             await self._ws.close()
             self._ws = None
@@ -208,6 +212,22 @@ class ViewerBridge:
         if not reply.get("ok"):
             raise ViewerError(reply.get("error", f"Viewer error on '{action}'"))
         return reply.get("result")
+
+    def _fail_pending(self, reason: str) -> None:
+        """Fail every in-flight request, because no reply can arrive now.
+
+        A pending request is keyed by an id only the page that received it
+        knows. When that page goes away — closed, reloaded, or displaced by a
+        second tab winning the handshake — the reply is not late, it is never
+        coming; nothing else in this class notices, so before this the request
+        sat until its own timeout and then blamed a stall. That is the wrong
+        answer twice over: the caller waits minutes for news that was available
+        immediately, and the news it finally gets names the wrong cause.
+        """
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_exception(ViewerError(reason))
+        self._pending.clear()
 
     def _stall_hint(self) -> str:
         """Explain a timeout when the tab being hidden is the likely cause."""
@@ -338,6 +358,15 @@ class ViewerBridge:
             if data.get("action") == "protean_ping":
                 # Handshake: this connection is a protean viewer.
                 if self._ws is not None and self._ws is not ws and not self._ws.closed:
+                    # The displaced page held whatever was in flight, and the
+                    # newcomer has never heard of it. Failed before the close,
+                    # which wakes the old handler and would otherwise bury this
+                    # reason in a plain disconnect.
+                    self._fail_pending(
+                        "The viewer was replaced by another protean tab while "
+                        "this was in flight, so the reply is lost. Retry against "
+                        "the tab that is connected now."
+                    )
                     # Tell the displaced viewer it lost the connection on
                     # purpose. Without this it reconnects on its timer, wins the
                     # handshake back, and the two tabs trade the socket forever.
@@ -370,5 +399,9 @@ class ViewerBridge:
             self._ws = None
             self._visibility = None
             self._connected.clear()
+            self._fail_pending(
+                "The viewer disconnected while this was in flight — the tab was "
+                "closed or reloaded. Reopen it and retry."
+            )
             logger.info("Viewer disconnected")
         return ws
