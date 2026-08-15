@@ -257,28 +257,38 @@ def _visibility_note(bridge: ViewerBridge) -> str:
 
 
 @mcp.tool()
-async def open_viewer(timeout: float = 20) -> str:
+async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
 
     Idempotent: if a viewer is already connected, reports its address instead
     of opening a new tab.
+
+    reveal_url: include the handshake token in the address reported back. The
+      token is what authenticates a socket, and an *absent* Origin is allowed
+      so non-browser clients can connect at all — so whatever holds this URL
+      can drive the viewer and answer for it. This reply is read by a model,
+      kept in a transcript and often written to a log, so by default the
+      address comes back without it and the real one goes straight to the
+      browser. Set this only to open the viewer somewhere the launch could not
+      reach: a second browser, or another machine forwarding the port.
     """
     bridge = get_bridge()
     await bridge.start()
     # Carries the handshake token; the bridge builds it so no caller can open a
     # viewer that is then refused by its own socket.
-    url = bridge.viewer_url
+    launch_url = bridge.viewer_url
+    shown = launch_url if reveal_url else bridge.display_url
     if bridge.viewer_connected:
-        return f"Viewer already connected at {url}{_visibility_note(bridge)}"
+        return f"Viewer already connected at {shown}{_visibility_note(bridge)}"
     if _static_dir() is None:
         return (
-            f"Bridge is listening at {url}, but the viewer app is not built. "
+            f"Bridge is listening at {shown}, but the viewer app is not built. "
             "Run `npm install && npm run build` in the viewer/ directory, "
             "then call open_viewer again."
         )
-    webbrowser.open(url)
+    webbrowser.open(launch_url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {url}{_visibility_note(bridge)}"
+    return f"Viewer connected at {shown}{_visibility_note(bridge)}"
 
 
 @mcp.tool()

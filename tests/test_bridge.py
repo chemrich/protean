@@ -253,3 +253,15 @@ def test_the_viewer_url_carries_a_token_the_socket_will_accept(bridge):
     """One place builds the URL, so a viewer cannot be opened that is refused."""
     assert f"token={bridge.token}" in bridge.viewer_url
     assert bridge.viewer_url.startswith(f"http://127.0.0.1:{bridge.port}/")
+
+
+def test_the_display_url_carries_no_token(bridge):
+    """The address that goes in a reply is not the one that authenticates.
+
+    A tool reply is read by a model, kept in a transcript and often logged, so
+    a token in one is a credential in all three — and the Origin check is no
+    backstop, since an absent Origin is allowed so that non-browser clients can
+    connect at all.
+    """
+    assert bridge.token not in bridge.display_url
+    assert bridge.display_url == f"http://127.0.0.1:{bridge.port}/"
