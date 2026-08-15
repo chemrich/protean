@@ -276,6 +276,49 @@ newcomer cannot guess:
 
 ### 3.3 A dependency licence check
 
+> **Run 2026-08-15, and "all believed permissive" was wrong twice over.** The
+> results are below; the original text follows them.
+
+**Two runtime dependencies are LGPL, not permissive.** Read from installed
+metadata across the whole runtime closure — 54 packages, the set a
+`pip install protean-mcp` actually pulls in:
+
+| | |
+|---|---|
+| `biotraj` | LGPL-2.1-or-later — required by **biotite** |
+| `propka` | LGPL-2.1 — required by **pdb2pqr** |
+
+Everything else is MIT, BSD, Apache-2.0, PSF, CC0, MIT-CMU or a permissive
+combination. Neither LGPL package blocks an MIT project: protean depends on
+them, it does not vendor or statically link them, and pip installs them as
+separate distributions. What it does block is the sentence "every dependency is
+permissive", which this document was carrying unverified.
+
+**The wheel redistributes Mol\*, and was shipping it without its notice.**
+`[tool.hatch.build.targets.wheel] artifacts` puts the built viewer inside the
+wheel, so `pip install protean-mcp` delivers `molstar.js` — and everything
+webpack bundled into it: React, immutable, safe-buffer, all MIT. MIT requires
+the copyright and permission notice to travel with the copy. The bundle's own
+first line says *"For license information please see molstar.js.LICENSE.txt"*,
+and `sync-molstar` copied the script and the stylesheet but not that file, so
+the artifact carried a dangling reference to the notice it is obliged to
+include. Fixed, and `tests/test_packaging.py` now fails if the wheel loses it —
+mutation-tested by removing the file and watching the test fail.
+
+This is the finding the section did not anticipate: the question was whether
+protean may *depend* on its dependencies, and the answer turned on what it
+*ships*. Only the viewer is redistributed; the npm side has exactly one runtime
+dependency (`molstar`, MIT) and four build-time ones (vite, typescript, vitest,
+jsdom) that never reach a user.
+
+**protean's own licence was unreadable to tooling.** `license = { file =
+"LICENSE" }` leaves `License` empty in installed metadata, so the audit script
+reported protean-mcp itself as `UNSTATED`. Now `license = "MIT"` with
+`license-files = ["LICENSE"]` (PEP 639); the built wheel reports
+`License-Expression: MIT` and carries the file.
+
+The original text of this section follows.
+
 biotite, pdb2pqr, Mol\*, aiohttp, httpx, pillow. All believed permissive; none
 verified. **This is an unverified claim in a document about publishing, which
 is exactly the kind this repo does not get to make.** Cheap to settle with
