@@ -272,15 +272,40 @@ def test_the_transformers_a_real_session_uses_are_all_allowed():
         "ms-plugin.parse-cube",
         "ms-plugin.volume-from-dx",
         "ms-plugin.volume-from-density-server-cif",
+        "ms-plugin.trajectory-from-pdb",
+        "ms-plugin.trajectory-from-gro",
+        "ms-plugin.trajectory-from-xyz",
     ],
 )
 def test_the_decoder_families_are_allowed_by_pattern(name):
-    """Which decoder appears depends on the volume format the caller loaded.
+    """Which decoder appears depends on the format the caller loaded.
 
-    Safe as a family: neither transforms/data.js nor transforms/volume.js
-    fetches outside Download and DownloadBlob, which are checked by URL.
+    Safe as a family: transforms/model.js holds no fetch at all, and neither
+    transforms/data.js nor transforms/volume.js fetches outside Download and
+    DownloadBlob, which are checked by URL.
     """
     assert _unknown_transformers(tree({"transformer": name})) == []
+
+
+def test_a_session_from_a_pdb_file_is_not_refused():
+    """The regression the pattern exists for, kept as its own case.
+
+    A structure loaded from a .pdb reaches Mol* through `trajectory-from-pdb`
+    where an mmCIF uses `trajectory-from-mmcif`, so naming the transformers one
+    by one made protean refuse a session it had written itself seconds earlier
+    — measured end to end against a live viewer. Everything in the census
+    behind that list came from RCSB, and RCSB serves mmCIF.
+    """
+    snapshot = tree(
+        {"transformer": "build-in.root"},
+        {"transformer": "ms-plugin.raw-data", "params": {"data": "ATOM      1  N\n"}},
+        {"transformer": "ms-plugin.trajectory-from-pdb"},
+        {"transformer": "ms-plugin.model-from-trajectory"},
+        {"transformer": "ms-plugin.structure-from-model"},
+        {"transformer": "ms-plugin.structure-representation-3d"},
+    )
+    assert _unknown_transformers(snapshot) == []
+    assert _remote_references(snapshot) == []
 
 
 async def test_load_session_refuses_a_file_that_reaches_outside_itself(tmp_path):

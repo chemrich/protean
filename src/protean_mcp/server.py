@@ -2016,12 +2016,20 @@ _SESSION_TRANSFORMERS = frozenset(
 )
 
 # The decoder families, allowed by pattern because which one appears depends on
-# the volume format the caller loaded. Safe to admit as a family: every
-# `parse-*` and `volume-from-*` transform consumes the object its parent
-# produced, and neither transforms/data.js nor transforms/volume.js fetches
-# anywhere except Download and DownloadBlob, both of which are named above and
-# checked by URL.
-_SESSION_DECODERS = re.compile(r"^ms-plugin\.(?:parse|volume-from)-[a-z0-9-]+$")
+# the format the caller loaded rather than on anything protean chooses: a .pdb
+# file gives `trajectory-from-pdb` where an mmCIF gives `trajectory-from-mmcif`,
+# and each volume format has its own pair. Naming them one by one is how this
+# check came to refuse a session protean had just written — the census behind
+# the list above used structures fetched from RCSB, which arrive as mmCIF, so
+# no PDB file was ever in it.
+#
+# Safe to admit as families: every `parse-*`, `volume-from-*` and
+# `trajectory-from-*` transform consumes the object its parent produced.
+# transforms/model.js holds no fetch at all, and transforms/data.js fetches only
+# in Download and DownloadBlob, both named above and checked by URL.
+_SESSION_DECODERS = re.compile(
+    r"^ms-plugin\.(?:parse|volume-from|trajectory-from)-[a-z0-9-]+$"
+)
 
 
 def _session_path(path: str) -> Path:
