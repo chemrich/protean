@@ -7,6 +7,15 @@ nothing is released yet, so everything below is unreleased.
 
 ### Security
 
+- **`open_viewer` no longer hands the handshake token to the model.** The URL
+  it returned carried the token, so the credential that authenticates a viewer
+  socket landed in the model's context, in transcripts and in any log of tool
+  results — and the `Origin` check is no backstop for a leaked token, because
+  an *absent* Origin is allowed so non-browser clients can connect at all. The
+  address now comes back without it while the real one goes straight to the
+  browser; `reveal_url=True` asks for it deliberately, for a second browser or
+  a forwarded port. All three of `open_viewer`'s return paths were leaking it.
+
 - **A session file is no longer trusted to say where the viewer should look.**
   `load_session` handed the file's embedded Mol\* state tree straight to
   `setSnapshot`, which applies it as given, so a `.protean` file could name a
