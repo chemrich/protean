@@ -61,12 +61,31 @@ async def test_the_right_panel_starts_shut(page):
     assert await width_of(page, PANEL) == 0
 
 
-async def test_the_sequence_strip_is_gone(page):
-    """A navigation control for picking residues by eye; a model writes `resi`."""
+async def test_the_sequence_strip_is_there(page):
+    """The one panel that reports rather than acts, so it stays on by default.
+
+    Reading along while a model works is most of why a person has the viewer
+    open. Its clicks set a Mol* focus the Python side never hears about, which
+    costs a highlight and changes no analysis.
+    """
     count = await page.evaluate(
         "JSON.stringify(document.querySelectorAll('.msp-sequence').length)"
     )
-    assert count == 0
+    assert count == 1
+
+
+async def test_the_status_pill_clears_the_sequence_strip(page):
+    """Both are pinned to the top-right; the pill sat in the strip's band.
+
+    A long chain wraps across that band, so the residues would have run under
+    the pill. Measured off the strip rather than nudged by a constant.
+    """
+    clears = await page.evaluate(
+        "JSON.stringify("
+        "document.getElementById('status').getBoundingClientRect().top >="
+        "document.querySelector('.msp-sequence').getBoundingClientRect().bottom)"
+    )
+    assert clears is True
 
 
 async def test_the_canvas_gets_nearly_the_whole_window(page):

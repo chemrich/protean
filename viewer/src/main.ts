@@ -42,11 +42,22 @@ function mountControlsTab(plugin: any): void {
     const panel = document.querySelector('.msp-layout-right') as HTMLElement | null;
     const width = open && panel ? panel.offsetWidth : 0;
     tab.style.right = `${width}px`;
-    // The status pill is pinned to the same corner the panel opens into, and
-    // sat on top of its header. Both move together or neither does.
+    // The status pill is pinned to the corner both the panel and the sequence
+    // strip occupy, and sat on top of each in turn — over the panel's header,
+    // and in the strip's band, where a long chain's residues would run under
+    // it. Measured off both rather than offset by a guessed constant, since
+    // the strip's height depends on how far the sequence wraps.
     const status = document.getElementById('status');
-    if (status) status.style.right = `${width + 8}px`;
+    const strip = document.querySelector('.msp-sequence') as HTMLElement | null;
+    if (status) {
+      status.style.right = `${width + 8}px`;
+      status.style.top = strip ? `${strip.getBoundingClientRect().bottom + 8}px` : '8px';
+    }
   };
+
+  // The sequence strip appears when a structure loads, long after this runs,
+  // so its arrival has to move the pill as well as a panel toggle does.
+  plugin.state.data.events.changed.subscribe(() => requestAnimationFrame(draw));
 
   tab.addEventListener('click', () => {
     open = !open;
@@ -88,10 +99,13 @@ async function init() {
     // collapsed state. mountControlsTab() supplies the slice.
     collapseRightPanel: true,
     layoutShowRemoteState: false,
-    // The residue strip is a navigation control for a person picking residues
-    // by eye. A model selects with `select("resi 45-60")`, and the strip's own
-    // clicks set a focus the Python side never hears about.
-    layoutShowSequence: false,
+    // The sequence strip stays. A model selects by writing `resi 45-60`, so
+    // this is not how selections get made here — but it is the one panel that
+    // *reports* rather than acts, and reading along while a model works is the
+    // whole reason a person has the viewer open. Its own clicks set a Mol*
+    // focus the Python side never hears about, which costs a highlight and
+    // changes no analysis.
+    layoutShowSequence: true,
     layoutShowLog: false,
     // The viewport's own buttons: expand, settings, selection mode, animation,
     // trajectory transport. Each duplicates something protean drives through a
