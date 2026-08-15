@@ -293,8 +293,14 @@ class ViewerBridge:
             raise web.HTTPForbidden(text="origin not permitted")
         # compare_digest, not ==: the comparison is against a secret and a
         # timing side channel is free to avoid here.
-        offered = request.query.get("token", "")
-        if not secrets.compare_digest(offered, self.token):
+        #
+        # Compared as bytes, because compare_digest raises TypeError on str
+        # arguments carrying non-ASCII — and the query string is percent-decoded
+        # before it reaches here, so `?token=%C3%A9` is one request away. That
+        # made the refusal path an attacker controls the one returning 500 and a
+        # traceback, where a merely wrong token returned a clean 403.
+        offered = request.query.get("token", "").encode()
+        if not secrets.compare_digest(offered, self.token.encode()):
             logger.warning("Refused a viewer socket with a bad or missing token")
             raise web.HTTPForbidden(text="bad or missing token")
 

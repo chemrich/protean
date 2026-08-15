@@ -193,6 +193,21 @@ async def test_a_socket_with_the_wrong_token_is_refused(bridge):
         assert excinfo.value.status == 403
 
 
+async def test_a_non_ascii_token_is_refused_like_any_other(bridge):
+    """403, not 500.
+
+    The query string is percent-decoded before the handler sees it, and
+    compare_digest raises TypeError on a str carrying non-ASCII. So the refusal
+    an attacker can trigger at will was the one returning a stack trace, while
+    a merely wrong token returned a clean 403 — the loud path and the quiet one
+    the wrong way round.
+    """
+    async with aiohttp.ClientSession() as session:
+        with pytest.raises(aiohttp.WSServerHandshakeError) as excinfo:
+            await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token=%C3%A9")
+        assert excinfo.value.status == 403
+
+
 async def test_a_foreign_origin_is_refused_even_with_the_token(bridge):
     """Defence in depth: the token should not be the only thing standing there.
 
