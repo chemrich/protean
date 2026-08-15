@@ -5,21 +5,29 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
-### Fixed
+### The viewer
 
-- **`screenshot` works again through an MCP client.** It failed for every
-  caller with `Unable to serialize unknown type: Image`, while the test suite
-  stayed green. FastMCP derives an output schema from the return annotation,
-  and `-> list[Any]` gets one — so the reply was encoded as *structured*
-  content, which an image cannot be. A bare `list` gets no schema and worked,
-  which is how the floating `mcp[cli]>=1.2.0,<2` pin brought this in without a
-  line of protean changing. The tool now declares `structured_output=False`,
-  putting the image back in unstructured content where it belongs.
+- **The viewer opens as a canvas, with Mol\*'s panels collapsed to slices.**
+  Both were shown in full by default, and they are Mol\*'s controls for a
+  person driving Mol\* directly: the left one loads structures, the right one
+  edits the state tree. Used here they change the picture and nothing else —
+  the analysis half lives in the Python process, so the model goes on
+  answering, correctly, about the molecule it loaded rather than the one now on
+  screen.
 
-  **The tests could not have caught it**, and that gap is now closed too: every
-  test called tools as plain Python functions, so nothing ever crossed the
-  serialisation boundary a real client goes through.
-  `tests/test_mcp_boundary.py` calls them the way a client does.
+  They are collapsed rather than removed, because a viewer you cannot inspect
+  is its own kind of opaque: when the picture looks wrong, the state tree is
+  where the answer is. Mol\* collapses its left region to a 32 px icon rail on
+  its own; its right region has no collapsed state, so protean supplies a 16 px
+  tab that opens the panel and moves to sit against its edge. Measured on a
+  1280×800 window: Mol\*'s panel greys fell from 42% of it to 0.5%, and the
+  molecule rose from 20.5% to 36%.
+
+  The sequence strip stays — it is the one panel that *reports* rather than
+  acts, and reading along while a model works is most of why a person has the
+  viewer open. The viewport's buttons go, except Mol\*'s camera reset and the
+  controls toggle. The status pill moves to the lower right, the one corner
+  Mol\* leaves empty.
 
 ### Packaging
 
@@ -36,6 +44,20 @@ nothing is released yet, so everything below is unreleased.
   the wheel reports `License-Expression: MIT`.
 
 ### Fixed
+
+- **`screenshot` works again through an MCP client.** It failed for every
+  caller with `Unable to serialize unknown type: Image`, while the test suite
+  stayed green. FastMCP derives an output schema from the return annotation,
+  and `-> list[Any]` gets one — so the reply was encoded as *structured*
+  content, which an image cannot be. A bare `list` gets no schema and worked,
+  which is how the floating `mcp[cli]>=1.2.0,<2` pin brought this in without a
+  line of protean changing. The tool now declares `structured_output=False`,
+  putting the image back in unstructured content where it belongs.
+
+  **The tests could not have caught it**, and that gap is now closed too: every
+  test called tools as plain Python functions, so nothing ever crossed the
+  serialisation boundary a real client goes through.
+  `tests/test_mcp_boundary.py` calls them the way a client does.
 
 - **`load_session` no longer leaves the analysis describing the previous
   molecule.** It restored the viewer and never touched the Python side, so
