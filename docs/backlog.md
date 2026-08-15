@@ -683,6 +683,89 @@ what `superpose` means, not a repair. The comment at
 `analysis/superposition.py` states the divergence with these numbers rather
 than claiming a parity that does not hold.
 
+## Three findings from the going-public security pass, 2026-08-15
+
+Found by attacking every path-taking tool (`docs/going-public.md` §3.1). One is
+fixed here; the other two are open and want a decision.
+
+### 19. `load_session` trusted the file it was given — fixed
+
+A `.protean` file's embedded Mol\* state tree was handed straight to
+`plugin.state.setSnapshot`, which applies it as given. A file naming a URL made
+the browser fetch it and draw whatever came back, while `load_session` returned
+a normal reply — demonstrated against a live viewer with an outbound GET to a
+server standing in for the file's author. The format exists to be shared, so
+"a session someone sent you" is its ordinary use, not an exotic threat.
+
+**The first fix was wrong, and a review found it.** It checked strings sitting
+under a `url` or `uri` key, chosen by grepping molstar for `PD.Url(`. Two live
+bypasses: `create-volume-streaming-info` fetches from `serverUrl`, which is a
+`PD.Text` and so absent from that grep, and a URL inside a list has no key at
+all. **The lesson is about the shape, not the omission** — a guard built by
+enumerating the attacker's options is only as complete as the enumeration, and
+this one was refuted the same day it was written.
+
+What replaced it checks two things, because neither alone is enough:
+
+- **No string anywhere may name a location to fetch from** — a scheme, a
+  `//host`, or a leading `/`, which the browser resolves against the viewer's
+  own origin. Two exceptions, both measured from real sessions rather than
+  assumed: this bridge's `/volumes/<handle>` route, and by *exact value* the
+  three third-party URLs Mol\* serialises as its own custom-property defaults
+  (PDBe validation, RCSB validation reports, RCSB symmetry). A blanket "no
+  URLs" rule would have refused every real session; allowing the key would have
+  let those same providers fetch from anywhere.
+- **No transformer may appear that `save_session` never writes**, measured by
+  building a scene with every state-adding tool. This is the half that does not
+  depend on spotting a URL: `create-volume-streaming-info` fetches Mol\*'s own
+  public default when the file names no URL at all. The `parse-*` and
+  `volume-from-*` decoder families are admitted by pattern, since which one
+  appears depends on the volume format and neither family fetches.
+
+The match is anchored, so text that merely mentions a URL — an mmCIF header
+cites `http://mmcif.pdb.org/...` — is not a reference. Decompression is bounded
+too: 9 kB of gzip reaches 2 GB, and the file was read whole before anything
+checked it.
+
+**Two things worth keeping from the diagnosis.** The first two attempts
+reported the attack as *refused* when nothing had been tested: Mol\* re-runs a
+transform only when its `version` differs (`mol-state/state.js:473`), so
+hand-edits to a snapshot are silently ignored unless the version is bumped. A
+control — the same edit truncating the structure to 100 atoms — is what exposed
+it: it also "passed", which no real refusal would have done. And two of the
+tests written for the *second* fix could not fail either: one looped over the
+set it was testing, so emptying the set passed it, and one relied on a skip
+that the anchored match had already made unreachable. Both were caught by
+mutating the guard, not by reading the tests.
+
+### 20. Viewer and analysis are different molecules after `load_session` — open
+
+**Not fixed; no attacker needed.** `load_session` restores the viewer and never
+touches the Python side, so every measurement afterwards describes whatever was
+loaded before. Measured: viewer `atom_count` 100, `_structure` 660 atoms,
+`_structure_identifier` still `'1ubq'`. Nothing reports a discrepancy.
+
+This is item 2's shape again, and it is the guarantee protean exists to make.
+The fix wants a decision: parse the session's embedded mmCIF back into
+`_structure` (the data is right there), or clear `_structure` so analysis
+refuses loudly rather than answering about the wrong molecule.
+
+### 21. Every writing tool overwrites any path it is given — open
+
+`save_session`, `snapshot`, `screenshot`, `movie(path=)` and
+`electrostatics(path=)` write wherever they are pointed, creating parent
+directories, with no overwrite check. Demonstrated: `save_session` replaced a
+21-byte JSON file with 32 kB of gzip, and `electrostatics(path=…)` — an
+*output* path despite reading like an input — wrote an OpenDX grid over a file
+named `secret.key`. `record_trajectory`/`turntable` create arbitrary directory
+trees for their frames.
+
+The caller is the model, so the realistic route is a tool call the model was
+talked into. Wants a policy decision rather than a patch: refuse to overwrite
+an existing file that protean did not write, require the extension to match
+what is being written, or confine writes to a cache directory unless the user
+named the path.
+
 ### What the review is worth
 
 Every fix above is mutation-tested, and **a review ran on each of the four

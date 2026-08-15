@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import math
+import re
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -1948,10 +1949,171 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 SESSION_FORMAT = "protean-session"
 SESSION_VERSION = 1
 
+# A session is mostly embedded mmCIF, which compresses about 5x, so a real one
+# is a few MB. The bound is on the *decompressed* size because that is what a
+# crafted file controls: 9 kB of gzip expands to 2 GB at a ratio a text
+# document reaches easily, and load_session decompresses before it can check
+# anything about the contents.
+_MAX_SESSION_BYTES = 512 * 1024 * 1024
+
+# The only URL protean itself puts in a session: a relative path to this
+# bridge's own volume route, which is how a volume reaches the viewer.
+# `/volumes/{handle}` is a dict lookup in connection.py, not a filesystem path,
+# so allowing this prefix cannot be turned into a read.
+_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/]+$")
+
+# Anything naming a location to fetch: a scheme, a protocol-relative //host, or
+# a leading /, which the browser resolves against the viewer's own origin — so
+# `/volumes/../../x` is a request to this bridge that is not the volumes route.
+# Measured: the only /-leading strings in real sessions are the volume URLs.
+_SESSION_URL_LIKE = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?/")
+
+# Mol* serialises its *own* defaults for the custom-property providers the
+# prebuilt bundle registers, so a legitimate session carries these three third-
+# party URLs without protean ever asking for anything. They are allowed by
+# exact value only: the same key holding a different host is a session telling
+# the viewer to fetch from someone else, and those providers do fetch.
+# Measured from real sessions — re-measure when the molstar pin moves, and
+# expect the failure to be a loud refusal naming the URL.
+_SESSION_DEFAULT_URLS = frozenset(
+    {
+        "https://www.ebi.ac.uk/pdbe/api/validation/residuewise_outlier_summary/entry/",
+        "https://files.rcsb.org/pub/pdb/validation_reports",
+        "https://data.rcsb.org/graphql",
+    }
+)
+
+# What protean's own save_session writes, measured by building a scene with
+# every state-adding tool (structures, representations, labels, measurements,
+# presets, superposition, volumes, isosurfaces) and taking the union.
+#
+# This is an allowlist rather than a hunt for fetching params, because the
+# fetching ones cannot be enumerated reliably: `create-volume-streaming-info`
+# fetches from `serverUrl`, which is a PD.Text and so invisible to a PD.Url
+# grep, and it would fetch from Mol*'s public default even with no URL in the
+# file at all. A name protean never writes has no business in a protean
+# session.
+_SESSION_TRANSFORMERS = frozenset(
+    {
+        "build-in.root",
+        "ms-plugin.create-group",
+        "ms-plugin.custom-model-properties",
+        "ms-plugin.custom-structure-properties",
+        "ms-plugin.download",
+        "ms-plugin.model-from-trajectory",
+        "ms-plugin.model-unitcell-3d",
+        "ms-plugin.raw-data",
+        "ms-plugin.structure-component",
+        "ms-plugin.structure-from-model",
+        "ms-plugin.structure-multi-selection-from-bundle",
+        "ms-plugin.structure-representation-3d",
+        "ms-plugin.structure-selections-angle-3d",
+        "ms-plugin.structure-selections-dihedral-3d",
+        "ms-plugin.structure-selections-distance-3d",
+        "ms-plugin.trajectory-from-mmcif",
+        "ms-plugin.volume-representation-3d",
+    }
+)
+
+# The decoder families, allowed by pattern because which one appears depends on
+# the volume format the caller loaded. Safe to admit as a family: every
+# `parse-*` and `volume-from-*` transform consumes the object its parent
+# produced, and neither transforms/data.js nor transforms/volume.js fetches
+# anywhere except Download and DownloadBlob, both of which are named above and
+# checked by URL.
+_SESSION_DECODERS = re.compile(r"^ms-plugin\.(?:parse|volume-from)-[a-z0-9-]+$")
+
 
 def _session_path(path: str) -> Path:
     out = Path(path).expanduser()
     return out if out.suffix else out.with_suffix(".protean")
+
+
+def _decompress_session(src: Path) -> bytes:
+    """Gunzip *src*, refusing to expand past _MAX_SESSION_BYTES.
+
+    gzip.decompress() will happily allocate whatever the file decodes to, and
+    the file is chosen by whoever wrote the session rather than by the user
+    opening it.
+    """
+    with gzip.open(src, "rb") as handle:
+        raw = handle.read(_MAX_SESSION_BYTES + 1)
+    if len(raw) > _MAX_SESSION_BYTES:
+        raise ViewerError(
+            f"{src} decompresses to more than "
+            f"{_MAX_SESSION_BYTES // 1024 // 1024} MB, which no scene this "
+            "viewer can hold produces. Refusing to read it."
+        )
+    return raw
+
+
+def _remote_references(node: Any, path: str = "snapshot") -> list[str]:
+    """Every string in *node* that names somewhere the viewer would fetch from.
+
+    A protean session embeds its own data — that is the point of the format —
+    so the only URL protean writes is the relative /volumes path above, plus
+    the third-party defaults Mol* serialises for its own custom-property
+    providers. Anything else means the file is telling the viewer to fetch from
+    a host of its author's choosing, and Mol* will do it: the state tree is
+    applied as given, so whoever wrote the file decides what ends up on screen
+    while load_session still reports success.
+
+    **Every string, not every string under a `url` key.** The key names cannot
+    be enumerated: `serverUrl` on `create-volume-streaming-info` is a PD.Text,
+    so a grep for PD.Url does not find it, and a URL sitting inside a list has
+    no key at all. Both were live bypasses of the first version of this check.
+
+    Strings under a `data` key are skipped: that is embedded file content —
+    an mmCIF cites `http://mmcif.pdb.org/...` in its own header — and it is
+    parsed, never fetched.
+
+    Returns the offending locations rather than raising, so the refusal can
+    name all of them at once.
+    """
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "data" and isinstance(value, str):
+                continue
+            found.extend(_remote_references(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_remote_references(value, f"{path}[{index}]"))
+    elif (
+        isinstance(node, str)
+        and _SESSION_URL_LIKE.search(node)
+        and not _SESSION_LOCAL_URL.match(node)
+        and node not in _SESSION_DEFAULT_URLS
+    ):
+        found.append(f"{path} = {node[:120]}")
+    return found
+
+
+def _unknown_transformers(snapshot: Any) -> list[str]:
+    """Transformer names in *snapshot* that save_session never writes.
+
+    The second half of the check, and the half that does not depend on
+    spotting a URL: `create-volume-streaming-info` fetches from Mol*'s own
+    public default when the file names no URL at all, so a session carrying it
+    reaches the network with nothing for _remote_references() to find.
+    """
+    tree = snapshot.get("data", {}) if isinstance(snapshot, dict) else {}
+    transforms = (
+        tree.get("tree", {}).get("transforms", []) if isinstance(tree, dict) else []
+    )
+    if not isinstance(transforms, list):
+        return []
+    unknown = []
+    for transform in transforms:
+        if not isinstance(transform, dict):
+            continue
+        name = transform.get("transformer")
+        if not isinstance(name, str):
+            continue
+        if name in _SESSION_TRANSFORMERS or _SESSION_DECODERS.match(name):
+            continue
+        unknown.append(name)
+    return sorted(set(unknown))
 
 
 @mcp.tool()
@@ -1989,14 +2151,29 @@ async def load_session(path: str) -> dict[str, Any]:
 
     Reports which named handles came back, and which were dropped because the
     restored state no longer contains them.
+
+    A session file is untrusted input — it is a file, and files get shared —
+    so one that reaches outside itself is refused rather than restored. See
+    _remote_references().
     """
     src = _session_path(path)
     if not src.is_file():
         raise ViewerError(f"No session file at {src}")
     try:
-        document = json.loads(gzip.decompress(src.read_bytes()))
+        document = json.loads(_decompress_session(src))
     except (OSError, gzip.BadGzipFile, json.JSONDecodeError) as exc:
         raise ViewerError(f"{src} is not a readable protean session: {exc}") from exc
+    except RecursionError as exc:
+        # 155 bytes of nested brackets reach this, and an unhandled
+        # RecursionError is a stack trace where a refusal belongs.
+        raise ViewerError(f"{src} is nested too deeply to be a session") from exc
+    if not isinstance(document, dict):
+        # Valid JSON is not a session: `[1, 2, 3]` reached .get() and raised a
+        # bare AttributeError, which is a stack trace where a refusal belongs.
+        raise ViewerError(
+            f"{src} is not a protean session (it holds a "
+            f"{type(document).__name__}, not an object)"
+        )
     if document.get("format") != SESSION_FORMAT:
         raise ViewerError(
             f"{src} is not a protean session (format={document.get('format')!r})"
@@ -2006,9 +2183,31 @@ async def load_session(path: str) -> dict[str, Any]:
             f"{src} is session version {document.get('version')!r}; "
             f"this build reads version {SESSION_VERSION}"
         )
+    snapshot = document.get("molstar")
+    if snapshot is None:
+        # Truncated or hand-built: the format and version said session, and the
+        # scene is simply absent.
+        raise ViewerError(f"{src} carries no scene to restore")
+    try:
+        remote = _remote_references(snapshot)
+    except RecursionError as exc:
+        # A document that parsed can still out-nest this walk, and a guard that
+        # cannot finish must refuse rather than fall through to the viewer.
+        raise ViewerError(f"{src} is nested too deeply to check") from exc
+    if remote:
+        raise ViewerError(
+            f"{src} tells the viewer to fetch from somewhere else, so it was "
+            "not written by save_session() and is refused: " + "; ".join(remote[:5])
+        )
+    unknown = _unknown_transformers(snapshot)
+    if unknown:
+        raise ViewerError(
+            f"{src} holds state save_session() never writes, so it was not "
+            "written by protean and is refused: " + ", ".join(unknown[:5])
+        )
     result = await _call(
         "load_session",
-        {"snapshot": document["molstar"], "handles": document.get("handles", {})},
+        {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
     return {"path": str(src), "created": document.get("created"), **result}
 

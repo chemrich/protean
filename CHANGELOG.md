@@ -7,6 +7,32 @@ nothing is released yet, so everything below is unreleased.
 
 ### Security
 
+- **A session file is no longer trusted to say where the viewer should look.**
+  `load_session` handed the file's embedded Mol\* state tree straight to
+  `setSnapshot`, which applies it as given, so a `.protean` file could name a
+  URL and the browser would fetch it — and then draw whatever came back, while
+  `load_session` returned a normal reply naming the atom count it had been
+  handed. Demonstrated against a live viewer with an outbound GET to a stand-in
+  attacker server. The format exists to be shared, so a session someone sent
+  you is its ordinary use, not an exotic one.
+
+  A session is now checked two ways, because neither alone is enough:
+
+  - **No string in it may name a location to fetch from**, except this bridge's
+    own relative `/volumes/<handle>` route and — by exact value — the three
+    third-party URLs Mol\* serialises as its own custom-property defaults. Both
+    exceptions were measured from real sessions; a blanket "no URLs" rule would
+    have refused every session, and allowing the *key* would have permitted the
+    same providers to fetch from anywhere.
+  - **No transformer may appear that `save_session` never writes.** This is the
+    half that does not depend on spotting a URL: `create-volume-streaming-info`
+    fetches from Mol\*'s own public default when the file names no URL at all,
+    so there is nothing for the first check to find.
+
+  Decompression is bounded at 512 MB as well: 9 kB of gzip reaches 2 GB, and
+  the file was read whole before anything checked it. Malformed files now
+  refuse rather than raising `AttributeError`, `KeyError` or `RecursionError`.
+
 - **The viewer handshake is authenticated.** The bridge's WebSocket accepted any
   connection: no `Origin` check, no token. A WebSocket is not subject to the
   same-origin policy and the port is `DEFAULT_PORT` plus a small scan range, so
