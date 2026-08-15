@@ -30,7 +30,10 @@ async function init() {
     layoutShowControls: false,
     layoutShowLeftPanel: false,
     layoutShowRemoteState: false,
-    layoutShowSequence: true,
+    // The residue strip is a navigation control for a person picking residues
+    // by eye. A model selects with `select("resi 45-60")`, and the strip's own
+    // clicks set a focus the Python side never hears about.
+    layoutShowSequence: false,
     layoutShowLog: false,
     viewportShowExpand: true,
     viewportShowSelectionMode: true,
