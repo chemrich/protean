@@ -716,11 +716,19 @@ What replaced it checks two things, because neither alone is enough:
   URLs" rule would have refused every real session; allowing the key would have
   let those same providers fetch from anywhere.
 - **No transformer may appear that `save_session` never writes**, measured by
-  building a scene with every state-adding tool. This is the half that does not
+  building a scene with every state-adding tool. **That list was already too
+  narrow when it landed.** Naming the transformers one by one meant a session
+  saved from a `.pdb` file was refused by protean seconds after protean wrote
+  it: a PDB reaches Mol\* through `trajectory-from-pdb` where an mmCIF uses
+  `trajectory-from-mmcif`, and every structure in the census came from RCSB,
+  which serves mmCIF. This is the half that does not
   depend on spotting a URL: `create-volume-streaming-info` fetches Mol\*'s own
-  public default when the file names no URL at all. The `parse-*` and
-  `volume-from-*` decoder families are admitted by pattern, since which one
-  appears depends on the volume format and neither family fetches.
+  public default when the file names no URL at all. The `parse-*`,
+  `volume-from-*` and `trajectory-from-*` decoder families are admitted by
+  pattern, since which one appears depends on the format the caller loaded and
+  none of those transforms fetches — a narrower claim than "their files do not
+  fetch", since `model.js` fetches in the two custom-property transforms, which
+  are allowlisted by name with their URLs pinned by value.
 
 The match is anchored, so text that merely mentions a URL — an mmCIF header
 cites `http://mmcif.pdb.org/...` — is not a reference. Decompression is bounded
@@ -738,9 +746,16 @@ set it was testing, so emptying the set passed it, and one relied on a skip
 that the anchored match had already made unreachable. Both were caught by
 mutating the guard, not by reading the tests.
 
-### 20. Viewer and analysis are different molecules after `load_session` — open
+### 20. Viewer and analysis are different molecules after `load_session` — half fixed
 
-**Not fixed; no attacker needed.** `load_session` restores the viewer and never
+**The wrong answer is gone; the restore is not built yet.** `load_session` now
+clears the analysis side and says so, so measurements refuse instead of
+describing the previous molecule. Restoring it properly — parsing the session's
+own embedded mmCIF back into `_structure` — is the next change, and is
+tractable: a session carries exactly one structure blob even after a superpose,
+so there is nothing to guess about which molecule the analysis subject is.
+
+**The original finding.** No attacker needed. `load_session` restores the viewer and never
 touches the Python side, so every measurement afterwards describes whatever was
 loaded before. Measured: viewer `atom_count` 100, `_structure` 660 atoms,
 `_structure_identifier` still `'1ubq'`. Nothing reports a discrepancy.

@@ -293,28 +293,38 @@ def _visibility_note(bridge: ViewerBridge) -> str:
 
 
 @mcp.tool()
-async def open_viewer(timeout: float = 20) -> str:
+async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
 
     Idempotent: if a viewer is already connected, reports its address instead
     of opening a new tab.
+
+    reveal_url: include the handshake token in the address reported back. The
+      token is what authenticates a socket, and an *absent* Origin is allowed
+      so non-browser clients can connect at all — so whatever holds this URL
+      can drive the viewer and answer for it. This reply is read by a model,
+      kept in a transcript and often written to a log, so by default the
+      address comes back without it and the real one goes straight to the
+      browser. Set this only to open the viewer somewhere the launch could not
+      reach: a second browser, or another machine forwarding the port.
     """
     bridge = get_bridge()
     await bridge.start()
     # Carries the handshake token; the bridge builds it so no caller can open a
     # viewer that is then refused by its own socket.
-    url = bridge.viewer_url
+    launch_url = bridge.viewer_url
+    shown = launch_url if reveal_url else bridge.display_url
     if bridge.viewer_connected:
-        return f"Viewer already connected at {url}{_visibility_note(bridge)}"
+        return f"Viewer already connected at {shown}{_visibility_note(bridge)}"
     if _static_dir() is None:
         return (
-            f"Bridge is listening at {url}, but the viewer app is not built. "
+            f"Bridge is listening at {shown}, but the viewer app is not built. "
             "Run `npm install && npm run build` in the viewer/ directory, "
             "then call open_viewer again."
         )
-    webbrowser.open(url)
+    webbrowser.open(launch_url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {url}{_visibility_note(bridge)}"
+    return f"Viewer connected at {shown}{_visibility_note(bridge)}"
 
 
 @mcp.tool()
@@ -2009,7 +2019,12 @@ _MAX_SESSION_BYTES = 512 * 1024 * 1024
 # bridge's own volume route, which is how a volume reaches the viewer.
 # `/volumes/{handle}` is a dict lookup in connection.py, not a filesystem path,
 # so allowing this prefix cannot be turned into a read.
-_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/]+$")
+#
+# `\Z` rather than `$`, and no whitespace in the handle: `$` matches before a
+# trailing newline and `[^/]` admits one, so "/volumes/x\n" would have passed
+# as this bridge's own route. The emitter percent-encodes handles, so a real
+# one never carries whitespace.
+_SESSION_LOCAL_URL = re.compile(r"^/volumes/[^/\s]+\Z")
 
 # Anything naming a location to fetch: a scheme, a protocol-relative //host, or
 # a leading /, which the browser resolves against the viewer's own origin — so
@@ -2059,18 +2074,41 @@ _SESSION_TRANSFORMERS = frozenset(
         "ms-plugin.structure-selections-angle-3d",
         "ms-plugin.structure-selections-dihedral-3d",
         "ms-plugin.structure-selections-distance-3d",
-        "ms-plugin.trajectory-from-mmcif",
         "ms-plugin.volume-representation-3d",
+        # trajectory-from-mmcif is covered by the decoder pattern below, along
+        # with trajectory-from-pdb; naming one of the pair here would read as
+        # if it were the only one allowed.
     }
 )
 
 # The decoder families, allowed by pattern because which one appears depends on
-# the volume format the caller loaded. Safe to admit as a family: every
-# `parse-*` and `volume-from-*` transform consumes the object its parent
-# produced, and neither transforms/data.js nor transforms/volume.js fetches
-# anywhere except Download and DownloadBlob, both of which are named above and
-# checked by URL.
-_SESSION_DECODERS = re.compile(r"^ms-plugin\.(?:parse|volume-from)-[a-z0-9-]+$")
+# the format the caller loaded rather than on anything protean chooses: a .pdb
+# file gives `trajectory-from-pdb` where an mmCIF gives `trajectory-from-mmcif`,
+# and each volume format has its own pair. Naming them one by one is how this
+# check came to refuse a session protean had just written — the census behind
+# the list above used structures fetched from RCSB, which arrive as mmCIF, so
+# no PDB file was ever in it.
+#
+# Safe to admit as families, on a claim narrower than it is tempting to write:
+# **no `parse-*`, `volume-from-*` or `trajectory-from-*` transform fetches** —
+# each consumes the object its parent produced. That is not the same as saying
+# their files do not fetch, and the difference matters when re-measuring:
+# transforms/model.js *does* fetch, in `custom-model-properties` and
+# `custom-structure-properties` (it hands `assetManager` to the property
+# providers at model.js:1150 and :1206), which is exactly what reaches the
+# three URLs pinned by value above. Those two are allowlisted by name, not by
+# this pattern. In transforms/data.js the fetching transforms are Download —
+# named above, and its URL checked — and DownloadBlob, which is in neither
+# list and so is refused outright.
+#
+# `\Z`, not `$`: `$` also matches before a trailing newline, so
+# "ms-plugin.parse-cif\n" would be admitted as a known decoder and reach the
+# viewer to fail there as a raw Mol* error, rather than being refused here by
+# name. `_SESSION_LOCAL_URL` above is anchored the same way and for the same
+# reason.
+_SESSION_DECODERS = re.compile(
+    r"^ms-plugin\.(?:parse|volume-from|trajectory-from)-[a-z0-9-]+\Z"
+)
 
 
 def _session_path(path: str) -> Path:
@@ -2254,11 +2292,33 @@ async def load_session(path: str) -> dict[str, Any]:
             f"{src} holds state save_session() never writes, so it was not "
             "written by protean and is refused: " + ", ".join(unknown[:5])
         )
+    global _structure, _structure_error, _structure_identifier  # session state
     result = await _call(
         "load_session",
         {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
-    return {"path": str(src), "created": document.get("created"), **result}
+    # The viewer now holds the session's molecule and the analysis still holds
+    # whatever was loaded before it, so every measurement would describe a
+    # different structure from the picture — and say nothing about it. Measured
+    # before this: viewer 100 atoms, `_structure` 660, identifier still
+    # '1ubq'. Restoring the analysis side is the better answer and is the next
+    # change; refusing is the honest one until then, because the alternative is
+    # not "no analysis" but "analysis of the wrong molecule".
+    previous = _structure_identifier
+    discarded = _discard_session_state()
+    _structure, _structure_error, _structure_identifier = None, None, None
+    return {
+        "path": str(src),
+        "created": document.get("created"),
+        **result,
+        "analysis": (
+            "cleared — load_session restores the viewer only, so selections and "
+            "measurements are unavailable until fetch_structure loads this "
+            "molecule for analysis too"
+            + (f" (was holding {previous})" if previous else "")
+            + discarded
+        ),
+    }
 
 
 @mcp.tool()
