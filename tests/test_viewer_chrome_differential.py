@@ -74,18 +74,20 @@ async def test_the_sequence_strip_is_there(page):
     assert count == 1
 
 
-async def test_the_status_pill_clears_the_sequence_strip(page):
-    """Both are pinned to the top-right; the pill sat in the strip's band.
+async def test_the_status_pill_sits_in_the_lower_right(page):
+    """The one corner Mol* leaves empty.
 
-    A long chain wraps across that band, so the residues would have run under
-    the pill. Measured off the strip rather than nudged by a constant.
+    The strip owns the top — where the pill used to sit in its band, which a
+    long enough chain would wrap under — and the axes widget the bottom left.
     """
-    clears = await page.evaluate(
-        "JSON.stringify("
-        "document.getElementById('status').getBoundingClientRect().top >="
-        "document.querySelector('.msp-sequence').getBoundingClientRect().bottom)"
+    corner = await page.evaluate(
+        "JSON.stringify((() => {"
+        "const r = document.getElementById('status').getBoundingClientRect();"
+        "return {lower: r.top > window.innerHeight / 2,"
+        " right: r.left > window.innerWidth / 2};"
+        "})())"
     )
-    assert clears is True
+    assert corner == {"lower": True, "right": True}
 
 
 async def test_the_canvas_gets_nearly_the_whole_window(page):

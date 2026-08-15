@@ -42,22 +42,13 @@ function mountControlsTab(plugin: any): void {
     const panel = document.querySelector('.msp-layout-right') as HTMLElement | null;
     const width = open && panel ? panel.offsetWidth : 0;
     tab.style.right = `${width}px`;
-    // The status pill is pinned to the corner both the panel and the sequence
-    // strip occupy, and sat on top of each in turn — over the panel's header,
-    // and in the strip's band, where a long chain's residues would run under
-    // it. Measured off both rather than offset by a guessed constant, since
-    // the strip's height depends on how far the sequence wraps.
+    // The status pill rests in the opposite corner from Mol*'s own furniture —
+    // the sequence strip owns the top, the axes widget the bottom left — but
+    // the panel spans the full height, so the pill still has to step aside for
+    // it. Only horizontally now, which is why the strip no longer figures.
     const status = document.getElementById('status');
-    const strip = document.querySelector('.msp-sequence') as HTMLElement | null;
-    if (status) {
-      status.style.right = `${width + 8}px`;
-      status.style.top = strip ? `${strip.getBoundingClientRect().bottom + 8}px` : '8px';
-    }
+    if (status) status.style.right = `${width + 8}px`;
   };
-
-  // The sequence strip appears when a structure loads, long after this runs,
-  // so its arrival has to move the pill as well as a panel toggle does.
-  plugin.state.data.events.changed.subscribe(() => requestAnimationFrame(draw));
 
   tab.addEventListener('click', () => {
     open = !open;
