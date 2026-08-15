@@ -1,18 +1,24 @@
-"""The viewer is a canvas, and the panels that could desync it are not there.
+"""The viewer opens out of the way, and everything is one click back.
 
-Mol\\*'s own UI is built for a person driving it, and every panel it ships is a
-way to load a molecule or edit the state tree by hand. Here that is a hazard
-rather than a convenience: the analysis half lives in the Python process, so
-"Download Structure → 1TQN → Apply" in the left panel changes the picture and
-nothing else, and the model goes on answering — correctly — about a molecule
-that is no longer on screen.
+Mol\\*'s panels are its controls for a person driving Mol\\* directly: the left
+one loads structures, the right one edits the state tree. Used here they change
+the picture and nothing else — the analysis half lives in the Python process,
+so the model goes on answering, correctly, about the molecule it loaded rather
+than the one now on screen.
+
+So they start collapsed rather than removed. A viewer you cannot inspect is its
+own kind of opaque: when the picture looks wrong, the state tree is where the
+answer is. The default is out of the way; reaching them costs one click.
 
 Asserted against a real browser rather than against `main.ts`, because the
-options are strings handed to a library: a typo in one leaves the panel there
-and nothing complains. These tests read the rendered DOM.
+options are strings handed to a library — a typo leaves the panel open and
+nothing complains — and because the right-hand tab is our own DOM, whose first
+version flipped its chevron while the panel stayed shut.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -20,16 +26,8 @@ from .browser import BROWSER_MARKS, viewer_session
 
 pytestmark = BROWSER_MARKS
 
-
-# Class names Mol* gives the chrome. Read off the rendered page rather than
-# recalled: `.msp-layout-left` is the data-loading panel, `.msp-layout-right`
-# the state editor, `.msp-sequence` the residue strip.
-PANELS = {
-    "left panel (loads structures by hand)": ".msp-layout-left",
-    "right panel (edits the state tree)": ".msp-layout-right",
-    "sequence strip": ".msp-sequence",
-    "log": ".msp-log",
-}
+RAIL = ".msp-layout-left"
+PANEL = ".msp-layout-right"
 
 
 @pytest.fixture(scope="module")
@@ -38,40 +36,90 @@ async def page():
         yield session
 
 
+CLICK_TAB = "(document.getElementById('panel-tab').click(), JSON.stringify('ok'))"
+
+
+async def width_of(page, selector: str) -> int:
+    return int(
+        await page.evaluate(
+            f"JSON.stringify(document.querySelector('{selector}')?.offsetWidth ?? 0)"
+        )
+    )
+
+
 async def test_the_canvas_is_there(page):
     """The floor: decluttering must not have removed the thing itself."""
-    found = await page.evaluate("JSON.stringify(!!document.querySelector('canvas'))")
-    assert found is True
+    assert await page.evaluate("JSON.stringify(!!document.querySelector('canvas'))")
 
 
-@pytest.mark.parametrize(("what", "selector"), sorted(PANELS.items()))
-async def test_the_chrome_is_gone(page, what, selector):
+async def test_the_left_panel_is_a_rail_rather_than_a_panel(page):
+    """Collapsed, not hidden — Mol* renders it as a 32px strip of icons."""
+    assert 0 < await width_of(page, RAIL) <= 48
+
+
+async def test_the_right_panel_starts_shut(page):
+    assert await width_of(page, PANEL) == 0
+
+
+async def test_the_sequence_strip_is_gone(page):
+    """A navigation control for picking residues by eye; a model writes `resi`."""
     count = await page.evaluate(
-        f"JSON.stringify(document.querySelectorAll('{selector}').length)"
+        "JSON.stringify(document.querySelectorAll('.msp-sequence').length)"
     )
-    assert count == 0, f"{what} is back on screen ({selector})"
+    assert count == 0
 
 
-async def test_the_status_pill_survives(page):
-    """The one piece of UI protean puts there itself.
-
-    It is how a watcher knows the tab is still the one being driven, and the
-    connection tests in the viewer suite assert its text.
-    """
-    text = await page.evaluate(
-        "JSON.stringify(document.getElementById('status').textContent)"
-    )
-    assert text == "connected"
-
-
-async def test_the_canvas_fills_the_window(page):
-    """The point of removing the panels, stated as a measurement.
-
-    With the left and right panels drawn, the canvas gets roughly half the
-    width; without them it should be within a few per cent of the whole window.
-    """
+async def test_the_canvas_gets_nearly_the_whole_window(page):
+    """The point of the default, stated as a measurement."""
     ratio = await page.evaluate(
         "JSON.stringify(document.querySelector('canvas').getBoundingClientRect().width"
         " / window.innerWidth)"
     )
-    assert ratio > 0.95, f"the canvas is only {ratio:.0%} of the window"
+    assert ratio > 0.9, f"the canvas is only {ratio:.0%} of the window"
+
+
+async def test_the_tab_opens_the_panel_and_shuts_it_again(page):
+    """The claim the whole design rests on, and the one that was false first.
+
+    The first version called `plugin.layout.setProps`, which writes the layout
+    state without firing the event React redraws on. The chevron flipped, the
+    state read `full`, and the panel stayed 0px wide — a control reporting
+    success while doing nothing. Asserting the *width* is what caught it;
+    asserting the chevron would have passed.
+    """
+    assert await width_of(page, PANEL) == 0
+
+    await page.evaluate(
+        "(document.getElementById('panel-tab').click(), JSON.stringify('ok'))"
+    )
+    await asyncio.sleep(1)
+    assert await width_of(page, PANEL) > 100, "the tab did not open the panel"
+
+    await page.evaluate(
+        "(document.getElementById('panel-tab').click(), JSON.stringify('ok'))"
+    )
+    await asyncio.sleep(1)
+    assert await width_of(page, PANEL) == 0, "the tab did not shut the panel"
+
+
+async def test_the_status_pill_survives_and_moves_out_of_the_way(page):
+    """It is pinned to the corner the panel opens into, and used to sit on it."""
+    assert (
+        await page.evaluate(
+            "JSON.stringify(document.getElementById('status').textContent)"
+        )
+        == "connected"
+    )
+
+    await page.evaluate(
+        "(document.getElementById('panel-tab').click(), JSON.stringify('ok'))"
+    )
+    await asyncio.sleep(1)
+    offset = await page.evaluate(
+        "JSON.stringify(document.getElementById('status').style.right)"
+    )
+    await page.evaluate(
+        "(document.getElementById('panel-tab').click(), JSON.stringify('ok'))"
+    )
+    await asyncio.sleep(1)
+    assert offset not in ("", "0px", "8px"), f"the pill stayed under the panel ({offset})"
