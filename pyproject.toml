@@ -4,7 +4,12 @@ version = "0.1.0.dev0"
 description = "Agent-native molecular visualization: an MCP server driving a Mol* viewer"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+# PEP 639: an SPDX expression rather than a file reference, so the licence is
+# machine-readable. The table form leaves `License` empty in installed
+# metadata — an audit of the dependency tree read protean's own licence as
+# UNSTATED, which is a poor look for the package doing the auditing.
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Charlie Emrich", email = "emrich@gmail.com" }]
 keywords = ["mcp", "molstar", "pymol", "structural-biology", "visualization"]
 dependencies = [
