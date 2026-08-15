@@ -5,6 +5,21 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- **A viewer that cannot connect now says why, instead of retrying forever.**
+  The WebSocket API hides the handshake's HTTP status from the page, so a
+  refused socket and an unreachable server arrive as the same event — and the
+  page retried every 1.5 s indefinitely, showing only "disconnected". Two cases
+  make that a silent failure rather than a hiccup: the bridge mints a token per
+  process, so restarting the server leaves an open tab refused on every attempt
+  for as long as it lives; and a page opened by hand at
+  `http://127.0.0.1:9878/` has no token at all, loads, looks alive, and can
+  never connect. The page now stops after ~30 s and names both causes, or says
+  immediately that it was opened without a token, and points at `open_viewer`
+  either way. A completed handshake resets the budget, so a long session is not
+  capped.
+
 ### Security
 
 - **A session file is no longer trusted to say where the viewer should look.**
