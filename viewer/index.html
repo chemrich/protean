@@ -9,12 +9,23 @@
       html, body { margin: 0; height: 100%; background: #111; }
       #app { position: absolute; inset: 0; }
       #status {
-        position: fixed; top: 8px; right: 8px; z-index: 100;
+        position: fixed; bottom: 8px; right: 8px; z-index: 100;
         font: 12px/1.4 sans-serif; color: #fff; padding: 3px 10px;
         border-radius: 10px; background: #b33; opacity: 0.85;
         pointer-events: none;
       }
       #status.connected { background: #2a7; }
+      /* The right-edge slice: Mol*'s left region collapses to a 32px rail on
+         its own, and its right region cannot, so this is the same affordance
+         supplied by hand. Kept narrow and quiet — it is a door, not a control. */
+      #panel-tab {
+        position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+        z-index: 90; width: 16px; height: 72px; padding: 0; border: 0;
+        border-radius: 4px 0 0 4px; cursor: pointer;
+        background: rgba(0, 0, 0, 0.22); color: #fff;
+        font: 13px/1 sans-serif; opacity: 0.8;
+      }
+      #panel-tab:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
     </style>
   </head>
   <body>
