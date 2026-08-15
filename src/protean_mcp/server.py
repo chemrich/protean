@@ -3485,7 +3485,18 @@ async def clear_viewer() -> str:
     return "Viewer cleared."
 
 
-@mcp.tool()
+# structured_output=False, and the reason is not cosmetic. FastMCP derives an
+# output schema from the return annotation, and `list[Any]` gets one — so the
+# reply is serialised as *structured* content, which an Image cannot be:
+#
+#     Unable to serialize unknown type:
+#     <class 'mcp.server.fastmcp.utilities.types.Image'>
+#
+# The tool then fails for every caller, having worked when the annotation was
+# bare `list` and the library minted no schema. Turning the schema off puts the
+# image back in unstructured content, where it belongs: an image is what this
+# returns, not a JSON object describing one.
+@mcp.tool(structured_output=False)
 async def screenshot(path: str | None = None, overwrite: bool = False) -> list[Any]:
     """Capture the current viewport as a PNG.
 
