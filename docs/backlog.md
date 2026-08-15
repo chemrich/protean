@@ -738,9 +738,16 @@ set it was testing, so emptying the set passed it, and one relied on a skip
 that the anchored match had already made unreachable. Both were caught by
 mutating the guard, not by reading the tests.
 
-### 20. Viewer and analysis are different molecules after `load_session` — open
+### 20. Viewer and analysis are different molecules after `load_session` — half fixed
 
-**Not fixed; no attacker needed.** `load_session` restores the viewer and never
+**The wrong answer is gone; the restore is not built yet.** `load_session` now
+clears the analysis side and says so, so measurements refuse instead of
+describing the previous molecule. Restoring it properly — parsing the session's
+own embedded mmCIF back into `_structure` — is the next change, and is
+tractable: a session carries exactly one structure blob even after a superpose,
+so there is nothing to guess about which molecule the analysis subject is.
+
+**The original finding.** No attacker needed. `load_session` restores the viewer and never
 touches the Python side, so every measurement afterwards describes whatever was
 loaded before. Measured: viewer `atom_count` 100, `_structure` 660 atoms,
 `_structure_identifier` still `'1ubq'`. Nothing reports a discrepancy.

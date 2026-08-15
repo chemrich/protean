@@ -2205,11 +2205,33 @@ async def load_session(path: str) -> dict[str, Any]:
             f"{src} holds state save_session() never writes, so it was not "
             "written by protean and is refused: " + ", ".join(unknown[:5])
         )
+    global _structure, _structure_error, _structure_identifier  # session state
     result = await _call(
         "load_session",
         {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
-    return {"path": str(src), "created": document.get("created"), **result}
+    # The viewer now holds the session's molecule and the analysis still holds
+    # whatever was loaded before it, so every measurement would describe a
+    # different structure from the picture — and say nothing about it. Measured
+    # before this: viewer 100 atoms, `_structure` 660, identifier still
+    # '1ubq'. Restoring the analysis side is the better answer and is the next
+    # change; refusing is the honest one until then, because the alternative is
+    # not "no analysis" but "analysis of the wrong molecule".
+    previous = _structure_identifier
+    discarded = _discard_session_state()
+    _structure, _structure_error, _structure_identifier = None, None, None
+    return {
+        "path": str(src),
+        "created": document.get("created"),
+        **result,
+        "analysis": (
+            "cleared — load_session restores the viewer only, so selections and "
+            "measurements are unavailable until fetch_structure loads this "
+            "molecule for analysis too"
+            + (f" (was holding {previous})" if previous else "")
+            + discarded
+        ),
+    }
 
 
 @mcp.tool()
