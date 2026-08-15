@@ -5,6 +5,22 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- **`screenshot` works again through an MCP client.** It failed for every
+  caller with `Unable to serialize unknown type: Image`, while the test suite
+  stayed green. FastMCP derives an output schema from the return annotation,
+  and `-> list[Any]` gets one — so the reply was encoded as *structured*
+  content, which an image cannot be. A bare `list` gets no schema and worked,
+  which is how the floating `mcp[cli]>=1.2.0,<2` pin brought this in without a
+  line of protean changing. The tool now declares `structured_output=False`,
+  putting the image back in unstructured content where it belongs.
+
+  **The tests could not have caught it**, and that gap is now closed too: every
+  test called tools as plain Python functions, so nothing ever crossed the
+  serialisation boundary a real client goes through.
+  `tests/test_mcp_boundary.py` calls them the way a client does.
+
 ### Packaging
 
 - **The wheel ships Mol\*'s licence notice, which it is obliged to carry.** The
