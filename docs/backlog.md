@@ -881,8 +881,15 @@ started running, and the suite has only three runtime skip sites — two of them
 the wheel build and ffmpeg, which a viewer-layout change cannot touch. The
 third is `_figure_or_skip`, "this renderer cannot capture at 4323px", and it
 guards exactly three tests: these ones. So the extra time is real work that had
-been silently absent, not waste. **Inferred, not proven** — the flip could not
-be reproduced locally, where every capture completes.
+been silently absent, not waste.
+
+The first CI run with `-rs` tightened this. All **28** of today's skips are
+accounted for by the six gates — 8 path tracing, 8 ffmpeg, 8 mkdssp, 2 APBS, 1
+PyMOL, 1 ColabFold — and **none is `_figure_or_skip`**. Since those gates have
+not changed, the three extra skips before the declutter were not gate skips,
+and only one other runtime skip exists. **Still not proof**: the older run used
+`-q` with no `-rs`, so its reasons were never recorded and cannot be recovered.
+That hole is what `-rs` closes going forward.
 
 The lesson that outlives the specific answer: **`pytest -q` prints a skip
 count and no reasons, so a test can stop running and the job stays green.**
