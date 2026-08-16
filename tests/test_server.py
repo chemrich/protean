@@ -1498,6 +1498,143 @@ async def test_width_mm_is_the_escape_hatch(wired_bridge, tmp_path):
     assert sent["width"] == 1181  # 100 mm at 300 dpi
 
 
+# -- what a capture is allowed to cost -----------------------------------------
+
+
+def _spy_on_budgets(monkeypatch) -> dict[str, list[float]]:
+    """Record the timeout every request is actually given, per action.
+
+    The timeout never goes on the wire and no reply reflects it, so a correct
+    `_capture_timeout` wired to nothing would satisfy an assertion about the
+    helper alone and leave the behaviour exactly as it was.
+
+    Every call is kept rather than the last one. A turntable orbits once per
+    frame and once more to close the loop, so keeping only the last would let
+    that final call paper over a wrong budget on all the others — which it
+    did, until a mutation that should have failed this suite did not.
+    """
+    budgets: dict[str, list[float]] = {}
+    bridge = server_mod._bridge
+    assert bridge is not None  # the wired_bridge fixture installed it
+    original = bridge.request
+
+    async def spy(action: str, args: Any = None, timeout: float = 60.0) -> Any:
+        budgets.setdefault(action, []).append(timeout)
+        return await original(action, args, timeout)
+
+    monkeypatch.setattr(bridge, "request", spy)
+    return budgets
+
+
+def test_a_small_capture_keeps_a_flat_budget():
+    """Below a megapixel, the render is not where the time goes."""
+    assert server_mod._capture_timeout(1200) == server_mod._CAPTURE_TIMEOUT_FLOOR
+
+
+def test_a_bigger_capture_gets_a_bigger_budget():
+    assert server_mod._capture_timeout(6000) > server_mod._capture_timeout(4323)
+    assert server_mod._capture_timeout(4323) > server_mod._capture_timeout(1200)
+
+
+def test_the_journal_figure_gets_more_than_the_budget_that_failed_it():
+    """The capture a fixed number was replaced for.
+
+    183 mm at 600 dpi is 4323 px, and against the old flat 300 s it timed out
+    in CI on one run and finished on the next, from the same commit. Measured
+    at 105 s under SwiftShader on the development machine, and a CI runner is
+    about three times slower again, so the budget has to clear ~315 s by
+    enough that a slow runner is not a coin toss.
+    """
+    assert server_mod._capture_timeout(4323) > 900
+
+
+@pytest.mark.parametrize("width", [400, 3000, 3163, 4323, 8000])
+def test_path_tracing_is_never_given_less_time_than_the_same_capture_without_it(
+    width,
+):
+    """Strictly more expensive work must not get a strictly smaller budget.
+
+    The traced budget was a flat 600 s taken *instead of* the size-derived one,
+    and above 3163 px the size-derived one is larger — so a journal figure got
+    1121 s with the tracer off and 600 s with it on, at exactly the sizes this
+    budget exists for.
+    """
+    assert server_mod._capture_timeout(width, traced=True) >= server_mod._capture_timeout(
+        width
+    )
+    assert (
+        server_mod._capture_timeout(width, traced=True)
+        >= server_mod._TRACED_SCREENSHOT_TIMEOUT
+    )
+
+
+async def test_a_frame_sequence_refuses_a_width_beyond_what_can_be_captured(
+    wired_bridge, tmp_path
+):
+    """`snapshot` is guarded by _snapshot_pixels; this path never went through it.
+
+    It mattered little against a flat 300 s. Against a size-derived budget a
+    mistyped width buys hours per frame instead of failing in minutes:
+    turntable(width=20000) would allow 6.7 h for each one.
+
+    Handlers are registered so that removing the guard fails this test rather
+    than hanging it: without them the capture waits out its own 24,000 s budget
+    and takes the suite with it.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    try:
+        with pytest.raises(ViewerError, match="megapixels"):
+            await turntable(str(tmp_path / "turn"), frames=2, width=20000)
+        assert calls == [], "refused before anything reached the viewer"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_the_budget_that_reaches_the_bridge_follows_the_size_asked_for(
+    wired_bridge, tmp_path, monkeypatch
+):
+    budgets = _spy_on_budgets(monkeypatch)
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _snapshot_handler(sent, 4323, 1860)
+    task = wired_bridge.serve(1)
+    await snapshot(str(tmp_path / "fig"), column="double", dpi=600)
+    await task
+
+    assert sent["width"] == 4323
+    assert budgets["snapshot"] == [server_mod._capture_timeout(4323)]
+    assert budgets["snapshot"][0] > server_mod._CAPTURE_TIMEOUT_FLOOR
+
+
+async def test_positioning_the_scene_is_not_charged_as_a_capture(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """A camera move borrowed the capture's budget when there was only one.
+
+    Keeping them apart is the point: a figure-sized capture is allowed minutes
+    now, and an orbit that never answers should not be.
+
+    Captured wide enough to clear the floor deliberately. At a small width the
+    two budgets are both 300 s and the assertions below hold whichever way the
+    call sites are wired, which is a test that cannot fail.
+    """
+    budgets = _spy_on_budgets(monkeypatch)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    await turntable(str(tmp_path / "turn"), frames=2, width=3000)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert set(budgets["orbit"]) == {server_mod._VIEWER_ACTION_TIMEOUT}
+    assert set(budgets["snapshot"]) == {server_mod._capture_timeout(3000)}
+    assert set(budgets["snapshot"]) != set(budgets["orbit"])
+
+
 async def test_snapshot_needs_exactly_one_width():
     with pytest.raises(ViewerError, match="exactly one of column"):
         await snapshot("/tmp/x.png")

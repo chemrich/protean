@@ -113,9 +113,65 @@ _path_tracing = False
 # minutes, and aborting it would report a stall for work that was succeeding.
 _SCREENSHOT_TIMEOUT = 60.0
 _TRACED_SCREENSHOT_TIMEOUT = 600.0
-# A figure-resolution capture is a real render, not a viewport grab: 4323x3242
-# takes about 2.5s and 12000x9000 about 20s on a real GPU.
-_SNAPSHOT_TIMEOUT = 300.0
+
+# Positioning the scene — a trajectory frame, a camera move, an orbit step — is
+# not a capture. These borrowed the capture's budget back when there was only
+# one, and they keep its old value under their own name so that changing what a
+# render is allowed to cost does not quietly change what a camera move is.
+_VIEWER_ACTION_TIMEOUT = 300.0
+
+# What a capture is allowed to cost, derived from the pixels asked for rather
+# than fixed, because the range a fixed number would have to span is enormous.
+# 12000x9000 (108 MP) takes about 20 s on a real GPU — 0.19 s/MP. Measured
+# under SwiftShader on the development machine, one capture per width:
+#
+#     1200 px   0.6 MP     6.5 s   10.4 s/MP
+#     2000 px   1.7 MP    17.7 s   10.3
+#     3000 px   3.9 MP    42.9 s   11.1
+#     4323 px   8.1 MP   105.2 s   13.1     <- 183 mm at 600 dpi
+#     6000 px  15.5 MP   209.7 s   13.5
+#     8000 px  27.6 MP   467.3 s   16.9
+#
+# Nearly linear in the pixel count, drifting up as it grows. A CI runner is
+# about three times slower again.
+#
+# The fixed 300 s this replaces sat right on that curve: ample for a 1200 px
+# capture, marginal for the journal figure in CI — where the same commit failed
+# three tests on one run and passed on the next — and unreachable above about
+# 5000 px on any renderer this slow, including locally. A timeout a correct
+# program clears only sometimes reports the runner's speed rather than the
+# program's health, and re-running it is how a red build stops meaning
+# anything.
+#
+# There is no progress signal to use instead. Mol*'s ordinary image pass
+# renders in a single synchronous call — `MultiSamplePass.render`, with no
+# `runtime.update` between samples — so the page's main thread is blocked for
+# the whole capture and could not send a heartbeat if we asked for one. Silence
+# is exactly what a healthy large capture looks like, and the pixel count is
+# the only thing that separates it from a stall.
+#
+# What this budget costs, stated rather than glossed: a page that goes away for
+# good — tab closed, or its reconnect attempts exhausted — is not detected here.
+# A plain disconnect deliberately fails nothing, because the page may be
+# mid-render with the socket dead under it and about to deliver. So a closed tab
+# blocks for this budget where it used to block for 300 s. Accepted rather than
+# solved: a bounded grace period after a disconnect would have to outlast the
+# remaining render, which is precisely the quantity nobody knows. What does end
+# the wait quickly is a page reconnecting without claiming the work — see
+# ViewerBridge._fail_pending.
+#
+# The area is estimated as width squared, the same convention
+# _MAX_SNAPSHOT_PIXELS is checked against and for the same reason: height
+# follows the viewport's aspect and is not known on this side until the viewer
+# answers. It overestimates — the viewer's real aspect measures 0.43 with the
+# panels collapsed — and overestimating is the safe direction for a timeout.
+#
+# 60 s/MP against that estimate gives the journal figure 1121 s: about 10x what
+# this machine needs for it and about 3x what a CI runner needs.
+_CAPTURE_SECONDS_PER_MEGAPIXEL = 60.0
+# Below a megapixel or so the fixed costs — encoding, the data URI, the round
+# trip — dominate the render, so small captures keep a flat budget.
+_CAPTURE_TIMEOUT_FLOOR = 300.0
 
 # Nature's column widths, which most journals sit close to. Anything else goes
 # through width_mm rather than being invented here.
@@ -845,6 +901,25 @@ def _incomplete_capture(image: Any) -> bool:
     return bool(lowest == 0)
 
 
+def _capture_timeout(width: int, traced: bool = False) -> float:
+    """How long a capture *width* pixels across is allowed to take.
+
+    Proportional to the work rather than fixed, so the same number does not
+    have to be both generous enough for a 4323 px figure under software
+    rendering and meaningful for a 1200 px one. See
+    _CAPTURE_SECONDS_PER_MEGAPIXEL for the measurements behind the rate.
+
+    Path tracing takes the larger of its flat budget and the size-derived one.
+    Taking the flat 600 s alone inverted the ordering it exists to guarantee:
+    above 3163 px the size-derived budget overtakes it, so a journal figure got
+    1121 s with the tracer off and 600 s with it on — less time for strictly
+    more expensive work, at exactly the sizes this budget was rebuilt for.
+    """
+    megapixels = width * width / 1_000_000
+    budget = max(_CAPTURE_TIMEOUT_FLOOR, _CAPTURE_SECONDS_PER_MEGAPIXEL * megapixels)
+    return max(_TRACED_SCREENSHOT_TIMEOUT, budget) if traced else budget
+
+
 def _snapshot_pixels(
     column: str | None, width_mm: float | None, dpi: int
 ) -> tuple[int, float]:
@@ -946,7 +1021,7 @@ async def snapshot(
         args["transparent"] = transparent
 
     bridge = _require_viewer()
-    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    timeout = _capture_timeout(width, traced=_path_tracing)
     result = await bridge.request("snapshot", args, timeout=timeout)
 
     data_uri: str = result["data_uri"]
@@ -1261,12 +1336,21 @@ async def _capture_sequence(
     """
     if width < 1:
         raise ViewerError(f"Frame width must be at least 1 pixel, got {width}")
+    # The same ceiling snapshot() enforces through _snapshot_pixels, which this
+    # path never went through. It mattered little against a flat 300 s; against
+    # a size-derived budget a mistyped width buys hours per frame rather than
+    # failing in five minutes — turntable(width=20000) would allow 6.7 h each.
+    if width * width > _MAX_SNAPSHOT_PIXELS:
+        raise ViewerError(
+            f"A frame {width} pixels wide is beyond what can be captured "
+            f"({_MAX_SNAPSHOT_PIXELS // 1_000_000} megapixels). Lower the width."
+        )
 
     out = Path(directory).expanduser()
     out.mkdir(parents=True, exist_ok=True)
 
     bridge = _require_viewer()
-    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else _SNAPSHOT_TIMEOUT
+    timeout = _capture_timeout(width, traced=_path_tracing)
     args: dict[str, Any] = {"width": width, "crop": False}
     if transparent is not None:
         args["transparent"] = transparent
@@ -1328,7 +1412,9 @@ async def record_trajectory(
 
     def step(index: int) -> Any:
         async def place() -> None:
-            await bridge.request("frame", {"index": index}, timeout=_SNAPSHOT_TIMEOUT)
+            await bridge.request(
+                "frame", {"index": index}, timeout=_VIEWER_ACTION_TIMEOUT
+            )
 
         return place
 
@@ -1336,7 +1422,7 @@ async def record_trajectory(
         directory, width, transparent, [step(i) for i in indices]
     )
     # Back to where the run started, so the viewer is not left mid-trajectory.
-    await bridge.request("frame", {"index": 0}, timeout=_SNAPSHOT_TIMEOUT)
+    await bridge.request("frame", {"index": 0}, timeout=_VIEWER_ACTION_TIMEOUT)
     return {**result, "of": total, "stride": stride}
 
 
@@ -1420,7 +1506,7 @@ async def record_timeline(
 
     def move(state: dict[str, Any]) -> Any:
         async def place() -> None:
-            await bridge.request("set_camera", state, timeout=_SNAPSHOT_TIMEOUT)
+            await bridge.request("set_camera", state, timeout=_VIEWER_ACTION_TIMEOUT)
 
         return place
 
@@ -1529,7 +1615,7 @@ async def turntable(
             # later one is a step further round.
             if index:
                 await bridge.request(
-                    "orbit", {"degrees": step}, timeout=_SNAPSHOT_TIMEOUT
+                    "orbit", {"degrees": step}, timeout=_VIEWER_ACTION_TIMEOUT
                 )
 
         return place
@@ -1540,7 +1626,9 @@ async def turntable(
     # Close the loop, so a turntable is not a one-way trip that leaves every
     # later capture facing somewhere else.
     await bridge.request(
-        "orbit", {"degrees": degrees - step * (frames - 1)}, timeout=_SNAPSHOT_TIMEOUT
+        "orbit",
+        {"degrees": degrees - step * (frames - 1)},
+        timeout=_VIEWER_ACTION_TIMEOUT,
     )
     return {
         **result,

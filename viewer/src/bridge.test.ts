@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { connectBridge } from './bridge';
+import { connectBridge, reportable } from './bridge';
+
+/** Matches RECONNECT_MS in bridge.ts. */
+const RECONNECT_DELAY = 1500;
 
 /** Stand-in for the browser WebSocket, capturing what the bridge sends. */
 class FakeSocket {
@@ -189,5 +192,102 @@ describe('visibility reporting', () => {
       action: 'protean_visibility',
       visibility: 'hidden',
     });
+  });
+});
+
+describe('a reply that outlives its socket', () => {
+  // The bug this exists for: a figure-sized capture blocks the main thread for
+  // tens of seconds, the socket dies inside that window (observed at 62 s into
+  // a 68 s capture, 1006 with no close frame), and the reply was then sent on
+  // the dead socket — a silent no-op. The work had succeeded and the caller was
+  // told the viewer stalled.
+  //
+  // Fake timers throughout, because the page's reconnect is scheduled by the
+  // close itself: switching to them afterwards leaves that timer on the real
+  // clock, where it never fires.
+
+  const handshake = (socket: FakeSocket) => {
+    socket.onopen!();
+    socket.receive({ action: 'protean_pong', version: 1 });
+  };
+
+  const reconnect = async () => {
+    await vi.advanceTimersByTimeAsync(RECONNECT_DELAY);
+    const socket = latest();
+    handshake(socket);
+    return socket;
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+
+  it('delivers a reply completed after the socket died on the next socket', async () => {
+    let finish: (value: unknown) => void = () => {};
+    connectBridge(() => new Promise((resolve) => (finish = resolve)));
+    const first = latest();
+    handshake(first);
+
+    first.receive({ id: 'req-1', action: 'snapshot', args: {} });
+    first.close(); // dies mid-render
+    finish({ pixels: [4323, 1863] }); // the render finishes regardless
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Nothing went out on the dead socket, which is where it used to vanish.
+    expect(first.sent.some((m) => m.id === 'req-1')).toBe(false);
+
+    const second = await reconnect();
+    expect(second.sent.some((m) => m.id === 'req-1' && m.ok === true)).toBe(true);
+  });
+
+  it('declares what it still owes on the handshake', async () => {
+    let finish: (value: unknown) => void = () => {};
+    connectBridge(() => new Promise((resolve) => (finish = resolve)));
+    const first = latest();
+    handshake(first);
+    first.receive({ id: 'req-1', action: 'snapshot', args: {} });
+    first.close();
+    finish({ ok: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const second = await reconnect();
+    // A page that claims nothing is one that reloaded, and the server ends the
+    // request at once. This one still owes an answer, so it must say so.
+    expect(second.sent[0].inflight).toContain('req-1');
+  });
+
+  it('re-arms a reply whose socket died before the frame left', async () => {
+    connectBridge(async () => ({ done: true }));
+    const first = latest();
+    handshake(first);
+    first.receive({ id: 'req-1', action: 'snapshot', args: {} });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.sent.some((m) => m.id === 'req-1')).toBe(true);
+
+    // `send` only queues into bufferedAmount. If the socket dies before the
+    // frame is transmitted, dropping it would lose the reply *and* stop the
+    // next handshake claiming it — so the server would report a reloaded tab
+    // for a page that did nothing of the sort.
+    first.close();
+    const second = await reconnect();
+
+    expect(second.sent[0].inflight).toContain('req-1');
+  });
+});
+
+describe('a reply too large to send', () => {
+  it('passes an ordinary reply through untouched', () => {
+    const payload = JSON.stringify({ id: 'x', ok: true, result: {} });
+    expect(reportable('x', payload, 1000)).toBe(payload);
+  });
+
+  it('replaces one past the limit with an error that fits', () => {
+    // Retrying an oversized reply is worse than dropping it: held in the
+    // outbox it would kill every new socket in turn, re-uploading tens of
+    // megabytes, while the caller waits out its budget regardless.
+    const payload = 'x'.repeat(2000);
+    const replaced = JSON.parse(reportable('x', payload, 1000));
+
+    expect(replaced).toMatchObject({ id: 'x', ok: false });
+    expect(replaced.error).toContain('beyond what the bridge can carry');
+    expect(reportable('x', payload, 1000).length).toBeLessThan(1000);
   });
 });

@@ -4,6 +4,29 @@ export type Handler = (action: string, args: Record<string, unknown>) => Promise
 
 const PROTOCOL_VERSION = 1;
 const RECONNECT_MS = 1500;
+/** The server ends a socket on a message past 64 MB; stay clear of it. */
+export const MAX_REPLY_BYTES = 60 * 1024 * 1024;
+
+/**
+ * A reply the server cannot receive, turned into one that says so.
+ *
+ * aiohttp caps a message at 64 MB and ends the socket on a larger one, and a
+ * capture can exceed that — `_MAX_SNAPSHOT_PIXELS` permits 120 MP, whose data
+ * URI does not fit. Retrying such a reply is worse than dropping it: held in
+ * the outbox it would be re-sent on every reconnect, killing each new socket
+ * and re-uploading tens of megabytes, while the caller waits out its whole
+ * budget regardless. An error is small, arrives, and names the fix.
+ */
+export function reportable(id: string, payload: string, limit = MAX_REPLY_BYTES): string {
+  if (payload.length <= limit) return payload;
+  return JSON.stringify({
+    id,
+    ok: false,
+    error:
+      `The reply is ${Math.round(payload.length / 1e6)} MB, beyond what the bridge ` +
+      'can carry. Capture at a lower width or dpi.',
+  });
+}
 // Roughly thirty seconds of retrying before the page says why it is not
 // connecting. Retrying forever is what a page with a stale token used to do:
 // the bridge mints a token per process, so restarting the server leaves an
@@ -36,6 +59,57 @@ export function connectBridge(handle: Handler): void {
   // guessing at one.
   let attempts = 0;
   let gaveUp = false;
+
+  // Requests received and not yet answered, and replies that were ready while
+  // no socket was open to carry them.
+  //
+  // A long action blocks this thread — Mol*'s image pass at figure resolution
+  // renders in one synchronous call, tens of seconds of it — and the socket can
+  // die in that window. Nothing here notices until the render returns, and by
+  // then `ws.send` on the closed socket is a silent no-op: the reply is dropped,
+  // the server waits out the request's whole budget, and reports a stall for
+  // work that had actually succeeded. Observed against a 68 s journal-figure
+  // capture, whose socket closed 62 s in.
+  //
+  // So a reply that cannot be sent is kept and delivered on the next
+  // authenticated socket, and the ids are declared on the handshake so the
+  // server can tell "still coming" from "that page is gone".
+  const running = new Set<string>();
+  const outbox = new Map<string, string>();
+  // Sent on the current socket but not known to have left it: `send` only
+  // queues into bufferedAmount, so a socket dying before the frame goes out
+  // would otherwise lose the reply *and* drop its id from the next handshake's
+  // claim — the server would then report a reloaded tab for a page that did
+  // nothing of the sort. Held here until the socket closes cleanly.
+  let unacked = new Map<string, string>();
+
+  const deliver = (id: string, payload: string) => {
+    running.delete(id);
+    if (current && current.readyState === WebSocket.OPEN) {
+      current.send(payload);
+      unacked.set(id, payload);
+      return;
+    }
+    outbox.set(id, payload);
+  };
+
+  const flushOutbox = (ws: WebSocket) => {
+    for (const [id, payload] of outbox) {
+      ws.send(payload);
+      unacked.set(id, payload);
+      outbox.delete(id);
+    }
+  };
+
+  // A socket that closed may or may not have delivered what was queued on it,
+  // so everything unacked goes back to be sent again. A duplicate is harmless:
+  // the server matches a reply to a pending id and ignores one it has already
+  // resolved. Losing it is not.
+  const rearm = () => {
+    for (const [id, payload] of unacked) if (!outbox.has(id)) outbox.set(id, payload);
+    unacked = new Map();
+  };
+
 
   const setStatus = (connected: boolean) => {
     if (!status) return;
@@ -71,6 +145,14 @@ export function connectBridge(handle: Handler): void {
           action: 'protean_ping',
           version: PROTOCOL_VERSION,
           visibility: document.visibilityState,
+          // What this page still owes an answer for. A reconnecting page that
+          // claims nothing has lost the work — it reloaded — and the server
+          // can say so at once instead of waiting out the timeout.
+          // `unacked` is deliberately not included: a handshake only ever
+          // follows a close, and the close moves everything unacked back into
+          // the outbox. Adding it looked prudent and was unreachable — the
+          // mutation that deleted it failed nothing.
+          inflight: [...running, ...outbox.keys()],
         })
       );
     };
@@ -79,9 +161,12 @@ export function connectBridge(handle: Handler): void {
       const msg = JSON.parse(ev.data);
       if (msg.action === 'protean_pong') {
         // A completed handshake, not merely an open socket: the server closes
-        // an unauthenticated one without ever answering.
+        // an unauthenticated one without ever answering. Replies held while
+        // the socket was down go now, for the same reason — an unauthenticated
+        // socket would never carry them.
         attempts = 0;
         setStatus(true);
+        flushOutbox(ws);
         return;
       }
       if (msg.action === 'protean_superseded') {
@@ -90,18 +175,20 @@ export function connectBridge(handle: Handler): void {
         return;
       }
       const { id, action, args } = msg;
+      running.add(id);
       try {
         const result = await handle(action, args ?? {});
-        ws.send(JSON.stringify({ id, ok: true, result: result ?? {} }));
+        deliver(id, reportable(id, JSON.stringify({ id, ok: true, result: result ?? {} })));
       } catch (e) {
         const error = e instanceof Error ? e.message : String(e);
         console.error(`protean action '${action}' failed:`, e);
-        ws.send(JSON.stringify({ id, ok: false, error }));
+        deliver(id, JSON.stringify({ id, ok: false, error }));
       }
     };
 
     ws.onclose = () => {
       if (current === ws) current = null;
+      rearm();
       // A page opened with no token at all cannot succeed on any attempt, so
       // it says so immediately rather than after thirty seconds of pretending
       // the server might come up.

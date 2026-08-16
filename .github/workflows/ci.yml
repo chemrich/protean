@@ -103,4 +103,13 @@ jobs:
         # ~690 s, so about 1.3% more. The cost is that they now run in both
         # jobs; the benefit is that a cross-file interaction has somewhere to
         # show up.
-        run: uv run pytest tests/ -q
+        #
+        # `-rs` because a skip is how coverage disappears quietly here. Several
+        # of these tests skip on what the renderer turns out to manage, and `-q`
+        # alone prints a count with no reasons — so a test can stop running and
+        # the tick stays green. That happened: the journal-figure captures, this
+        # project's Phase 4 exit criterion, were skipping on the CI renderer,
+        # and the only trace was the skip count moving 31 -> 28 on the run where
+        # they started executing again. Runtime is unchanged; this just makes
+        # the absence legible.
+        run: uv run pytest tests/ -q -rs
