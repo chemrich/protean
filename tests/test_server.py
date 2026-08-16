@@ -1548,6 +1548,52 @@ def test_the_journal_figure_gets_more_than_the_budget_that_failed_it():
     assert server_mod._capture_timeout(4323) > 900
 
 
+@pytest.mark.parametrize("width", [400, 3000, 3163, 4323, 8000])
+def test_path_tracing_is_never_given_less_time_than_the_same_capture_without_it(
+    width,
+):
+    """Strictly more expensive work must not get a strictly smaller budget.
+
+    The traced budget was a flat 600 s taken *instead of* the size-derived one,
+    and above 3163 px the size-derived one is larger — so a journal figure got
+    1121 s with the tracer off and 600 s with it on, at exactly the sizes this
+    budget exists for.
+    """
+    assert server_mod._capture_timeout(width, traced=True) >= server_mod._capture_timeout(
+        width
+    )
+    assert (
+        server_mod._capture_timeout(width, traced=True)
+        >= server_mod._TRACED_SCREENSHOT_TIMEOUT
+    )
+
+
+async def test_a_frame_sequence_refuses_a_width_beyond_what_can_be_captured(
+    wired_bridge, tmp_path
+):
+    """`snapshot` is guarded by _snapshot_pixels; this path never went through it.
+
+    It mattered little against a flat 300 s. Against a size-derived budget a
+    mistyped width buys hours per frame instead of failing in minutes:
+    turntable(width=20000) would allow 6.7 h for each one.
+
+    Handlers are registered so that removing the guard fails this test rather
+    than hanging it: without them the capture waits out its own 24,000 s budget
+    and takes the suite with it.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _frame_handlers(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    try:
+        with pytest.raises(ViewerError, match="megapixels"):
+            await turntable(str(tmp_path / "turn"), frames=2, width=20000)
+        assert calls == [], "refused before anything reached the viewer"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 async def test_the_budget_that_reaches_the_bridge_follows_the_size_asked_for(
     wired_bridge, tmp_path, monkeypatch
 ):
