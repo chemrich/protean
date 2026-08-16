@@ -50,6 +50,44 @@ publication rendering, trajectories and cryo-EM maps all work end to end. See
   the voxels rather than echoed from the file header and the contour unit
   named rather than assumed.
 
+## What people use it for
+
+Roughly in order of how often it comes up.
+
+**Asking a structure questions in plain language.** What is at the active site,
+what holds this interface together, which residues are conserved, how far apart
+are these two things. The answer comes back as numbers *and* as a picture of
+the thing the numbers describe, which is the part that is tedious to do by
+hand.
+
+**Making a figure for a paper.** "Double column, 600 dpi, white background" is
+a single call, and the file carries the physical size it claims. Getting a
+figure out of a viewer usually means a screenshot at whatever size the window
+happened to be; this is the difference between a picture and a figure.
+
+**Comparing two structures.** Superpose them, get the RMSD and how many
+residues actually aligned, and see what moved. Both a sequence-based mode and a
+structural one for remote homologs.
+
+**Following a simulation.** Load a trajectory, ask which loops move (RMSF),
+watch RMSD over time, then render a turntable or a movie of the interesting
+frames.
+
+**Looking at maps.** Contour a cryo-EM or crystallographic map at a stated
+sigma or absolute level, put a model in it, and see whether the density
+supports what the model claims.
+
+**Handing the result to someone else.** `save_session()` writes the scene and
+the structure into one file that reopens as it was.
+
+The common thread is that a model can do all of this without you learning a
+command language — and that every answer it gives you is about the molecule on
+screen, not a different one it happens to still be holding.
+
+**When not to use it.** If you want to explore a structure yourself, with your
+hands, use [Mol\*](https://molstar.org/viewer/) directly. It is better at that
+than anything driving it can be, and protean does not try to replace it.
+
 ## Install
 
 protean needs Python 3.11+ and a browser. ffmpeg is optional and only needed
@@ -113,6 +151,46 @@ the real output of each. protean loses two of them — PyMOL's `cealign` finds a
 rigid core that protean's sequence-based `superpose` cannot, and PyMOL's
 selection grammar has no gaps where protean's has several. protean wins where
 the answer needs to arrive as structured data a model can compose.
+
+## How it differs from Mol\*
+
+protean is not a fork, a patch or a rival. It drives a stock Mol\* build, and
+*Built on Mol\** below is about how much of what you see is theirs. The
+difference is who the controls are for.
+
+**Mol\* is built for a person, or for a web developer embedding a viewer.** You
+drive it with a mouse and its panels, or you write TypeScript against its
+plugin API inside the browser. Both assume the thing in control is on the same
+side of the screen as the picture.
+
+**protean moves the controls to the other side.** The tool surface lives in a
+Python process the model talks to over MCP, so "show me the zinc site" is a
+call with named arguments a model can see in a schema, and the reply is data it
+can use in the next call. Four things follow from that, and they are most of
+what protean actually adds:
+
+- **An analysis half that Mol\* does not have.** Interfaces and buried area,
+  superposition with RMSD, conservation from a sequence alignment, RMSF over a
+  trajectory, electrostatics. That work happens in Python with
+  [biotite](https://www.biotite-python.org), and the results come back as
+  numbers rather than as something drawn on screen.
+- **One vocabulary over both halves.** A selection is a named handle that
+  analysis returns and display tools consume, so the residues a calculation
+  found are the residues you colour, without anyone re-deriving them.
+- **The two halves must agree, and it is checked.** The atom count Python holds
+  is reconciled against the viewer's, and a discrepancy is reported with its
+  cause rather than passed over — alternate conformers, say, which analysis
+  resolves to one per site and Mol\* draws all of. A model answering confidently
+  about a molecule other than the one on screen is the failure this project
+  exists to prevent.
+- **Figures instead of screenshots.** `snapshot()` renders at whatever pixel
+  count a physical size and DPI imply and writes that resolution into the file.
+  Mol\* cannot record physical resolution at all, so a capture from any viewer
+  is a picture at whatever size the window was.
+
+What protean does *not* add is anything to the rendering. Every representation,
+colour theme, lighting rig, material and the path tracer are Mol\*'s, reached
+through a different set of controls.
 
 ## Known gaps
 
