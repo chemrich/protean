@@ -1,8 +1,16 @@
 # protean
 
 Agent-native molecular visualization. An MCP server (Python) drives a
-[Mol\*](https://molstar.org)-based viewer in a browser tab — a model does the
+[Mol\*](https://molstar.org) viewer in a browser tab — a model does the
 driving, you watch and tweak.
+
+![Carbonic anhydrase II: the catalytic zinc site in ball-and-stick against a faded cartoon fold](docs/images/zinc-site.png)
+
+*"Load 1CA2 and show me the catalytic zinc site" — protean's own output, and
+its own answer: His94, His96 and His119 coordinating the zinc, with Glu106 and
+Thr199 behind them. The selection was written as `byres (polymer within 5 of
+resn ZN) or resn ZN`; the figure came out of `snapshot()` at a real physical
+size.*
 
 protean is built for a model to use, not for a human at a REPL. Selections are
 named handles that analysis returns and display tools consume; styles are enums
@@ -10,9 +18,13 @@ a model can see in the tool schema rather than strings it has to guess; and
 every reply is structured data, read back off the viewer rather than echoed
 from the request.
 
-**Status: Phases 1–5 complete.** Selections, analysis, publication rendering
-and trajectories all work end to end. See [PLAN.md](PLAN.md) for the roadmap
-and the decisions behind it.
+**Everything you see is Mol\***. protean supplies a tool vocabulary and an
+analysis half in Python; the rendering, the parsing, the camera and the path
+tracer are Mol\*'s, and so is the credit — see *Built on Mol\** below.
+
+**Status: Phases 1–5 complete**, plus volumes. Selections, analysis,
+publication rendering, trajectories and cryo-EM maps all work end to end. See
+[PLAN.md](PLAN.md) for the roadmap and the decisions behind it.
 
 ## What it can do
 
@@ -105,10 +117,16 @@ the answer needs to arrive as structured data a model can compose.
 ## Known gaps
 
 [docs/backlog.md](docs/backlog.md) lists what the benchmark and a 499-probe
-corpus of structures and failure modes turned up — including two wrong answers
-worth knowing about before trusting a number: `sidechain` returns the whole
-molecule on nucleic acids, and the viewer and analysis disagree by 217 atoms on
-one glycoprotein.
+corpus of structures and failure modes turned up, what has been fixed since,
+and what is still open. It is kept as a record rather than a tidy list: the
+wrong turns are written down beside the fixes, because on this project the
+diagnosis that looked obvious has been wrong often enough to be worth
+recording.
+
+The open items worth knowing about before trusting a number are marked
+**open** there. `parse_structure` and `load_structure` still disagree about
+which assembly "the structure" means (item 18), and nothing yet reports which
+build of protean you are talking to (item 22).
 
 ## Development
 
@@ -156,10 +174,45 @@ complaint. So:
   test fails. Several tests in this repo exist because that exercise showed the
   first version passed against the bug it was written for.
 
-## Built on
+## Built on Mol\*
 
-- [Mol\*](https://molstar.org) — the viewer, rendering and path tracer
-  ([paper](https://doi.org/10.1093/nar/gkab314), MIT)
+**protean is a way of driving [Mol\*](https://molstar.org), and almost
+everything a user actually sees is Mol\*'s work.** It renders the molecule,
+parses mmCIF and BinaryCIF, builds cartoons and surfaces and molecular
+surfaces, computes secondary structure, handles the camera, contours volumes,
+and provides the path tracer behind `path_trace()`. protean adds a tool
+vocabulary a model can use, an analysis half in Python, and the guarantee that
+the two describe the same molecule. Take Mol\* away and there is no viewer;
+take protean away and Mol\* is still one of the best molecular graphics
+programs there is.
+
+Mol\* is developed by the [Mol\* team](https://github.com/molstar/molstar) at
+[PDBe](https://www.ebi.ac.uk/pdbe/) and [RCSB PDB](https://www.rcsb.org),
+building on the earlier LiteMol and NGL Viewer projects. It is the viewer
+behind the structure pages at both of the world's main structural databases,
+which is a good part of why it is worth building on: it is maintained,
+scrutinised and used at scale by people who are not us.
+
+> Sehnal D, Bittrich S, Deshpande M, Svobodová R, Berka K, Bazgier V,
+> Velankar S, Burley SK, Koča J, Rose AS. **Mol\* Viewer: modern web app for 3D
+> visualization and analysis of large biomolecular structures.** *Nucleic Acids
+> Research* 49(W1):W431–W437, 2021.
+> [doi:10.1093/nar/gkab314](https://doi.org/10.1093/nar/gkab314)
+
+If you use protean for published work, cite Mol\*. It is
+[MIT licensed](https://github.com/molstar/molstar/blob/master/LICENSE), and the
+protean wheel redistributes the built viewer, so it carries Mol\*'s licence
+notice with it as `molstar.js.LICENSE.txt` — a packaging test fails if that
+file ever goes missing.
+
+**What protean changes about it.** The viewer opens as a canvas rather than as
+Mol\*'s full control layout: the left panel is collapsed to Mol\*'s own icon
+rail, the right panel sits behind a tab, and the sequence strip stays because
+it reports rather than acts. Nothing is removed — the state tree is still there
+when a picture looks wrong, which is exactly when you want it.
+
+## Also built on
+
 - [biotite](https://www.biotite-python.org) — structure and trajectory parsing,
   superposition ([paper](https://doi.org/10.1186/s12859-018-2367-z), BSD-3)
 - [FastMCP](https://github.com/jlowin/fastmcp) — the MCP server (Apache-2.0)
