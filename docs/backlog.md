@@ -967,6 +967,16 @@ exception  = ClientConnectionResetError('Cannot write to closing transport')
 choosing to end it. No renderer crash appears in Chrome's own log, so the page
 survives it.
 
+**A confounder found afterwards, and worth knowing before trusting the
+frequency.** Both reproductions ran while two leaked headless Chromes from
+killed background commands had been burning CPU for eight hours — enough to
+take the same suite from 12:46 to 44 minutes. CPU starvation is a plausible
+cause of an abnormal close, so **"2/2" describes a contended machine, not a
+clean one**, and the drop may be far rarer than that suggests. It does not
+change the fix: a reply that was computed and then lost should be recoverable
+whatever killed the socket. If anything it strengthens the link to CI, whose
+runners are resource-constrained in the same way.
+
 **The reply was then dropped in silence.** `bridge.ts` replied on the socket
 captured when the request arrived, and `send` on a closed socket is a no-op, so
 the answer went nowhere while the work had actually succeeded. The server, with
