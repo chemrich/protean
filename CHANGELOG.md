@@ -45,6 +45,50 @@ nothing is released yet, so everything below is unreleased.
 
 ### Fixed
 
+- **A capture is allowed time in proportion to the pixels it asks for.** Every
+  capture shared one fixed 300 s budget, which the range of sizes makes
+  meaningless: 12000×9000 takes about 20 s on a real GPU, while under software
+  rendering the same machine takes 6.5 s for a 1200 px capture and 105 s for a
+  4323 px one — 183 mm at 600 dpi, an ordinary journal figure. A CI runner is
+  roughly three times slower again. Above about 5000 px the fixed budget could
+  not be met on any renderer that slow, including locally, for sizes the tool
+  accepts without complaint.
+
+  The budget is now 60 s per megapixel of the requested size, with a 300 s
+  floor for small captures — about 10x what the development machine needs for a
+  journal figure and 3x what a CI runner needs. Positioning the scene (a
+  trajectory frame, a camera move, an orbit step) borrowed the capture's budget
+  when there was only one, and keeps the old 300 s under its own name, so a
+  camera move that never answers is not given a render's patience.
+
+  There is no progress signal to use instead: Mol\*'s ordinary image pass
+  renders in a single synchronous call, so the page's main thread is blocked
+  for the whole capture and could not send a heartbeat if asked for one.
+  Silence is what a healthy large capture looks like, and only the pixel count
+  separates it from a stall.
+
+  This is not what made the journal-figure test flaky in CI — that was a lost
+  reply, below — but the two share a cause worth naming: a long render is
+  indistinguishable from a stall from the outside, so both the budget and the
+  failure reporting were guessing.
+
+- **A capture's reply is no longer lost with its socket.** During a
+  figure-sized capture the page's main thread is blocked for tens of seconds,
+  and the WebSocket can die inside that window — observed closing 62 s into a
+  68 s capture, abnormally (1006, no close frame), with the page itself
+  surviving. The page then replied on the socket the request had arrived on,
+  and `send` on a closed socket does nothing, so the answer vanished although
+  the work had succeeded. Nothing failed the waiting request either, so it ran
+  out its whole budget and reported a stall — *"Viewer timed out on
+  'snapshot'"*, which is what CI had been printing.
+
+  The page now keeps a reply it cannot send and delivers it on the next
+  authenticated socket, and the handshake declares what that page still owes.
+  A viewer that reconnects mid-render keeps its request alive; one that
+  reloaded, or a second tab that takes the connection, ends it immediately with
+  the reason rather than at the end of the budget. A plain disconnect
+  deliberately fails nothing: the reply may still be on its way.
+
 - **`screenshot` works again through an MCP client.** It failed for every
   caller with `Unable to serialize unknown type: Image`, while the test suite
   stayed green. FastMCP derives an output schema from the return annotation,

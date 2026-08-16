@@ -119,6 +119,10 @@ class ViewerBridge:
         )
 
     async def stop(self) -> None:
+        # Before the close, not after: closing the socket wakes the handler,
+        # which would fail these as an ordinary disconnect and bury the more
+        # specific reason.
+        self._fail_pending("The viewer bridge was shut down while this was in flight.")
         if self._ws is not None:
             await self._ws.close()
             self._ws = None
@@ -208,6 +212,67 @@ class ViewerBridge:
         if not reply.get("ok"):
             raise ViewerError(reply.get("error", f"Viewer error on '{action}'"))
         return reply.get("result")
+
+    def _fail_pending(self, reason: str, keep: set[str] | None = None) -> None:
+        """Fail in-flight requests whose reply can no longer arrive.
+
+        A pending request is keyed by an id only the page that received it
+        knows, so when that page is gone the reply is not late — it is never
+        coming. Nothing here noticed, and the request sat until its own timeout
+        and then blamed a stall: the caller waited minutes for news available
+        at once, and the news named the wrong cause.
+
+        *keep* is what a newly connected page says it still owes an answer for.
+        Those are left alone; everything else pending is failed, because the
+        page that could have answered it is gone.
+
+        **A closed socket is deliberately not one of these moments.** A long
+        action blocks the page's main thread, the socket can die inside that
+        window, and the page reconnects and delivers the held reply once the
+        work finishes — so failing on disconnect would destroy a reply that was
+        on its way. What ends that wait instead is a page reconnecting without
+        claiming the work, or the request's own budget.
+        """
+        for rid, fut in list(self._pending.items()):
+            if keep is not None and rid in keep:
+                continue
+            if not fut.done():
+                fut.set_exception(ViewerError(reason))
+            self._pending.pop(rid, None)
+
+    async def _register_viewer(
+        self, ws: web.WebSocketResponse, data: dict[str, Any]
+    ) -> None:
+        """Take the handshake: this connection is the viewer from now on."""
+        displacing = self._ws is not None and self._ws is not ws and not self._ws.closed
+        if displacing:
+            assert self._ws is not None
+            # Tell the displaced viewer it lost the connection on purpose.
+            # Without this it reconnects on its timer, wins the handshake back,
+            # and the two tabs trade the socket forever.
+            with contextlib.suppress(ConnectionResetError):
+                await self._ws.send_json({"action": "protean_superseded"})
+            await self._ws.close()
+
+        self._ws = ws
+        self._visibility = data.get("visibility")
+        self._connected.set()
+
+        # Whatever this page says it still owes an answer for survives; anything
+        # else pending belonged to a page that is gone, and no reply for it can
+        # arrive. A page that reconnects mid-render claims its work and keeps
+        # waiting; one that reloaded claims nothing, and the caller hears so at
+        # once rather than at the end of a figure-sized budget.
+        claimed = data.get("inflight")
+        keep = {str(rid) for rid in claimed} if isinstance(claimed, list) else None
+        if keep is not None or displacing:
+            self._fail_pending(
+                "The viewer answering this is gone — the tab reloaded, or "
+                "another protean tab took the connection. The reply is lost; "
+                "retry against the tab connected now.",
+                keep=keep,
+            )
+        await ws.send_json({"action": "protean_pong", "version": PROTOCOL_VERSION})
 
     def _stall_hint(self) -> str:
         """Explain a timeout when the tab being hidden is the likely cause."""
@@ -336,21 +401,8 @@ class ViewerBridge:
                 continue
 
             if data.get("action") == "protean_ping":
-                # Handshake: this connection is a protean viewer.
-                if self._ws is not None and self._ws is not ws and not self._ws.closed:
-                    # Tell the displaced viewer it lost the connection on
-                    # purpose. Without this it reconnects on its timer, wins the
-                    # handshake back, and the two tabs trade the socket forever.
-                    with contextlib.suppress(ConnectionResetError):
-                        await self._ws.send_json({"action": "protean_superseded"})
-                    await self._ws.close()
-                self._ws = ws
+                await self._register_viewer(ws, data)
                 registered = True
-                self._visibility = data.get("visibility")
-                self._connected.set()
-                await ws.send_json(
-                    {"action": "protean_pong", "version": PROTOCOL_VERSION}
-                )
                 continue
 
             if data.get("action") == "protean_visibility":
@@ -370,5 +422,8 @@ class ViewerBridge:
             self._ws = None
             self._visibility = None
             self._connected.clear()
+            # Nothing pending is failed here on purpose: see _fail_pending. The
+            # page may be mid-render with the socket dead under it, and it
+            # delivers the held reply when it reconnects.
             logger.info("Viewer disconnected")
         return ws
