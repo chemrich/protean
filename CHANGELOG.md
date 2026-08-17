@@ -7,6 +7,29 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A control in the viewer that asks the server rather than drawing.** One
+  button, one view — `ghost-surface` — and the rule that makes it worth having:
+  **a button never draws, it asks**, and the server runs the same `preset()` a
+  model would call. One code path, two entry points, so a handle made by a click
+  is an ordinary handle and the picture a click makes is the picture the model
+  would have made. Any other arrangement lets the GUI and the model render the
+  same view differently, and eventually they will.
+
+  **The channel carries view names from a fixed list and nothing else.** The
+  socket is token-authenticated, but a page holding that token can already reach
+  the viewer, and the tool surface would hand it `snapshot(path=)`,
+  `save_session(path=)`, `movie(path=)` and `electrostatics(path=)` — each of
+  which writes where the caller says. A test enumerates the live tool registry,
+  finds the nine tools taking a path, and asserts none is reachable from the
+  page.
+
+- **Every tool reply says what the person at the viewer did.** Without it the
+  model answers about a scene it did not produce and has no way to know changed
+  — this project's oldest failure mode, arriving through a door we opened
+  ourselves. Drained rather than repeated, so one click is reported once. MCP
+  can push notifications and client support is uneven, so it rides out on the
+  next reply instead, which needs no client support at all.
+
 - **Six more presets, so `preset()` covers the styles worth borrowing from
   MCPymol.** `textbook`, `bfactor`, `putty`, `hydrophobic-surface` and
   `pointillist` decide what is drawn; `cinematic` only restyles what is there,

@@ -18,6 +18,7 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from pathlib import Path
 from typing import Any
@@ -861,7 +862,12 @@ async def _as_server(session, load: bool = False):
     describe one molecule.
     """
     previous = server_mod._bridge
-    server_mod._bridge = session.bridge
+    # Adopted the way the server adopts one, rather than assigned. The
+    # difference is `on_invoke`: a bridge assigned straight into the global is
+    # a socket the page can talk to with no rule about what it may ask for, and
+    # every page-initiated test would then be exercising an arrangement that
+    # does not exist in production.
+    server_mod.use_bridge(session.bridge)
     saved = (server_mod._structure, server_mod._structure_identifier)
     try:
         if load:
@@ -1062,6 +1068,75 @@ async def test_putty_width_follows_the_bfactor_it_claims():
         f"control {control:.6f} against measured {measured:.6f}: too close to "
         "separate, so this is measuring the reload rather than B-factor"
     )
+
+
+# -- a control that asks the server, from docs/views.md §4 ---------------------
+
+_CLICK_VIEW = "(document.getElementById('view-ghost').click(), JSON.stringify('ok'))"
+_BUTTON_IDLE = "JSON.stringify(!document.getElementById('view-ghost').disabled)"
+_BUTTON_LABEL = "JSON.stringify(document.getElementById('view-ghost').textContent)"
+
+
+async def _click_and_settle(session, timeout: float = 60) -> str:
+    """Click the view button and wait for the server's answer to land.
+
+    The button disables itself for the round trip, so its own state says when
+    the answer arrived. That is the only thing it is trusted for: what the
+    *scene* did is read from pixels, because a control reporting success while
+    the picture does not move is the failure this whole design is arranged
+    around.
+    """
+    await session.evaluate(_CLICK_VIEW)
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if await session.evaluate(_BUTTON_IDLE):
+            label: str = await session.evaluate(_BUTTON_LABEL)
+            return label
+        await asyncio.sleep(0.1)
+    raise AssertionError("the button never came back from its round trip")
+
+
+async def test_a_click_draws_the_view_the_server_was_asked_for():
+    """Criterion 4, and the criterion 3 claim checked from the other end.
+
+    The scene has to arrive over the ordinary action channel, which means the
+    pixels move *and* the handle it created is one the Python side knows about.
+    The pixels alone would pass with the page drawing for itself — the exact
+    arrangement §3.2 rules out, because a selection made in the browser is a
+    handle no model can refer to.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        before = await _shot(session)
+        label = await _click_and_settle(session)
+        after = await _shot(session)
+        handles = server_mod._handles.names()
+        reported = await server_mod.list_selections()
+
+    assert "refused" not in label, f"the button reported {label!r}"
+    assert difference(before, after) > STYLED, "the click changed no pixels"
+    # The surface is wider than the cartoon it wraps, as it is for the tool.
+    assert coverage(after, of=background(before)) > coverage(
+        before, of=background(before)
+    )
+    assert "auto_ghost" in handles, "the page drew this, not the server"
+    assert "ghost-surface" in reported["user_actions"]
+
+
+async def test_a_click_for_a_view_that_cannot_apply_is_refused_on_the_button():
+    """A control that cannot report failure is a control that reports success.
+
+    Nothing loaded, so the same refusal the tool gives has to reach the button
+    rather than being swallowed into a console nobody is reading.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=False):
+        server_mod._structure = None
+        server_mod._structure_error = None
+        before = await _shot(session)
+        label = await _click_and_settle(session)
+        after = await _shot(session)
+
+    assert "refused" in label, f"the button reported {label!r}"
+    assert difference(before, after) == 0.0, "a refused click changed the picture"
 
 
 async def test_ghost_surface_layers_over_what_is_already_drawn():

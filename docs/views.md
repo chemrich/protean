@@ -1,7 +1,8 @@
 # Views, and driving them from the viewer
 
-Planned 2026-08-17. **§5.1, the six style presets, is done**; §4's `protean_invoke`
-slice and everything after it are not. Two things that turn out to be one thing:
+Planned 2026-08-17. **§5.1 (the six style presets) and §4 (the `protean_invoke`
+slice) are done**; §5.2 onward are not. Two things that turn out to be one
+thing:
 
 1. **MCPymol has fifteen named view types and protean has four presets.** If
    protean is a general PyMOL replacement, the good ones belong here.
@@ -165,11 +166,17 @@ next tool reply carries them:
 No client support needed, and a model cannot act on a stale picture without
 being told.
 
-## 4. The vertical slice — what gets built now
+## 4. The vertical slice — shipped 2026-08-17
 
 One button, one view, end to end. Deliberately not a framework: it proves the
 loop, the allowlist and the state reporting together, and everything afterwards
 is adding rows to a list.
+
+**Done, and the design survived contact.** A real click in a real browser moves
+the pixels, and the handle it leaves behind is `auto_ghost` on the Python side —
+which is the claim that matters, because pixels alone would pass with the page
+drawing for itself. All eight criteria are met; what the work added to the plan
+is below.
 
 **Chosen view: `ghost-surface`**, because it already exists as a preset, takes
 only a handle, and its effect is obvious in a screenshot.
@@ -180,12 +187,43 @@ only a handle, and its effect is obvious in a screenshot.
 |---|---|---|
 | 1 | ~~Every theme and representation the later phases need reaches the pixels~~ | **Done 2026-08-17** — eight differential tests, instrument rebuilt |
 | 2 | ~~`ellipsoid` either draws or refuses~~ | **Void** — it draws; the planning probe was wrong |
-| 3 | A page-initiated `protean_invoke` runs the same code path as `preset()` | Assert on the calls the server issues, not on the picture alone |
-| 4 | The scene arrives back over the ordinary action channel | Differential test: click, then compare pixels |
-| 5 | The allowlist admits no tool taking a path | Enumerate from the tool registry, not from a list in a file |
-| 6 | An unlisted view name is refused, and says what is available | Mutation-tested |
-| 7 | The next tool reply names the user's action | Assert the string, then assert it clears |
-| 8 | A click while no structure is loaded fails like the tool does | Same refusal, same wording |
+| 3 | ~~A page-initiated `protean_invoke` runs the same code path as `preset()`~~ | **Done** — the click's viewer calls are compared with the tool's, action for action |
+| 4 | ~~The scene arrives back over the ordinary action channel~~ | **Done** — a real click in Chrome, pixels compared, and `auto_ghost` asserted on the Python side |
+| 5 | ~~The allowlist admits no tool taking a path~~ | **Done** — nine path-taking tools enumerated from the live registry; none reachable |
+| 6 | ~~An unlisted view name is refused, and says what is available~~ | **Done**, and the first version of the test was a no-op — see below |
+| 7 | ~~The next tool reply names the user's action~~ | **Done** — wrapped at the tool decorator, drained so it is said once |
+| 8 | ~~A click while no structure is loaded fails like the tool does~~ | **Done** — the two error strings are asserted equal |
+
+### 4.1a What the slice turned up that the plan did not
+
+**The handler cannot run inside the socket's message loop.** It drives the
+viewer, so it sends an action and waits for the reply — and that reply is a
+message the same loop has to read. Awaited inline, the loop sits inside the
+handler while the handler waits on the loop; the click hangs until its own
+budget expires and then blames the viewer. It runs as a task. Mutating that back
+to an inline `await` fails three tests by timeout, which is why each carries its
+own bound rather than relying on pytest to notice a hang.
+
+**A reply travelling the page's way has no outbox.** The dropped-reply work of
+PR 89 protects replies going *to* the server; the answer to a click goes the
+other way, on the socket it was asked over, and if that socket dies the button
+would wait forever. It now settles as "lost contact before it said whether the
+view was applied" — deliberately not "failed", because the server may well have
+applied it and a control that claims failure about something that happened is
+worse than one that admits it does not know.
+
+**The mutation test for the allowlist was a no-op, twice.** Opening the channel
+to forward any name left every test green: `preset()` refuses a bogus name too,
+and its refusal reads much the same. The tests now separate the two — the
+refusal must offer the *view* vocabulary rather than the preset one, and
+`putty`, a real preset that is not a listed view, must be refused *with handlers
+registered* so that a forwarded name would genuinely have drawn. The second
+condition was itself missing at first, and the test passed for the wrong reason.
+
+**Adopting a bridge is now one function**, `use_bridge()`, because the
+interesting half is not the assignment but `on_invoke`. A bridge assigned
+straight into the module global is a socket a page can talk to with no rule
+about what it may ask for, and the differential harness was doing exactly that.
 
 ### 4.2 The failure modes to write tests against first
 
@@ -280,9 +318,19 @@ and makes the relationship visible in the reply's `steps`.
 Turning one button into several. Depends entirely on how §4 feels: if the
 round-trip is sluggish, the answer is a different UI, not more buttons.
 
-Unknown: whether the control is a strip, a menu, or keyboard shortcuts; whether
-views are exclusive or compose; what happens on a structure the view makes no
-sense for.
+**§4 is done and the round trip is fine**, so this stays "more buttons" rather
+than becoming a redesign. Two of the unknowns are answered by the work below it:
+the drawing views are **exclusive**, because they all draw through the one
+shared handle and so replace their predecessor rather than stack; and a view a
+structure cannot take **refuses and says so on the control**, which is what
+`textbook` on a ligand-only entry already does. Adding a view is now two lines —
+an entry in `_PAGE_VIEWS` and a button that names it.
+
+Still unknown: whether the control is a strip, a menu, or keyboard shortcuts;
+and whether the *styling* presets, which compose rather than replace, want a
+different affordance from the drawing ones. A click that changes the lighting
+and a click that changes the whole picture reading identically is the obvious
+way for this to get confusing.
 
 ### 5.3 Parameterised view tools — stub
 
@@ -416,6 +464,14 @@ The candidates here, stated in advance so they can be checked off or laughed at:
 
 - **That the round-trip through the server feels instant.** It is a WebSocket on
   loopback, so it should. If it does not, §5.2 changes shape entirely.
+
+  **Right, with a caveat nobody predicted, checked 2026-08-17.** The transport
+  is not the cost — the *view* is. `ghost-surface` meshes a molecular surface,
+  which takes as long from a click as it does from a tool, and under software
+  rendering that is seconds rather than milliseconds. So the button disables
+  itself for the round trip and says so, which is the affordance a switcher
+  needs anyway. §5.2 does not change shape; it inherits a control that already
+  knows how to be busy.
 - **That "recipe work" is as cheap as it sounds.** The four existing presets are
   small, but each needed a differential test proving the picture changed, and
   the threshold for "changed" was argued over.

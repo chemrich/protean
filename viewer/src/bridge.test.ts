@@ -291,3 +291,87 @@ describe('a reply too large to send', () => {
     expect(reportable('x', payload, 1000).length).toBeLessThan(1000);
   });
 });
+
+describe('a view the page asks for', () => {
+  it('sends the view name and nothing that looks like a tool call', async () => {
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    void channel.invoke('ghost-surface');
+    await flush();
+
+    const asked = latest().sent.at(-1);
+    expect(asked).toMatchObject({ action: 'protean_invoke', view: 'ghost-surface' });
+    // No args, no tool, no path. The page names a view; the server decides
+    // what that means. Anything richer here is a channel to the tool surface
+    // wearing a different name.
+    expect(Object.keys(asked).sort()).toEqual(['action', 'id', 'view']);
+  });
+
+  it('settles the click with what the server said', async () => {
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    const settled = channel.invoke('ghost-surface');
+    await flush();
+    const { id } = latest().sent.at(-1);
+    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-surface' });
+
+    await expect(settled).resolves.toEqual({
+      ok: true,
+      view: 'ghost-surface',
+      error: undefined,
+    });
+  });
+
+  it('carries a refusal back verbatim, rather than reporting success', async () => {
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    const settled = channel.invoke('nope');
+    await flush();
+    const { id } = latest().sent.at(-1);
+    latest().receive({ action: 'protean_invoked', id, ok: false, error: 'Unknown view' });
+
+    await expect(settled).resolves.toMatchObject({ ok: false, error: 'Unknown view' });
+  });
+
+  it('does not hand the reply to the dispatcher as if it were an action', async () => {
+    // It would come back as "Unknown action: protean_invoked", the button would
+    // wait forever, and the failure would look like a slow server.
+    const handled: string[] = [];
+    const channel = connectBridge(async (action) => {
+      handled.push(action);
+      return {};
+    });
+    latest().onopen!();
+    const settled = channel.invoke('ghost-surface');
+    await flush();
+    const { id } = latest().sent.at(-1);
+    latest().receive({ action: 'protean_invoked', id, ok: true });
+
+    await expect(settled).resolves.toMatchObject({ ok: true });
+    expect(handled).toEqual([]);
+  });
+
+  it('stops waiting when the socket dies, and does not claim it failed', async () => {
+    // A reply travelling the page's way has no outbox to wait in: the server
+    // sends it on the socket it was asked over. The view may well have been
+    // applied, so the honest answer is that we do not know.
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    const settled = channel.invoke('ghost-surface');
+    await flush();
+    latest().close();
+
+    const reply = await settled;
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toMatch(/lost contact/);
+  });
+
+  it('refuses to ask at all when no socket is open', async () => {
+    const channel = connectBridge(async () => ({}));
+    // Never opened: no onopen, so `current` is null.
+    await expect(channel.invoke('ghost-surface')).resolves.toMatchObject({
+      ok: false,
+    });
+    expect(latest().sent).toEqual([]);
+  });
+});
