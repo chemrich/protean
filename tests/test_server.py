@@ -488,6 +488,29 @@ def _tiny_protein_pdb(path: Path) -> Path:
     return path
 
 
+def _protein_and_water_pdb(path: Path) -> Path:
+    """The tiny protein with three waters around it, for the solvent keyword."""
+    atoms = [
+        (1, "N", "GLY", 1, (0.0, 0.0, 0.0), "N"),
+        (2, "CA", "GLY", 1, (1.46, 0.0, 0.0), "C"),
+        (3, "C", "GLY", 1, (2.0, 1.42, 0.0), "C"),
+        (4, "O", "GLY", 1, (1.25, 2.39, 0.0), "O"),
+        (5, "N", "GLY", 2, (3.33, 1.5, 0.0), "N"),
+        (6, "CA", "GLY", 2, (4.0, 2.78, 0.0), "C"),
+        (7, "C", "GLY", 2, (5.5, 2.65, 0.0), "C"),
+        (8, "O", "GLY", 2, (6.1, 1.58, 0.0), "O"),
+        (9, "OXT", "GLY", 2, (6.05, 3.75, 0.0), "O"),
+        (10, "O", "HOH", 101, (0.0, 5.0, 0.0), "O"),
+        (11, "O", "HOH", 102, (2.0, 6.5, 0.0), "O"),
+        (12, "O", "HOH", 103, (4.0, 7.0, 0.0), "O"),
+    ]
+    path.write_text(
+        "\n".join(_pdb_line(s, n, r, "A", i, xyz, e) for s, n, r, i, xyz, e in atoms)
+        + "\nEND\n"
+    )
+    return path
+
+
 async def test_electrostatics_reports_which_method_ran(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     out = await electrostatics(
@@ -1722,6 +1745,7 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "label",
         "focus",
         "select",
+        "hide",
     ):
 
         def handle(args, action=action):
@@ -1732,8 +1756,8 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
 
 
 async def test_unknown_preset_is_refused_with_the_real_list(wired_bridge):
-    with pytest.raises(ViewerError, match=r"Unknown preset 'cinematic'.*active-site"):
-        await preset("cinematic")
+    with pytest.raises(ViewerError, match=r"Unknown preset 'noir'.*active-site"):
+        await preset("noir")
 
 
 async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
@@ -1816,6 +1840,159 @@ async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_pa
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     with pytest.raises(ViewerError, match="needs a handle"):
         await preset("active-site")
+
+
+# -- the style presets from docs/views.md §5.1 ---------------------------------
+#
+# The six borrowed from MCPymol. Four of them decide what is drawn rather than
+# only restyling it, which is the part with a way to go wrong: `auto` belongs to
+# the viewer's load preset, so a view has to hide it and take the scene over, and
+# two views in a row have to replace each other rather than stack.
+
+_DRAWING_PRESETS = ["textbook", "bfactor", "putty", "hydrophobic-surface", "pointillist"]
+
+
+async def _preset_calls(
+    wired_bridge, tmp_path, name: str, handle: str | None = None
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+    """Apply a preset against a recording viewer and hand back what it sent."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+    task = wired_bridge.serve(40)
+    try:
+        out = await preset(name, handle=handle)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return out, calls
+
+
+@pytest.mark.parametrize("name", _DRAWING_PRESETS)
+async def test_a_drawing_preset_takes_the_scene_over(wired_bridge, tmp_path, name):
+    """Hide what the viewer drew, then draw under one shared handle.
+
+    Without the hide, the new representation is coincident with the load
+    preset's own and the picture does not visibly change — which is exactly how
+    the probe that planned this work convinced itself five separate primitives
+    were broken.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out, calls = await _preset_calls(wired_bridge, tmp_path, name)
+
+    hidden = [args for action, args in calls if action == "hide"]
+    assert hidden and hidden[0]["name"] == "auto", "the load preset's scene stayed up"
+
+    shown = [args for action, args in calls if action == "show"]
+    assert shown, f"{name} never drew anything"
+    assert shown[0]["name"] == "auto_view"
+    assert out["applied_to"] == "auto"
+    assert [action for action, _ in calls].index("hide") < [
+        action for action, _ in calls
+    ].index("show"), "drew before hiding, so the two are coincident"
+
+
+@pytest.mark.parametrize("name", _DRAWING_PRESETS)
+async def test_a_drawing_preset_reports_every_call_it_made(wired_bridge, tmp_path, name):
+    """The invariant the first preset established, extended to the new ones.
+
+    `steps` is what makes a preset adjustable rather than an opaque style, so a
+    call that does not appear there is one nobody can undo.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out, calls = await _preset_calls(wired_bridge, tmp_path, name)
+    assert len(out["steps"]) == len(calls)
+
+
+async def test_a_second_view_replaces_the_first_rather_than_stacking(
+    wired_bridge, tmp_path
+):
+    """Both draw through the same handle, so Mol* rebuilds one component.
+
+    Under two handles the tube and the surface would both be on screen at once,
+    and a switcher built on this would accumulate a view per click.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _, first = await _preset_calls(wired_bridge, tmp_path, "putty")
+    _, second = await _preset_calls(wired_bridge, tmp_path, "hydrophobic-surface")
+
+    drew = [args["name"] for action, args in first + second if action == "show"]
+    assert drew == ["auto_view", "auto_view"]
+
+
+async def test_a_view_on_a_handle_redraws_that_handle_and_leaves_the_scene(
+    wired_bridge, tmp_path
+):
+    """A named target says what to restyle, so there is nothing to take over."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("all", name="site")
+    await task
+
+    out, calls = await _preset_calls(wired_bridge, tmp_path, "putty", handle="site")
+
+    assert not [args for action, args in calls if action == "hide"]
+    shown = [args for action, args in calls if action == "show"]
+    assert shown and shown[0]["name"] == "site"
+    assert out["applied_to"] == "site"
+
+
+async def test_styling_after_a_view_follows_the_scene_it_drew(wired_bridge, tmp_path):
+    """The silent-success trap this repo keeps meeting, in a new costume.
+
+    Once a view has hidden `auto`, styling `auto` still succeeds and still
+    changes nothing anyone can see. Style what is on screen.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "putty")
+    _, calls = await _preset_calls(wired_bridge, tmp_path, "cinematic")
+
+    styled = [args["name"] for action, args in calls if action in ("shading", "material")]
+    assert styled == ["auto_view", "auto_view"]
+
+
+async def test_textbook_composes_illustrative_rather_than_repeating_it(
+    wired_bridge, tmp_path
+):
+    """One styling recipe, called twice, so the two cannot drift apart."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _, styled = await _preset_calls(wired_bridge, tmp_path, "illustrative")
+    _, drawn = await _preset_calls(wired_bridge, tmp_path, "textbook")
+
+    tail = [action for action, _ in drawn][-len(styled) :]
+    assert tail == [action for action, _ in styled]
+
+
+async def test_a_view_refuses_an_empty_handle_rather_than_drawing_nothing(
+    wired_bridge, tmp_path
+):
+    """Nothing to draw is a refusal, not a blank canvas reported as success."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    wired_bridge.handlers["select"] = lambda args: {}
+    task = wired_bridge.serve(1)
+    await select("resn ZZZ", name="nothing")
+    await task
+
+    with pytest.raises(ViewerError, match=r"is empty.*report success"):
+        await preset("putty", handle="nothing")
+
+
+async def test_a_view_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="No selection named 'nope'"):
+        await preset("putty", handle="nope")
+
+
+async def test_pointillist_leaves_the_solvent_out(wired_bridge, tmp_path):
+    """Waters are most of the atoms in a crystal structure and none of the shape."""
+    await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "pointillist")
+
+    scene = server_mod._handles.get("auto_view")
+    array = server_mod._structure
+    assert len(scene) > 0
+    assert "HOH" not in {str(r) for r in array[scene.indices].res_name}
 
 
 async def test_capabilities_reports_the_presets(wired_bridge):

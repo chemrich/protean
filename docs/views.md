@@ -1,6 +1,7 @@
 # Views, and driving them from the viewer
 
-Planned 2026-08-17, not started. Two things that turn out to be one thing:
+Planned 2026-08-17. **§5.1, the six style presets, is done**; §4's `protean_invoke`
+slice and everything after it are not. Two things that turn out to be one thing:
 
 1. **MCPymol has fifteen named view types and protean has four presets.** If
    protean is a general PyMOL replacement, the good ones belong here.
@@ -213,15 +214,42 @@ Nothing below is designed yet. These are placeholders with their known
 unknowns, to be filled in as each is taken up, and **corrected in place
 afterwards** as every other plan document in this repo has been.
 
-### 5.1 The style presets — stub
+### 5.1 The style presets — shipped 2026-08-17
 
 Six recipes: `textbook`, `cinematic`, `pointillist`, `bfactor`,
-`hydrophobic-surface`, `putty`.
+`hydrophobic-surface`, `putty`. All six are in `preset()`, and the estimate
+held: no new rendering, no new dependency, nothing but compositions of tools
+that already existed.
 
-Known: primitives all exist. Unknown: whether `putty`'s tube width varies with
-B-factor by default, or needs the `uncertainty` **size** theme, which protean
-does not expose at all — `size` scales uniformly today. That gap is also
-cryo-EM §4 ("size by scalar"), so the two should be done together.
+**The one open question is answered, and the answer removes a dependency.**
+This stub asked whether `putty`'s tube width varies with B-factor by default or
+needs the `uncertainty` **size** theme, which protean does not expose — and
+concluded that if it did, this work was tied to cryo-EM §4 ("size by scalar").
+It does not. `putty`'s provider declares `defaultSizeTheme: uncertainty`, so
+width follows B-factor with nothing passed to it.
+
+The source says so, and the source is where this document has gone wrong
+before, so it was measured too: the same coordinates loaded twice, once with the
+deposited B-factors and once with every B-factor flattened to their mean. The
+two putty frames differ by **0.0202** of the frame; the cartoon control, whose
+size theme is uniform, differs by **0.000125**. Nothing else about the two files
+differs, so the width is the B-factor. **§5.1 and cryo-EM §4 are
+independent.**
+
+**One limit worth stating rather than discovering later:**
+
+- **`bfactor` uses only the cold half of its ramp on an ordinary crystal
+  structure.** Mol\*'s `uncertainty` colour theme has a fixed `[0, 100]` domain
+  and `color()` passes no theme parameters, so 1UBQ's B-factors — 2 to 47 —
+  occupy 0.02 to 0.47 of it. The picture is correct and the contrast is lower
+  than PyMOL's `spectrum b`, which fits the ramp to the data. The fix is a
+  domain on `color()`, not a change to the preset; `color_by_rmsf` works around
+  the same limit today by rescaling values before it sends them.
+
+**`textbook` calls `illustrative` rather than repeating it.** The two would
+otherwise be near-duplicates: `illustrative` is the styling, `textbook` is the
+styling plus the decision about what to draw. Composing them keeps one recipe
+and makes the relationship visible in the reply's `steps`.
 
 ### 5.2 The view switcher — stub
 

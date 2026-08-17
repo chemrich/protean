@@ -5,6 +5,34 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Views
+
+- **Six more presets, so `preset()` covers the styles worth borrowing from
+  MCPymol.** `textbook`, `bfactor`, `putty`, `hydrophobic-surface` and
+  `pointillist` decide what is drawn; `cinematic` only restyles what is there,
+  as `publication-cartoon` and `illustrative` already did. None of them needed
+  new rendering — Mol\* has the representations and the themes, and protean
+  validates against its live registries, so all six are compositions of tools
+  that already existed. The reply lists every call each one made, so any of it
+  can be adjusted afterwards.
+
+  The drawing presets hide what the load preset built and draw through one
+  shared handle, `auto_view`. Sharing it is the point: applying a second view
+  rebuilds that component rather than adding to it, so switching views ends at
+  a view instead of at all of them at once.
+
+- **`putty`'s tube width follows B-factor, and that is Mol\*'s own default
+  rather than anything protean adds.** The plan for these views recorded it as
+  an open question — whether putty needed a size theme protean does not expose,
+  which would have tied it to the cryo-EM "size by scalar" work. It does not.
+  Measured against the same coordinates loaded twice, once with the deposited
+  B-factors and once with every B-factor flattened to their mean: the putty
+  frames differ by 0.020 of the frame, the cartoon control by 0.000125.
+
+- **A view refuses rather than drawing an empty scene.** A handle with no atoms,
+  or a whole-scene view of a structure with no polymer, previously drew nothing
+  and reported success.
+
 ### The viewer
 
 - **The viewer opens as a canvas, with Mol\*'s panels collapsed to slices.**
