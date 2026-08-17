@@ -97,12 +97,18 @@ async def test_every_view_a_click_can_ask_for_is_a_real_preset():
     assert set(server_mod._PAGE_VIEWS.values()) <= set(server_mod._PRESETS)
 
 
-async def test_a_bridge_the_server_adopts_knows_what_a_click_may_ask(bridge):
+async def test_a_bridge_the_server_adopts_knows_what_a_click_may_ask(bridge, monkeypatch):
     """The wiring, not the comment about the wiring.
 
     A bridge reaching the server without this is a socket a page can talk to
     and no rule about what it may ask for.
+
+    The monkeypatch is not decoration: `use_bridge` sets the module global, and
+    `_isolate_session_state` deliberately leaves `_bridge` alone — it is a
+    connection, not session state. Without this the suite would carry a stopped
+    bridge into every later file, which is the shape of backlog item 12.
     """
+    monkeypatch.setattr(server_mod, "_bridge", server_mod._bridge)
     assert bridge._invoke is None
     assert server_mod.use_bridge(bridge)._invoke is server_mod._invoke_from_page
 
