@@ -50,14 +50,28 @@ including the merge-commit content a `--no-merges` scan skips, and its entropy
 rules were canary-tested first so that "no leaks found" is evidence rather than
 a silence. Nothing. The scope, and why each part of it is there, is under §3.1.
 
-**One absolute path is in flight, and `main` being clean will not stop it.** The
-`cryoem-volumes` branch commits `viewer/node_modules` as a mode-120000 symlink
-holding an absolute path from one machine, and `.gitignore:12` is
-`viewer/node_modules/` — the trailing slash matches a directory, not a symlink,
-which is why it slipped through and why the gap is still open on `main`. The
-row above is true today and stops being true on the first merge of that branch.
-**Re-run the check immediately before the flip, not only now**, and strip the
-symlink when that branch lands.
+**The absolute path that was in flight is gone — re-checked 2026-08-17.** The
+`cryoem-volumes` branch committed `viewer/node_modules` as a mode-120000
+symlink holding an absolute path from one machine, straight past a
+`viewer/node_modules/` rule whose trailing slash matched a directory and not a
+symlink. All three things this paragraph used to say are now false: the rule is
+`viewer/node_modules` without the slash, the branch is on neither the remote
+nor this machine, and **no symlink appears in any of the 270 commits on any of
+the seven remote refs.**
+
+The re-check swept wider than symlinks and turned up one thing. Commit
+`5f66bc0` (2026-08-11) added `sys.path.insert(0, "/Users/charlie/code/protean")`
+to `docs/benchmark/protean_corpus.py`, replaced the same day by
+`Path(__file__).resolve().parents[2]`. The tree is clean; the history is not,
+and history is what a flip publishes. **Left alone on purpose**: every commit
+already carries its author's name and address, so the path discloses a username
+that authorship states outright, plus a directory layout, and no credential.
+Rewriting every SHA since 2026-08-11 does not buy that back. The only other
+match in the tree is `file:///Users/someone/.ssh/id_rsa`, a hostile URL that a
+session-trust test feeds in deliberately.
+
+**Still re-run this immediately before the flip**, because the worth of the row
+is its date rather than its wording.
 
 **The bridge binds loopback.** The obvious finding for a tool that runs a local
 HTTP server — "it is listening on every interface" — does not apply. That is
@@ -73,10 +87,21 @@ Public repositories get GitHub-hosted Actions minutes free. The browser job is
 **76.5% of current CI spend** (measured 2026-08-12, 842 billable minutes over
 four days), so opening the repo is a cost *reduction*, not only an exposure.
 
-**Not verified.** This is how GitHub's billing is documented to work for
-standard runners on public repos, not something measured here. Confirm against
-the account's own billing page before treating the saving as real — the same
-rule this repo applies to everything else.
+**Verified 2026-08-17, and it holds for protean.** GitHub's billing
+documentation: *"GitHub Actions usage is free for self-hosted runners and for
+public repositories that use standard GitHub-hosted runners."* All three jobs
+in `ci.yml` are `runs-on: ubuntu-latest`, which is a standard runner, so the
+flip takes this spend to zero.
+
+**The exception is the trap, and it points straight at the slowest job.**
+*"Larger runners are always charged for, even when used by public repositories
+or when you have quota available from your plan."* The obvious way to attack a
+33-minute browser job is more cores, and it is the first thing anyone reaches
+for — on a public repo that quietly puts the bill back. After the flip the
+trade inverts: standard runners are free but slow, and the one lever that looks
+most attractive is the only one that costs money. The levers in backlog 24 that
+cost neither money nor coverage are the post-merge re-runs on `main` and
+path-filtering docs-only PRs.
 
 ## 3. Before the flip
 

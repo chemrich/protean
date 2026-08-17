@@ -1,8 +1,16 @@
 # protean
 
 Agent-native molecular visualization. An MCP server (Python) drives a
-[Mol\*](https://molstar.org)-based viewer in a browser tab — a model does the
+[Mol\*](https://molstar.org) viewer in a browser tab — a model does the
 driving, you watch and tweak.
+
+![Carbonic anhydrase II: the catalytic zinc site in ball-and-stick against a faded cartoon fold](docs/images/zinc-site.png)
+
+*"Load 1CA2 and show me the catalytic zinc site" — protean's own output, and
+its own answer: His94, His96 and His119 coordinating the zinc, with Glu106 and
+Thr199 behind them. The selection was written as `byres (polymer within 5 of
+resn ZN) or resn ZN`; the figure came out of `snapshot()` at a real physical
+size.*
 
 protean is built for a model to use, not for a human at a REPL. Selections are
 named handles that analysis returns and display tools consume; styles are enums
@@ -10,9 +18,13 @@ a model can see in the tool schema rather than strings it has to guess; and
 every reply is structured data, read back off the viewer rather than echoed
 from the request.
 
-**Status: Phases 1–5 complete.** Selections, analysis, publication rendering
-and trajectories all work end to end. See [PLAN.md](PLAN.md) for the roadmap
-and the decisions behind it.
+**Everything you see is Mol\***. protean supplies a tool vocabulary and an
+analysis half in Python; the rendering, the parsing, the camera and the path
+tracer are Mol\*'s, and so is the credit — see *Built on Mol\** below.
+
+**Status: Phases 1–5 complete**, plus volumes. Selections, analysis,
+publication rendering, trajectories and cryo-EM maps all work end to end. See
+[PLAN.md](PLAN.md) for the roadmap and the decisions behind it.
 
 ## What it can do
 
@@ -37,6 +49,44 @@ and the decisions behind it.
   BinaryCIF maps, contoured as a surface or mesh, with the statistics read off
   the voxels rather than echoed from the file header and the contour unit
   named rather than assumed.
+
+## What people use it for
+
+Roughly in order of how often it comes up.
+
+**Asking a structure questions in plain language.** What is at the active site,
+what holds this interface together, which residues are conserved, how far apart
+are these two things. The answer comes back as numbers *and* as a picture of
+the thing the numbers describe, which is the part that is tedious to do by
+hand.
+
+**Making a figure for a paper.** "Double column, 600 dpi, white background" is
+a single call, and the file carries the physical size it claims. Getting a
+figure out of a viewer usually means a screenshot at whatever size the window
+happened to be; this is the difference between a picture and a figure.
+
+**Comparing two structures.** Superpose them, get the RMSD and how many
+residues actually aligned, and see what moved. Both a sequence-based mode and a
+structural one for remote homologs.
+
+**Following a simulation.** Load a trajectory, ask which loops move (RMSF),
+watch RMSD over time, then render a turntable or a movie of the interesting
+frames.
+
+**Looking at maps.** Contour a cryo-EM or crystallographic map at a stated
+sigma or absolute level, put a model in it, and see whether the density
+supports what the model claims.
+
+**Handing the result to someone else.** `save_session()` writes the scene and
+the structure into one file that reopens as it was.
+
+The common thread is that a model can do all of this without you learning a
+command language — and that every answer it gives you is about the molecule on
+screen, not a different one it happens to still be holding.
+
+**When not to use it.** If you want to explore a structure yourself, with your
+hands, use [Mol\*](https://molstar.org/viewer/) directly. It is better at that
+than anything driving it can be, and protean does not try to replace it.
 
 ## Install
 
@@ -102,13 +152,59 @@ rigid core that protean's sequence-based `superpose` cannot, and PyMOL's
 selection grammar has no gaps where protean's has several. protean wins where
 the answer needs to arrive as structured data a model can compose.
 
+## How it differs from Mol\*
+
+protean is not a fork, a patch or a rival. It drives a stock Mol\* build, and
+*Built on Mol\** below is about how much of what you see is theirs. The
+difference is who the controls are for.
+
+**Mol\* is built for a person, or for a web developer embedding a viewer.** You
+drive it with a mouse and its panels, or you write TypeScript against its
+plugin API inside the browser. Both assume the thing in control is on the same
+side of the screen as the picture.
+
+**protean moves the controls to the other side.** The tool surface lives in a
+Python process the model talks to over MCP, so "show me the zinc site" is a
+call with named arguments a model can see in a schema, and the reply is data it
+can use in the next call. Four things follow from that, and they are most of
+what protean actually adds:
+
+- **An analysis half that Mol\* does not have.** Interfaces and buried area,
+  superposition with RMSD, conservation from a sequence alignment, RMSF over a
+  trajectory, electrostatics. That work happens in Python with
+  [biotite](https://www.biotite-python.org), and the results come back as
+  numbers rather than as something drawn on screen.
+- **One vocabulary over both halves.** A selection is a named handle that
+  analysis returns and display tools consume, so the residues a calculation
+  found are the residues you colour, without anyone re-deriving them.
+- **The two halves must agree, and it is checked.** The atom count Python holds
+  is reconciled against the viewer's, and a discrepancy is reported with its
+  cause rather than passed over — alternate conformers, say, which analysis
+  resolves to one per site and Mol\* draws all of. A model answering confidently
+  about a molecule other than the one on screen is the failure this project
+  exists to prevent.
+- **Figures instead of screenshots.** `snapshot()` renders at whatever pixel
+  count a physical size and DPI imply and writes that resolution into the file.
+  Mol\* cannot record physical resolution at all, so a capture from any viewer
+  is a picture at whatever size the window was.
+
+What protean does *not* add is anything to the rendering. Every representation,
+colour theme, lighting rig, material and the path tracer are Mol\*'s, reached
+through a different set of controls.
+
 ## Known gaps
 
 [docs/backlog.md](docs/backlog.md) lists what the benchmark and a 499-probe
-corpus of structures and failure modes turned up — including two wrong answers
-worth knowing about before trusting a number: `sidechain` returns the whole
-molecule on nucleic acids, and the viewer and analysis disagree by 217 atoms on
-one glycoprotein.
+corpus of structures and failure modes turned up, what has been fixed since,
+and what is still open. It is kept as a record rather than a tidy list: the
+wrong turns are written down beside the fixes, because on this project the
+diagnosis that looked obvious has been wrong often enough to be worth
+recording.
+
+The open items worth knowing about before trusting a number are marked
+**open** there. `parse_structure` and `load_structure` still disagree about
+which assembly "the structure" means (item 18), and nothing yet reports which
+build of protean you are talking to (item 22).
 
 ## Development
 
@@ -156,10 +252,45 @@ complaint. So:
   test fails. Several tests in this repo exist because that exercise showed the
   first version passed against the bug it was written for.
 
-## Built on
+## Built on Mol\*
 
-- [Mol\*](https://molstar.org) — the viewer, rendering and path tracer
-  ([paper](https://doi.org/10.1093/nar/gkab314), MIT)
+**protean is a way of driving [Mol\*](https://molstar.org), and almost
+everything a user actually sees is Mol\*'s work.** It renders the molecule,
+parses mmCIF and BinaryCIF, builds cartoons and surfaces and molecular
+surfaces, computes secondary structure, handles the camera, contours volumes,
+and provides the path tracer behind `path_trace()`. protean adds a tool
+vocabulary a model can use, an analysis half in Python, and the guarantee that
+the two describe the same molecule. Take Mol\* away and there is no viewer;
+take protean away and Mol\* is still one of the best molecular graphics
+programs there is.
+
+Mol\* is developed by the [Mol\* team](https://github.com/molstar/molstar) at
+[PDBe](https://www.ebi.ac.uk/pdbe/) and [RCSB PDB](https://www.rcsb.org),
+building on the earlier LiteMol and NGL Viewer projects. It is the viewer
+behind the structure pages at both of the world's main structural databases,
+which is a good part of why it is worth building on: it is maintained,
+scrutinised and used at scale by people who are not us.
+
+> Sehnal D, Bittrich S, Deshpande M, Svobodová R, Berka K, Bazgier V,
+> Velankar S, Burley SK, Koča J, Rose AS. **Mol\* Viewer: modern web app for 3D
+> visualization and analysis of large biomolecular structures.** *Nucleic Acids
+> Research* 49(W1):W431–W437, 2021.
+> [doi:10.1093/nar/gkab314](https://doi.org/10.1093/nar/gkab314)
+
+If you use protean for published work, cite Mol\*. It is
+[MIT licensed](https://github.com/molstar/molstar/blob/master/LICENSE), and the
+protean wheel redistributes the built viewer, so it carries Mol\*'s licence
+notice with it as `molstar.js.LICENSE.txt` — a packaging test fails if that
+file ever goes missing.
+
+**What protean changes about it.** The viewer opens as a canvas rather than as
+Mol\*'s full control layout: the left panel is collapsed to Mol\*'s own icon
+rail, the right panel sits behind a tab, and the sequence strip stays because
+it reports rather than acts. Nothing is removed — the state tree is still there
+when a picture looks wrong, which is exactly when you want it.
+
+## Also built on
+
 - [biotite](https://www.biotite-python.org) — structure and trajectory parsing,
   superposition ([paper](https://doi.org/10.1186/s12859-018-2367-z), BSD-3)
 - [FastMCP](https://github.com/jlowin/fastmcp) — the MCP server (Apache-2.0)
