@@ -42,6 +42,15 @@ nothing is released yet, so everything below is unreleased.
   or a whole-scene view of a structure with no polymer, previously drew nothing
   and reported success.
 
+- **Loading a structure now waits for the camera the load preset moved.**
+  `focus`, `orient` and `reset_view` have always waited; `load_structure` never
+  did. Mol\* tweens the preset's framing over ~250 ms like any other camera
+  move, and waiting for the *geometry* to stop changing says nothing about it,
+  so a capture taken straight after a load could be mid-flight. Found by CI
+  rather than by reasoning: two loads of identical coordinates produced frames
+  0.008 apart on a runner where this machine reads 0.000125, and the difference
+  was the camera still travelling.
+
 ### The viewer
 
 - **The viewer opens as a canvas, with Mol\*'s panels collapsed to slices.**

@@ -875,6 +875,13 @@ export function createDispatcher(plugin: any): Handler {
         // they can be hidden or removed like any other selection.
         const auto = allComponents().map((c: any) => c.cell.transform.ref);
         if (auto.length) components.set(AUTO, { refs: auto });
+        // The preset frames the new molecule, and Mol* tweens that move over
+        // ~250 ms like any other. `render: true` waits for the *geometry* to
+        // stop changing, which says nothing about the camera, so a capture
+        // taken straight after a load could be mid-flight. focus, orient and
+        // reset_view have always waited; this one never did, and the symptom is
+        // a figure framed slightly wrong rather than an error.
+        await settleCamera(plugin, CAMERA_TIMEOUT_MS);
         // Report what was actually built. The server holds its own copy of the
         // same molecule, and this is the number that proves the two agree.
         const built = plugin.managers.structure.hierarchy.current.structures[0];

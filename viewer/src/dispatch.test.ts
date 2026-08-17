@@ -1483,6 +1483,43 @@ describe('settling a visible tab', () => {
     expect(raf.mock.calls.length).toBeGreaterThan(3);
   });
 
+  it('waits for the camera the load preset moved', async () => {
+    // The preset frames the new molecule, and Mol* tweens that like any other
+    // camera move. Settling the *geometry* says nothing about it, so a capture
+    // taken straight after a load could be mid-flight — which is how CI, on a
+    // slower renderer, produced two visibly different frames from two loads of
+    // identical coordinates.
+    const plugin: any = fakePlugin();
+    const camera = { state: { target: [0, 0, 0], radius: 10 } };
+    let moving = 20;
+    plugin.canvas3d = {
+      commitQueueSize: { value: 0 },
+      reprCount: { value: 0 },
+      camera,
+    };
+    const raf = vi.fn((cb: FrameRequestCallback) => {
+      if (moving > 0) {
+        moving--;
+        camera.state.radius += 1;
+      }
+      cb(0);
+      return 0;
+    });
+    vi.stubGlobal('requestAnimationFrame', raf);
+    window.__protean = { setTurbo: vi.fn() };
+
+    await createDispatcher(plugin)('load_structure', {
+      name: '1ubq', format: 'mmcif', data: 'x',
+    });
+
+    expect(moving).toBe(0);
+    // The frame count is what makes this falsifiable. With an already-drained
+    // commit queue the render pump alone spends six frames — three to let work
+    // start, three of stillness — so anything past twenty can only have come
+    // from waiting on a camera that was still moving.
+    expect(raf.mock.calls.length).toBeGreaterThan(20);
+  });
+
   it('still skips the pump for actions that draw nothing', async () => {
     const { plugin, raf } = withCommitLoop(5);
     const setTurbo = vi.fn();

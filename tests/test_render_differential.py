@@ -1004,6 +1004,16 @@ async def test_putty_width_follows_the_bfactor_it_claims():
     which is also what rules out the camera having moved when the second
     structure replaced the first. A control that moves means the putty number
     is measuring the reload.
+
+    **The control is asserted against the signal rather than against a number.**
+    The first version of this test used an absolute ceiling of 0.001, measured
+    on the development machine, where the control reads 0.000125. CI read
+    0.007983 and the test failed — correctly: `load_structure` did not wait for
+    the camera the load preset moves, so the first capture after a load could be
+    mid-tween, and a slower renderer opened the gap wide enough to see. That is
+    fixed in the viewer, but the lesson about the threshold stands. A ratio says
+    what the test actually claims — putty responds to B-factor and cartoon does
+    not — in a form that does not depend on which machine draws it.
     """
     fetched = await fetch_structure_data(FIXTURE)
     deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
@@ -1030,10 +1040,17 @@ async def test_putty_width_follows_the_bfactor_it_claims():
     )
     measured = difference(frames[("putty", "deposited")], frames[("putty", "flattened")])
 
-    assert control < 0.001, (
-        f"the control moved by {control:.6f}; this is measuring the reload, not B"
+    assert measured > STYLED, (
+        f"putty drew the same tube for two different B-factor sets: {measured:.6f}"
     )
-    assert measured > STYLED, "putty drew the same tube for two different B-factor sets"
+    # Measured 162x apart on the development machine (0.020219 against
+    # 0.000125). Five is the floor: a renderer with more edge noise than this
+    # one still has to leave the claim unambiguous, and if the two ever come
+    # that close the instrument has become the subject rather than putty.
+    assert control * 5 < measured, (
+        f"control {control:.6f} against measured {measured:.6f}: too close to "
+        "separate, so this is measuring the reload rather than B-factor"
+    )
 
 
 async def test_ghost_surface_layers_over_what_is_already_drawn():

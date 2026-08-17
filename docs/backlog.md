@@ -1044,3 +1044,36 @@ only that it does not happen on the first draw; or the auto-fit may be something
 protean should be suppressing so a caller's camera is never taken from them.
 Deciding needs a reading of when Mol\* requests a camera reset, which was out of
 scope for the presets and is the whole of this item.
+
+### 27. `load_structure` never waited for the camera it moved — fixed
+
+Found by CI disagreeing with this machine, which is the only way it could have
+been found: the gap is invisible on a fast renderer.
+
+A differential test loaded the same coordinates twice and compared cartoon
+frames as its control — the two must be identical, because nothing that cartoon
+draws depends on what changed between them. Locally the control read
+**0.000125**. On CI it read **0.007983** and failed the test.
+
+The cause is one missing wait. `applyPreset` frames the newly loaded molecule,
+and Mol\* tweens that move over ~250 ms exactly like any other camera move.
+`load_structure` is marked `render: true`, which settles the *geometry* — it
+waits for the commit queue to drain — and that says nothing at all about the
+camera. `focus`, `orient` and `reset_view` have called `settleCamera` since they
+were written; this one never did.
+
+So **a capture taken straight after `fetch_structure()` could be framed
+mid-tween**, and the slower the renderer the wider the window. The symptom is a
+figure framed slightly wrong, which is exactly the class of defect that survives
+a green test suite: nothing errors, the picture looks plausible, and only two
+captures of the same thing side by side show it.
+
+`load_structure` now settles the camera too. The unit test asserts it by frame
+count — with a drained commit queue the render pump alone spends six frames, so
+anything past twenty can only have come from waiting on a camera that was still
+moving — and removing the wait fails that test rather than hanging.
+
+**The threshold was the second lesson.** The control's ceiling was an absolute
+number measured on one machine, and an absolute number is a claim about a
+renderer rather than about the thing being tested. It is now a ratio against the
+signal it is controlling for, which is what the test was always trying to say.

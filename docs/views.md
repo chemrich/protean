@@ -247,6 +247,16 @@ pictures. The presets now ask for the frame outright with `reset_view()`, listed
 in the steps, which makes a view idempotent — the property §5.2's switcher needs.
 The underlying `show()` behaviour is backlog 26.
 
+**A second camera defect fell out of the first, and CI found it rather than this
+machine.** `load_structure` never waited for the camera the load preset moves,
+though `focus`, `orient` and `reset_view` always have — so a capture taken
+straight after a load could be mid-tween. Locally the gap is 0.000125 of the
+frame and invisible; on a CI runner it is 0.0080, which failed a control
+assertion in the putty test above. Backlog 27, fixed in the viewer. Worth noting
+*how* it surfaced: not by inspecting `load_structure`, but because a test
+asserted that something which must not change had not changed, and then ran on a
+machine that was not this one.
+
 **Two limits worth stating rather than discovering later:**
 
 - **`bfactor` uses only the cold half of its ramp on an ordinary crystal
