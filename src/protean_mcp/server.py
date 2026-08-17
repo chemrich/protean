@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
+import functools
 import gzip
 import io
 import json
@@ -12,6 +13,7 @@ import logging
 import math
 import re
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1892,8 +1894,20 @@ async def unhide(name: str = "sele") -> dict[str, Any]:
 
 @mcp.tool()
 async def remove(name: str = "sele") -> dict[str, Any]:
-    """Delete a named selection and its representations from the scene."""
-    return await _call("remove", {"name": name})
+    """Delete a named selection and its representations from the scene.
+
+    The handle goes too. It used to survive on this side while its component
+    was deleted in the viewer, so the two disagreed about what existed: a
+    later show() or shading() on that name resolved here and then failed
+    there, and code asking "is this drawn?" by looking in the handle table got
+    yes for something that had been removed.
+    """
+    result = await _call("remove", {"name": name})
+    # `auto` is the viewer's own handle and has no entry here, so a missing one
+    # is ordinary rather than an error.
+    with contextlib.suppress(HandleError):
+        _handles.drop(name)
+    return result
 
 
 @mcp.tool()
@@ -1974,6 +1988,53 @@ async def capabilities() -> dict[str, Any]:
 # eye needs — two coincident representations read as one muddy one.
 _SCENE_HANDLE = f"{_WHOLE_SCENE}_view"
 
+# Every screen-space effect a preset has an opinion about. A preset states all
+# of them rather than only the ones it changes, because `effects()` leaves
+# anything omitted exactly as it was — right for a tool composing calls, wrong
+# for a recipe declaring a whole look. `cinematic` is the only preset that turns
+# depth of field on, and before this every view that did not mention it kept the
+# blur: a `textbook` diagram applied after it came out with a shallow focus, and
+# said it had succeeded.
+_PRESET_EFFECTS = (
+    "outline",
+    "occlusion",
+    "shadow",
+    "depth_of_field",
+    "bloom",
+    "sharpening",
+)
+
+
+def _step(call: str, **kwargs: Any) -> str:
+    """Render a tool call as the line of code that would reproduce it."""
+    rendered = ", ".join(
+        f'{key}="{value}"' if isinstance(value, str) else f"{key}={value}"
+        for key, value in kwargs.items()
+    )
+    return f"{call}({rendered})"
+
+
+async def _run(tool: Any, **kwargs: Any) -> str:
+    """Make a call and return the line that reproduces it, from one dict.
+
+    The steps a preset reports are documented as the calls it made, and as
+    something a caller can run by hand instead. Written out separately they
+    drifted: three of them omitted an argument that had been sent, so replaying
+    the reported steps gave a different picture than the preset did — including,
+    after `cinematic`, a different depth of field. Deriving the call and its
+    description from the same kwargs makes that impossible rather than unlikely.
+    """
+    await tool(**kwargs)
+    return _step(tool.__name__, **kwargs)
+
+
+async def _set_effects(**wanted: Any) -> str:
+    """Set every effect in `_PRESET_EFFECTS`, not only the ones being changed."""
+    settings: dict[str, Any] = dict.fromkeys(_PRESET_EFFECTS, False)
+    settings.update(wanted)
+    await effects(**settings)
+    return _step("effects", **settings)
+
 
 def _styleable(target: str) -> str:
     """The handle shading, material and opacity should actually point at.
@@ -1999,6 +2060,12 @@ async def _take_the_scene(target: str, selection: str) -> tuple[str, list[str]]:
 
     Returns the handle and the steps taken, so the reply says what happened to
     the scene rather than leaving a caller to notice `auto` went away.
+
+    **Nothing is changed until it is known there is something to draw.** The
+    first version hid `auto` and rebuilt the scene handle before checking that
+    the selection had matched anything, so refusing left a blank viewer, an
+    empty handle registered under `auto_view`, and a caller holding an error
+    that said nothing about either. A refusal has to leave the scene alone.
     """
     if target != _WHOLE_SCENE:
         try:
@@ -2011,23 +2078,33 @@ async def _take_the_scene(target: str, selection: str) -> tuple[str, list[str]]:
                 "and report success."
             )
         return target, []
-    # A scene the load preset never built has no `auto` to hide, which is not a
-    # reason to refuse to draw. Reported either way rather than suppressed: a
-    # step that says nothing happened is the difference between "taken over"
-    # and "there was nothing there", and a caller cannot see the scene.
+
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection(selection), array)
+    except SelectionError as exc:
+        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        raise ViewerError(
+            f"Nothing matched {selection!r}, so this view would draw nothing "
+            "and report success. The scene is untouched; pass a handle naming "
+            "what to draw instead."
+        )
+
+    # Only now that the view is going to happen. A scene the load preset never
+    # built has no `auto` to hide, which is not a reason to refuse to draw —
+    # reported either way rather than suppressed, because a step saying nothing
+    # happened is the difference between "taken over" and "there was nothing
+    # there", and a caller cannot see the scene.
     steps = []
     try:
         await hide(_WHOLE_SCENE)
-        steps.append(f'hide("{_WHOLE_SCENE}")')
+        steps.append(_step("hide", name=_WHOLE_SCENE))
     except ViewerError as exc:
-        steps.append(f'hide("{_WHOLE_SCENE}") — skipped: {exc}')
-    summary = await select(selection, name=_SCENE_HANDLE, limit=0)
-    if not summary["atom_count"]:
-        raise ViewerError(
-            f"Nothing matched {selection!r}, so this view would draw nothing "
-            "and report success. Pass a handle naming what to draw instead."
-        )
-    steps.append(f'select("{selection}", name="{_SCENE_HANDLE}")')
+        steps.append(f"{_step('hide', name=_WHOLE_SCENE)} — skipped: {exc}")
+    _register(_SCENE_HANDLE, indices, f"preset over {selection!r}")
+    steps.append(_step("select", selection=selection, name=_SCENE_HANDLE))
     return _SCENE_HANDLE, steps
 
 
@@ -2056,32 +2133,39 @@ async def _frame_the_scene(target: str) -> list[str]:
 async def _preset_publication_cartoon(target: str) -> list[str]:
     """A clean figure: white ground, soft directional light, crevices readable."""
     target = _styleable(target)
-    await background(color="#ffffff", gradient="off")
-    await lighting(rig="three-point")
-    await effects(occlusion=True, outline=False, bloom=False, depth_of_field=False)
-    await shading(style="normal", name=target)
-    await material(finish="matte", name=target)
     return [
-        'background(color="#ffffff")',
-        'lighting(rig="three-point")',
-        "effects(occlusion=True, outline=False, bloom=False)",
-        f'shading(style="normal", name="{target}")',
-        f'material(finish="matte", name="{target}")',
+        await _run(background, color="#ffffff", gradient="off"),
+        await _run(lighting, rig="three-point"),
+        await _set_effects(occlusion=True),
+        await _run(shading, style="normal", name=target),
+        await _run(material, finish="matte", name=target),
     ]
 
 
 async def _preset_illustrative(target: str) -> list[str]:
     """The textbook look: flat banded colour with a drawn edge."""
     target = _styleable(target)
-    await background(color="#ffffff", gradient="off")
-    await lighting(rig="flat")
-    await effects(outline=True, outline_color="#000000", occlusion=False, bloom=False)
-    await shading(style="cel", name=target, cel_steps=4)
     return [
-        'background(color="#ffffff")',
-        'lighting(rig="flat")',
-        'effects(outline=True, outline_color="#000000", occlusion=False)',
-        f'shading(style="cel", cel_steps=4, name="{target}")',
+        await _run(background, color="#ffffff", gradient="off"),
+        await _run(lighting, rig="flat"),
+        await _set_effects(outline=True, outline_color="#000000"),
+        await _run(shading, style="cel", name=target, cel_steps=4),
+    ]
+
+
+async def _preset_cinematic(target: str) -> list[str]:
+    """A lit render: dark ground, raking back light, deep crevices, shallow focus.
+
+    Styling only, like `publication-cartoon` — it lights whatever is on screen
+    rather than choosing it. Pair it with a view that draws.
+    """
+    target = _styleable(target)
+    return [
+        await _run(background, color="#05070c", gradient="off"),
+        await _run(lighting, rig="rim"),
+        await _set_effects(occlusion=True, depth_of_field=True),
+        await _run(shading, style="normal", name=target),
+        await _run(material, finish="glossy", name=target),
     ]
 
 
@@ -2106,13 +2190,10 @@ async def _preset_ghost_surface(target: str) -> list[str]:
 
     ghost = f"{target}_ghost"
     _register(ghost, indices, origin)
-    await show(representation="molecular-surface", handle=ghost, opacity=0.25)
-    await shading(style="xray", name=ghost)
-    await material(finish="glossy", name=ghost)
     return [
-        f'show(representation="molecular-surface", handle="{ghost}", opacity=0.25)',
-        f'shading(style="xray", name="{ghost}")',
-        f'material(finish="glossy", name="{ghost}")',
+        await _run(show, representation="molecular-surface", handle=ghost, opacity=0.25),
+        await _run(shading, style="xray", name=ghost),
+        await _run(material, finish="glossy", name=ghost),
     ]
 
 
@@ -2124,149 +2205,119 @@ async def _preset_active_site(target: str) -> list[str]:
             "interface(), or near()"
         )
     rest = _styleable(_WHOLE_SCENE)
-    await opacity(0.2, name=rest)
-    await show(representation="ball-and-stick", handle=target, color="element-symbol")
-    await label(name=target, level="residue")
-    await focus(name=target)
-    await lighting(rig="studio")
-    await effects(occlusion=True, outline=False)
     return [
-        f'opacity(0.2, name="{rest}")',
-        f'show(representation="ball-and-stick", handle="{target}")',
-        f'label(name="{target}")',
-        f'focus(name="{target}")',
-        'lighting(rig="studio")',
+        await _run(opacity, opacity=0.2, name=rest),
+        await _run(
+            show, representation="ball-and-stick", handle=target, color="element-symbol"
+        ),
+        await _run(label, name=target, level="residue"),
+        await _run(focus, name=target),
+        await _run(lighting, rig="studio"),
+        await _set_effects(occlusion=True),
     ]
 
 
-async def _preset_textbook(target: str) -> list[str]:
-    """The diagram rather than the photograph: helices and sheets, flat, outlined.
+# -- the views that decide what is drawn ---------------------------------------
+#
+# Five recipes with one shape: take the scene, draw one representation through
+# it, style it, frame it. They were five copies of that shape, and the copies
+# are what let their effect sets and their hand-written step strings drift —
+# `cinematic`'s depth of field survived into every view that did not mention it,
+# and three views described a call they had not quite made. One helper and a
+# table of the differences makes both impossible rather than unlikely.
 
-    `illustrative` is the styling half of this and stays separate, because
-    restyling whatever is already drawn is a different request from deciding
-    what to draw. This calls it rather than repeating it, so the two cannot
-    drift apart, and the reply lists both halves.
+
+async def _pointillist_style(_target: str, _handle: str) -> list[str]:
+    """Dark ground and no lighting model, so dots read as dots."""
+    return [
+        await _run(background, color="#05070c", gradient="off"),
+        await _run(lighting, rig="flat"),
+        await _set_effects(),
+    ]
+
+
+async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
+    """Ring lighting, because a surface's curvature is what is being read.
+
+    One hard key light flattens it into a highlight and a shadow.
     """
-    handle, steps = await _take_the_scene(target, "polymer")
-    await show(representation="cartoon", handle=handle, color="secondary-structure")
+    return [
+        await _run(background, color="#ffffff", gradient="off"),
+        await _run(lighting, rig="ring"),
+        await _set_effects(occlusion=True),
+        await _run(material, finish="matte", name=handle),
+    ]
+
+
+@dataclass(frozen=True)
+class _View:
+    """What separates one drawing view from another, and nothing else."""
+
+    selection: str
+    representation: str
+    color: str
+    style: Any
+
+
+_VIEWS: dict[str, _View] = {
+    # `illustrative` is the styling half of textbook and stays a preset in its
+    # own right, because restyling what is already drawn is a different request
+    # from deciding what to draw. Called here rather than repeated.
+    "textbook": _View(
+        selection="polymer",
+        representation="cartoon",
+        color="secondary-structure",
+        style=lambda target, handle: _preset_illustrative(target),
+    ),
+    "bfactor": _View(
+        selection="polymer",
+        representation="cartoon",
+        color="uncertainty",
+        style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    "putty": _View(
+        selection="polymer",
+        representation="putty",
+        color="uncertainty",
+        style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    "hydrophobic-surface": _View(
+        selection="polymer",
+        representation="molecular-surface",
+        color="hydrophobicity",
+        style=_hydrophobic_style,
+    ),
+    # Solvent is left out: waters are most of the atoms in a crystal structure
+    # and none of the shape, so including them draws a haze around the molecule.
+    "pointillist": _View(
+        selection="not solvent",
+        representation="point",
+        color="element-symbol",
+        style=_pointillist_style,
+    ),
+}
+
+
+async def _draw_view(name: str, target: str) -> list[str]:
+    """Take the scene, draw the view through it, style it, then frame it."""
+    view = _VIEWS[name]
+    handle, steps = await _take_the_scene(target, view.selection)
     steps.append(
-        f'show(representation="cartoon", handle="{handle}", color="secondary-structure")'
+        await _run(
+            show, representation=view.representation, handle=handle, color=view.color
+        )
     )
-    steps += await _preset_illustrative(target)
+    steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
 
-async def _preset_cinematic(target: str) -> list[str]:
-    """A lit render: dark ground, raking back light, deep crevices, shallow focus.
-
-    Styling only, like `publication-cartoon` — it lights whatever is on screen
-    rather than choosing it. Pair it with a view that draws.
-    """
-    target = _styleable(target)
-    await background(color="#05070c", gradient="off")
-    await lighting(rig="rim")
-    await effects(occlusion=True, depth_of_field=True, outline=False, bloom=False)
-    await shading(style="normal", name=target)
-    await material(finish="glossy", name=target)
-    return [
-        'background(color="#05070c")',
-        'lighting(rig="rim")',
-        "effects(occlusion=True, depth_of_field=True, outline=False)",
-        f'shading(style="normal", name="{target}")',
-        f'material(finish="glossy", name="{target}")',
-    ]
-
-
-async def _preset_pointillist(target: str) -> list[str]:
-    """Every atom a dot, on black: the shape without a cartoon smoothing it.
-
-    Solvent is left out. Waters are most of the dots in a crystal structure and
-    none of the shape, so including them draws a haze around the molecule.
-    """
-    handle, steps = await _take_the_scene(target, "not solvent")
-    await show(representation="point", handle=handle, color="element-symbol")
-    await background(color="#05070c", gradient="off")
-    await lighting(rig="flat")
-    await effects(occlusion=False, outline=False, bloom=False, depth_of_field=False)
-    return [
-        *steps,
-        f'show(representation="point", handle="{handle}", color="element-symbol")',
-        'background(color="#05070c")',
-        'lighting(rig="flat")',
-        "effects(occlusion=False, outline=False, bloom=False)",
-        *await _frame_the_scene(target),
-    ]
-
-
-async def _preset_bfactor(target: str) -> list[str]:
-    """Rigid core to mobile loop, on the ramp Mol* keeps for B-factor.
-
-    The ramp's domain is fixed at [0, 100] by the theme and protean passes it
-    no parameters, so a well-ordered crystal structure uses only the cold half
-    of it: 1UBQ's B-factors run 2 to 47, which is 0.02 to 0.47 of the ramp. The
-    picture is right and the contrast is smaller than PyMOL's `spectrum b`,
-    which fits the ramp to the data.
-    """
-    handle, steps = await _take_the_scene(target, "polymer")
-    await show(representation="cartoon", handle=handle, color="uncertainty")
-    steps.append(
-        f'show(representation="cartoon", handle="{handle}", color="uncertainty")'
-    )
-    steps += await _preset_publication_cartoon(target)
-    return steps + await _frame_the_scene(target)
-
-
-async def _preset_hydrophobic_surface(target: str) -> list[str]:
-    """Where the molecule is greasy: a solvent-excluded surface on hydrophobicity.
-
-    Ring lighting rather than a key light, because a surface's curvature is the
-    thing being read and one hard highlight flattens it.
-    """
-    handle, steps = await _take_the_scene(target, "polymer")
-    await show(representation="molecular-surface", handle=handle, color="hydrophobicity")
-    await background(color="#ffffff", gradient="off")
-    await lighting(rig="ring")
-    await effects(occlusion=True, outline=False, bloom=False)
-    await material(finish="matte", name=handle)
-    return [
-        *steps,
-        f'show(representation="molecular-surface", handle="{handle}", '
-        'color="hydrophobicity")',
-        'background(color="#ffffff")',
-        'lighting(rig="ring")',
-        "effects(occlusion=True, outline=False)",
-        f'material(finish="matte", name="{handle}")',
-        *await _frame_the_scene(target),
-    ]
-
-
-async def _preset_putty(target: str) -> list[str]:
-    """A tube that swells where the model is least certain, and warms with it.
-
-    Width comes from Mol*'s `uncertainty` size theme, which is `putty`'s own
-    default and needs nothing passed to it — measured against the same
-    coordinates with every B-factor flattened to their mean, where the tube
-    goes uniform. Colour is the same quantity on the same ramp, so width and
-    hue cannot tell different stories.
-    """
-    handle, steps = await _take_the_scene(target, "polymer")
-    await show(representation="putty", handle=handle, color="uncertainty")
-    steps.append(f'show(representation="putty", handle="{handle}", color="uncertainty")')
-    steps += await _preset_publication_cartoon(target)
-    return steps + await _frame_the_scene(target)
-
-
-_PRESETS = {
+_PRESETS: dict[str, Any] = {
     "publication-cartoon": _preset_publication_cartoon,
     "illustrative": _preset_illustrative,
+    "cinematic": _preset_cinematic,
     "ghost-surface": _preset_ghost_surface,
     "active-site": _preset_active_site,
-    "textbook": _preset_textbook,
-    "cinematic": _preset_cinematic,
-    "pointillist": _preset_pointillist,
-    "bfactor": _preset_bfactor,
-    "hydrophobic-surface": _preset_hydrophobic_surface,
-    "putty": _preset_putty,
+    **{name: functools.partial(_draw_view, name) for name in _VIEWS},
 }
 
 
@@ -2317,13 +2368,19 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            the rest of the structure faded back. Needs a handle.
 
     handle: which selection the preset applies to. Omitted means the whole
-      scene — the drawing presets then hide what the viewer loaded, draw their
-      own polymer selection under the handle "auto_view", and reframe the
-      camera on it, all of which the reply lists; unhide("auto") is the way
-      back. **A whole-scene view therefore discards a camera you had moved**, so
-      apply the view first and orient afterwards. Given a handle they leave the
-      camera alone. active-site refuses an omitted handle, since a site has to
-      be named.
+      scene — the drawing presets then hide what the viewer loaded, draw under
+      the handle "auto_view", and reframe the camera on it, all of which the
+      reply lists. What lands in "auto_view" is the view's own selection:
+      `polymer` for every one of them except pointillist, which takes
+      everything that is not solvent. **A whole-scene view therefore discards a
+      camera you had moved**, so apply the view first and orient afterwards.
+      Given a handle they leave the camera alone. active-site refuses an
+      omitted handle, since a site has to be named.
+
+      To put the viewer's own scene back: remove("auto_view") and then
+      unhide("auto"). Both are needed — unhide alone leaves the view drawn on
+      top of the restored scene, which is the pair of coincident
+      representations the shared handle exists to avoid.
     """
     recipe = _PRESETS.get(name)
     if recipe is None:

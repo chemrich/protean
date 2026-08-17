@@ -1077,3 +1077,54 @@ moving — and removing the wait fails that test rather than hanging.
 number measured on one machine, and an absolute number is a claim about a
 renderer rather than about the thing being tested. It is now a ratio against the
 signal it is controlling for, which is what the test was always trying to say.
+
+## Four findings a code review left open, 2026-08-17
+
+Raised against the style presets (PR 93) and deliberately not fixed there: each
+belongs to a tool the presets merely exposed, so fixing it at the preset layer
+would close the door for six recipes and leave it open for every direct caller.
+
+### 28. The handle table and the viewer disagree about what is drawn — open
+
+`_handles` is protean's mirror of the viewer's `components` map, and the viewer
+is the authority. They drift:
+
+- `clear_viewer()` empties the viewer without calling `_discard_session_state`,
+  so every handle survives a cleared scene.
+- `hide(name)` leaves the handle registered, which is correct — the selection
+  still exists — but means the table cannot answer "is this on screen?".
+
+`_styleable()` asks exactly that question, and answers it from the table. After
+`preset("putty")` followed by `unhide("auto")` both components are drawn, and
+the next styling preset restyles only `auto_view` while reporting success over
+the whole scene. The fix is to ask the viewer which components exist rather
+than to infer it; `remove()` dropping its handle (done in PR 93) closed the
+worst case but not the question.
+
+### 29. A representation that cannot draw a handle still reports success — open
+
+`preset("putty", handle="lig")` where `lig` is a ligand: the handle has atoms,
+so the guard passes; `putty` is a polymer-trace representation and draws no
+geometry; `show` returns the *component's* atom count rather than the built
+representation's, so the reply is a full step list and an unchanged screen.
+
+This is the silent success the project exists to catch, and it is `show()`'s,
+not the preset's — `show(representation="putty", handle="lig")` does the same
+thing on its own. The fix is for the viewer to report what the representation
+actually built, which would let every caller notice, and is the same number
+`isApplicable` already knows.
+
+### 30. shading, material and opacity succeed on a hidden component — open
+
+They change state nobody can see and report success. `_styleable()` in the
+presets is a workaround for exactly this, and only for the preset path: a
+caller doing `hide('auto'); shading(style='cel', name='auto')` by hand still
+gets a cheerful reply and no change. `dispatch.ts` already reads
+`isHiddenComponent` for hide/unhide, so the check is available; the question is
+whether these three should refuse or warn.
+
+### 31. `show()` moves the camera on the second draw of a handle, not the first — open
+
+Recorded as item 26 while the presets were being built and still open. Item 27
+fixed the same class of defect for `load_structure`; this one is the remaining
+half, and `_frame_the_scene()` is a preset-level workaround for it.

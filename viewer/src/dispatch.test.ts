@@ -1483,22 +1483,47 @@ describe('settling a visible tab', () => {
     expect(raf.mock.calls.length).toBeGreaterThan(3);
   });
 
-  it('waits for the camera the load preset moved', async () => {
-    // The preset frames the new molecule, and Mol* tweens that like any other
-    // camera move. Settling the *geometry* says nothing about it, so a capture
-    // taken straight after a load could be mid-flight — which is how CI, on a
-    // slower renderer, produced two visibly different frames from two loads of
-    // identical coordinates.
+  it('waits for the camera the load preset moved, after the scene commits', async () => {
+    // The preset frames the new molecule and Mol* tweens that like any other
+    // camera move, so settling the *geometry* says nothing about it: a capture
+    // taken straight after a load could be mid-flight. That is backlog 27, and
+    // CI found it because two loads of identical coordinates drew two visibly
+    // different frames on a slower renderer.
+    //
+    // **The ordering is the whole test.** Mol* resolves a requested camera
+    // reset from `commit()`, and only when `commitScene` reports everything
+    // committed — "Only reset the camera after the full scene has been
+    // commited", canvas3d.js. So the camera cannot start moving while geometry
+    // is still queued, and this fake reproduces exactly that: frames drain the
+    // commit queue first and only then advance the camera. A camera wait placed
+    // *inside* the action — where the first version of this fix put it — runs
+    // while the queue is full, finds a camera that has not moved, counts that
+    // as arrival, and returns. The tween then plays out under the render pump,
+    // which watches only the queue. This test fails against that placement;
+    // the version it replaced passed against it, because its camera advanced on
+    // every frame no matter who was pumping.
     const plugin: any = fakePlugin();
     const camera = { state: { target: [0, 0, 0], radius: 10 } };
+    const queue = { queued: 8, drawn: 0 };
     let moving = 20;
     plugin.canvas3d = {
-      commitQueueSize: { value: 0 },
-      reprCount: { value: 0 },
+      commitQueueSize: {
+        get value() {
+          return queue.queued;
+        },
+      },
+      reprCount: {
+        get value() {
+          return queue.drawn;
+        },
+      },
       camera,
     };
     const raf = vi.fn((cb: FrameRequestCallback) => {
-      if (moving > 0) {
+      if (queue.queued > 0) {
+        queue.queued--;
+        queue.drawn++;
+      } else if (moving > 0) {
         moving--;
         camera.state.radius += 1;
       }
@@ -1512,12 +1537,9 @@ describe('settling a visible tab', () => {
       name: '1ubq', format: 'mmcif', data: 'x',
     });
 
+    expect(queue.queued).toBe(0);
     expect(moving).toBe(0);
-    // The frame count is what makes this falsifiable. With an already-drained
-    // commit queue the render pump alone spends six frames — three to let work
-    // start, three of stillness — so anything past twenty can only have come
-    // from waiting on a camera that was still moving.
-    expect(raf.mock.calls.length).toBeGreaterThan(20);
+    expect(camera.state.radius).toBe(30);
   });
 
   it('still skips the pump for actions that draw nothing', async () => {

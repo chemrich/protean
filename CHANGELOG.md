@@ -48,8 +48,37 @@ nothing is released yet, so everything below is unreleased.
   move, and waiting for the *geometry* to stop changing says nothing about it,
   so a capture taken straight after a load could be mid-flight. Found by CI
   rather than by reasoning: two loads of identical coordinates produced frames
-  0.008 apart on a runner where this machine reads 0.000125, and the difference
-  was the camera still travelling.
+  0.008 apart on a runner where this machine reads 0.000125.
+
+  **The wait has to come after the render pump, not inside the action**, which
+  the first version of this fix got wrong. Mol\* resolves a requested camera
+  reset from `commit()` and only once `commitScene` reports everything
+  committed — "Only reset the camera after the full scene has been commited",
+  `canvas3d.js` — so a wait placed before the geometry settles watches a camera
+  that has not started moving, counts stillness as arrival, and returns just in
+  time for the tween to begin behind it.
+
+- **A preset states every screen-space effect, rather than only the ones it
+  changes.** `effects()` leaves anything omitted exactly as it was, which is
+  right for a tool composing calls and wrong for a recipe declaring a whole
+  look. `cinematic` is the only preset that turns depth of field on, so
+  `textbook`, `illustrative` and `hydrophobic-surface` — none of which mentioned
+  it — rendered blurred after it and reported success.
+
+- **The steps a preset reports are derived from the calls it makes.** They were
+  written out by hand beside each call and had drifted: three omitted an
+  argument that had been sent, so replaying the reported steps produced a
+  different picture than the preset did.
+
+- **A refused view leaves the scene alone.** The refusal path hid the viewer's
+  own scene and rebuilt the shared handle *before* checking the selection had
+  matched anything, so declining to draw left a blank viewer, an empty
+  `auto_view` in the handle table, and an error mentioning neither.
+
+- **`remove()` drops the handle as well as the component.** The handle survived
+  on the Python side while its component was deleted in the viewer, so the two
+  disagreed about what existed and a later call on that name resolved here and
+  then failed there.
 
 ### The viewer
 

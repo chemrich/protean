@@ -987,7 +987,18 @@ async def test_a_second_view_replaces_the_first_rather_than_stacking():
         switched = await _shot(session)
 
     assert difference(direct, surfaced) > STYLED, "the surface never drew"
-    assert difference(direct, switched) == 0.0
+    # Not bit-exact. Between these two frames the scene handle is destroyed and
+    # rebuilt twice, a surface is meshed, and the camera is reset twice — and
+    # the neighbouring test in this file exists because an absolute pixel
+    # threshold measured on one machine is a claim about a renderer rather than
+    # about the thing under test. The claim here is that switching away and back
+    # returns to the view, so it is stated against the size of the detour.
+    returned = difference(direct, switched)
+    assert returned < STYLED, (
+        f"putty reached twice differs by {returned:.6f}: the surface is still "
+        "on screen underneath, or the view is not idempotent"
+    )
+    assert returned * 10 < difference(direct, surfaced)
 
 
 async def test_putty_width_follows_the_bfactor_it_claims():

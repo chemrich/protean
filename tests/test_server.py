@@ -488,6 +488,20 @@ def _tiny_protein_pdb(path: Path) -> Path:
     return path
 
 
+def _water_only_pdb(path: Path) -> Path:
+    """No polymer at all, so a view that needs one has nothing to draw."""
+    atoms = [
+        (1, "O", "HOH", 101, (0.0, 0.0, 0.0), "O"),
+        (2, "O", "HOH", 102, (3.0, 0.0, 0.0), "O"),
+        (3, "O", "HOH", 103, (0.0, 3.0, 0.0), "O"),
+    ]
+    path.write_text(
+        "\n".join(_pdb_line(s, n, r, "A", i, xyz, e) for s, n, r, i, xyz, e in atoms)
+        + "\nEND\n"
+    )
+    return path
+
+
 def _protein_and_water_pdb(path: Path) -> Path:
     """The tiny protein with three waters around it, for the solvent keyword."""
     atoms = [
@@ -1898,11 +1912,50 @@ async def test_a_drawing_preset_reports_every_call_it_made(wired_bridge, tmp_pat
     """The invariant the first preset established, extended to the new ones.
 
     `steps` is what makes a preset adjustable rather than an opaque style, so a
-    call that does not appear there is one nobody can undo.
+    call that does not appear there is one nobody can undo. Paired by tool name
+    in order rather than counted, because a count matches just as happily when a
+    step describes the wrong call as the right one — and because `select` is
+    resolved in Python, registering the handle that show() then builds the
+    component from, so it is a step with no viewer call of its own.
     """
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     out, calls = await _preset_calls(wired_bridge, tmp_path, name)
-    assert len(out["steps"]) == len(calls)
+
+    reported = [step.split("(")[0] for step in out["steps"]]
+    assert [tool for tool in reported if tool != "select"] == [
+        action for action, _ in calls
+    ]
+
+
+@pytest.mark.parametrize("name", _DRAWING_PRESETS)
+async def test_a_reported_step_carries_the_arguments_that_were_sent(
+    wired_bridge, tmp_path, name
+):
+    """A step you cannot replay is not the call it claims to be.
+
+    Three of these were written out by hand beside the call they described, and
+    drifted from it: `effects(...)` dropped a toggle it had just set, so
+    replaying the reported steps produced a different picture than the preset
+    did. Both now come from one dict, and this is what says so.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out, calls = await _preset_calls(wired_bridge, tmp_path, name)
+
+    steps = [step for step in out["steps"] if not step.startswith("select(")]
+    for step, (action, args) in zip(steps, calls, strict=True):
+        assert step.startswith(f"{action}("), f"{step!r} does not describe {action}"
+        for key, value in args.items():
+            # `expression` is molscript the viewer needs and a caller never
+            # writes; `limit` shapes the reply rather than the picture.
+            if key in ("expression", "limit"):
+                continue
+            # show() takes `handle` and sends it as `name`; it is the only
+            # argument whose tool spelling differs from its wire spelling.
+            name = "handle" if (action == "show" and key == "name") else key
+            rendered = (
+                f'{name}="{value}"' if isinstance(value, str) else f"{name}={value}"
+            )
+            assert rendered in step, f"{step!r} omits {rendered}"
 
 
 async def test_a_second_view_replaces_the_first_rather_than_stacking(
@@ -1937,6 +1990,54 @@ async def test_a_view_on_a_handle_redraws_that_handle_and_leaves_the_scene(
     shown = [args for action, args in calls if action == "show"]
     assert shown and shown[0]["name"] == "site"
     assert out["applied_to"] == "site"
+
+
+@pytest.mark.parametrize("name", ["textbook", "illustrative", "hydrophobic-surface"])
+async def test_a_preset_states_every_effect_rather_than_inheriting_one(
+    wired_bridge, tmp_path, name
+):
+    """`cinematic` is the only preset that turns depth of field on.
+
+    effects() leaves anything omitted exactly as it was — right for a tool
+    composing calls, wrong for a recipe declaring a whole look. These three
+    never mentioned depth of field, so after cinematic the flat outlined
+    diagram came out with a shallow-focus blur and reported success. A preset
+    states all six toggles or it does not control its own picture.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "cinematic")
+    _, calls = await _preset_calls(wired_bridge, tmp_path, name)
+
+    applied = [args for action, args in calls if action == "effects"]
+    assert applied, f"{name} set no effects at all"
+    assert applied[0].get("depth_of_field") is False, (
+        f"{name} left depth of field wherever cinematic put it"
+    )
+    assert set(server_mod._PRESET_EFFECTS) <= set(applied[0])
+
+
+async def test_a_refused_view_leaves_the_scene_alone(wired_bridge, tmp_path):
+    """A refusal that blanks the viewer first is worse than the drawing it refused.
+
+    The scene handle was hidden and rebuilt before anything checked the
+    selection had matched, so refusing left an empty viewer, a zero-atom
+    `auto_view` in the handle table, and an error mentioning none of it — and
+    the stale handle then captured every later styling preset.
+    """
+    await _load(wired_bridge, _water_only_pdb(tmp_path / "wet.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+    task = wired_bridge.serve(20)
+    try:
+        with pytest.raises(ViewerError, match="scene is untouched"):
+            await preset("textbook")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert calls == [], "the viewer was touched before the refusal"
+    assert "auto_view" not in server_mod._handles.names()
 
 
 async def test_styling_after_a_view_follows_the_scene_it_drew(wired_bridge, tmp_path):
