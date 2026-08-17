@@ -48,16 +48,30 @@ over primitives that exist. That is the finding that makes this cheap.
 - **Pharmacophore is much cheaper than it looks.** Mol\* ships an `interactions`
   extension that computes `hydrophobic`, `ionic`, `cation-pi`, `pi-stacking` and
   `metal-coordination`, with visuals. Most of a pharmacophore is already there.
-- **`ellipsoid` drew nothing on 1UBQ and reported success.** Probably correct
+- **`ellipsoid` drew nothing on 1UBQ and reported success.** ~~Probably correct
   behaviour — anisotropic displacement parameters are absent from that entry —
-  but it is indistinguishable from the failure this project exists to catch, and
-  nothing said so.
+  but it is indistinguishable from the failure this project exists to catch.~~
+  **Wrong, corrected 2026-08-17.** It draws. This was the broken instrument
+  again, not a defect: anything drawn over the load preset's own representation
+  appears to change nothing.
 
-**One thing is deliberately *not* claimed.** An attempt to verify that colour
-themes reach the pixels failed: a literal `#ff0000` control also measured as
-zero change, so the instrument was broken rather than the colouring. The render
-suite does have passing tests that colour reaches pixels, so this is *unverified
-here*, not *known broken*. §4 exists because of it.
+**One thing was deliberately not claimed, and is now settled.** An attempt to
+verify that colour themes reach the pixels failed: a literal `#ff0000` control
+also measured as zero change, so the instrument was broken rather than the
+colouring.
+
+**Rebuilt and answered, 2026-08-17.** The fault was that the probe drew its test
+representation *on top of* the load preset's `auto` scene, where the two are
+coincident and nothing it did could show. Hide `auto` first and everything
+measures. All five themes the catalogue needs — `uncertainty`, `hydrophobicity`,
+`illustrative`, `partial-charge`, `secondary-structure` — reach the pixels, as
+do `putty`, `point` and `ellipsoid`. Eight differential tests in
+`test_render_differential.py` now pin it.
+
+**The instrument was wrong about three separate things**, each time producing a
+confident answer: that colour themes were unverifiable, that `ellipsoid` was a
+silent no-op, and — implicitly — that the primitives needed checking one by one
+rather than the harness needing fixing once. Worth more than the result.
 
 ## 2. The decision: presets or tools
 
@@ -163,8 +177,8 @@ only a handle, and its effect is obvious in a screenshot.
 
 | # | Criterion | How it is checked |
 |---|---|---|
-| 1 | Every theme and representation the later phases need reaches the pixels | One differential test per name, against a rebuilt instrument — the one used while planning could not measure a hex colour |
-| 2 | `ellipsoid` either draws or refuses | It currently reports success and draws nothing |
+| 1 | ~~Every theme and representation the later phases need reaches the pixels~~ | **Done 2026-08-17** — eight differential tests, instrument rebuilt |
+| 2 | ~~`ellipsoid` either draws or refuses~~ | **Void** — it draws; the planning probe was wrong |
 | 3 | A page-initiated `protean_invoke` runs the same code path as `preset()` | Assert on the calls the server issues, not on the picture alone |
 | 4 | The scene arrives back over the ordinary action channel | Differential test: click, then compare pixels |
 | 5 | The allowlist admits no tool taking a path | Enumerate from the tool registry, not from a list in a file |

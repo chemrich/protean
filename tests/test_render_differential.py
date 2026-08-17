@@ -1344,3 +1344,83 @@ async def test_a_timeline_needs_two_keyframes():
         await server_mod.keyframe("only")
         with pytest.raises(ViewerError, match="at least two keyframes"):
             await server_mod.record_timeline("/tmp/nowhere", frames=4)
+
+
+# -- the vocabulary the view catalogue is built on ------------------------------
+#
+# docs/views.md acceptance criteria 1 and 2. The catalogue of views borrowed from
+# MCPymol is almost entirely recipes over primitives Mol* already has, so the
+# thing worth pinning is not the recipes but that each primitive *reaches the
+# pixels*. A theme that silently fails to apply would leave every view built on
+# it reporting success and drawing the previous picture.
+#
+# The instrument used while planning could not measure this: it coloured a
+# handle drawn on top of the load preset's own representation, so the visible
+# pixels came from `auto` and even a literal #ff0000 measured as no change. The
+# fix is the first line of each test — hide what the preset drew, then draw the
+# thing being measured. Worth stating because the broken version looked correct
+# and produced a confident, wrong answer.
+
+# Every theme the view catalogue needs, and what each is for there.
+_VIEW_THEMES = [
+    "uncertainty",  # B-factor: the bfactor and putty views
+    "hydrophobicity",  # the hydrophobic-surface view
+    "illustrative",  # the textbook and cinematic views
+    "partial-charge",  # the charge-colouring view (a proxy, not a solve)
+    "secondary-structure",  # a staple of every cartoon figure
+]
+
+
+@contextlib.asynccontextmanager
+async def _bare_fold(session):
+    """The polymer alone, in flat white, with the load preset's scene hidden.
+
+    A theme has to be applied to something visible to be measurable, and the
+    preset's `auto` representation is coincident with anything drawn over it.
+    """
+    async with _as_server(session, load=True):
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="cartoon", handle="fold", color="#ffffff")
+        yield
+
+
+@pytest.mark.parametrize("theme", _VIEW_THEMES)
+async def test_a_colour_theme_the_views_need_reaches_the_pixels(theme):
+    async with viewer_session(FIXTURE) as session, _bare_fold(session):
+        white = await _shot(session)
+        assert coverage(white) > 0.02, "nothing was drawn to colour"
+
+        await server_mod.color(theme, name="fold")
+        painted = await _shot(session)
+
+        assert difference(white, painted) > STYLED, f"{theme} changed nothing"
+
+
+@pytest.mark.parametrize("representation", ["putty", "point"])
+async def test_a_representation_the_views_need_draws_something(representation):
+    """`putty` carries the putty view, `point` the pointillist one."""
+    async with viewer_session(FIXTURE) as session, _bare_fold(session):
+        as_cartoon = await _shot(session)
+
+        await server_mod.show(representation=representation, handle="fold")
+        drawn = await _shot(session)
+
+        assert coverage(drawn) > 0.01, f"{representation} drew nothing at all"
+        assert difference(as_cartoon, drawn) > STYLED
+
+
+async def test_ellipsoid_draws_after_all():
+    """Recorded as a silent no-op by the planning probe. It was not.
+
+    docs/views.md said ellipsoid drew nothing on 1UBQ while reporting success,
+    which would have been the silent failure this suite exists to catch. It was
+    the third thing the broken instrument got wrong: drawn over the load
+    preset's own representation, nothing appears to change whatever is drawn.
+    Against a hidden scene it draws like anything else.
+    """
+    async with viewer_session(FIXTURE) as session, _bare_fold(session):
+        before = await _shot(session)
+        await server_mod.show(representation="ellipsoid", handle="fold")
+        after = await _shot(session)
+        assert difference(before, after) > STYLED
