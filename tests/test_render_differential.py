@@ -965,6 +965,31 @@ async def test_every_view_looks_different_from_every_other(views):
             )
 
 
+async def test_a_second_view_replaces_the_first_rather_than_stacking():
+    """Switching views has to end at the view, not at both views at once.
+
+    Every view draws through one shared handle, so Mol* rebuilds that component
+    instead of adding another. Checked in pixels rather than in the call log:
+    the same view reached by two routes has to land on the same frame, and it
+    would not if the surface were still on screen underneath the tube.
+
+    `putty` is the view taken twice because it sets every property it depends
+    on — ground, lighting, effects, shading, material, representation, colour —
+    so arriving at it a second time cannot inherit anything from the detour.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("putty")
+        direct = await _shot(session)
+
+        await server_mod.preset("hydrophobic-surface")
+        surfaced = await _shot(session)
+        await server_mod.preset("putty")
+        switched = await _shot(session)
+
+    assert difference(direct, surfaced) > STYLED, "the surface never drew"
+    assert difference(direct, switched) == 0.0
+
+
 async def test_putty_width_follows_the_bfactor_it_claims():
     """The plan's one open question about these six, answered from pixels.
 

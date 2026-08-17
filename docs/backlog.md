@@ -1003,3 +1003,44 @@ Three changes, and the order matters:
    work did fail on disconnect, which reads as obviously right and destroys a
    reply that is still coming — it turned a recoverable drop into a certain
    failure.
+
+## One finding from building the style presets, 2026-08-17
+
+### 26. `show()` on a handle moves the camera the second time, not the first — open
+
+Found while making a view idempotent, and it belongs to `show()` rather than to
+the presets: reproduced with plain `hide()`/`select()`/`show()` calls and no
+preset anywhere.
+
+Drawing the same handle three times in a row, screenshotting after each, gives:
+
+```
+show #1 vs #2   0.143831
+show #2 vs #3   0.000000
+```
+
+The first draw keeps the framing the load preset chose. The second refits the
+camera to what is actually on screen and then holds. Frames are otherwise
+perfectly stable — three captures of an unchanged scene differ by exactly 0.0 —
+so this is not a settling artefact caught mid-animation; the camera genuinely
+lands somewhere else and stays.
+
+Two consequences, both silent:
+
+- **A figure captured after the first draw is framed for a scene that is no
+  longer there.** Hide the load preset's representation, draw your own, capture:
+  the camera is still fitted to what you hid.
+- **Applying the same view twice gives two pictures**, which makes anything
+  built on repeated `show()` — a view switcher, most obviously — non-idempotent.
+
+`reset_view()` and `focus()` both pin it: with either called after the draw, all
+three frames are identical. The style presets take the `reset_view()` route for
+whole-scene views (docs/views.md §5.1), which fixes it *there* and leaves
+`show()` itself as it is.
+
+**What is not known** is which end is wrong. Mol\* auto-fitting the camera on a
+component rebuild may be the intended behaviour, in which case the defect is
+only that it does not happen on the first draw; or the auto-fit may be something
+protean should be suppressing so a caller's camera is never taken from them.
+Deciding needs a reading of when Mol\* requests a camera reset, which was out of
+scope for the presets and is the whole of this item.

@@ -236,7 +236,18 @@ size theme is uniform, differs by **0.000125**. Nothing else about the two files
 differs, so the width is the B-factor. **§5.1 and cryo-EM §4 are
 independent.**
 
-**One limit worth stating rather than discovering later:**
+**What the work turned up that the plan did not predict**, and it is not about
+presets at all: **drawing the same handle twice through `show()` lands on two
+different cameras.** The first draw keeps the framing the load preset chose; the
+second refits to what is actually on screen and then holds — 0.1438 of the frame
+between them on 1UBQ, reproduced with plain `show()`/`hide()` calls and no preset
+involved. So the first figure anyone captured after taking the scene over was
+framed for a scene that was no longer there, and applying a view twice gave two
+pictures. The presets now ask for the frame outright with `reset_view()`, listed
+in the steps, which makes a view idempotent — the property §5.2's switcher needs.
+The underlying `show()` behaviour is backlog 26.
+
+**Two limits worth stating rather than discovering later:**
 
 - **`bfactor` uses only the cold half of its ramp on an ordinary crystal
   structure.** Mol\*'s `uncertainty` colour theme has a fixed `[0, 100]` domain
@@ -245,6 +256,9 @@ independent.**
   than PyMOL's `spectrum b`, which fits the ramp to the data. The fix is a
   domain on `color()`, not a change to the preset; `color_by_rmsf` works around
   the same limit today by rescaling values before it sends them.
+- **A whole-scene view discards a camera the caller had moved.** Stated in the
+  tool description, because the alternative — leaving it — is the
+  non-deterministic behaviour above.
 
 **`textbook` calls `illustrative` rather than repeating it.** The two would
 otherwise be near-duplicates: `illustrative` is the styling, `textbook` is the
@@ -395,6 +409,14 @@ The candidates here, stated in advance so they can be checked off or laughed at:
 - **That "recipe work" is as cheap as it sounds.** The four existing presets are
   small, but each needed a differential test proving the picture changed, and
   the threshold for "changed" was argued over.
+
+  **Half right, checked 2026-08-17 against §5.1.** The recipes themselves were
+  as cheap as promised — six presets, no new rendering, the existing threshold
+  reused unchanged. What was not free was everything around them: taking the
+  scene over from the load preset without leaving two coincident
+  representations, making a second view replace the first rather than stack,
+  and the camera behaviour in backlog 26, which nothing in the plan anticipated
+  and which is most of what the work turned out to be about.
 - **That the interactions extension is a pharmacophore.** It computes contacts.
   A pharmacophore is a claim about what a site *wants*, which is not the same
   thing, and the gap may be most of the work.

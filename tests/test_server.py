@@ -1746,6 +1746,7 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "focus",
         "select",
         "hide",
+        "reset_view",
     ):
 
         def handle(args, action=action):
@@ -1960,8 +1961,10 @@ async def test_textbook_composes_illustrative_rather_than_repeating_it(
     _, styled = await _preset_calls(wired_bridge, tmp_path, "illustrative")
     _, drawn = await _preset_calls(wired_bridge, tmp_path, "textbook")
 
-    tail = [action for action, _ in drawn][-len(styled) :]
-    assert tail == [action for action, _ in styled]
+    want = [action for action, _ in styled]
+    got = [action for action, _ in drawn]
+    starts = got.index(want[0])
+    assert got[starts : starts + len(want)] == want
 
 
 async def test_a_view_refuses_an_empty_handle_rather_than_drawing_nothing(

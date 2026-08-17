@@ -2031,6 +2031,28 @@ async def _take_the_scene(target: str, selection: str) -> tuple[str, list[str]]:
     return _SCENE_HANDLE, steps
 
 
+async def _frame_the_scene(target: str) -> list[str]:
+    """Point the camera at what the view just drew, and do it explicitly.
+
+    Measured: drawing the same handle twice through show() lands on two
+    different cameras. The first draw keeps the framing the load preset chose;
+    the second refits to what is actually on screen and then holds — 0.144 of
+    the frame between them on 1UBQ, with no preset involved, so this is show()'s
+    behaviour and not the presets'. Left alone, applying a view twice gives two
+    pictures, and the first figure anyone captures is framed for a scene that is
+    no longer there.
+
+    Asking for the frame outright makes a view idempotent, which is what a
+    switcher needs. The cost is that a whole-scene view discards a camera the
+    caller had moved, so it is listed in the steps rather than done quietly, and
+    a view given a handle does not touch the camera at all.
+    """
+    if target != _WHOLE_SCENE:
+        return []
+    await reset_view()
+    return ["reset_view()"]
+
+
 async def _preset_publication_cartoon(target: str) -> list[str]:
     """A clean figure: white ground, soft directional light, crevices readable."""
     target = _styleable(target)
@@ -2130,7 +2152,8 @@ async def _preset_textbook(target: str) -> list[str]:
     steps.append(
         f'show(representation="cartoon", handle="{handle}", color="secondary-structure")'
     )
-    return steps + await _preset_illustrative(target)
+    steps += await _preset_illustrative(target)
+    return steps + await _frame_the_scene(target)
 
 
 async def _preset_cinematic(target: str) -> list[str]:
@@ -2171,6 +2194,7 @@ async def _preset_pointillist(target: str) -> list[str]:
         'background(color="#05070c")',
         'lighting(rig="flat")',
         "effects(occlusion=False, outline=False, bloom=False)",
+        *await _frame_the_scene(target),
     ]
 
 
@@ -2188,7 +2212,8 @@ async def _preset_bfactor(target: str) -> list[str]:
     steps.append(
         f'show(representation="cartoon", handle="{handle}", color="uncertainty")'
     )
-    return steps + await _preset_publication_cartoon(target)
+    steps += await _preset_publication_cartoon(target)
+    return steps + await _frame_the_scene(target)
 
 
 async def _preset_hydrophobic_surface(target: str) -> list[str]:
@@ -2211,6 +2236,7 @@ async def _preset_hydrophobic_surface(target: str) -> list[str]:
         'lighting(rig="ring")',
         "effects(occlusion=True, outline=False)",
         f'material(finish="matte", name="{handle}")',
+        *await _frame_the_scene(target),
     ]
 
 
@@ -2226,7 +2252,8 @@ async def _preset_putty(target: str) -> list[str]:
     handle, steps = await _take_the_scene(target, "polymer")
     await show(representation="putty", handle=handle, color="uncertainty")
     steps.append(f'show(representation="putty", handle="{handle}", color="uncertainty")')
-    return steps + await _preset_publication_cartoon(target)
+    steps += await _preset_publication_cartoon(target)
+    return steps + await _frame_the_scene(target)
 
 
 _PRESETS = {
@@ -2290,10 +2317,13 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            the rest of the structure faded back. Needs a handle.
 
     handle: which selection the preset applies to. Omitted means the whole
-      scene — the drawing presets then hide what the viewer loaded and draw
-      their own polymer selection under the handle "auto_view", which the reply
-      names; unhide("auto") is the way back. active-site refuses an omitted
-      handle, since a site has to be named.
+      scene — the drawing presets then hide what the viewer loaded, draw their
+      own polymer selection under the handle "auto_view", and reframe the
+      camera on it, all of which the reply lists; unhide("auto") is the way
+      back. **A whole-scene view therefore discards a camera you had moved**, so
+      apply the view first and orient afterwards. Given a handle they leave the
+      camera alone. active-site refuses an omitted handle, since a site has to
+      be named.
     """
     recipe = _PRESETS.get(name)
     if recipe is None:

@@ -29,6 +29,15 @@ nothing is released yet, so everything below is unreleased.
   B-factors and once with every B-factor flattened to their mean: the putty
   frames differ by 0.020 of the frame, the cartoon control by 0.000125.
 
+- **A whole-scene preset reframes the camera, deliberately and in the reply.**
+  Drawing the same handle twice through `show()` lands on two different
+  cameras — the first draw keeps the framing the load preset chose, the second
+  refits to what is on screen and then holds, 0.144 of the frame apart on 1UBQ
+  with no preset involved. So a view applied once was framed for a scene that
+  was no longer there, and applying it twice gave two pictures. The presets now
+  ask for the frame outright, which costs a camera the caller had moved and
+  says so; given a handle they leave the camera alone.
+
 - **A view refuses rather than drawing an empty scene.** A handle with no atoms,
   or a whole-scene view of a structure with no polymer, previously drew nothing
   and reported success.
