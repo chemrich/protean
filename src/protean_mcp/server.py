@@ -525,6 +525,17 @@ async def fetch_structure(
     )
     if loaded is not None:
         note += _assembly_note(loaded, result)
+    if isinstance(result, dict) and result.get("camera_settled") is False:
+        # The viewer frames a new molecule with a tweened camera move and waits
+        # for it to land. When that wait runs out of budget the camera is still
+        # travelling, and a capture taken now is framed for somewhere it was
+        # passing through. Said out loud because the alternative is a figure
+        # that looks like a measurement and is not.
+        note += (
+            " [the camera was still moving when the viewer stopped waiting, so a "
+            "capture taken immediately may be framed mid-move — reset_view() "
+            "settles it]"
+        )
     note += discarded
     return f"Loaded {label} ({structure.format}, from {origin}): {result}{note}"
 

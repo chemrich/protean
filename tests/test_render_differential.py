@@ -1057,8 +1057,20 @@ async def test_putty_width_follows_the_bfactor_it_claims():
     )
     measured = difference(frames[("putty", "deposited")], frames[("putty", "flattened")])
 
+    # What the frames looked like, carried into any failure message. A bare
+    # pair of ratios says the test failed and nothing about why: this one has
+    # failed once in a full-suite run with *both* numbers an order of magnitude
+    # up, which is the signature of a differently framed scene rather than a
+    # differently drawn one — and re-running to find that out cost twenty
+    # minutes and did not reproduce.
+    shape = ", ".join(
+        f"{kind}/{variant} {frame.width}x{frame.height} coverage {coverage(frame):.4f}"
+        for (kind, variant), frame in sorted(frames.items())
+    )
+
     assert measured > STYLED, (
-        f"putty drew the same tube for two different B-factor sets: {measured:.6f}"
+        f"putty drew the same tube for two different B-factor sets: "
+        f"{measured:.6f} — {shape}"
     )
     # Measured 162x apart on the development machine (0.020219 against
     # 0.000125). Five is the floor: a renderer with more edge noise than this
@@ -1066,7 +1078,7 @@ async def test_putty_width_follows_the_bfactor_it_claims():
     # that close the instrument has become the subject rather than putty.
     assert control * 5 < measured, (
         f"control {control:.6f} against measured {measured:.6f}: too close to "
-        "separate, so this is measuring the reload rather than B-factor"
+        f"separate, so this is measuring the reload rather than B-factor — {shape}"
     )
 
 

@@ -428,9 +428,19 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
  * camera, or a mid-tween one; either way the reported target is wrong while
  * the camera itself ends up in the right place.
  */
-async function settleCamera(plugin: any, budgetMs: number): Promise<void> {
+/** Returns whether the camera actually came to rest inside its budget.
+ *
+ * **The budget expiring is a real outcome and used to be an invisible one.**
+ * The loop simply ran out and returned, so a camera still travelling was
+ * indistinguishable from one that had arrived, and the only symptom was a
+ * figure framed for a scene that no longer existed — which is exactly the
+ * silent success this project exists to catch. Whether it settled now travels
+ * with the reply, so a mis-framed capture can say so instead of looking like a
+ * measurement.
+ */
+async function settleCamera(plugin: any, budgetMs: number): Promise<boolean> {
   const camera = plugin.canvas3d?.camera;
-  if (!camera) return;
+  if (!camera) return true;
   const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
   const sample = () => {
     const state = camera.state;
@@ -451,6 +461,7 @@ async function settleCamera(plugin: any, budgetMs: number): Promise<void> {
     quiet = moving ? 0 : quiet + 1;
     previous = current;
   }
+  return quiet >= 3;
 }
 
 async function withRenderPump<T>(
@@ -2163,8 +2174,15 @@ export function createDispatcher(plugin: any): Handler {
     // geometry is still queued, and a wait placed before the render pump
     // watches a camera that is still, decides it has arrived, and returns just
     // in time for the tween to start behind it.
-    if (spec.camera) await settleCamera(plugin, CAMERA_TIMEOUT_MS);
-    return result;
+    if (!spec.camera) return result;
+    const settled = await settleCamera(plugin, CAMERA_TIMEOUT_MS);
+    // Reported rather than thrown. A camera that ran out of budget has still
+    // very likely arrived somewhere sensible, and refusing the whole load over
+    // it would turn a framing wobble into a failure to display a molecule. The
+    // caller gets to decide, and a capture taken straight afterwards can say
+    // why it looks different rather than presenting itself as a measurement.
+    if (settled || typeof result !== 'object' || result === null) return result;
+    return { ...(result as Record<string, unknown>), camera_settled: false };
   };
 }
 
