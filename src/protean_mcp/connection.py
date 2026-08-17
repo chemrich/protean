@@ -16,6 +16,7 @@ import logging
 import os
 import secrets
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -75,6 +76,20 @@ class ViewerBridge:
         #: a URL and the viewer downloads it. The two paths differ because of
         #: size, not because of format.
         self._volumes: dict[str, Path | bytes] = {}
+        #: What a `protean_invoke` from the page runs, registered by the server.
+        #:
+        #: The page cannot reach a tool; it names a view and this decides what
+        #: that means. Held as a callback rather than imported because the
+        #: server imports *this* module, and because it keeps the rule visible:
+        #: everything a click can do is whatever was handed in here.
+        self._invoke: Callable[[str], Awaitable[str]] | None = None
+        #: Invocations still running, kept so they are not garbage collected
+        #: mid-flight. asyncio holds only weak references to tasks.
+        self._invocations: set[asyncio.Task[None]] = set()
+
+    def on_invoke(self, handler: Callable[[str], Awaitable[str]]) -> None:
+        """Say what a view request from the page should run."""
+        self._invoke = handler
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -212,6 +227,35 @@ class ViewerBridge:
         if not reply.get("ok"):
             raise ViewerError(reply.get("error", f"Viewer error on '{action}'"))
         return reply.get("result")
+
+    async def _run_invoke(self, ws: web.WebSocketResponse, data: dict[str, Any]) -> None:
+        """Run a view the page asked for, and tell it what happened.
+
+        The page gets the refusal text verbatim, so a click on a structure that
+        cannot take the view fails the way the tool does rather than in a
+        dialect of its own. It is a reply and not a log line because a control
+        that cannot report failure is a control that reports success.
+        """
+        rid = data.get("id")
+        view = data.get("view")
+        try:
+            if self._invoke is None:
+                raise ViewerError("This viewer accepts no view requests from the page")
+            if not isinstance(view, str):
+                raise ViewerError("A view request has to name a view")
+            applied = await self._invoke(view)
+            reply = {"action": "protean_invoked", "id": rid, "ok": True, "view": applied}
+        except Exception as exc:  # the page is told either way
+            logger.info("Refused a view request from the page: %s", exc)
+            reply = {
+                "action": "protean_invoked",
+                "id": rid,
+                "ok": False,
+                "error": str(exc),
+            }
+        with contextlib.suppress(ConnectionResetError, RuntimeError):
+            if not ws.closed:
+                await ws.send_json(reply)
 
     def _fail_pending(self, reason: str, keep: set[str] | None = None) -> None:
         """Fail in-flight requests whose reply can no longer arrive.
@@ -403,6 +447,20 @@ class ViewerBridge:
             if data.get("action") == "protean_ping":
                 await self._register_viewer(ws, data)
                 registered = True
+                continue
+
+            if data.get("action") == "protean_invoke":
+                # Deliberately a task, and this is the whole subtlety of the
+                # page-initiated path. The handler drives the viewer, so it
+                # calls `request()` and waits for a reply — which arrives as a
+                # message *this loop* has to read. Awaiting it here would mean
+                # the loop is inside the handler while the handler waits on the
+                # loop, and the click would hang until its own timeout and then
+                # blame the viewer. The reply to the page goes back from the
+                # task, once there is something to say.
+                task = asyncio.create_task(self._run_invoke(ws, data))
+                self._invocations.add(task)
+                task.add_done_callback(self._invocations.discard)
                 continue
 
             if data.get("action") == "protean_visibility":
