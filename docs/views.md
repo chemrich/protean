@@ -263,6 +263,80 @@ side (`record_trajectory`, `movie`). **Playback is the piece worth borrowing
 rather than rebuilding**, and rebuilding it would be the clearest possible case
 of reimplementing the thing protean is built on.
 
+### 5.7 Electrostatics — mostly shipped, and one dependency worth removing
+
+MCPymol has two electrostatics views. They are not the same kind of thing, and
+the difference is the whole point.
+
+**`poisson_boltzmann_view` is already shipped, and with better manners.**
+`electrostatics(method="apbs")` followed by `color_by_potential()` does what it
+does. protean adds what MCPymol's version does not report: *which solver
+actually ran*. `method="auto"` uses APBS when a runnable binary is present and a
+screened Coulomb field otherwise, and the reply always says which — on the
+grounds that a potential whose provenance is unstated is worth nothing. The
+fallback is calibrated rather than asserted: against APBS on ubiquitin it tracks
+surface potential at r = 0.96 with 94% sign agreement, running about 1.6x low in
+magnitude.
+
+**`electrostatic_view` is not a solve at all**, and that is easy to miss. It
+assigns charges to terminal charged atoms — or to whole charged residues — and
+colours from those. It is a fast qualitative proxy: *roughly where are the
+charges*, with no solver and no wait. Mol\*'s `partial-charge` and
+`formal-charge` themes give protean the same thing for nothing.
+
+**So it is worth having, and the naming is the trap.** Shipping something called
+an electrostatics view next to a tool that runs Poisson-Boltzmann would create
+exactly the confusion the provenance rule exists to prevent. **It gets named for
+what it is — charge colouring, not potential** — and its description says it is
+a proxy, in the same sentence a reader meets it.
+
+#### The wart to fix on the way past
+
+`color_by_potential()` takes a **file path** to an OpenDX grid, defaulting to
+whatever `electrostatics()` last wrote. `load_volume()` produces **handles**.
+The two do not meet: a potential map loaded from anywhere else cannot reach a
+colouring call at all.
+
+That is already open as cryo-EM §1.3 (`color_surface_by_volume`). Doing it here
+collapses two colouring paths into one and makes electrostatics consistent with
+every other volume.
+
+#### The solver, and the seam that is already there
+
+**Decision, 2026-08-17: keep APBS for now, and keep the ability to switch.**
+
+The switch is worth designing for because APBS is the reason
+`method="auto"` needs a fallback at all — it is an external binary, absent on
+most machines, and it is why the Coulombic path had to be calibrated in the
+first place. **sashimi** — a sibling electrostatics project, not public at the
+time of writing, so deliberately unlinked — is gaining a **pure-Python
+solver**, which would make a real Poisson-Boltzmann answer available with no
+binary to install. For a tool people add with one line, that is the difference
+between a feature most users get and one most users fall back from.
+
+**The seam already exists and needs nothing built.** `method` is an enum whose
+contract is "say which one ran", so a third value slots in beside `apbs` and
+`coulombic` without changing any caller. That is the whole reason this can be
+deferred safely.
+
+**Two ways to consume it, and they are not equally cheap.** Worth deciding
+before, not during:
+
+- **As a library** — protean imports it and calls it in-process. Cheap, testable
+  the way everything else here is testable, and it keeps protean self-contained.
+  This is the attractive one, and it is what a pure-Python solver makes possible.
+- **As an MCP server** — protean becomes an MCP *client* of sashimi. That is a
+  new process to run, a new failure surface, and a dependency a user has to
+  install and configure separately. It buys nothing the library route does not,
+  unless sashimi's solver stays unavailable as a package.
+
+**What has to be true before switching**, none of it checked yet: the solver
+agrees with APBS to within something stated (the same calibration the Coulombic
+path got, not a weaker one); it emits or can be made to emit OpenDX, or
+`color_by_potential` has been moved to handles by then; and its runtime on a
+protein of ordinary size is not so much worse that `auto` would rather have the
+binary.
+
 ---
 
 ## 6. What this plan will get wrong
