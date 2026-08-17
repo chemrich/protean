@@ -846,9 +846,19 @@ export function createDispatcher(plugin: any): Handler {
     return { name, hidden, components: found.length, changed };
   }
 
-  const actions: Record<string, { render?: boolean; run: (args: any) => Promise<unknown> }> = {
+  const actions: Record<
+    string,
+    { render?: boolean; camera?: boolean; run: (args: any) => Promise<unknown> }
+  > = {
     load_structure: {
       render: true,
+      // The preset frames the new molecule, and Mol* tweens that over ~250 ms
+      // like any other camera move. `render: true` waits for the geometry to
+      // stop changing, which says nothing about the camera, so without this a
+      // capture taken straight after a load could be mid-flight. focus, orient
+      // and reset_view have always waited; this one never did, and the symptom
+      // is a figure framed slightly wrong rather than an error.
+      camera: true,
       async run({ name, format, data, assembly }: LoadStructureArgs) {
         components.clear();
         forgetVolumes();
@@ -2145,7 +2155,16 @@ export function createDispatcher(plugin: any): Handler {
     const spec = actions[action];
     if (!spec) throw new Error(`Unknown action: ${action}`);
     if (!spec.render) return spec.run(args);
-    return withRenderPump(plugin, action, () => spec.run(args));
+    const result = await withRenderPump(plugin, action, () => spec.run(args));
+    // After the pump, never inside the action. Mol* resolves a requested
+    // camera reset from `commit()`, and only when `commitScene` reports
+    // everything committed — "Only reset the camera after the full scene has
+    // been commited", canvas3d.js. So the camera has not begun to move while
+    // geometry is still queued, and a wait placed before the render pump
+    // watches a camera that is still, decides it has arrived, and returns just
+    // in time for the tween to start behind it.
+    if (spec.camera) await settleCamera(plugin, CAMERA_TIMEOUT_MS);
+    return result;
   };
 }
 

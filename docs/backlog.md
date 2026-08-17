@@ -1003,3 +1003,128 @@ Three changes, and the order matters:
    work did fail on disconnect, which reads as obviously right and destroys a
    reply that is still coming — it turned a recoverable drop into a certain
    failure.
+
+## One finding from building the style presets, 2026-08-17
+
+### 26. `show()` on a handle moves the camera the second time, not the first — open
+
+Found while making a view idempotent, and it belongs to `show()` rather than to
+the presets: reproduced with plain `hide()`/`select()`/`show()` calls and no
+preset anywhere.
+
+Drawing the same handle three times in a row, screenshotting after each, gives:
+
+```
+show #1 vs #2   0.143831
+show #2 vs #3   0.000000
+```
+
+The first draw keeps the framing the load preset chose. The second refits the
+camera to what is actually on screen and then holds. Frames are otherwise
+perfectly stable — three captures of an unchanged scene differ by exactly 0.0 —
+so this is not a settling artefact caught mid-animation; the camera genuinely
+lands somewhere else and stays.
+
+Two consequences, both silent:
+
+- **A figure captured after the first draw is framed for a scene that is no
+  longer there.** Hide the load preset's representation, draw your own, capture:
+  the camera is still fitted to what you hid.
+- **Applying the same view twice gives two pictures**, which makes anything
+  built on repeated `show()` — a view switcher, most obviously — non-idempotent.
+
+`reset_view()` and `focus()` both pin it: with either called after the draw, all
+three frames are identical. The style presets take the `reset_view()` route for
+whole-scene views (docs/views.md §5.1), which fixes it *there* and leaves
+`show()` itself as it is.
+
+**What is not known** is which end is wrong. Mol\* auto-fitting the camera on a
+component rebuild may be the intended behaviour, in which case the defect is
+only that it does not happen on the first draw; or the auto-fit may be something
+protean should be suppressing so a caller's camera is never taken from them.
+Deciding needs a reading of when Mol\* requests a camera reset, which was out of
+scope for the presets and is the whole of this item.
+
+### 27. `load_structure` never waited for the camera it moved — fixed
+
+Found by CI disagreeing with this machine, which is the only way it could have
+been found: the gap is invisible on a fast renderer.
+
+A differential test loaded the same coordinates twice and compared cartoon
+frames as its control — the two must be identical, because nothing that cartoon
+draws depends on what changed between them. Locally the control read
+**0.000125**. On CI it read **0.007983** and failed the test.
+
+The cause is one missing wait. `applyPreset` frames the newly loaded molecule,
+and Mol\* tweens that move over ~250 ms exactly like any other camera move.
+`load_structure` is marked `render: true`, which settles the *geometry* — it
+waits for the commit queue to drain — and that says nothing at all about the
+camera. `focus`, `orient` and `reset_view` have called `settleCamera` since they
+were written; this one never did.
+
+So **a capture taken straight after `fetch_structure()` could be framed
+mid-tween**, and the slower the renderer the wider the window. The symptom is a
+figure framed slightly wrong, which is exactly the class of defect that survives
+a green test suite: nothing errors, the picture looks plausible, and only two
+captures of the same thing side by side show it.
+
+`load_structure` now settles the camera too. The unit test asserts it by frame
+count — with a drained commit queue the render pump alone spends six frames, so
+anything past twenty can only have come from waiting on a camera that was still
+moving — and removing the wait fails that test rather than hanging.
+
+**The threshold was the second lesson.** The control's ceiling was an absolute
+number measured on one machine, and an absolute number is a claim about a
+renderer rather than about the thing being tested. It is now a ratio against the
+signal it is controlling for, which is what the test was always trying to say.
+
+## Four findings a code review left open, 2026-08-17
+
+Raised against the style presets (PR 93) and deliberately not fixed there: each
+belongs to a tool the presets merely exposed, so fixing it at the preset layer
+would close the door for six recipes and leave it open for every direct caller.
+
+### 28. The handle table and the viewer disagree about what is drawn — open
+
+`_handles` is protean's mirror of the viewer's `components` map, and the viewer
+is the authority. They drift:
+
+- `clear_viewer()` empties the viewer without calling `_discard_session_state`,
+  so every handle survives a cleared scene.
+- `hide(name)` leaves the handle registered, which is correct — the selection
+  still exists — but means the table cannot answer "is this on screen?".
+
+`_styleable()` asks exactly that question, and answers it from the table. After
+`preset("putty")` followed by `unhide("auto")` both components are drawn, and
+the next styling preset restyles only `auto_view` while reporting success over
+the whole scene. The fix is to ask the viewer which components exist rather
+than to infer it; `remove()` dropping its handle (done in PR 93) closed the
+worst case but not the question.
+
+### 29. A representation that cannot draw a handle still reports success — open
+
+`preset("putty", handle="lig")` where `lig` is a ligand: the handle has atoms,
+so the guard passes; `putty` is a polymer-trace representation and draws no
+geometry; `show` returns the *component's* atom count rather than the built
+representation's, so the reply is a full step list and an unchanged screen.
+
+This is the silent success the project exists to catch, and it is `show()`'s,
+not the preset's — `show(representation="putty", handle="lig")` does the same
+thing on its own. The fix is for the viewer to report what the representation
+actually built, which would let every caller notice, and is the same number
+`isApplicable` already knows.
+
+### 30. shading, material and opacity succeed on a hidden component — open
+
+They change state nobody can see and report success. `_styleable()` in the
+presets is a workaround for exactly this, and only for the preset path: a
+caller doing `hide('auto'); shading(style='cel', name='auto')` by hand still
+gets a cheerful reply and no change. `dispatch.ts` already reads
+`isHiddenComponent` for hide/unhide, so the check is available; the question is
+whether these three should refuse or warn.
+
+### 31. `show()` moves the camera on the second draw of a handle, not the first — open
+
+Recorded as item 26 while the presets were being built and still open. Item 27
+fixed the same class of defect for `load_structure`; this one is the remaining
+half, and `_frame_the_scene()` is a preset-level workaround for it.

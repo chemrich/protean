@@ -1,6 +1,7 @@
 # Views, and driving them from the viewer
 
-Planned 2026-08-17, not started. Two things that turn out to be one thing:
+Planned 2026-08-17. **§5.1, the six style presets, is done**; §4's `protean_invoke`
+slice and everything after it are not. Two things that turn out to be one thing:
 
 1. **MCPymol has fifteen named view types and protean has four presets.** If
    protean is a general PyMOL replacement, the good ones belong here.
@@ -213,15 +214,66 @@ Nothing below is designed yet. These are placeholders with their known
 unknowns, to be filled in as each is taken up, and **corrected in place
 afterwards** as every other plan document in this repo has been.
 
-### 5.1 The style presets — stub
+### 5.1 The style presets — shipped 2026-08-17
 
 Six recipes: `textbook`, `cinematic`, `pointillist`, `bfactor`,
-`hydrophobic-surface`, `putty`.
+`hydrophobic-surface`, `putty`. All six are in `preset()`, and the estimate
+held: no new rendering, no new dependency, nothing but compositions of tools
+that already existed.
 
-Known: primitives all exist. Unknown: whether `putty`'s tube width varies with
-B-factor by default, or needs the `uncertainty` **size** theme, which protean
-does not expose at all — `size` scales uniformly today. That gap is also
-cryo-EM §4 ("size by scalar"), so the two should be done together.
+**The one open question is answered, and the answer removes a dependency.**
+This stub asked whether `putty`'s tube width varies with B-factor by default or
+needs the `uncertainty` **size** theme, which protean does not expose — and
+concluded that if it did, this work was tied to cryo-EM §4 ("size by scalar").
+It does not. `putty`'s provider declares `defaultSizeTheme: uncertainty`, so
+width follows B-factor with nothing passed to it.
+
+The source says so, and the source is where this document has gone wrong
+before, so it was measured too: the same coordinates loaded twice, once with the
+deposited B-factors and once with every B-factor flattened to their mean. The
+two putty frames differ by **0.0202** of the frame; the cartoon control, whose
+size theme is uniform, differs by **0.000125**. Nothing else about the two files
+differs, so the width is the B-factor. **§5.1 and cryo-EM §4 are
+independent.**
+
+**What the work turned up that the plan did not predict**, and it is not about
+presets at all: **drawing the same handle twice through `show()` lands on two
+different cameras.** The first draw keeps the framing the load preset chose; the
+second refits to what is actually on screen and then holds — 0.1438 of the frame
+between them on 1UBQ, reproduced with plain `show()`/`hide()` calls and no preset
+involved. So the first figure anyone captured after taking the scene over was
+framed for a scene that was no longer there, and applying a view twice gave two
+pictures. The presets now ask for the frame outright with `reset_view()`, listed
+in the steps, which makes a view idempotent — the property §5.2's switcher needs.
+The underlying `show()` behaviour is backlog 26.
+
+**A second camera defect fell out of the first, and CI found it rather than this
+machine.** `load_structure` never waited for the camera the load preset moves,
+though `focus`, `orient` and `reset_view` always have — so a capture taken
+straight after a load could be mid-tween. Locally the gap is 0.000125 of the
+frame and invisible; on a CI runner it is 0.0080, which failed a control
+assertion in the putty test above. Backlog 27, fixed in the viewer. Worth noting
+*how* it surfaced: not by inspecting `load_structure`, but because a test
+asserted that something which must not change had not changed, and then ran on a
+machine that was not this one.
+
+**Two limits worth stating rather than discovering later:**
+
+- **`bfactor` uses only the cold half of its ramp on an ordinary crystal
+  structure.** Mol\*'s `uncertainty` colour theme has a fixed `[0, 100]` domain
+  and `color()` passes no theme parameters, so 1UBQ's B-factors — 2 to 47 —
+  occupy 0.02 to 0.47 of it. The picture is correct and the contrast is lower
+  than PyMOL's `spectrum b`, which fits the ramp to the data. The fix is a
+  domain on `color()`, not a change to the preset; `color_by_rmsf` works around
+  the same limit today by rescaling values before it sends them.
+- **A whole-scene view discards a camera the caller had moved.** Stated in the
+  tool description, because the alternative — leaving it — is the
+  non-deterministic behaviour above.
+
+**`textbook` calls `illustrative` rather than repeating it.** The two would
+otherwise be near-duplicates: `illustrative` is the styling, `textbook` is the
+styling plus the decision about what to draw. Composing them keeps one recipe
+and makes the relationship visible in the reply's `steps`.
 
 ### 5.2 The view switcher — stub
 
@@ -367,6 +419,14 @@ The candidates here, stated in advance so they can be checked off or laughed at:
 - **That "recipe work" is as cheap as it sounds.** The four existing presets are
   small, but each needed a differential test proving the picture changed, and
   the threshold for "changed" was argued over.
+
+  **Half right, checked 2026-08-17 against §5.1.** The recipes themselves were
+  as cheap as promised — six presets, no new rendering, the existing threshold
+  reused unchanged. What was not free was everything around them: taking the
+  scene over from the load preset without leaving two coincident
+  representations, making a second view replace the first rather than stack,
+  and the camera behaviour in backlog 26, which nothing in the plan anticipated
+  and which is most of what the work turned out to be about.
 - **That the interactions extension is a pharmacophore.** It computes contacts.
   A pharmacophore is a claim about what a site *wants*, which is not the same
   thing, and the gap may be most of the work.

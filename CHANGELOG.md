@@ -5,6 +5,81 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Views
+
+- **Six more presets, so `preset()` covers the styles worth borrowing from
+  MCPymol.** `textbook`, `bfactor`, `putty`, `hydrophobic-surface` and
+  `pointillist` decide what is drawn; `cinematic` only restyles what is there,
+  as `publication-cartoon` and `illustrative` already did. None of them needed
+  new rendering — Mol\* has the representations and the themes, and protean
+  validates against its live registries, so all six are compositions of tools
+  that already existed. The reply lists every call each one made, so any of it
+  can be adjusted afterwards.
+
+  The drawing presets hide what the load preset built and draw through one
+  shared handle, `auto_view`. Sharing it is the point: applying a second view
+  rebuilds that component rather than adding to it, so switching views ends at
+  a view instead of at all of them at once.
+
+- **`putty`'s tube width follows B-factor, and that is Mol\*'s own default
+  rather than anything protean adds.** The plan for these views recorded it as
+  an open question — whether putty needed a size theme protean does not expose,
+  which would have tied it to the cryo-EM "size by scalar" work. It does not.
+  Measured against the same coordinates loaded twice, once with the deposited
+  B-factors and once with every B-factor flattened to their mean: the putty
+  frames differ by 0.020 of the frame, the cartoon control by 0.000125.
+
+- **A whole-scene preset reframes the camera, deliberately and in the reply.**
+  Drawing the same handle twice through `show()` lands on two different
+  cameras — the first draw keeps the framing the load preset chose, the second
+  refits to what is on screen and then holds, 0.144 of the frame apart on 1UBQ
+  with no preset involved. So a view applied once was framed for a scene that
+  was no longer there, and applying it twice gave two pictures. The presets now
+  ask for the frame outright, which costs a camera the caller had moved and
+  says so; given a handle they leave the camera alone.
+
+- **A view refuses rather than drawing an empty scene.** A handle with no atoms,
+  or a whole-scene view of a structure with no polymer, previously drew nothing
+  and reported success.
+
+- **Loading a structure now waits for the camera the load preset moved.**
+  `focus`, `orient` and `reset_view` have always waited; `load_structure` never
+  did. Mol\* tweens the preset's framing over ~250 ms like any other camera
+  move, and waiting for the *geometry* to stop changing says nothing about it,
+  so a capture taken straight after a load could be mid-flight. Found by CI
+  rather than by reasoning: two loads of identical coordinates produced frames
+  0.008 apart on a runner where this machine reads 0.000125.
+
+  **The wait has to come after the render pump, not inside the action**, which
+  the first version of this fix got wrong. Mol\* resolves a requested camera
+  reset from `commit()` and only once `commitScene` reports everything
+  committed — "Only reset the camera after the full scene has been commited",
+  `canvas3d.js` — so a wait placed before the geometry settles watches a camera
+  that has not started moving, counts stillness as arrival, and returns just in
+  time for the tween to begin behind it.
+
+- **A preset states every screen-space effect, rather than only the ones it
+  changes.** `effects()` leaves anything omitted exactly as it was, which is
+  right for a tool composing calls and wrong for a recipe declaring a whole
+  look. `cinematic` is the only preset that turns depth of field on, so
+  `textbook`, `illustrative` and `hydrophobic-surface` — none of which mentioned
+  it — rendered blurred after it and reported success.
+
+- **The steps a preset reports are derived from the calls it makes.** They were
+  written out by hand beside each call and had drifted: three omitted an
+  argument that had been sent, so replaying the reported steps produced a
+  different picture than the preset did.
+
+- **A refused view leaves the scene alone.** The refusal path hid the viewer's
+  own scene and rebuilt the shared handle *before* checking the selection had
+  matched anything, so declining to draw left a blank viewer, an empty
+  `auto_view` in the handle table, and an error mentioning neither.
+
+- **`remove()` drops the handle as well as the component.** The handle survived
+  on the Python side while its component was deleted in the viewer, so the two
+  disagreed about what existed and a later call on that name resolved here and
+  then failed there.
+
 ### The viewer
 
 - **The viewer opens as a canvas, with Mol\*'s panels collapsed to slices.**

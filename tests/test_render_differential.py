@@ -918,6 +918,152 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
     assert black > color_fraction(frames["plain"], (0, 0, 0, 255), tolerance=40)
 
 
+# -- the style presets from docs/views.md §5.1 ---------------------------------
+#
+# Six views borrowed from MCPymol, four of which decide what is drawn rather
+# than only restyling it. Taken in one session, in this order, because a browser
+# launch is the expensive part: each frame is compared with the one before it,
+# and then all seven are compared with each other. The second claim is the one
+# worth having — two recipes that composed to the same picture would both pass
+# "it changed something" and still be one view wearing two names.
+
+_VIEW_SEQUENCE = [
+    "textbook",
+    "bfactor",
+    "putty",
+    "hydrophobic-surface",
+    "cinematic",
+    "pointillist",
+]
+
+
+@pytest.fixture(scope="module")
+async def views() -> list[tuple[str, Render]]:
+    """One frame per view, in sequence, starting from the plain load."""
+    taken: list[tuple[str, Render]] = []
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        taken.append(("plain", await _shot(session)))
+        for name in _VIEW_SEQUENCE:
+            await server_mod.preset(name)
+            taken.append((name, await _shot(session)))
+    return taken
+
+
+@pytest.mark.parametrize("name", _VIEW_SEQUENCE)
+async def test_a_view_changes_the_picture(views, name):
+    """The floor: a view that reports success and draws the previous frame."""
+    index = [n for n, _ in views].index(name)
+    before, after = views[index - 1][1], views[index][1]
+    assert difference(before, after) > STYLED
+
+
+async def test_every_view_looks_different_from_every_other(views):
+    for i, (left, left_frame) in enumerate(views):
+        for right, right_frame in views[i + 1 :]:
+            assert difference(left_frame, right_frame) > STYLED, (
+                f"{left} and {right} render the same picture"
+            )
+
+
+async def test_a_second_view_replaces_the_first_rather_than_stacking():
+    """Switching views has to end at the view, not at both views at once.
+
+    Every view draws through one shared handle, so Mol* rebuilds that component
+    instead of adding another. Checked in pixels rather than in the call log:
+    the same view reached by two routes has to land on the same frame, and it
+    would not if the surface were still on screen underneath the tube.
+
+    `putty` is the view taken twice because it sets every property it depends
+    on — ground, lighting, effects, shading, material, representation, colour —
+    so arriving at it a second time cannot inherit anything from the detour.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("putty")
+        direct = await _shot(session)
+
+        await server_mod.preset("hydrophobic-surface")
+        surfaced = await _shot(session)
+        await server_mod.preset("putty")
+        switched = await _shot(session)
+
+    assert difference(direct, surfaced) > STYLED, "the surface never drew"
+    # Not bit-exact. Between these two frames the scene handle is destroyed and
+    # rebuilt twice, a surface is meshed, and the camera is reset twice — and
+    # the neighbouring test in this file exists because an absolute pixel
+    # threshold measured on one machine is a claim about a renderer rather than
+    # about the thing under test. The claim here is that switching away and back
+    # returns to the view, so it is stated against the size of the detour.
+    returned = difference(direct, switched)
+    assert returned < STYLED, (
+        f"putty reached twice differs by {returned:.6f}: the surface is still "
+        "on screen underneath, or the view is not idempotent"
+    )
+    assert returned * 10 < difference(direct, surfaced)
+
+
+async def test_putty_width_follows_the_bfactor_it_claims():
+    """The plan's one open question about these six, answered from pixels.
+
+    docs/views.md asked whether putty's tube varies with B-factor by default or
+    needs a size theme protean does not expose. Two loads of the *same*
+    coordinates, one with the deposited B-factors and one with every B-factor
+    flattened to their mean, isolate the answer: nothing else about the two
+    files differs.
+
+    The cartoon pair is the control, and it carries the test. Cartoon's default
+    size theme is uniform, so it must read identical across the two loads —
+    which is also what rules out the camera having moved when the second
+    structure replaced the first. A control that moves means the putty number
+    is measuring the reload.
+
+    **The control is asserted against the signal rather than against a number.**
+    The first version of this test used an absolute ceiling of 0.001, measured
+    on the development machine, where the control reads 0.000125. CI read
+    0.007983 and the test failed — correctly: `load_structure` did not wait for
+    the camera the load preset moves, so the first capture after a load could be
+    mid-tween, and a slower renderer opened the gap wide enough to see. That is
+    fixed in the viewer, but the lesson about the threshold stands. A ratio says
+    what the test actually claims — putty responds to B-factor and cartoon does
+    not — in a form that does not depend on which machine draws it.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+    flattened = deposited.copy()
+    flattened.b_factor = np.full(
+        deposited.array_length(), float(deposited.b_factor.mean())
+    )
+
+    frames: dict[tuple[str, str], Render] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        for variant, array in (("deposited", deposited), ("flattened", flattened)):
+            await server_mod._send_structure(array, FIXTURE)
+            server_mod._structure = array
+            for representation in ("cartoon", "putty"):
+                await server_mod.hide(server_mod._WHOLE_SCENE)
+                await server_mod.select("polymer", name="fold")
+                await server_mod.show(
+                    representation=representation, handle="fold", color="#ffffff"
+                )
+                frames[(representation, variant)] = await _shot(session)
+
+    control = difference(
+        frames[("cartoon", "deposited")], frames[("cartoon", "flattened")]
+    )
+    measured = difference(frames[("putty", "deposited")], frames[("putty", "flattened")])
+
+    assert measured > STYLED, (
+        f"putty drew the same tube for two different B-factor sets: {measured:.6f}"
+    )
+    # Measured 162x apart on the development machine (0.020219 against
+    # 0.000125). Five is the floor: a renderer with more edge noise than this
+    # one still has to leave the claim unambiguous, and if the two ever come
+    # that close the instrument has become the subject rather than putty.
+    assert control * 5 < measured, (
+        f"control {control:.6f} against measured {measured:.6f}: too close to "
+        "separate, so this is measuring the reload rather than B-factor"
+    )
+
+
 async def test_ghost_surface_layers_over_what_is_already_drawn():
     """The scoping claim, checked on screen rather than in the call log.
 
