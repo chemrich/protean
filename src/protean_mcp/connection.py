@@ -83,13 +83,25 @@ class ViewerBridge:
         #: server imports *this* module, and because it keeps the rule visible:
         #: everything a click can do is whatever was handed in here.
         self._invoke: Callable[[str], Awaitable[str]] | None = None
+        #: The views a click may ask for, handed to the page on the handshake.
+        #:
+        #: The page draws its menu from this rather than from a list of its
+        #: own. Two lists cannot disagree if only one exists, and a copy in the
+        #: bundle would drift from the allowlist that actually gates the
+        #: channel — which is the failure this project keeps meeting.
+        self._views: list[dict[str, str]] = []
         #: Invocations still running, kept so they are not garbage collected
         #: mid-flight. asyncio holds only weak references to tasks.
         self._invocations: set[asyncio.Task[None]] = set()
 
-    def on_invoke(self, handler: Callable[[str], Awaitable[str]]) -> None:
-        """Say what a view request from the page should run."""
+    def on_invoke(
+        self,
+        handler: Callable[[str], Awaitable[str]],
+        views: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Say what a view request from the page should run, and what it may ask for."""
         self._invoke = handler
+        self._views = views or []
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -316,7 +328,16 @@ class ViewerBridge:
                 "retry against the tab connected now.",
                 keep=keep,
             )
-        await ws.send_json({"action": "protean_pong", "version": PROTOCOL_VERSION})
+        await ws.send_json(
+            {
+                "action": "protean_pong",
+                "version": PROTOCOL_VERSION,
+                # On the pong rather than behind a request of its own: the page
+                # needs it before it can draw anything, and this is the first
+                # message it is guaranteed to receive.
+                "views": self._views,
+            }
+        )
 
     def _stall_hint(self) -> str:
         """Explain a timeout when the tab being hidden is the likely cause."""

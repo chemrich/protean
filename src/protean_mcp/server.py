@@ -387,7 +387,7 @@ def use_bridge(bridge: ViewerBridge) -> ViewerBridge:
     """
     global _bridge  # noqa: PLW0603 - deliberate module-level singleton
     _bridge = bridge
-    bridge.on_invoke(_invoke_from_page)
+    bridge.on_invoke(_invoke_from_page, _page_view_catalogue())
     return bridge
 
 
@@ -2578,8 +2578,50 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 #: The tools a page-initiated request may reach, by name in the MCP registry.
 _PAGE_TOOLS = frozenset({"preset"})
 
-#: View names a click may ask for, and the preset each one means.
-_PAGE_VIEWS: dict[str, str] = {"ghost-surface": "ghost-surface"}
+#: What a view does to the scene, which decides how a menu may present it.
+#:
+#: Not a detail of presentation: the three behave differently enough that one
+#: flat list would misdescribe two of them.
+#:
+#: - `draws` replaces what is on screen. `_take_the_scene` hides `auto` and
+#:   draws its own selection, so these replace each other *and* whatever was
+#:   there. Each also applies a styling preset of its own, so a `draws` chosen
+#:   after a `styles` silently discards it.
+#: - `styles` changes how the scene looks and never what is drawn. These
+#:   replace each other — all of them set background and lighting — and compose
+#:   with any `draws`.
+#: - `layers` draws over what is already there, under its own handle, and
+#:   composes with everything.
+_VIEW_DRAWS = "draws"
+_VIEW_STYLES = "styles"
+_VIEW_LAYERS = "layers"
+
+#: View names a click may ask for, the preset each means, and what it does.
+#:
+#: `active-site` is deliberately absent: it needs a handle to point at, and a
+#: button has none to give.
+_PAGE_VIEWS: dict[str, tuple[str, str]] = {
+    "textbook": ("textbook", _VIEW_DRAWS),
+    "bfactor": ("bfactor", _VIEW_DRAWS),
+    "putty": ("putty", _VIEW_DRAWS),
+    "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
+    "pointillist": ("pointillist", _VIEW_DRAWS),
+    "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
+    "illustrative": ("illustrative", _VIEW_STYLES),
+    "cinematic": ("cinematic", _VIEW_STYLES),
+    "ghost-surface": ("ghost-surface", _VIEW_LAYERS),
+}
+
+
+def _page_view_catalogue() -> list[dict[str, str]]:
+    """What the page may ask for, in the order a menu should show it.
+
+    Sent to the page rather than written there. A copy in `index.html` is the
+    list-that-drifts this project keeps meeting — a hand-written nine where
+    fourteen tools existed, a named-file CI list that stopped running new
+    suites — and two lists cannot disagree if only one of them exists.
+    """
+    return [{"name": name, "kind": kind} for name, (_, kind) in _PAGE_VIEWS.items()]
 
 
 async def _invoke_from_page(view: str) -> str:
@@ -2591,11 +2633,12 @@ async def _invoke_from_page(view: str) -> str:
     Any other arrangement lets the two render the same view differently, and
     eventually they will.
     """
-    preset_name = _PAGE_VIEWS.get(view)
-    if preset_name is None:
+    entry = _PAGE_VIEWS.get(view)
+    if entry is None:
         raise ViewerError(
             f"Unknown view {view!r}. Available: {', '.join(sorted(_PAGE_VIEWS))}"
         )
+    preset_name = entry[0]
     # A click is not a reply to the model, so nothing it runs may drain the
     # queue: without this the `preset` below would take an earlier click's news
     # into a reply that goes back to the page, where the model never sees it.

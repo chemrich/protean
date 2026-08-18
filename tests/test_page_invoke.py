@@ -17,6 +17,7 @@ import contextlib
 import json
 from typing import Any
 
+import aiohttp
 import pytest
 
 import protean_mcp.server as server_mod
@@ -94,8 +95,14 @@ async def test_the_page_tools_are_tools_that_exist():
 
 
 async def test_every_view_a_click_can_ask_for_is_a_real_preset():
+    """The drift guard. A menu entry the server cannot honour is worse than no
+    menu: it offers something and then refuses it."""
     assert server_mod._PAGE_VIEWS
-    assert set(server_mod._PAGE_VIEWS.values()) <= set(server_mod._PRESETS)
+    for name, (preset_name, _) in server_mod._PAGE_VIEWS.items():
+        assert preset_name in server_mod._PRESETS, (
+            f"the page may ask for {name!r}, which means preset "
+            f"{preset_name!r}, and no such preset exists"
+        )
 
 
 async def test_a_bridge_the_server_adopts_knows_what_a_click_may_ask(bridge, monkeypatch):
@@ -167,23 +174,34 @@ async def test_an_unlisted_view_is_refused_and_says_what_is_available(wired):
 async def test_a_preset_that_is_not_a_listed_view_cannot_be_clicked(wired, tmp_path):
     """The allowlist is the boundary, and this is what shows it bears weight.
 
-    `putty` is a real preset and not a listed view, so it is the case that
-    separates "the list decides" from "the name is forwarded and preset()
-    decides". A channel that forwarded would draw this happily — and would
-    carry every other name just as happily, which is the whole risk.
+    `active-site` is a real preset and not a listed view, so it is the case
+    that separates "the list decides" from "the name is forwarded and preset()
+    decides". A channel that forwarded would carry it — and every other name
+    just as happily, which is the whole risk.
+
+    **The assertion is on which refusal comes back, not that one does.**
+    `active-site` needs a handle, so a forwarding channel would also fail — for
+    a different reason, from `preset()` rather than from the allowlist. Only
+    the wording tells the two apart, so only the wording is asserted. This test
+    used `putty` until `putty` became a listed view, at which point its premise
+    quietly disappeared.
     """
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
-    assert "putty" in server_mod._PRESETS
-    assert "putty" not in server_mod._PAGE_VIEWS
+    assert "active-site" in server_mod._PRESETS
+    assert "active-site" not in server_mod._PAGE_VIEWS
     # Handlers registered on purpose. Without them a forwarded name would fail
     # on the first viewer action and this would pass for the wrong reason —
     # which it did, until a mutation that opened the allowlist left it green.
     _record(wired, [])
 
-    reply = await _click(wired, "putty")
+    reply = await _click(wired, "active-site")
 
     assert reply["ok"] is False
-    assert "putty" in reply["error"]
+    assert "Unknown view" in reply["error"], (
+        "refused, but by preset() rather than by the allowlist — so the "
+        f"channel forwarded the name: {reply['error']}"
+    )
+    assert "active-site" in reply["error"]
     assert server_mod._user_actions == []
 
 
@@ -291,3 +309,44 @@ async def test_a_refused_click_is_not_reported_as_something_the_user_did(wired):
     """It changed nothing, so saying so would describe a scene that never was."""
     await _click(wired, "not-a-view")
     assert server_mod._user_actions == []
+
+
+# -- the catalogue the menu is drawn from --------------------------------------
+
+
+def test_a_view_needing_a_target_is_not_offered():
+    """`active-site` needs a handle to point at, and a click has none to give."""
+    assert "active-site" not in server_mod._PAGE_VIEWS
+
+
+def test_the_catalogue_says_what_each_view_does_to_the_scene():
+    """The kinds are load-bearing, not decoration.
+
+    A `draws` view replaces the scene *and* brings its own styling, so picking
+    one after a `styles` discards it. A menu that showed nine equal items would
+    hide that, and the first surprise would be a chosen background vanishing.
+    """
+    catalogue = server_mod._page_view_catalogue()
+    assert {entry["name"] for entry in catalogue} == set(server_mod._PAGE_VIEWS)
+
+    kinds = {entry["name"]: entry["kind"] for entry in catalogue}
+    assert kinds["putty"] == server_mod._VIEW_DRAWS
+    assert kinds["cinematic"] == server_mod._VIEW_STYLES
+    assert kinds["ghost-surface"] == server_mod._VIEW_LAYERS
+
+
+async def test_the_page_is_told_what_it_may_ask_for(wired):
+    """Sent on the handshake, so the page never keeps a list of its own."""
+    bridge = server_mod._bridge
+    assert bridge is not None  # the wired fixture installed it
+    session = aiohttp.ClientSession()
+    ws = await session.ws_connect(f"ws://127.0.0.1:{bridge.port}/ws?token={bridge.token}")
+    try:
+        await ws.send_json({"action": "protean_ping", "version": 1})
+        pong = json.loads((await asyncio.wait_for(ws.receive(), INVOKE_TIMEOUT)).data)
+        assert pong["action"] == "protean_pong"
+        offered = {entry["name"] for entry in pong["views"]}
+        assert offered == set(server_mod._PAGE_VIEWS), pong
+    finally:
+        await ws.close()
+        await session.close()

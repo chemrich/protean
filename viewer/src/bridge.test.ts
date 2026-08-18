@@ -452,3 +452,58 @@ describe('a server from a different build', () => {
     expect(document.getElementById('status')!.textContent).not.toContain('mismatch');
   });
 });
+
+describe('the views a page may ask for', () => {
+  // Drawn from the server, never from a list in the bundle. A copy here would
+  // drift from the allowlist that actually gates the channel, and a menu
+  // offering a view the server refuses is worse than no menu.
+
+  it('hands the server\u2019s catalogue to whoever is drawing the menu', () => {
+    const seen: any[] = [];
+    const channel = connectBridge(async () => ({}));
+    channel.onViews((views) => seen.push(views));
+    latest().onopen!();
+
+    latest().receive({
+      action: 'protean_pong',
+      version: 1,
+      views: [
+        { name: 'putty', kind: 'draws' },
+        { name: 'cinematic', kind: 'styles' },
+      ],
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].map((v: any) => v.name)).toEqual(['putty', 'cinematic']);
+  });
+
+  it('hands it over again on a reconnect, which may reach a different server', () => {
+    vi.useFakeTimers();
+    const seen: any[] = [];
+    const channel = connectBridge(async () => ({}));
+    channel.onViews((views) => seen.push(views));
+    latest().onopen!();
+    latest().receive({ action: 'protean_pong', version: 1, views: [{ name: 'putty', kind: 'draws' }] });
+
+    latest().close();
+    vi.advanceTimersByTime(RECONNECT_DELAY);
+    latest().onopen!();
+    latest().receive({ action: 'protean_pong', version: 1, views: [] });
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toEqual([]);
+  });
+
+  it('says nothing when a server too old to offer views answers', () => {
+    // An absent list is not an empty one: a menu drawn from `[]` and a menu
+    // never drawn look the same on screen, but only one of them is a claim.
+    const seen: any[] = [];
+    const channel = connectBridge(async () => ({}));
+    channel.onViews((views) => seen.push(views));
+    latest().onopen!();
+
+    latest().receive({ action: 'protean_pong', version: 1 });
+
+    expect(seen).toHaveLength(0);
+  });
+});

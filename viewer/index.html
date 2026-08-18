@@ -26,16 +26,43 @@
         font: 13px/1 sans-serif; opacity: 0.8;
       }
       #panel-tab:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
-      /* The view button borrows the tab's palette exactly. A control that asks
-         the server is new; a second visual language for it is not wanted. */
-      #view-ghost {
-        position: fixed; left: 40px; bottom: 8px;
+      /* The view menu borrows the tab's palette exactly. A control that asks
+         the server is new; a second visual language for it is not wanted.
+
+         Sat above Mol*'s axis widget rather than beside it. That widget is
+         drawn into the canvas at `location: bottom-left`, so it does not exist
+         in the DOM and cannot be measured from here — and Mol* leaves it out
+         of the image pass, so a screenshot does not show it either. This
+         clearance is therefore judged rather than measured. */
+      #view-menu-button {
+        position: fixed; left: 40px; bottom: 104px;
         z-index: 90; padding: 4px 10px; border: 0; border-radius: 4px;
         cursor: pointer; background: rgba(0, 0, 0, 0.22); color: #fff;
         font: 13px/1 sans-serif; opacity: 0.8;
       }
-      #view-ghost:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
-      #view-ghost:disabled { cursor: default; opacity: 0.5; }
+      #view-menu-button:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
+      /* Opens upward: it is anchored near the bottom of the window, and a menu
+         that grew downward would run off the edge. */
+      #view-menu {
+        position: fixed; left: 40px; bottom: 136px; z-index: 95;
+        min-width: 150px; padding: 4px; border-radius: 6px;
+        background: rgba(16, 16, 18, 0.92); color: #fff;
+        font: 13px/1.5 sans-serif;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+      }
+      #view-menu[hidden] { display: none; }
+      .view-menu-heading {
+        padding: 4px 8px 2px; font-size: 11px; letter-spacing: 0.04em;
+        text-transform: uppercase; opacity: 0.55;
+      }
+      .view-menu-item {
+        display: block; width: 100%; text-align: left;
+        padding: 4px 8px; border: 0; border-radius: 4px;
+        background: transparent; color: inherit; font: inherit;
+        cursor: pointer;
+      }
+      .view-menu-item:hover { background: rgba(255, 255, 255, 0.12); }
+      .view-menu-item:disabled { cursor: default; opacity: 0.5; }
     </style>
   </head>
   <body>

@@ -51,8 +51,24 @@ export interface InvokeReply {
 }
 
 /** What a control in the page may do: ask for a view, and be told the outcome. */
+/** A view the page may ask for, and what it does to the scene. */
+export interface ViewOffer {
+  name: string;
+  kind: string;
+}
+
 export interface PageChannel {
   invoke(view: string): Promise<InvokeReply>;
+  /** Called with the views the server allows, once a handshake completes.
+   *
+   * The list comes from the server rather than living here: the page's copy
+   * would drift from the allowlist that actually gates the channel, and a menu
+   * offering a view the server refuses is worse than no menu at all.
+   *
+   * Called on every handshake, not only the first — a reconnect may reach a
+   * server that allows something different.
+   */
+  onViews(handler: (views: ViewOffer[]) => void): void;
 }
 
 export function connectBridge(handle: Handler): PageChannel {
@@ -80,6 +96,7 @@ export function connectBridge(handle: Handler): PageChannel {
   let attempts = 0;
   // The server's protocol number when it differs from this bundle's, else null.
   let mismatched: number | null = null;
+  let viewsHandler: ((views: ViewOffer[]) => void) | null = null;
   let gaveUp = false;
 
   // Requests received and not yet answered, and replies that were ready while
@@ -232,6 +249,7 @@ export function connectBridge(handle: Handler): PageChannel {
           : null;
         setStatus(true);
         flushOutbox(ws);
+        if (Array.isArray(msg.views)) viewsHandler?.(msg.views as ViewOffer[]);
         return;
       }
       if (msg.action === 'protean_superseded') {
@@ -290,6 +308,9 @@ export function connectBridge(handle: Handler): PageChannel {
   open();
 
   return {
+    onViews(handler: (views: ViewOffer[]) => void): void {
+      viewsHandler = handler;
+    },
     invoke(view: string): Promise<InvokeReply> {
       if (!current || current.readyState !== WebSocket.OPEN) {
         return Promise.resolve({
