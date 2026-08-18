@@ -170,6 +170,22 @@ nothing is released yet, so everything below is unreleased.
 
   For an installed wheel none of this fires, because nothing rewrites the files
   under one.
+- **`show()` no longer takes the camera at a moment nobody chose.** Drawing a
+  handle moved the camera roughly one time in seven and held still the rest,
+  because Mol\* requests an automatic camera fit whenever a scene commit decides
+  the visible bounding sphere has moved out from under it — and a commit has a
+  250 ms budget, so which boundary a `hide` and a `show` landed on decided
+  whether that test ran against the old scene or the new one. A caller could
+  rely neither on the camera moving nor on it staying, which is worse than
+  either: a figure captured after a draw was framed unpredictably, and applying
+  the same view twice could give two pictures.
+
+  The viewer now takes the camera off automatic fitting and asks for the one
+  fit a load wants. `focus()` and `reset_view()` are unchanged, so the camera
+  moves where a caller asked for it and nowhere else. The camera's *limits*
+  still follow the scene, because the flag that stops Mol\* re-framing also
+  stops it maintaining them — left alone, a map spanning more than its protein
+  would be clipped away by a slab drawn from the protein's radius.
 
 - **A capture is allowed time in proportion to the pixels it asks for.** Every
   capture shared one fixed 300 s budget, which the range of sizes makes

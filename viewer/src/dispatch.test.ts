@@ -213,6 +213,8 @@ function fakePlugin() {
         hierarchy: { current: { structures: [hierarchyStructure] } },
         component: { toggleVisibility, updateRepresentationsTheme: vi.fn(async () => {}) },
       },
+      // The one fit a load asks for, now that automatic fitting is off.
+      camera: { reset: vi.fn() },
     },
     state: {
       getSnapshot: () => ({ id: 'snapshot-1' }),
@@ -251,6 +253,9 @@ function withCanvas(plugin: any) {
   const canvasProps: any = {
     renderer: { backgroundColor: 0x000000 },
     transparentBackground: false,
+    // Off by default, exactly as Mol* ships it; `load_structure` turns it on so
+    // a later `show()` cannot take the camera. See backlog 26.
+    camera: { manualReset: false },
     // Mirrors a live canvas, read off one with CDP: occlusion and bloom start
     // on with full parameter groups, everything else is off and — crucially —
     // an off mapped static carries `params: {}`. That last detail is the whole
@@ -284,6 +289,8 @@ function withCanvas(plugin: any) {
       if (props.postprocessing) {
         Object.assign(canvasProps.postprocessing, props.postprocessing);
       }
+      // `load_structure` takes the camera off Mol*'s automatic fitting here.
+      if (props.camera) Object.assign(canvasProps.camera, props.camera);
     }),
     // Settled instantly: these tests are about props, not about timing.
     commitQueueSize: { value: 0 },
@@ -1430,6 +1437,10 @@ describe('settling a visible tab', () => {
     const plugin: any = fakePlugin();
     const state = { queued, drawn: 0 };
     plugin.canvas3d = {
+      props: { camera: { manualReset: false } },
+      setProps: vi.fn((props: any) => {
+        if (props.camera) plugin.canvas3d.props.camera = { ...props.camera };
+      }),
       commitQueueSize: {
         get value() {
           return state.queued;
@@ -1507,6 +1518,10 @@ describe('settling a visible tab', () => {
     const queue = { queued: 8, drawn: 0 };
     let moving = 20;
     plugin.canvas3d = {
+      props: { camera: { manualReset: false } },
+      setProps: vi.fn((props: any) => {
+        if (props.camera) plugin.canvas3d.props.camera = { ...props.camera };
+      }),
       commitQueueSize: {
         get value() {
           return queue.queued;
@@ -1570,6 +1585,10 @@ describe('a camera that never came to rest', () => {
     const plugin: any = fakePlugin();
     const camera = { state: { target: [0, 0, 0], radius: 10 } };
     plugin.canvas3d = {
+      props: { camera: { manualReset: false } },
+      setProps: vi.fn((props: any) => {
+        if (props.camera) plugin.canvas3d.props.camera = { ...props.camera };
+      }),
       commitQueueSize: { value: 0 },
       reprCount: { value: 0 },
       camera,
@@ -1596,6 +1615,10 @@ describe('a camera that never came to rest', () => {
     const plugin: any = fakePlugin();
     const camera = { state: { target: [0, 0, 0], radius: 10 } };
     plugin.canvas3d = {
+      props: { camera: { manualReset: false } },
+      setProps: vi.fn((props: any) => {
+        if (props.camera) plugin.canvas3d.props.camera = { ...props.camera };
+      }),
       commitQueueSize: { value: 0 },
       reprCount: { value: 0 },
       camera,

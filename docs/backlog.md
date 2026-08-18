@@ -1033,7 +1033,7 @@ Three changes, and the order matters:
 
 ## One finding from building the style presets, 2026-08-17
 
-### 26. `show()` on a handle moves the camera the second time, not the first — open, and it is a race
+### 26. `show()` on a handle moves the camera the second time, not the first — fixed
 
 Found while making a view idempotent, and it belongs to `show()` rather than to
 the presets: reproduced with plain `hide()`/`select()`/`show()` calls and no
@@ -1110,6 +1110,59 @@ difference at a similar rate. Not established: 32's control renders identical
 geometry, and whether its camera moves has not been measured. Doing that
 measurement is the cheapest way to find out, and would either merge the two
 items or separate them properly.
+
+**Fixed 2026-08-18 by taking the route above.** `load_structure` sets
+`manualReset` on the canvas after `clear()`, which gates off every automatic
+request in `commitScene`, and then asks for the one fit a load actually wants —
+`managers.camera.reset()` sets the flag directly, so an explicit reset still
+works. `focus()` and `reset_view()` are unaffected, which leaves the camera
+moving only where a caller asked for it.
+
+Both halves are load-bearing and each has its own test: remove `manualReset`
+and the mechanism test fails; remove the explicit fit and the load frames
+nothing, which the second test catches. The prop is set after `clear()` because
+clearing rebuilds canvas3d state and a prop set before it does not survive.
+
+**A code review found four gaps in the first version of this fix**, and they
+are the reason the prop is set where it is:
+
+- `manualReset` gates more than the auto-fit. `commitScene` ends with
+  `if (!p.camera.manualReset) camera.setState({ radiusMax: getSceneRadius() })`,
+  and the trackball's min/max distances are recomputed only inside
+  `resolveCameraReset`. So the camera's *limits* stopped tracking the scene, and
+  a volume spanning more than the protein would be clipped away by a slab drawn
+  from the protein's radius. The dispatcher now maintains `radiusMax` after
+  every draw, deliberately without moving the camera: framing belongs to the
+  caller, bounds belong to the scene.
+- Setting it inside `load_structure` left every path that draws *without*
+  loading one still auto-fitting — a volume into an empty viewer, or anything
+  after `clear_viewer`. It is set once at start-up instead.
+- The first version's comment justified that placement by claiming a prop set
+  before `plugin.clear()` would not survive. **That was asserted, not checked,
+  and it is false**: `clear()` takes `resetViewportSettings` and protean passes
+  nothing, so canvas3d props are untouched. The same wrong reason was written
+  into this entry as fact.
+- `load_session` re-applies a snapshot's canvas3d props, where `manualReset`
+  defaults to false — so restoring any session written before this existed
+  would hand automatic fitting back for the viewer's life. Re-asserted after
+  `setSnapshot`.
+
+**One of those is fixed but untested, and that is worth stating.** The
+`radiusMax` maintenance has no test, because three attempts to build a scene
+that actually grows — a large spacefill, a 300 A volume cell, a volume at an
+offset — each failed to move `boundingSphere.radius` at all, and a test whose
+own guard says "the scene did not grow" proves nothing about what happens when
+it does. The mechanism is read straight out of `canvas3d.js` and the fix is
+four lines, but nothing in the suite would catch its removal. Finding a scene
+that grows is the next piece of work here.
+
+**The tests that do exist assert the property, not the picture**, and the rate
+is why: at one
+in seven, a repeated-`show()` comparison would pass six times out of seven
+against a regression — a test that mostly cannot fail. Verified with the
+mechanism engaged in a live viewer (`manualReset: true` after load *and* after
+a draw) and fourteen consecutive clean runs of the reproduction, where 0 in 14
+alone would have been ~11% likely by luck.
 
 ### 27. `load_structure` never waited for the camera it moved — fixed
 

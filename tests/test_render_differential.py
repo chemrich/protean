@@ -1657,3 +1657,47 @@ async def test_ellipsoid_draws_after_all():
         await server_mod.show(representation="ellipsoid", handle="fold")
         after = await _shot(session)
         assert difference(before, after) > STYLED
+
+
+# -- the camera belongs to the caller ------------------------------------------
+
+
+async def test_a_load_takes_the_camera_off_automatic_fitting():
+    """Backlog 26, pinned at the mechanism rather than at the symptom.
+
+    Mol\\*'s `commitScene` requests a camera reset whenever `shouldResetCamera()`
+    decides the visible bounding sphere has moved out from under the camera, and
+    a commit has a 250 ms budget it can run out of. Which commit boundary a
+    `hide` and a `show` land on then decided whether that test ran against the
+    old scene or the new one, so `show()` moved the camera about **one time in
+    seven** and held still the rest — measured, fourteen runs, twelve at 0.0 and
+    two at 0.030043.
+
+    That rate is why this test asserts the property and not the picture. A
+    repeated-`show()` comparison would pass six times in seven against a
+    regression, which is a test that mostly cannot fail.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        # Stringified because `evaluate` parses what comes back as JSON, and a
+        # bare boolean is not a JSON document.
+        camera = await session.evaluate(
+            "JSON.stringify(window.__protean.plugin.canvas3d.props.camera)"
+        )
+        assert camera["manualReset"] is True, (
+            "the automatic fit is live again, and show() can take the camera"
+        )
+
+
+async def test_a_load_still_frames_the_molecule_itself():
+    """The other half: `manualReset` suppresses the fit a load used to get free.
+
+    Without an explicit reset beside it this leaves every load framed by
+    whatever the camera was doing before, which looks like nothing at all on an
+    empty canvas and like the wrong molecule on a second load.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        drawn = await _shot(session)
+        assert coverage(drawn) > 0.02, "loaded and framed nothing"
+
+        camera = await session.request("camera_state")
+        assert camera["radius"] and camera["radius"] > 0, "camera never fitted"

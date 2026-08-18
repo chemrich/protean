@@ -586,6 +586,8 @@ interface Entry {
 }
 
 export function createDispatcher(plugin: any): Handler {
+  takeTheCameraOffAutomaticFitting(plugin);
+
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
 
@@ -892,6 +894,12 @@ export function createDispatcher(plugin: any): Handler {
           'default',
           structureParams ? { structure: structureParams } : undefined
         );
+        // The fit the preset used to get for free. Automatic fitting is off
+        // (see `takeTheCameraOffAutomaticFitting`), and a load replaces a scene
+        // that was already framed, so the first-fit rule in the dispatcher will
+        // not fire — this is the one place that asks. `camera: true` above
+        // waits for it to arrive.
+        plugin.managers.camera.reset();
         // Register the preset's own representations under a reserved handle so
         // they can be hidden or removed like any other selection.
         const auto = allComponents().map((c: any) => c.cell.transform.ref);
@@ -2094,6 +2102,12 @@ export function createDispatcher(plugin: any): Handler {
       render: true,
       async run({ snapshot, handles }: { snapshot: any; handles: Record<string, string[]> }) {
         await plugin.state.setSnapshot(snapshot);
+        // A snapshot carries canvas3d props, and `manualReset` defaults to
+        // false — so restoring any session written before this existed would
+        // hand automatic fitting back for the rest of the viewer's life, and
+        // backlog 26's race with it. Every session file on disk today is such
+        // a file.
+        takeTheCameraOffAutomaticFitting(plugin);
         components.clear();
         // Volume handles are not saved, so none can survive a restore. Keeping
         // them would leave `volume_info` answering from a `data` object this
@@ -2167,6 +2181,8 @@ export function createDispatcher(plugin: any): Handler {
     if (!spec) throw new Error(`Unknown action: ${action}`);
     if (!spec.render) return spec.run(args);
     const result = await withRenderPump(plugin, action, () => spec.run(args));
+    // Bounds after every draw, framing only when nothing ever has been.
+    const fitted = keepCameraBounded(plugin);
     // After the pump, never inside the action. Mol* resolves a requested
     // camera reset from `commit()`, and only when `commitScene` reports
     // everything committed — "Only reset the camera after the full scene has
@@ -2174,7 +2190,7 @@ export function createDispatcher(plugin: any): Handler {
     // geometry is still queued, and a wait placed before the render pump
     // watches a camera that is still, decides it has arrived, and returns just
     // in time for the tween to start behind it.
-    if (!spec.camera) return result;
+    if (!spec.camera && !fitted) return result;
     const settled = await settleCamera(plugin, CAMERA_TIMEOUT_MS);
     // Reported rather than thrown. A camera that ran out of budget has still
     // very likely arrived somewhere sensible, and refusing the whole load over
@@ -2184,6 +2200,60 @@ export function createDispatcher(plugin: any): Handler {
     if (settled || typeof result !== 'object' || result === null) return result;
     return { ...(result as Record<string, unknown>), camera_settled: false };
   };
+}
+
+/** Take the camera off Mol*'s automatic fitting, for the life of the viewer.
+ *
+ * `commitScene` requests a camera reset whenever `shouldResetCamera()` decides
+ * the visible bounding sphere has moved out from under the camera, and a commit
+ * has a 250 ms budget it can run out of. Which commit boundary a `hide` and a
+ * `show` land on then decided whether that test ran against the old scene or
+ * the new one, so `show()` moved the camera about one time in seven and held
+ * still the rest — backlog 26. A caller could rely neither on it moving nor on
+ * it staying, which is worse than either.
+ *
+ * `manualReset` gates only the *automatic* request; `managers.camera.reset()`
+ * sets the flag directly and still works, which is what `focus()`,
+ * `reset_view()` and the explicit fit after a load rely on.
+ *
+ * **Set once here rather than per load.** An earlier version set it inside
+ * `load_structure`, claiming a prop set before `plugin.clear()` would not
+ * survive. That claim was wrong — `clear()` takes `resetViewportSettings` and
+ * protean passes nothing, so canvas3d props are untouched — and the placement
+ * left every path that draws without loading a structure still auto-fitting:
+ * a volume into an empty viewer, or anything after `clear_viewer`.
+ */
+function takeTheCameraOffAutomaticFitting(plugin: any): void {
+  plugin.canvas3d?.setProps({ camera: { manualReset: true } });
+}
+
+/** Keep the camera's limits current without touching where it points.
+ *
+ * The same flag that stops Mol* re-framing also stops it maintaining
+ * `radiusMax` — `commitScene` ends with `if (!p.camera.manualReset)
+ * camera.setState({ radiusMax: getSceneRadius() })`, and the trackball's
+ * min/max distances are recomputed only inside `resolveCameraReset`. Left
+ * alone, a scene that grows after the load — a volume spanning far more than
+ * the protein — keeps the molecule's radius, and the clip slab drawn from it
+ * cuts the new geometry away while zoom stays clamped to the old bounds.
+ *
+ * So the limits are maintained here, deliberately without moving the camera:
+ * framing belongs to the caller, bounds belong to the scene.
+ *
+ * The one exception is a scene nothing has ever framed, which is what Mol*'s
+ * own `reprCount === 0` branch handled: there is no caller framing to protect,
+ * and leaving it unfitted shows a blank canvas and reports success.
+ */
+function keepCameraBounded(plugin: any): boolean {
+  const camera = plugin.canvas3d?.camera;
+  const radius = plugin.canvas3d?.boundingSphere?.radius ?? 0;
+  if (!camera || radius <= 0) return false;
+  if (!camera.state?.radiusMax) {
+    plugin.managers.camera.reset();
+    return true;
+  }
+  camera.setState({ radiusMax: radius }, 0);
+  return false;
 }
 
 /** Build a StructureElement.Loci covering every atom of *structure*.
