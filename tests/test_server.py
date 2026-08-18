@@ -2723,3 +2723,80 @@ async def test_an_unknown_provenance_is_refused_before_anything_is_read(
     # And the refusal is about the provenance, not the missing file — proof the
     # check ran first rather than the read failing for its own reasons.
     assert not missing.exists()
+
+
+# -- ground and sidechains, the stateless pairs --------------------------------
+
+
+def _alanine_with_sidechain_pdb(path: Path, n: int = 3) -> Path:
+    """Alanine *including* CB, because the other fixtures stop at the backbone.
+
+    Worth its own helper: `_tiny_protein_pdb` is glycine, whose sidechain is a
+    hydrogen, and `_peptide_pdb` writes N/CA/C/O only. Both have no sidechain
+    at all, which is a real structure protean has to answer about — and is why
+    the refusal below is reachable rather than defensive.
+    """
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"))
+        ):
+            lines.append(
+                _pdb_line(
+                    serial, name, "ALA", "A", res, (float(res) * 4, float(i), 0.0), elem
+                )
+            )
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("view", "expected"),
+    [("light-ground", "#ffffff"), ("dark-ground", "#05070c")],
+)
+async def test_a_ground_view_sets_the_background_and_nothing_else(
+    wired_bridge, tmp_path, view, expected
+):
+    """Two entries rather than one toggle, deliberately.
+
+    Nothing records which ground is in force — the server does not track what
+    was last applied — so a toggle would report state it cannot know. See
+    docs/views.md §5.8 for what a stateful version would need.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _, calls = await _preset_calls(wired_bridge, tmp_path, view)
+
+    actions = [action for action, _ in calls]
+    assert actions == ["background"], (
+        f"a ground view touched more than the ground: {actions}"
+    )
+    assert calls[0][1]["color"] == expected
+
+
+async def test_sidechains_draw_over_what_is_there_rather_than_replacing_it(
+    wired_bridge, tmp_path
+):
+    """Its own handle, for the reason the ghost surface has one: drawing under
+    an existing handle rebuilds that component rather than layering on it."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "sidechains")
+
+    assert server_mod._SIDECHAIN_HANDLE in server_mod._handles.names()
+
+
+async def test_sidechains_on_a_structure_that_has_none_is_refused(wired_bridge, tmp_path):
+    """Glycine's sidechain is a hydrogen, so this is a real structure and not a
+    contrived one. Drawing nothing and reporting success is the alternative."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="has a sidechain"):
+        await preset("sidechains")
+
+
+async def test_hiding_sidechains_that_were_never_drawn_is_refused(wired_bridge, tmp_path):
+    """A control reporting success for doing nothing is this project's oldest
+    failure, and a hide with nothing to hide is exactly that shape."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    with pytest.raises(ViewerError, match="none to hide"):
+        await preset("hide-sidechains")

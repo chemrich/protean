@@ -2363,6 +2363,79 @@ async def _preset_ghost_surface(target: str) -> list[str]:
     ]
 
 
+async def _preset_light_ground(target: str) -> list[str]:
+    """A white ground, and nothing else touched.
+
+    Paired with `dark-ground` rather than made a toggle, because nothing here
+    records which one is in force: the server does not track what was last
+    applied, and a control that reports state it cannot know is worse than one
+    that needs two entries. Stated in docs/views.md §5.8, which is where the
+    stateful version would start.
+    """
+    del target  # the ground is the scene's, not any selection's
+    return [await _run(background, color="#ffffff", gradient="off")]
+
+
+async def _preset_dark_ground(target: str) -> list[str]:
+    """A near-black ground, for a lit render or a dark room."""
+    del target
+    return [await _run(background, color="#05070c", gradient="off")]
+
+
+#: The handle `sidechains` draws under, so `hide-sidechains` can find it again.
+_SIDECHAIN_HANDLE = "sidechains"
+
+
+async def _preset_sidechains(target: str) -> list[str]:
+    """Sidechain sticks over whatever is already drawn.
+
+    Its own handle, for the reason the ghost surface has one: drawing under an
+    existing handle rebuilds that component rather than layering on it, so the
+    cartoon these are meant to sit on would disappear.
+
+    Solvent and the backbone are both out. `sidechain` is already the variable
+    part of a residue — the thing worth looking at when someone asks to see
+    them — and adding waters would bury it.
+    """
+    del target
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection("sidechain and not solvent"), array)
+    except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+        raise ViewerError(str(exc)) from exc
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        raise ViewerError(
+            "Nothing here has a sidechain — a nucleic acid or a bare backbone "
+            "has none to draw."
+        )
+    _register(_SIDECHAIN_HANDLE, indices, "preset(sidechains)")
+    return [
+        await _run(
+            show,
+            representation="ball-and-stick",
+            handle=_SIDECHAIN_HANDLE,
+            color="element-symbol",
+        )
+    ]
+
+
+async def _preset_hide_sidechains(target: str) -> list[str]:
+    """Put the sidechain sticks away again, leaving everything else alone.
+
+    Refuses rather than passing quietly when there are none drawn: a control
+    that reports success for doing nothing is the failure this project spends
+    most of its time on.
+    """
+    del target
+    if _SIDECHAIN_HANDLE not in _handles.names():
+        raise ViewerError(
+            "No sidechains are drawn, so there are none to hide. Apply the "
+            "sidechains view first."
+        )
+    return [await _run(hide, name=_SIDECHAIN_HANDLE)]
+
+
 async def _preset_active_site(target: str) -> list[str]:
     """Sticks and labels on the site, the rest faded back out of the way."""
     if target == _WHOLE_SCENE:
@@ -2479,6 +2552,10 @@ _PRESETS: dict[str, Any] = {
     "cinematic": _preset_cinematic,
     "ghost-surface": _preset_ghost_surface,
     "active-site": _preset_active_site,
+    "light-ground": _preset_light_ground,
+    "dark-ground": _preset_dark_ground,
+    "sidechains": _preset_sidechains,
+    "hide-sidechains": _preset_hide_sidechains,
     **{name: functools.partial(_draw_view, name) for name in _VIEWS},
 }
 
@@ -2605,7 +2682,11 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
     "illustrative": ("illustrative", _VIEW_STYLES),
     "cinematic": ("cinematic", _VIEW_STYLES),
+    "light-ground": ("light-ground", _VIEW_STYLES),
+    "dark-ground": ("dark-ground", _VIEW_STYLES),
     "ghost-surface": ("ghost-surface", _VIEW_LAYERS),
+    "sidechains": ("sidechains", _VIEW_LAYERS),
+    "hide-sidechains": ("hide-sidechains", _VIEW_LAYERS),
 }
 
 

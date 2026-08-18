@@ -481,6 +481,41 @@ path got, not a weaker one); it emits or can be made to emit OpenDX, or
 protein of ordinary size is not so much worse that `auto` would rather have the
 binary.
 
+### 5.8 A menu that knows what is in force — stub, and wanted
+
+Every entry the menu offers is **one-shot**: ask for a view, the server applies
+it. Nothing anywhere records what was applied, which has two visible costs.
+
+**The menu cannot tick the active view**, so it looks unfinished, and someone
+has no way to see which of the five drawing views they are looking at.
+
+**And it forced two entries where one control belongs.** Charlie asked for
+toggles — light/dark ground, show/hide sidechains — and they shipped as pairs
+(`light-ground`/`dark-ground`, `sidechains`/`hide-sidechains`) because a toggle
+has to know which way it is currently set. Tracking that in the page would be a
+lie the moment a model changes the background, which it can at any time. A
+control that misreports its own state is worse than one that needs two entries,
+so the pairs are honest rather than good.
+
+**What a stateful version needs**, none of it built:
+
+- The server records what is applied — which drawing view, which styling,
+  which layers are up. `_handles` already knows the layers by name, so
+  `sidechains` and `ghost-surface` are nearly free; the drawing and styling
+  presets record nothing today.
+- That state reaches the page. It cannot ride the handshake alone: a model can
+  change the scene at any moment, so the page has to be *told* when it changes,
+  the way `protean_views` is pushed when the catalogue arrives late.
+- A model is told too, or the two disagree. The user-action channel already
+  carries the reverse direction — what the person did, into the model's next
+  reply — and this is the same problem pointing the other way.
+
+**The trap to avoid**, and it is the reason this is a stub rather than a patch:
+a menu that shows state it infers rather than state it was told is the
+silent-success failure in a new place. It would look right and be wrong exactly
+when a model and a person are both working, which is the case protean exists
+for. Better no checkmark than a stale one.
+
 ---
 
 ## 6. What this plan will get wrong
