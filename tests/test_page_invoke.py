@@ -13,6 +13,7 @@ found a hand-written list of nine where fourteen tools existed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -234,6 +235,50 @@ async def test_the_next_tool_reply_names_what_the_user_did(wired, tmp_path):
 
     assert "ghost-surface" in told["user_actions"]
     assert "user_actions" not in again, "one click was reported twice"
+
+
+async def test_the_news_survives_a_tool_that_reaches_other_tools(wired, tmp_path):
+    """The version above cannot fail, and this is the one that could.
+
+    `list_selections` is a leaf: it calls no other tool, so the wrapper around
+    it is the only one in play. Several tools are not leaves — `preset` reaches
+    `hide` through `_take_the_scene` and `effects` through `_set_effects` — and
+    an inner wrapper that drains puts the news into a reply its caller throws
+    away. The model then hears nothing, which is worse than never recording it:
+    the tools that nest are the presets, and a preset is what a click applies.
+
+    Asserted through `preset` for that reason. Before the outermost-only guard
+    this failed while the leaf test passed.
+    """
+    await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _record(wired, [])
+    await _click(wired, "ghost-surface")
+
+    task = wired.serve(20)
+    try:
+        told = await server_mod.preset("publication-cartoon")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert "ghost-surface" in told["user_actions"]
+
+
+async def test_a_second_click_does_not_swallow_the_first(wired, tmp_path):
+    """A click runs `preset`, and `preset` is a tool whose reply can drain.
+
+    That reply goes back to the page, where no model will ever read it, so a
+    click that drained would delete the news of the click before it. Two
+    clicks, one report, and the model would be told about half of what
+    happened.
+    """
+    await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _record(wired, [])
+    await _click(wired, "ghost-surface", rid="click-1")
+    await _click(wired, "ghost-surface", rid="click-2")
+
+    assert len(server_mod._user_actions) == 2
 
 
 async def test_a_reply_says_nothing_when_the_user_did_nothing(wired, tmp_path):

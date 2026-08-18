@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import contextvars
 import datetime
 import functools
 import gzip
@@ -121,6 +122,17 @@ _path_tracing = False
 _user_actions: list[str] = []
 
 
+#: True while a tool call is already on its way to becoming a reply.
+#:
+#: A ContextVar rather than a counter because tool calls can overlap: under a
+#: plain global, one call's nested `hide()` would silence a *different* call
+#: that was about to report correctly. Copied into tasks, so a tool that spawns
+#: one still counts as nested.
+_replying_to_model: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_replying_to_model", default=False
+)
+
+
 def _take_user_actions() -> str:
     """Drain what the user did, as a phrase, or "" if they did nothing.
 
@@ -167,7 +179,22 @@ def _tool(*args: Any, **kwargs: Any) -> Any:
     def decorate(fn: Any) -> Any:
         @functools.wraps(fn)
         async def carrying(*call_args: Any, **call_kwargs: Any) -> Any:
-            return _carrying_user_actions(await fn(*call_args, **call_kwargs))
+            # Only the outermost call is a reply to the model, and only a reply
+            # to the model may drain. Several tools reach other tools through
+            # helpers — `_take_the_scene` calls `hide`, `_set_effects` calls
+            # `effects` — and the inner reply is discarded by the caller. Left
+            # unguarded the news went into that discarded dict and the model
+            # heard nothing, which is worse than never having recorded it: the
+            # tools that nest are the presets, and a preset is exactly what a
+            # click applies.
+            if _replying_to_model.get():
+                return await fn(*call_args, **call_kwargs)
+            token = _replying_to_model.set(True)
+            try:
+                result = await fn(*call_args, **call_kwargs)
+            finally:
+                _replying_to_model.reset(token)
+            return _carrying_user_actions(result)
 
         return _mcp_tool(*args, **kwargs)(carrying)
 
@@ -2536,7 +2563,14 @@ async def _invoke_from_page(view: str) -> str:
         raise ViewerError(
             f"Unknown view {view!r}. Available: {', '.join(sorted(_PAGE_VIEWS))}"
         )
-    await preset(preset_name)
+    # A click is not a reply to the model, so nothing it runs may drain the
+    # queue: without this the `preset` below would take an earlier click's news
+    # into a reply that goes back to the page, where the model never sees it.
+    token = _replying_to_model.set(True)
+    try:
+        await preset(preset_name)
+    finally:
+        _replying_to_model.reset(token)
     _user_actions.append(f"applied the {view} view")
     return view
 
