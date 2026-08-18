@@ -23,6 +23,15 @@ nothing is released yet, so everything below is unreleased.
   finds the nine tools taking a path, and asserts none is reachable from the
   page.
 
+- **`ghost-surface` no longer wraps the water.** A molecular surface is computed
+  per atom, so an isolated solvent molecule gets its own closed blob: 1UBQ drew
+  fifty-eight of them, detached spheres floating around the fold and 14% of
+  everything on screen — coverage fell from 0.1154 to 0.0996 with them gone.
+  Ligands and ions stay, because they are part of the molecule's shape and the
+  envelope should bulge around a bound ligand rather than ignore it. Found by
+  someone looking at the picture and saying it looked strange, which is the only
+  instrument that was ever going to catch it.
+
 - **Every tool reply says what the person at the viewer did.** Without it the
   model answers about a scene it did not produce and has no way to know changed
   — this project's oldest failure mode, arriving through a door we opened

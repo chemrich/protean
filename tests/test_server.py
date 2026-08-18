@@ -1829,6 +1829,40 @@ async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
     assert out["applied_to"] == "site"
 
 
+async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
+    wired_bridge, tmp_path
+):
+    """A molecular surface is per atom, so an isolated water gets its own blob.
+
+    1UBQ drew fifty-eight of them — detached spheres floating around the fold,
+    14% of everything on screen, and the first thing anyone looking at the view
+    asked about. Ligands and ions stay: they are part of the molecule's shape.
+    """
+    await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
+    _record(wired_bridge, [])
+    task = wired_bridge.serve(20)
+    try:
+        await preset("ghost-surface")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    ghost = server_mod._handles.get("auto_ghost")
+    array = server_mod._structure
+    assert len(ghost) > 0
+    assert len(ghost) < array.array_length(), "the whole structure was wrapped"
+    assert "HOH" not in {str(r) for r in array[ghost.indices].res_name}
+
+
+async def test_ghost_surface_refuses_a_structure_that_is_only_solvent(
+    wired_bridge, tmp_path
+):
+    await _load(wired_bridge, _water_only_pdb(tmp_path / "wet.pdb"))
+    with pytest.raises(ViewerError, match="nothing but solvent"):
+        await preset("ghost-surface")
+
+
 async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired_bridge, [])

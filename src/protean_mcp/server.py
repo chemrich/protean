@@ -2266,11 +2266,27 @@ async def _preset_ghost_surface(target: str) -> list[str]:
     replace whatever that handle was already drawing — the component is rebuilt,
     not layered — so the cartoon you wanted to see inside the ghost would
     silently disappear. The surface gets its own handle over the same atoms.
+
+    **Over the whole scene it means everything except the solvent.** A molecular
+    surface is computed per atom, so an isolated water gets its own closed
+    blob: 1UBQ drew fifty-eight of them, detached spheres floating around the
+    fold, and they were 14% of everything on screen. Ligands and ions stay in —
+    they are part of the molecule's shape, and the envelope should bulge around
+    a bound ligand rather than ignore it. Only the solvent is scenery.
     """
     array = _require_structure()
     if target == _WHOLE_SCENE:
-        indices = np.arange(array.array_length())
-        origin = "preset(ghost-surface) over everything"
+        try:
+            mask = _evaluate(_parse_selection("not solvent"), array)
+        except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+            raise ViewerError(str(exc)) from exc
+        indices = np.flatnonzero(mask)
+        if not len(indices):
+            raise ViewerError(
+                "This structure is nothing but solvent, so a ghost surface over "
+                "it would wrap water. Pass a handle naming what to wrap."
+            )
+        origin = "preset(ghost-surface) over everything but the solvent"
     else:
         try:
             indices = _handles.get(target).indices
