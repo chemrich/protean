@@ -1033,7 +1033,7 @@ Three changes, and the order matters:
 
 ## One finding from building the style presets, 2026-08-17
 
-### 26. `show()` on a handle moves the camera the second time, not the first — open
+### 26. `show()` on a handle moves the camera the second time, not the first — open, and it is a race
 
 Found while making a view idempotent, and it belongs to `show()` rather than to
 the presets: reproduced with plain `hide()`/`select()`/`show()` calls and no
@@ -1065,12 +1065,51 @@ three frames are identical. The style presets take the `reset_view()` route for
 whole-scene views (docs/views.md §5.1), which fixes it *there* and leaves
 `show()` itself as it is.
 
-**What is not known** is which end is wrong. Mol\* auto-fitting the camera on a
-component rebuild may be the intended behaviour, in which case the defect is
-only that it does not happen on the first draw; or the auto-fit may be something
-protean should be suppressing so a caller's camera is never taken from them.
-Deciding needs a reading of when Mol\* requests a camera reset, which was out of
-scope for the presets and is the whole of this item.
+**Corrected 2026-08-18: it is intermittent, not deterministic.** The reading of
+Mol\* this item asked for was done, and so was the measurement, and the
+measurement is the part that changed the entry. Running the reproduction above
+unchanged, fourteen times:
+
+```
+12 runs   show #1 vs #2   0.000000
+ 2 runs   show #1 vs #2   0.030043
+```
+
+So the numbers above were one observation of an event that fires roughly one
+time in seven, written up as though it always happened. Fourteen runs is enough
+to say "intermittent" and not enough to put a rate on it with any confidence,
+which is why the two counts are given rather than a percentage. Everything else in the entry
+holds — caught in the act, the camera genuinely moves and then stays:
+
+```
+after show #1:  camera z = 80.952   coverage 0.0050
+after show #2:  camera z = 36.061   coverage 0.0251   <- refit, closer
+after show #3:  camera z = 36.061   coverage 0.0251   <- and holds
+```
+
+**Where it comes from.** `commitScene` in `canvas3d.js` snapshots the visible
+bounding sphere *before* committing, then requests a camera reset if
+`reprCount === 0 || shouldResetCamera()`. `shouldResetCamera` asks whether any
+visible renderable has moved outside that old sphere and whether the camera
+sphere overlaps anything. A commit has a 250 ms budget and returns early when it
+cannot finish, so **which commit boundary a `hide` and a `show` land on decides
+whether the test is taken against the old scene or the new one** — and that is
+the race.
+
+**Which end is wrong, decided on the evidence:** the defect is that `show()` is
+neither. A caller cannot rely on the camera moving or on it staying, which is
+worse than either. `p.camera.manualReset` is Mol\*'s own lever — it gates every
+auto-reset in `commitScene`, defaults to `false`, and **protean has never set
+it**. Turning it on after the initial load would make `show()` deterministic and
+leave the camera to `focus()` and `reset_view()`, which is where a caller can
+see it move. The cost is that protean would then owe an explicit fit at load,
+where it currently gets one free.
+
+**Possibly the same thing as item 32**, which is also an intermittent framing
+difference at a similar rate. Not established: 32's control renders identical
+geometry, and whether its camera moves has not been measured. Doing that
+measurement is the cheapest way to find out, and would either merge the two
+items or separate them properly.
 
 ### 27. `load_structure` never waited for the camera it moved — fixed
 
