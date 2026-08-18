@@ -342,17 +342,47 @@ distance filter. Unknown: whether `mutation` should verify the stated residue
 actually matches the structure, which it should, and what it does when it does
 not.
 
-### 5.4 Pharmacophore and pLDDT — stub
+### 5.4 Pharmacophore and pLDDT — stub, and cheaper than it says
 
-Both are extension work rather than recipe work.
+~~Both are extension work rather than recipe work.~~
 
-Pharmacophore rides on Mol\*'s `interactions` extension. Unknown: what
-registering an extension does to the bundle size the wheel ships, and whether
-its interaction types are the ones a pharmacophore wants or merely adjacent.
+**Wrong on the premise, corrected 2026-08-17.** Neither needs an extension
+registered, because the *prebuilt* Mol\* bundle protean ships already registers
+them. Read from the live registries through `capabilities()`, twice, against two
+different server processes:
 
-pLDDT needs `model-archive/quality-assessment` registered. Unknown: whether to
-use its theme or protean's own banded palette — the bands are conventional and
-readers expect the standard colours.
+- **`plddt-confidence` is in the colour-theme registry.** So is the rest of that
+  family — `qmean-score`, `pdbe-structure-quality-report`, `rcsb-density-fit`,
+  `sb-ncbr-partial-charges`.
+- **`interactions` is in the representation registry**, alongside
+  `interaction-type` as a colour theme.
+
+The stub's reasoning was sound and its fact was not: it assumed protean builds
+Mol\* from source and registers a chosen set. protean loads `molstar.js`, the
+prebuilt bundle — that is why bundling from source needs >4 GB of RAM and this
+project does not do it — and the prebuilt bundle carries the extensions. **The
+bundle-size question therefore does not arise; the wheel already ships them.**
+
+What is *not* measured, and is the same trap this document has fallen into
+before: **whether either reaches the pixels.** Being in the registry means
+`show()` and `color()` will accept the name, which is exactly what the planning
+probe once mistook for the theme working. Each needs the differential treatment
+§5.1's themes got — drawn against a hidden scene, compared as pixels — before
+anything is built on it.
+
+Still open, and untouched by the correction: whether to use Mol\*'s pLDDT theme
+or protean's own banded palette (the bands are conventional and readers expect
+the standard colours), and whether the `interactions` types are the ones a
+pharmacophore wants or merely adjacent. §6 predicted that last one would be the
+gap, and nothing here has tested it.
+
+**The blocker is elsewhere, and it is real.** pLDDT is a property of a predicted
+model, and protean cannot currently load one: `fetch_structure(source=
+"alphafold")` is pinned to `model_v4`, which AlphaFold DB has retired — 404 for
+every accession tried — and a model fetched by hand fails the analysis parser
+under the default `assembly="biological"` because predicted models carry no
+`pdbx_struct_assembly_gen`. Backlog 33 and 34. Both were found by trying to
+measure this section rather than by reading it.
 
 Decided already: **pLDDT is not a GUI toggle.** It is a property of the model,
 meaningful for a predicted structure and meaningless for an experimental one, so

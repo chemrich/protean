@@ -1176,3 +1176,63 @@ The test's failure message now also carries each frame's size and coverage.
 Deliberately not done: raising the budget. A bigger number would make the
 symptom rarer and the diagnosis no easier, and the budget was never measured
 against anything in the first place.
+
+## Two findings from trying to use AlphaFold support, 2026-08-17
+
+Both found while measuring docs/views.md §5.4, which needs a predicted model to
+say anything about pLDDT. Together they mean **`fetch_structure(source=
+"alphafold")` does not work at all** — one of the three sources that tool
+documents.
+
+### 33. The AlphaFold URL is pinned to a retired version — open
+
+`fetch.py` builds `https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v4.cif`.
+AlphaFold DB is now on **v6** and v4 is gone:
+
+```
+P69905  v4: 404   v6: 200
+P0DTC2  v4: 404   v6: 404
+Q8N158  v4: 404   v6: 200
+```
+
+Not one accession's problem — the database version bumped and every AlphaFold
+fetch fails with *"Not found upstream"*, which reads as "no such protein" rather
+than "protean is asking for a file that no longer exists". P0DTC2 fails on both,
+so some accessions are genuinely absent and the two causes are indistinguishable
+from the message.
+
+**Bumping the number is the wrong fix**, or at least not the whole one: it would
+work until the next release and then fail the same way, silently, at whatever
+distance in time. The database publishes the answer —
+`https://alphafold.ebi.ac.uk/api/prediction/{accession}` returns `cifUrl` with
+the current version and a `latestVersion` field — so the version is something to
+*ask for* rather than to hardcode. One extra request, and it cannot go stale.
+
+Worth a test that the URL protean builds is one the database serves, which no
+existing test covers: the fetch tests use local files and a mocked upstream, so
+the whole suite passes with the tool completely broken.
+
+### 34. A predicted model fails the analysis parser by default — open
+
+An AlphaFold mmCIF loaded from disk:
+
+```
+Loaded af-P69905 ... [analysis unavailable: Could not parse mmcif coordinates:
+File has no 'pdbx_struct_assembly_gen' category]
+```
+
+The viewer draws it; selections and every analysis tool are unavailable. Loading
+the same file with `assembly="asymmetric"` works and reports 1077 atoms in both
+copies, so the failure is the **default**, not the parser.
+
+`assembly="biological"` is the right default for a deposited structure and
+meaningless for a predicted one, which has no crystallographic assembly to
+build. The fix is presumably to fall back to the deposited coordinates when
+there is no assembly category rather than to fail the analysis half — but that
+touches the same question as backlog 18, which is already open about
+`parse_structure` and `load_structure` disagreeing on what "the structure"
+means. Worth settling together.
+
+The reply does say what happened, which is the difference between this and a
+silent failure. It says it in a note a caller has to read, at the end of a line
+about a successful load.
