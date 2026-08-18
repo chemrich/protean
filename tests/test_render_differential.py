@@ -935,11 +935,11 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 
 _VIEW_SEQUENCE = [
     "textbook",
-    "bfactor",
     "putty",
     "hydrophobic-surface",
     "cinematic",
-    "pointillist",
+    "spacefill",
+    "skeleton",
 ]
 
 
@@ -1084,9 +1084,21 @@ async def test_putty_width_follows_the_bfactor_it_claims():
 
 # -- a control that asks the server, from docs/views.md §4 ---------------------
 
-_CLICK_VIEW = "(document.getElementById('view-ghost').click(), JSON.stringify('ok'))"
-_BUTTON_IDLE = "JSON.stringify(!document.getElementById('view-ghost').disabled)"
-_BUTTON_LABEL = "JSON.stringify(document.getElementById('view-ghost').textContent)"
+# Driven by what a person does — open the menu, click the entry — rather than by
+# reaching for an element id the page happens to use. The single button these
+# once addressed became a menu, and the tests failed on `null.click()` rather
+# than on anything about the behaviour, which is the wrong way for a test to
+# notice a redesign.
+# By the name the server uses, not by the label: the label reads "asking…" for
+# the length of a round trip, so anything keyed on text loses the element at
+# exactly the moment this waits on it.
+_ITEM = "document.querySelector('.view-menu-item[data-view=\"ghost-surface\"]')"
+_CLICK_VIEW = (
+    "(document.getElementById('view-menu-button').click(),"
+    f" {_ITEM}.click(), JSON.stringify('ok'))"
+)
+_BUTTON_IDLE = f"JSON.stringify(!{_ITEM}.disabled)"
+_BUTTON_LABEL = "JSON.stringify(document.getElementById('view-menu-button').textContent)"
 
 
 async def _click_and_settle(session, timeout: float = 60) -> str:

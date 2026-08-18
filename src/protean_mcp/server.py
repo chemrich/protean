@@ -2393,15 +2393,6 @@ async def _preset_active_site(target: str) -> list[str]:
 # table of the differences makes both impossible rather than unlikely.
 
 
-async def _pointillist_style(_target: str, _handle: str) -> list[str]:
-    """Dark ground and no lighting model, so dots read as dots."""
-    return [
-        await _run(background, color="#05070c", gradient="off"),
-        await _run(lighting, rig="flat"),
-        await _set_effects(),
-    ]
-
-
 async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
     """Ring lighting, because a surface's curvature is what is being read.
 
@@ -2435,12 +2426,6 @@ _VIEWS: dict[str, _View] = {
         color="secondary-structure",
         style=lambda target, handle: _preset_illustrative(target),
     ),
-    "bfactor": _View(
-        selection="polymer",
-        representation="cartoon",
-        color="uncertainty",
-        style=lambda target, handle: _preset_publication_cartoon(target),
-    ),
     "putty": _View(
         selection="polymer",
         representation="putty",
@@ -2453,13 +2438,24 @@ _VIEWS: dict[str, _View] = {
         color="hydrophobicity",
         style=_hydrophobic_style,
     ),
-    # Solvent is left out: waters are most of the atoms in a crystal structure
-    # and none of the shape, so including them draws a haze around the molecule.
-    "pointillist": _View(
+    # Solvent is left out of both of these: waters are most of the atoms in a
+    # crystal structure and none of the shape, so drawing them puts a haze of
+    # spheres or sticks around the molecule. Ligands and ions are kept, because
+    # in an all-atom view they are usually the point.
+    "spacefill": _View(
         selection="not solvent",
-        representation="point",
+        representation="spacefill",
         color="element-symbol",
-        style=_pointillist_style,
+        style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    # Ball-and-stick rather than `line`: a line model has no thickness to
+    # shade, so the ambient occlusion that makes this look like an object
+    # instead of a diagram would have nothing to work on.
+    "skeleton": _View(
+        selection="not solvent",
+        representation="ball-and-stick",
+        color="element-symbol",
+        style=lambda target, handle: _preset_publication_cartoon(target),
     ),
 }
 
@@ -2602,10 +2598,10 @@ _VIEW_LAYERS = "layers"
 #: button has none to give.
 _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "textbook": ("textbook", _VIEW_DRAWS),
-    "bfactor": ("bfactor", _VIEW_DRAWS),
     "putty": ("putty", _VIEW_DRAWS),
     "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
-    "pointillist": ("pointillist", _VIEW_DRAWS),
+    "spacefill": ("spacefill", _VIEW_DRAWS),
+    "skeleton": ("skeleton", _VIEW_DRAWS),
     "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
     "illustrative": ("illustrative", _VIEW_STYLES),
     "cinematic": ("cinematic", _VIEW_STYLES),

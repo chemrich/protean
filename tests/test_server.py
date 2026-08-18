@@ -1898,7 +1898,7 @@ async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_pa
 # the viewer's load preset, so a view has to hide it and take the scene over, and
 # two views in a row have to replace each other rather than stack.
 
-_DRAWING_PRESETS = ["textbook", "bfactor", "putty", "hydrophobic-surface", "pointillist"]
+_DRAWING_PRESETS = ["textbook", "putty", "hydrophobic-surface", "spacefill", "skeleton"]
 
 
 async def _preset_calls(
@@ -2122,10 +2122,17 @@ async def test_a_view_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_pat
         await preset("putty", handle="nope")
 
 
-async def test_pointillist_leaves_the_solvent_out(wired_bridge, tmp_path):
-    """Waters are most of the atoms in a crystal structure and none of the shape."""
+@pytest.mark.parametrize("view", ["spacefill", "skeleton"])
+async def test_an_all_atom_view_leaves_the_solvent_out(wired_bridge, tmp_path, view):
+    """Waters are most of the atoms in a crystal structure and none of the shape.
+
+    It matters more for these two than for a cartoon: drawing every water as a
+    sphere or a stick puts a haze around the molecule rather than a few extra
+    marks. Ligands and ions stay, because in an all-atom view they are usually
+    the point.
+    """
     await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
-    await _preset_calls(wired_bridge, tmp_path, "pointillist")
+    await _preset_calls(wired_bridge, tmp_path, view)
 
     scene = server_mod._handles.get("auto_view")
     array = server_mod._structure

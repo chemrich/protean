@@ -252,6 +252,13 @@ export function connectBridge(handle: Handler): PageChannel {
         if (Array.isArray(msg.views)) viewsHandler?.(msg.views as ViewOffer[]);
         return;
       }
+      // The same list the pong carries, sent when the server learns it after a
+      // page is already connected. Ordering should not decide whether a menu
+      // exists.
+      if (msg.action === 'protean_views') {
+        if (Array.isArray(msg.views)) viewsHandler?.(msg.views as ViewOffer[]);
+        return;
+      }
       if (msg.action === 'protean_superseded') {
         superseded = true;
         setStatus(false);

@@ -99,9 +99,38 @@ class ViewerBridge:
         handler: Callable[[str], Awaitable[str]],
         views: list[dict[str, str]] | None = None,
     ) -> None:
-        """Say what a view request from the page should run, and what it may ask for."""
+        """Say what a view request from the page should run, and what it may ask for.
+
+        The catalogue reaches the page on the handshake, and *also* now if one
+        has already happened. Otherwise this only works when the server is
+        wired before the viewer connects — true in production and not in the
+        test harness, where the page is up first, so the menu came out empty
+        and the arrangement being tested was not the one that ships.
+        """
         self._invoke = handler
         self._views = views or []
+        if self._ws is not None and not self._ws.closed:
+            self._announce_views(self._ws)
+
+    def _announce_views(self, ws: web.WebSocketResponse) -> None:
+        """Tell a connected page what it may ask for, without awaiting."""
+
+        async def send() -> None:
+            with contextlib.suppress(ConnectionResetError, RuntimeError):
+                await ws.send_json({"action": "protean_views", "views": self._views})
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Wired outside a loop, which is how a server sets itself up before
+            # anything is connected. There is nobody to tell, and the handshake
+            # will carry the catalogue when somebody arrives.
+            return
+        task = loop.create_task(send())
+        # asyncio holds only weak references to tasks, so an unheld one can be
+        # collected mid-flight.
+        self._invocations.add(task)
+        task.add_done_callback(self._invocations.discard)
 
     # -- lifecycle -----------------------------------------------------------
 

@@ -157,6 +157,10 @@ function mountViewMenu(channel: PageChannel): void {
       for (const view of offered) {
         const item = document.createElement('button');
         item.className = 'view-menu-item';
+        // The name the server uses, kept as an attribute because the label is
+        // not stable: it reads "asking…" for the length of a round trip, and
+        // anything identifying the item by its text loses it exactly then.
+        item.dataset.view = view.name;
         item.textContent = readable(view.name);
         item.addEventListener('click', () => void ask(view.name, item));
         menu.appendChild(item);
@@ -170,6 +174,7 @@ function mountViewMenu(channel: PageChannel): void {
     for (const view of unplaced) {
       const item = document.createElement('button');
       item.className = 'view-menu-item';
+      item.dataset.view = view.name;
       item.textContent = readable(view.name);
       item.addEventListener('click', () => void ask(view.name, item));
       menu.appendChild(item);
