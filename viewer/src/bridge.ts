@@ -35,6 +35,14 @@ export function reportable(id: string, payload: string, limit = MAX_REPLY_BYTES)
 // is a bug the user cannot diagnose.
 const MAX_ATTEMPTS = 20;
 
+/** How long a click waits for the server before deciding it is not coming.
+ *
+ * Generous, because a view can mesh a molecular surface and that is genuinely
+ * slow under software rendering — the measured worst case in this project is a
+ * capture near two minutes. The point of the bound is not to police a slow
+ * render but to end a wait that will never end. */
+const INVOKE_TIMEOUT_MS = 180_000;
+
 /** What the server says about a view the page asked for. */
 export interface InvokeReply {
   ok: boolean;
@@ -268,7 +276,25 @@ export function connectBridge(handle: Handler): PageChannel {
         });
       }
       const id = `invoke-${++asked}`;
-      const settled = new Promise<InvokeReply>((resolve) => invocations.set(id, resolve));
+      const settled = new Promise<InvokeReply>((resolve) => {
+        invocations.set(id, resolve);
+        // A socket that closes settles the wait; a server that simply never
+        // answers does not, and that is not hypothetical. A page outlives the
+        // server it was opened against — reconnect a viewer to a protean older
+        // than this bundle and `protean_invoke` is an action it has never heard
+        // of: it logs an unmatched message and replies to nobody. The button
+        // would sit on "asking…" for the rest of the session, which reads as a
+        // slow render rather than as a server that cannot do this.
+        setTimeout(() => {
+          if (!invocations.delete(id)) return;
+          resolve({
+            ok: false,
+            error:
+              'protean never answered. It may be older than this page — ' +
+              'reload the tab, and if that does not help, restart the server.',
+          });
+        }, INVOKE_TIMEOUT_MS);
+      });
       current.send(JSON.stringify({ action: 'protean_invoke', id, view }));
       return settled;
     },

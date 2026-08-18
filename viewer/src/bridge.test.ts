@@ -375,3 +375,38 @@ describe('a view the page asks for', () => {
     expect(latest().sent).toEqual([]);
   });
 });
+
+describe('a server that never answers a click', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('gives up rather than leaving the button asking forever', async () => {
+    // Not hypothetical: a page outlives the server it was opened against, and
+    // a protean older than this bundle has never heard of `protean_invoke`. It
+    // logs an unmatched message and replies to nobody, so without a bound the
+    // button sits on "asking…" for the rest of the session — which reads as a
+    // slow render rather than as a server that cannot do this at all. Found by
+    // clicking the button against a two-day-old server, not by review.
+    vi.useFakeTimers();
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    const settled = channel.invoke('ghost-surface');
+    // The socket stays open and the server says nothing at all.
+    await vi.advanceTimersByTimeAsync(180_000);
+
+    const reply = await settled;
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toMatch(/never answered/);
+  });
+
+  it('does not give up on a view that is merely slow', async () => {
+    vi.useFakeTimers();
+    const channel = connectBridge(async () => ({}));
+    latest().onopen!();
+    const settled = channel.invoke('ghost-surface');
+    await vi.advanceTimersByTimeAsync(170_000);
+    const { id } = latest().sent.at(-1);
+    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-surface' });
+
+    await expect(settled).resolves.toMatchObject({ ok: true });
+  });
+});
