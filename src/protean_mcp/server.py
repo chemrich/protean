@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import contextvars
 import datetime
 import functools
 import gzip
@@ -110,6 +111,95 @@ _conservation_scores: dict[str, Any] = {}
 # Whether the viewer is path tracing, mirrored from the last path_trace() reply
 # so screenshot() knows which timeout to use.
 _path_tracing = False
+
+# What the person at the viewer did since the model last heard anything.
+#
+# Without this the model answers about a scene it did not produce and has no way
+# to know changed — the desync this project exists to prevent, arriving through
+# a door we opened ourselves. MCP can push notifications, but client support is
+# uneven, so this rides out on the next tool reply instead: no client support
+# needed, and a model cannot act on a stale picture without being told.
+_user_actions: list[str] = []
+
+
+#: True while a tool call is already on its way to becoming a reply.
+#:
+#: A ContextVar rather than a counter because tool calls can overlap: under a
+#: plain global, one call's nested `hide()` would silence a *different* call
+#: that was about to report correctly. Copied into tasks, so a tool that spawns
+#: one still counts as nested.
+_replying_to_model: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_replying_to_model", default=False
+)
+
+
+def _take_user_actions() -> str:
+    """Drain what the user did, as a phrase, or "" if they did nothing.
+
+    Drained rather than read: the point is to say it once, at the first moment
+    the model can act on it. Left in place it would ride out on every later
+    reply too, and a model told twice about one click will reasonably conclude
+    there were two.
+    """
+    if not _user_actions:
+        return ""
+    done = ", ".join(_user_actions)
+    _user_actions.clear()
+    return f"since your last call the user {done} in the viewer"
+
+
+def _carrying_user_actions(result: Any) -> Any:
+    """Attach the news to a reply, in whatever shape that reply has."""
+    if not _user_actions:
+        return result
+    if isinstance(result, str):
+        return f"{result} [{_take_user_actions()}]"
+    if isinstance(result, dict):
+        return {**result, "user_actions": _take_user_actions()}
+    # A screenshot replies with a list of image content and has nowhere to put
+    # a sentence. Left undrained on purpose: the next reply that can carry it
+    # will, which is later than ideal and better than dropping it.
+    return result
+
+
+_mcp_tool = mcp.tool
+
+
+def _tool(*args: Any, **kwargs: Any) -> Any:
+    """`mcp.tool()`, and every reply carries what the user did in the viewer.
+
+    Wrapped once here rather than added to fifty-three replies by hand, which
+    is the version that goes stale: the next tool anyone writes would be the
+    one that forgets, and nothing would fail. `functools.wraps` carries the
+    name, docstring and signature across, so the schema FastMCP generates is
+    byte-identical to the unwrapped one — checked, because the schema is the
+    only thing a model ever sees of these functions.
+    """
+
+    def decorate(fn: Any) -> Any:
+        @functools.wraps(fn)
+        async def carrying(*call_args: Any, **call_kwargs: Any) -> Any:
+            # Only the outermost call is a reply to the model, and only a reply
+            # to the model may drain. Several tools reach other tools through
+            # helpers — `_take_the_scene` calls `hide`, `_set_effects` calls
+            # `effects` — and the inner reply is discarded by the caller. Left
+            # unguarded the news went into that discarded dict and the model
+            # heard nothing, which is worse than never having recorded it: the
+            # tools that nest are the presets, and a preset is exactly what a
+            # click applies.
+            if _replying_to_model.get():
+                return await fn(*call_args, **call_kwargs)
+            token = _replying_to_model.set(True)
+            try:
+                result = await fn(*call_args, **call_kwargs)
+            finally:
+                _replying_to_model.reset(token)
+            return _carrying_user_actions(result)
+
+        return _mcp_tool(*args, **kwargs)(carrying)
+
+    return decorate
+
 
 # An ordinary capture is well under a second; the tracer takes seconds to
 # minutes, and aborting it would report a stall for work that was succeeding.
@@ -278,10 +368,26 @@ def _static_dir() -> Path | None:
 
 
 def get_bridge() -> ViewerBridge:
-    global _bridge  # noqa: PLW0603 - deliberate module-level singleton
     if _bridge is None:
-        _bridge = ViewerBridge(static_dir=_static_dir())
+        return use_bridge(ViewerBridge(static_dir=_static_dir()))
     return _bridge
+
+
+def use_bridge(bridge: ViewerBridge) -> ViewerBridge:
+    """Adopt a bridge as this process's viewer, and say what a click on it may do.
+
+    One function because there are two ways to arrive here — the bridge this
+    module builds for itself, and one handed in by a test or a restore — and
+    the interesting half is not the assignment but `on_invoke`. Wiring that at
+    the point of construction would leave every other path with a socket a page
+    can talk to and no rule about what it may ask for, which is the kind of gap
+    that is invisible until someone finds it. A test asserts the handler is
+    there rather than trusting this comment.
+    """
+    global _bridge  # noqa: PLW0603 - deliberate module-level singleton
+    _bridge = bridge
+    bridge.on_invoke(_invoke_from_page)
+    return bridge
 
 
 def _require_viewer() -> ViewerBridge:
@@ -350,7 +456,7 @@ def _visibility_note(bridge: ViewerBridge) -> str:
     return f" (tab is {visibility} — rendering runs on the background-tab pump)"
 
 
-@mcp.tool()
+@_tool()
 async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
 
@@ -385,7 +491,7 @@ async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     return f"Viewer connected at {shown}{_visibility_note(bridge)}"
 
 
-@mcp.tool()
+@_tool()
 async def fetch_structure(
     identifier: str,
     source: str = "auto",
@@ -446,6 +552,17 @@ async def fetch_structure(
     )
     if loaded is not None:
         note += _assembly_note(loaded, result)
+    if isinstance(result, dict) and result.get("camera_settled") is False:
+        # The viewer frames a new molecule with a tweened camera move and waits
+        # for it to land. When that wait runs out of budget the camera is still
+        # travelling, and a capture taken now is framed for somewhere it was
+        # passing through. Said out loud because the alternative is a figure
+        # that looks like a measurement and is not.
+        note += (
+            " [the camera was still moving when the viewer stopped waiting, so a "
+            "capture taken immediately may be framed mid-move — reset_view() "
+            "settles it]"
+        )
     note += discarded
     return f"Loaded {label} ({structure.format}, from {origin}): {result}{note}"
 
@@ -543,7 +660,7 @@ def _assembly_note(loaded: Any, viewer_result: Any) -> str:
     return "".join(parts) + "]"
 
 
-@mcp.tool()
+@_tool()
 async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[str, Any]:
     """Resolve a PyMOL-syntax selection into a named handle.
 
@@ -597,7 +714,7 @@ async def select(selection: str, name: str = "sele", limit: int = 200) -> dict[s
     return summary
 
 
-@mcp.tool()
+@_tool()
 async def combine(operation: str, of: list[str], name: str) -> dict[str, Any]:
     """Build a handle from existing ones: union, intersect or subtract.
 
@@ -615,7 +732,7 @@ async def combine(operation: str, of: list[str], name: str) -> dict[str, Any]:
     return summary
 
 
-@mcp.tool()
+@_tool()
 async def near(
     of: str,
     radius: float = 5.0,
@@ -656,7 +773,7 @@ async def near(
     return summary
 
 
-@mcp.tool()
+@_tool()
 async def invert(of: str, name: str) -> dict[str, Any]:
     """Everything the given handle does not contain."""
     array = _require_structure()
@@ -672,7 +789,7 @@ async def invert(of: str, name: str) -> dict[str, Any]:
     return summary
 
 
-@mcp.tool()
+@_tool()
 async def show(
     representation: str = "cartoon",
     selection: str | None = None,
@@ -733,7 +850,7 @@ async def show(
     return {"name": label, "representation": representation, **_summarise(array, indices)}
 
 
-@mcp.tool()
+@_tool()
 async def color(color: str, name: str = "sele") -> dict[str, Any]:
     """Recolour an existing named selection.
 
@@ -743,7 +860,7 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
     return await _call("color", {"name": name, "color": color})
 
 
-@mcp.tool()
+@_tool()
 async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
     """Make an already-displayed selection transparent.
 
@@ -756,7 +873,7 @@ async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
     return await _call("opacity", {"name": name, "opacity": opacity})
 
 
-@mcp.tool()
+@_tool()
 async def effects(
     outline: bool | None = None,
     outline_color: str | None = None,
@@ -967,7 +1084,7 @@ def _snapshot_pixels(
     return pixels, millimetres
 
 
-@mcp.tool()
+@_tool()
 async def snapshot(
     path: str,
     column: str | None = None,
@@ -1072,7 +1189,7 @@ async def snapshot(
     }
 
 
-@mcp.tool()
+@_tool()
 async def load_trajectory(
     path: str, stride: int = 1, max_frames: int = 100
 ) -> dict[str, Any]:
@@ -1137,7 +1254,7 @@ def _require_trajectory() -> Any:
     return _trajectory
 
 
-@mcp.tool()
+@_tool()
 async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
     """Per-atom fluctuation across the trajectory, as numbers.
 
@@ -1204,7 +1321,7 @@ async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def color_by_rmsf(
     representation: str = "cartoon",
     scale: str = "relative",
@@ -1286,7 +1403,7 @@ async def color_by_rmsf(
     }
 
 
-@mcp.tool()
+@_tool()
 async def rmsd_series(reference: int = 0) -> dict[str, Any]:
     """RMSD of every frame against one of them, after superposing onto it.
 
@@ -1312,7 +1429,7 @@ async def rmsd_series(reference: int = 0) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def frame(index: int) -> dict[str, Any]:
     """Show one frame of the loaded trajectory.
 
@@ -1387,7 +1504,7 @@ async def _capture_sequence(
     }
 
 
-@mcp.tool()
+@_tool()
 async def record_trajectory(
     directory: str, width: int = 1200, stride: int = 1, transparent: bool | None = None
 ) -> dict[str, Any]:
@@ -1428,7 +1545,7 @@ async def record_trajectory(
     return {**result, "of": total, "stride": stride}
 
 
-@mcp.tool()
+@_tool()
 async def keyframe(name: str, remove: bool = False) -> dict[str, Any]:
     """Remember where the camera is now, under a name.
 
@@ -1457,7 +1574,7 @@ async def keyframe(name: str, remove: bool = False) -> dict[str, Any]:
     return {"keyframe": name, "keyframes": list(_keyframes), **_keyframes[name]}
 
 
-@mcp.tool()
+@_tool()
 async def list_keyframes() -> dict[str, Any]:
     """The camera positions saved so far, in the order a timeline will use."""
     return {
@@ -1466,7 +1583,7 @@ async def list_keyframes() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def record_timeline(
     directory: str,
     frames: int = 60,
@@ -1523,7 +1640,7 @@ async def record_timeline(
     }
 
 
-@mcp.tool()
+@_tool()
 async def movie(
     directory: str, path: str, fps: int = 30, overwrite: bool = False
 ) -> dict[str, Any]:
@@ -1552,7 +1669,7 @@ async def movie(
         raise ViewerError(str(exc)) from exc
 
 
-@mcp.tool()
+@_tool()
 async def spin(
     mode: str = "spin", speed: float | None = None, angle: float | None = None
 ) -> dict[str, Any]:
@@ -1574,7 +1691,7 @@ async def spin(
     return await _call("spin", args)
 
 
-@mcp.tool()
+@_tool()
 async def turntable(
     directory: str,
     frames: int = 36,
@@ -1641,7 +1758,7 @@ async def turntable(
     }
 
 
-@mcp.tool()
+@_tool()
 async def path_trace(
     enabled: bool = True,
     quality: str = "standard",
@@ -1685,7 +1802,7 @@ async def path_trace(
     return result
 
 
-@mcp.tool()
+@_tool()
 async def material(
     finish: str = "matte",
     name: str = "sele",
@@ -1731,7 +1848,7 @@ async def material(
     return await _call("material", args)
 
 
-@mcp.tool()
+@_tool()
 async def shading(
     style: str, name: str = "sele", cel_steps: int | None = None
 ) -> dict[str, Any]:
@@ -1761,7 +1878,7 @@ async def shading(
     return await _call("shading", args)
 
 
-@mcp.tool()
+@_tool()
 async def lighting(
     rig: str = "standard",
     intensity: float | None = None,
@@ -1798,7 +1915,7 @@ async def lighting(
     return await _call("lighting", args)
 
 
-@mcp.tool()
+@_tool()
 async def background(
     color: str | None = None,
     transparent: bool | None = None,
@@ -1871,7 +1988,7 @@ async def background(
     return await _call("background", args)
 
 
-@mcp.tool()
+@_tool()
 async def label(name: str = "sele", level: str = "residue") -> dict[str, Any]:
     """Draw text labels on a named selection.
 
@@ -1880,19 +1997,19 @@ async def label(name: str = "sele", level: str = "residue") -> dict[str, Any]:
     return await _call("label", {"name": name, "level": level})
 
 
-@mcp.tool()
+@_tool()
 async def hide(name: str = "sele") -> dict[str, Any]:
     """Hide a named selection without discarding it; unhide() brings it back."""
     return await _call("hide", {"name": name})
 
 
-@mcp.tool()
+@_tool()
 async def unhide(name: str = "sele") -> dict[str, Any]:
     """Show a selection previously hidden with hide()."""
     return await _call("unhide", {"name": name})
 
 
-@mcp.tool()
+@_tool()
 async def remove(name: str = "sele") -> dict[str, Any]:
     """Delete a named selection and its representations from the scene.
 
@@ -1910,7 +2027,7 @@ async def remove(name: str = "sele") -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@_tool()
 async def list_selections() -> dict[str, Any]:
     """The named handles in this session, with sizes and where each came from.
 
@@ -1932,25 +2049,25 @@ async def list_selections() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def focus(name: str = "sele") -> dict[str, Any]:
     """Zoom the camera to a named selection, returning the resulting camera target."""
     return await _call("focus", {"name": name})
 
 
-@mcp.tool()
+@_tool()
 async def reset_view() -> dict[str, Any]:
     """Reset the camera to frame the whole scene."""
     return await _call("reset_view", {})
 
 
-@mcp.tool()
+@_tool()
 async def orient() -> dict[str, Any]:
     """Align the camera to the structure's principal axes."""
     return await _call("orient", {})
 
 
-@mcp.tool()
+@_tool()
 async def measure(kind: str, names: list[str]) -> dict[str, Any]:
     """Add a distance, angle, or dihedral between named selections.
 
@@ -1961,7 +2078,7 @@ async def measure(kind: str, names: list[str]) -> dict[str, Any]:
     return await _call("measure", {"kind": kind, "names": names})
 
 
-@mcp.tool()
+@_tool()
 async def capabilities() -> dict[str, Any]:
     """List the representation and colour-theme names this viewer accepts.
 
@@ -2176,11 +2293,27 @@ async def _preset_ghost_surface(target: str) -> list[str]:
     replace whatever that handle was already drawing — the component is rebuilt,
     not layered — so the cartoon you wanted to see inside the ghost would
     silently disappear. The surface gets its own handle over the same atoms.
+
+    **Over the whole scene it means everything except the solvent.** A molecular
+    surface is computed per atom, so an isolated water gets its own closed
+    blob: 1UBQ drew fifty-eight of them, detached spheres floating around the
+    fold, and they were 14% of everything on screen. Ligands and ions stay in —
+    they are part of the molecule's shape, and the envelope should bulge around
+    a bound ligand rather than ignore it. Only the solvent is scenery.
     """
     array = _require_structure()
     if target == _WHOLE_SCENE:
-        indices = np.arange(array.array_length())
-        origin = "preset(ghost-surface) over everything"
+        try:
+            mask = _evaluate(_parse_selection("not solvent"), array)
+        except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+            raise ViewerError(str(exc)) from exc
+        indices = np.flatnonzero(mask)
+        if not len(indices):
+            raise ViewerError(
+                "This structure is nothing but solvent, so a ghost surface over "
+                "it would wrap water. Pass a handle naming what to wrap."
+            )
+        origin = "preset(ghost-surface) over everything but the solvent"
     else:
         try:
             indices = _handles.get(target).indices
@@ -2321,7 +2454,7 @@ _PRESETS: dict[str, Any] = {
 }
 
 
-@mcp.tool()
+@_tool()
 async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
     """Apply a named recipe: lighting, effects, shading and materials at once.
 
@@ -2390,6 +2523,56 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
     _require_viewer()
     steps = await recipe(handle or _WHOLE_SCENE)
     return {"preset": name, "applied_to": handle or _WHOLE_SCENE, "steps": steps}
+
+
+# -- what a click can ask for --------------------------------------------------
+#
+# The page names a view from this list and nothing else. It is not a route to
+# the tool surface, and the difference is not stylistic: the socket is
+# token-authenticated, but the going-public pass established what a page holding
+# that token can already do. Reaching every tool would hand a hostile page
+# `snapshot(path=)`, `save_session(path=)`, `movie(path=)` and
+# `electrostatics(path=)` — every one of which writes to a caller-chosen path.
+# The write-protection in backlog 21 refuses to *change what a file is*, which
+# is not the same as refusing to write.
+#
+# So: view names from a fixed list, resolved here, run through the same tool a
+# model would call. A test enumerates the live tool registry and asserts nothing
+# reachable from the page takes a path — read from the registry rather than from
+# a list in a file, because the going-public pass found a hand-written list of
+# nine where fourteen tools existed.
+
+#: The tools a page-initiated request may reach, by name in the MCP registry.
+_PAGE_TOOLS = frozenset({"preset"})
+
+#: View names a click may ask for, and the preset each one means.
+_PAGE_VIEWS: dict[str, str] = {"ghost-surface": "ghost-surface"}
+
+
+async def _invoke_from_page(view: str) -> str:
+    """Run a view the person at the viewer asked for.
+
+    Deliberately `preset()` itself rather than the recipe behind it: one code
+    path, two entry points, so a handle made by a click is an ordinary handle
+    and the picture a click produces is the picture the model would have made.
+    Any other arrangement lets the two render the same view differently, and
+    eventually they will.
+    """
+    preset_name = _PAGE_VIEWS.get(view)
+    if preset_name is None:
+        raise ViewerError(
+            f"Unknown view {view!r}. Available: {', '.join(sorted(_PAGE_VIEWS))}"
+        )
+    # A click is not a reply to the model, so nothing it runs may drain the
+    # queue: without this the `preset` below would take an earlier click's news
+    # into a reply that goes back to the page, where the model never sees it.
+    token = _replying_to_model.set(True)
+    try:
+        await preset(preset_name)
+    finally:
+        _replying_to_model.reset(token)
+    _user_actions.append(f"applied the {view} view")
+    return view
 
 
 SESSION_FORMAT = "protean-session"
@@ -2626,7 +2809,7 @@ def _unknown_transformers(snapshot: Any) -> list[str]:
     return sorted(set(unknown))
 
 
-@mcp.tool()
+@_tool()
 async def save_session(path: str, overwrite: bool = False) -> dict[str, Any]:
     """Save the whole scene to a .protean file.
 
@@ -2655,7 +2838,7 @@ async def save_session(path: str, overwrite: bool = False) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def load_session(path: str) -> dict[str, Any]:
     """Restore a scene previously written by save_session().
 
@@ -2804,7 +2987,7 @@ def _restore_analysis(snapshot: Any, viewer_atoms: Any) -> tuple[str, dict[str, 
     )
 
 
-@mcp.tool()
+@_tool()
 async def superpose(
     mobile: str,
     target: str,
@@ -2959,7 +3142,7 @@ async def _display_superposition(
     }
 
 
-@mcp.tool()
+@_tool()
 async def interface(
     chain_a: str,
     chain_b: str,
@@ -3092,7 +3275,7 @@ def _sample_handle(grid: Any, handle: str, limit: int) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
+@_tool()
 async def electrostatics(
     method: str = "auto",
     ph: float = 7.0,
@@ -3201,7 +3384,7 @@ def _residue_indices(array: Any, keys: set[tuple[str, int, str]]) -> Any:
     return np.flatnonzero(np.isin(labels, wanted))
 
 
-@mcp.tool()
+@_tool()
 async def conservation(
     chain: str | None = None,
     conserved_percentile: float = 25.0,
@@ -3307,7 +3490,7 @@ async def conservation(
     return payload
 
 
-@mcp.tool()
+@_tool()
 async def color_by_potential(
     handle: str = "sele",
     path: str | None = None,
@@ -3346,7 +3529,7 @@ async def color_by_potential(
     return {"handle": handle, "dx_path": str(grid_path), **result}
 
 
-@mcp.tool()
+@_tool()
 async def color_by_conservation(
     chain: str | None = None,
     mode: str = "gradient",
@@ -3700,7 +3883,7 @@ def _with_caveat(volume: dict[str, Any]) -> dict[str, Any]:
     return volume
 
 
-@mcp.tool()
+@_tool()
 async def load_volume(
     path: str,
     name: str | None = None,
@@ -3766,7 +3949,7 @@ async def load_volume(
     return _with_caveat(result)
 
 
-@mcp.tool()
+@_tool()
 async def volume_info(name: str) -> dict[str, Any]:
     """Report a loaded volume's dimensions and value statistics.
 
@@ -3785,7 +3968,7 @@ async def volume_info(name: str) -> dict[str, Any]:
     return _with_caveat(await _call("volume_info", {"name": name}))
 
 
-@mcp.tool()
+@_tool()
 async def list_volumes() -> dict[str, Any]:
     """List the volumes currently loaded, with their statistics and provenance."""
     _require_viewer()
@@ -3795,7 +3978,7 @@ async def list_volumes() -> dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@_tool()
 async def isosurface(
     name: str,
     level: float,
@@ -3852,7 +4035,7 @@ async def isosurface(
     return _with_caveat(await _call("isosurface", args))
 
 
-@mcp.tool()
+@_tool()
 async def remove_volume(name: str) -> str:
     """Remove one loaded volume from the viewer."""
     bridge = _require_viewer()
@@ -3861,7 +4044,7 @@ async def remove_volume(name: str) -> str:
     return f"Removed volume {result['removed']}."
 
 
-@mcp.tool()
+@_tool()
 async def clear_viewer() -> str:
     """Remove all loaded structures and volumes from the viewer."""
     bridge = _require_viewer()
@@ -3883,7 +4066,7 @@ async def clear_viewer() -> str:
 # bare `list` and the library minted no schema. Turning the schema off puts the
 # image back in unstructured content, where it belongs: an image is what this
 # returns, not a JSON object describing one.
-@mcp.tool(structured_output=False)
+@_tool(structured_output=False)
 async def screenshot(path: str | None = None, overwrite: bool = False) -> list[Any]:
     """Capture the current viewport as a PNG.
 

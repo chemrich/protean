@@ -1128,3 +1128,111 @@ whether these three should refuse or warn.
 Recorded as item 26 while the presets were being built and still open. Item 27
 fixed the same class of defect for `load_structure`; this one is the remaining
 half, and `_frame_the_scene()` is a preset-level workaround for it.
+
+### 32. A B-factor differential test fails about twice in twelve runs — open
+
+Found by a full local suite run on 2026-08-17, and **not explained**. Recorded
+now rather than when it is understood, because two confident explanations have
+already been wrong about it and a third guess is worth less than the numbers.
+
+`test_putty_width_follows_the_bfactor_it_claims` loads the same coordinates
+twice, once with the deposited B-factors and once with every B-factor flattened
+to their mean, and compares putty against a cartoon control that must read zero.
+Ordinarily the control reads **0.000125**. On the failing run it read
+**0.279658** — 28% of the frame between two renders of identical geometry — and
+the putty number rose with it, from 0.020 to 0.120.
+
+**Both numbers moving together is the shape of a differently *framed* scene
+rather than a differently *drawn* one.** A camera that landed somewhere else
+makes every per-pixel comparison larger at once.
+
+What has been ruled out, each by measurement:
+
+| hypothesis | test | result |
+|---|---|---|
+| CPU contention | 12 spinners, load average 124 | passed |
+| the test alone | isolation, eight runs | passed |
+| within-file pollution | the whole differential file | 108 passed |
+| a concurrent browser suite | second suite running alongside | passed |
+
+Two failures in about twelve observations. Both happened while something else
+was running, but neither deliberate reproduction — CPU load or a competing
+Chrome — brought it back.
+
+**CI cannot see this.** The browser job has passed every run, and it skips eight
+tests this machine runs for want of ffmpeg, so the suite it executes is not the
+suite that failed. That qualifies backlog item 12's claim that CI now reproduces
+cross-file pollution: it reproduces the kinds that do not depend on optional
+binaries.
+
+The leading remaining suspect is `settleCamera` giving up. It waits
+`CAMERA_TIMEOUT_MS = 3000` for the camera to come to rest and then returns
+regardless, so a camera still travelling was indistinguishable from one that had
+arrived. **That is now reported** — `load_structure` replies with
+`camera_settled: false` and `fetch_structure` says so in words — which does not
+fix anything but means the next occurrence can be read rather than guessed at.
+The test's failure message now also carries each frame's size and coverage.
+
+Deliberately not done: raising the budget. A bigger number would make the
+symptom rarer and the diagnosis no easier, and the budget was never measured
+against anything in the first place.
+
+## Two findings from trying to use AlphaFold support, 2026-08-17
+
+Both found while measuring docs/views.md §5.4, which needs a predicted model to
+say anything about pLDDT. Together they mean **`fetch_structure(source=
+"alphafold")` does not work at all** — one of the three sources that tool
+documents.
+
+### 33. The AlphaFold URL is pinned to a retired version — open
+
+`fetch.py` builds `https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v4.cif`.
+AlphaFold DB is now on **v6** and v4 is gone:
+
+```
+P69905  v4: 404   v6: 200
+P0DTC2  v4: 404   v6: 404
+Q8N158  v4: 404   v6: 200
+```
+
+Not one accession's problem — the database version bumped and every AlphaFold
+fetch fails with *"Not found upstream"*, which reads as "no such protein" rather
+than "protean is asking for a file that no longer exists". P0DTC2 fails on both,
+so some accessions are genuinely absent and the two causes are indistinguishable
+from the message.
+
+**Bumping the number is the wrong fix**, or at least not the whole one: it would
+work until the next release and then fail the same way, silently, at whatever
+distance in time. The database publishes the answer —
+`https://alphafold.ebi.ac.uk/api/prediction/{accession}` returns `cifUrl` with
+the current version and a `latestVersion` field — so the version is something to
+*ask for* rather than to hardcode. One extra request, and it cannot go stale.
+
+Worth a test that the URL protean builds is one the database serves, which no
+existing test covers: the fetch tests use local files and a mocked upstream, so
+the whole suite passes with the tool completely broken.
+
+### 34. A predicted model fails the analysis parser by default — open
+
+An AlphaFold mmCIF loaded from disk:
+
+```
+Loaded af-P69905 ... [analysis unavailable: Could not parse mmcif coordinates:
+File has no 'pdbx_struct_assembly_gen' category]
+```
+
+The viewer draws it; selections and every analysis tool are unavailable. Loading
+the same file with `assembly="asymmetric"` works and reports 1077 atoms in both
+copies, so the failure is the **default**, not the parser.
+
+`assembly="biological"` is the right default for a deposited structure and
+meaningless for a predicted one, which has no crystallographic assembly to
+build. The fix is presumably to fall back to the deposited coordinates when
+there is no assembly category rather than to fail the analysis half — but that
+touches the same question as backlog 18, which is already open about
+`parse_structure` and `load_structure` disagreeing on what "the structure"
+means. Worth settling together.
+
+The reply does say what happened, which is the difference between this and a
+silent failure. It says it in a note a caller has to read, at the end of a line
+about a successful load.

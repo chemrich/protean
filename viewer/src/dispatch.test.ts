@@ -1553,3 +1553,63 @@ describe('settling a visible tab', () => {
     expect(raf).not.toHaveBeenCalled();
   });
 });
+
+describe('a camera that never came to rest', () => {
+  beforeEach(() => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('says so in the reply rather than reporting a still camera', async () => {
+    // The budget expiring used to be invisible: the loop ran out, returned,
+    // and a camera still travelling looked exactly like one that had arrived.
+    // The only symptom was a figure framed for a scene that no longer existed.
+    const plugin: any = fakePlugin();
+    const camera = { state: { target: [0, 0, 0], radius: 10 } };
+    plugin.canvas3d = {
+      commitQueueSize: { value: 0 },
+      reprCount: { value: 0 },
+      camera,
+    };
+    // Never stops moving, and time runs faster than the budget.
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 500));
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      camera.state.radius += 1;
+      cb(0);
+      return 0;
+    });
+    window.__protean = { setTurbo: vi.fn() };
+
+    const loaded: any = await createDispatcher(plugin)('load_structure', {
+      name: '1ubq', format: 'mmcif', data: 'x',
+    });
+
+    expect(loaded.camera_settled).toBe(false);
+    expect(loaded.loaded).toBe('1ubq');
+  });
+
+  it('says nothing when it did settle, so the flag means something', async () => {
+    const plugin: any = fakePlugin();
+    const camera = { state: { target: [0, 0, 0], radius: 10 } };
+    plugin.canvas3d = {
+      commitQueueSize: { value: 0 },
+      reprCount: { value: 0 },
+      camera,
+    };
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    window.__protean = { setTurbo: vi.fn() };
+
+    const loaded: any = await createDispatcher(plugin)('load_structure', {
+      name: '1ubq', format: 'mmcif', data: 'x',
+    });
+
+    expect(loaded).not.toHaveProperty('camera_settled');
+  });
+});

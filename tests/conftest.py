@@ -55,7 +55,17 @@ class MockViewer:
 
     async def serve_one(self) -> None:
         """Answer a single request using registered handlers."""
-        msg = json.loads((await self.ws.receive()).data)
+        await self.answer(json.loads((await self.ws.receive()).data))
+
+    async def answer(self, msg: dict[str, Any]) -> None:
+        """Answer a request already read off the socket.
+
+        Split from serve_one because the page-initiated path puts two kinds of
+        message on one socket: actions the server is asking for, and the reply
+        to the click that caused them. Only one reader can have the socket, so
+        that reader has to be able to route — two coroutines both calling
+        `receive()` race, and the loser silently eats the other's message.
+        """
         action, args, rid = msg["action"], msg.get("args", {}), msg["id"]
         handler = self.handlers.get(action)
         if handler is None:
@@ -125,12 +135,19 @@ _SESSION_GLOBALS = (
 # restores nothing — their *contents* have to be snapshotted.
 _SESSION_CONTAINERS = ("_keyframes", "_conservation_scores")
 
+# The same again for the lists. `_user_actions` matters more than its size
+# suggests: it drains into the *next* tool reply whatever that reply is, so one
+# test leaving a click in it puts a sentence about the viewer into an unrelated
+# test's answer — backlog item 12 in miniature, and just as quiet.
+_SESSION_LISTS = ("_user_actions",)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_session_state():
     """Give every test the session state it started with."""
     scalars = {name: getattr(server_mod, name) for name in _SESSION_GLOBALS}
     containers = {name: dict(getattr(server_mod, name)) for name in _SESSION_CONTAINERS}
+    lists = {name: list(getattr(server_mod, name)) for name in _SESSION_LISTS}
     handles = dict(server_mod._handles.handles)
 
     yield
@@ -141,5 +158,9 @@ def _isolate_session_state():
         container = getattr(server_mod, name)
         container.clear()
         container.update(value)
+    for name, items in lists.items():
+        sequence = getattr(server_mod, name)
+        sequence.clear()
+        sequence.extend(items)
     server_mod._handles.handles.clear()
     server_mod._handles.handles.update(handles)

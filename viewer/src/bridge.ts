@@ -35,7 +35,27 @@ export function reportable(id: string, payload: string, limit = MAX_REPLY_BYTES)
 // is a bug the user cannot diagnose.
 const MAX_ATTEMPTS = 20;
 
-export function connectBridge(handle: Handler): void {
+/** How long a click waits for the server before deciding it is not coming.
+ *
+ * Generous, because a view can mesh a molecular surface and that is genuinely
+ * slow under software rendering — the measured worst case in this project is a
+ * capture near two minutes. The point of the bound is not to police a slow
+ * render but to end a wait that will never end. */
+const INVOKE_TIMEOUT_MS = 180_000;
+
+/** What the server says about a view the page asked for. */
+export interface InvokeReply {
+  ok: boolean;
+  view?: string;
+  error?: string;
+}
+
+/** What a control in the page may do: ask for a view, and be told the outcome. */
+export interface PageChannel {
+  invoke(view: string): Promise<InvokeReply>;
+}
+
+export function connectBridge(handle: Handler): PageChannel {
   // The token the page was opened with, handed straight to the socket. The
   // server demands it, because a WebSocket is not subject to the same-origin
   // policy: without it any site the user is visiting could connect to
@@ -82,6 +102,29 @@ export function connectBridge(handle: Handler): void {
   // claim — the server would then report a reloaded tab for a page that did
   // nothing of the sort. Held here until the socket closes cleanly.
   let unacked = new Map<string, string>();
+
+  // Views this page has asked for and not yet been told the outcome of.
+  //
+  // These run the other way round from everything else here: the page asks and
+  // the server answers, rather than the server asking. So they get their own
+  // map — putting them in `running` would offer them to the server on the next
+  // handshake as work this page owes an answer for, which is the opposite of
+  // what they are.
+  const invocations = new Map<string, (reply: InvokeReply) => void>();
+  let asked = 0;
+
+  /** Settle every waiting click, because its answer can no longer arrive.
+   *
+   * Deliberately not silent, and deliberately not claiming failure. The server
+   * may well have applied the view — the reply is what was lost, not
+   * necessarily the work — and a control that says "failed" about something
+   * that happened is worse than one that says it does not know. */
+  const abandonInvocations = (why: string) => {
+    for (const [id, settle] of invocations) {
+      invocations.delete(id);
+      settle({ ok: false, error: why });
+    }
+  };
 
   const deliver = (id: string, payload: string) => {
     running.delete(id);
@@ -174,6 +217,15 @@ export function connectBridge(handle: Handler): void {
         setStatus(false);
         return;
       }
+      if (msg.action === 'protean_invoked') {
+        // The answer to a click, not an action to perform. Routed here rather
+        // than handed to the dispatcher, which would report it as an unknown
+        // action and leave the button waiting forever.
+        const settle = invocations.get(msg.id);
+        invocations.delete(msg.id);
+        settle?.({ ok: !!msg.ok, view: msg.view, error: msg.error });
+        return;
+      }
       const { id, action, args } = msg;
       running.add(id);
       try {
@@ -189,6 +241,11 @@ export function connectBridge(handle: Handler): void {
     ws.onclose = () => {
       if (current === ws) current = null;
       rearm();
+      // A reply travelling the page's way has no outbox to wait in: the server
+      // sends it on the socket it was asked over, and that socket is gone.
+      abandonInvocations(
+        'lost contact with protean before it said whether the view was applied'
+      );
       // A page opened with no token at all cannot succeed on any attempt, so
       // it says so immediately rather than after thirty seconds of pretending
       // the server might come up.
@@ -209,4 +266,37 @@ export function connectBridge(handle: Handler): void {
   });
 
   open();
+
+  return {
+    invoke(view: string): Promise<InvokeReply> {
+      if (!current || current.readyState !== WebSocket.OPEN) {
+        return Promise.resolve({
+          ok: false,
+          error: 'not connected to protean, so nothing was asked for',
+        });
+      }
+      const id = `invoke-${++asked}`;
+      const settled = new Promise<InvokeReply>((resolve) => {
+        invocations.set(id, resolve);
+        // A socket that closes settles the wait; a server that simply never
+        // answers does not, and that is not hypothetical. A page outlives the
+        // server it was opened against — reconnect a viewer to a protean older
+        // than this bundle and `protean_invoke` is an action it has never heard
+        // of: it logs an unmatched message and replies to nobody. The button
+        // would sit on "asking…" for the rest of the session, which reads as a
+        // slow render rather than as a server that cannot do this.
+        setTimeout(() => {
+          if (!invocations.delete(id)) return;
+          resolve({
+            ok: false,
+            error:
+              'protean never answered. It may be older than this page — ' +
+              'reload the tab, and if that does not help, restart the server.',
+          });
+        }, INVOKE_TIMEOUT_MS);
+      });
+      current.send(JSON.stringify({ action: 'protean_invoke', id, view }));
+      return settled;
+    },
+  };
 }

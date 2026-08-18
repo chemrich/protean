@@ -4,7 +4,7 @@
  * connects the protean bridge.
  */
 
-import { connectBridge } from './bridge';
+import { connectBridge, type PageChannel } from './bridge';
 import { createDispatcher } from './dispatch';
 
 declare const molstar: {
@@ -68,6 +68,39 @@ function mountControlsTab(plugin: any): void {
   draw();
 }
 
+/**
+ * One button, asking the server for one view.
+ *
+ * **It does not draw.** It sends the view's name and the server runs the same
+ * `preset()` a model would call, which comes back over the ordinary action
+ * channel. A style toggle applied here in the browser would look identical and
+ * be safe; the views after this one create selections, and a selection made in
+ * the browser is a handle the Python side has never heard of — so the model
+ * could not refer to what the person is looking at. Routing everything through
+ * the server makes the distinction unnecessary rather than subtle.
+ *
+ * The button reports what the server said, including refusals, because a
+ * control that cannot report failure is a control that reports success.
+ */
+function mountViewButton(channel: PageChannel): void {
+  const button = document.createElement('button');
+  button.id = 'view-ghost';
+  button.textContent = 'Ghost surface';
+  button.title = 'Ask protean for the ghost-surface view';
+  document.body.appendChild(button);
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'asking…';
+    const reply = await channel.invoke('ghost-surface');
+    button.disabled = false;
+    button.textContent = reply.ok ? 'Ghost surface' : 'Ghost surface — refused';
+    button.title = reply.ok
+      ? 'Ask protean for the ghost-surface view'
+      : (reply.error ?? 'protean refused, and said nothing about why');
+  });
+}
+
 async function init() {
   // Both side panels start collapsed, and neither is gone.
   //
@@ -117,7 +150,7 @@ async function init() {
     plugin: viewer.plugin,
   });
   mountControlsTab(viewer.plugin);
-  connectBridge(createDispatcher(viewer.plugin));
+  mountViewButton(connectBridge(createDispatcher(viewer.plugin)));
 }
 
 init();

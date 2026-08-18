@@ -1,7 +1,8 @@
 # Views, and driving them from the viewer
 
-Planned 2026-08-17. **§5.1, the six style presets, is done**; §4's `protean_invoke`
-slice and everything after it are not. Two things that turn out to be one thing:
+Planned 2026-08-17. **§5.1 (the six style presets) and §4 (the `protean_invoke`
+slice) are done**; §5.2 onward are not. Two things that turn out to be one
+thing:
 
 1. **MCPymol has fifteen named view types and protean has four presets.** If
    protean is a general PyMOL replacement, the good ones belong here.
@@ -165,11 +166,17 @@ next tool reply carries them:
 No client support needed, and a model cannot act on a stale picture without
 being told.
 
-## 4. The vertical slice — what gets built now
+## 4. The vertical slice — shipped 2026-08-17
 
 One button, one view, end to end. Deliberately not a framework: it proves the
 loop, the allowlist and the state reporting together, and everything afterwards
 is adding rows to a list.
+
+**Done, and the design survived contact.** A real click in a real browser moves
+the pixels, and the handle it leaves behind is `auto_ghost` on the Python side —
+which is the claim that matters, because pixels alone would pass with the page
+drawing for itself. All eight criteria are met; what the work added to the plan
+is below.
 
 **Chosen view: `ghost-surface`**, because it already exists as a preset, takes
 only a handle, and its effect is obvious in a screenshot.
@@ -180,12 +187,43 @@ only a handle, and its effect is obvious in a screenshot.
 |---|---|---|
 | 1 | ~~Every theme and representation the later phases need reaches the pixels~~ | **Done 2026-08-17** — eight differential tests, instrument rebuilt |
 | 2 | ~~`ellipsoid` either draws or refuses~~ | **Void** — it draws; the planning probe was wrong |
-| 3 | A page-initiated `protean_invoke` runs the same code path as `preset()` | Assert on the calls the server issues, not on the picture alone |
-| 4 | The scene arrives back over the ordinary action channel | Differential test: click, then compare pixels |
-| 5 | The allowlist admits no tool taking a path | Enumerate from the tool registry, not from a list in a file |
-| 6 | An unlisted view name is refused, and says what is available | Mutation-tested |
-| 7 | The next tool reply names the user's action | Assert the string, then assert it clears |
-| 8 | A click while no structure is loaded fails like the tool does | Same refusal, same wording |
+| 3 | ~~A page-initiated `protean_invoke` runs the same code path as `preset()`~~ | **Done** — the click's viewer calls are compared with the tool's, action for action |
+| 4 | ~~The scene arrives back over the ordinary action channel~~ | **Done** — a real click in Chrome, pixels compared, and `auto_ghost` asserted on the Python side |
+| 5 | ~~The allowlist admits no tool taking a path~~ | **Done** — nine path-taking tools enumerated from the live registry; none reachable |
+| 6 | ~~An unlisted view name is refused, and says what is available~~ | **Done**, and the first version of the test was a no-op — see below |
+| 7 | ~~The next tool reply names the user's action~~ | **Done** — wrapped at the tool decorator, drained so it is said once |
+| 8 | ~~A click while no structure is loaded fails like the tool does~~ | **Done** — the two error strings are asserted equal |
+
+### 4.1a What the slice turned up that the plan did not
+
+**The handler cannot run inside the socket's message loop.** It drives the
+viewer, so it sends an action and waits for the reply — and that reply is a
+message the same loop has to read. Awaited inline, the loop sits inside the
+handler while the handler waits on the loop; the click hangs until its own
+budget expires and then blames the viewer. It runs as a task. Mutating that back
+to an inline `await` fails three tests by timeout, which is why each carries its
+own bound rather than relying on pytest to notice a hang.
+
+**A reply travelling the page's way has no outbox.** The dropped-reply work of
+PR 89 protects replies going *to* the server; the answer to a click goes the
+other way, on the socket it was asked over, and if that socket dies the button
+would wait forever. It now settles as "lost contact before it said whether the
+view was applied" — deliberately not "failed", because the server may well have
+applied it and a control that claims failure about something that happened is
+worse than one that admits it does not know.
+
+**The mutation test for the allowlist was a no-op, twice.** Opening the channel
+to forward any name left every test green: `preset()` refuses a bogus name too,
+and its refusal reads much the same. The tests now separate the two — the
+refusal must offer the *view* vocabulary rather than the preset one, and
+`putty`, a real preset that is not a listed view, must be refused *with handlers
+registered* so that a forwarded name would genuinely have drawn. The second
+condition was itself missing at first, and the test passed for the wrong reason.
+
+**Adopting a bridge is now one function**, `use_bridge()`, because the
+interesting half is not the assignment but `on_invoke`. A bridge assigned
+straight into the module global is a socket a page can talk to with no rule
+about what it may ask for, and the differential harness was doing exactly that.
 
 ### 4.2 The failure modes to write tests against first
 
@@ -280,9 +318,19 @@ and makes the relationship visible in the reply's `steps`.
 Turning one button into several. Depends entirely on how §4 feels: if the
 round-trip is sluggish, the answer is a different UI, not more buttons.
 
-Unknown: whether the control is a strip, a menu, or keyboard shortcuts; whether
-views are exclusive or compose; what happens on a structure the view makes no
-sense for.
+**§4 is done and the round trip is fine**, so this stays "more buttons" rather
+than becoming a redesign. Two of the unknowns are answered by the work below it:
+the drawing views are **exclusive**, because they all draw through the one
+shared handle and so replace their predecessor rather than stack; and a view a
+structure cannot take **refuses and says so on the control**, which is what
+`textbook` on a ligand-only entry already does. Adding a view is now two lines —
+an entry in `_PAGE_VIEWS` and a button that names it.
+
+Still unknown: whether the control is a strip, a menu, or keyboard shortcuts;
+and whether the *styling* presets, which compose rather than replace, want a
+different affordance from the drawing ones. A click that changes the lighting
+and a click that changes the whole picture reading identically is the obvious
+way for this to get confusing.
 
 ### 5.3 Parameterised view tools — stub
 
@@ -294,17 +342,47 @@ distance filter. Unknown: whether `mutation` should verify the stated residue
 actually matches the structure, which it should, and what it does when it does
 not.
 
-### 5.4 Pharmacophore and pLDDT — stub
+### 5.4 Pharmacophore and pLDDT — stub, and cheaper than it says
 
-Both are extension work rather than recipe work.
+~~Both are extension work rather than recipe work.~~
 
-Pharmacophore rides on Mol\*'s `interactions` extension. Unknown: what
-registering an extension does to the bundle size the wheel ships, and whether
-its interaction types are the ones a pharmacophore wants or merely adjacent.
+**Wrong on the premise, corrected 2026-08-17.** Neither needs an extension
+registered, because the *prebuilt* Mol\* bundle protean ships already registers
+them. Read from the live registries through `capabilities()`, twice, against two
+different server processes:
 
-pLDDT needs `model-archive/quality-assessment` registered. Unknown: whether to
-use its theme or protean's own banded palette — the bands are conventional and
-readers expect the standard colours.
+- **`plddt-confidence` is in the colour-theme registry.** So is the rest of that
+  family — `qmean-score`, `pdbe-structure-quality-report`, `rcsb-density-fit`,
+  `sb-ncbr-partial-charges`.
+- **`interactions` is in the representation registry**, alongside
+  `interaction-type` as a colour theme.
+
+The stub's reasoning was sound and its fact was not: it assumed protean builds
+Mol\* from source and registers a chosen set. protean loads `molstar.js`, the
+prebuilt bundle — that is why bundling from source needs >4 GB of RAM and this
+project does not do it — and the prebuilt bundle carries the extensions. **The
+bundle-size question therefore does not arise; the wheel already ships them.**
+
+What is *not* measured, and is the same trap this document has fallen into
+before: **whether either reaches the pixels.** Being in the registry means
+`show()` and `color()` will accept the name, which is exactly what the planning
+probe once mistook for the theme working. Each needs the differential treatment
+§5.1's themes got — drawn against a hidden scene, compared as pixels — before
+anything is built on it.
+
+Still open, and untouched by the correction: whether to use Mol\*'s pLDDT theme
+or protean's own banded palette (the bands are conventional and readers expect
+the standard colours), and whether the `interactions` types are the ones a
+pharmacophore wants or merely adjacent. §6 predicted that last one would be the
+gap, and nothing here has tested it.
+
+**The blocker is elsewhere, and it is real.** pLDDT is a property of a predicted
+model, and protean cannot currently load one: `fetch_structure(source=
+"alphafold")` is pinned to `model_v4`, which AlphaFold DB has retired — 404 for
+every accession tried — and a model fetched by hand fails the analysis parser
+under the default `assembly="biological"` because predicted models carry no
+`pdbx_struct_assembly_gen`. Backlog 33 and 34. Both were found by trying to
+measure this section rather than by reading it.
 
 Decided already: **pLDDT is not a GUI toggle.** It is a property of the model,
 meaningful for a predicted structure and meaningless for an experimental one, so
@@ -416,6 +494,14 @@ The candidates here, stated in advance so they can be checked off or laughed at:
 
 - **That the round-trip through the server feels instant.** It is a WebSocket on
   loopback, so it should. If it does not, §5.2 changes shape entirely.
+
+  **Right, with a caveat nobody predicted, checked 2026-08-17.** The transport
+  is not the cost — the *view* is. `ghost-surface` meshes a molecular surface,
+  which takes as long from a click as it does from a tool, and under software
+  rendering that is seconds rather than milliseconds. So the button disables
+  itself for the round trip and says so, which is the affordance a switcher
+  needs anyway. §5.2 does not change shape; it inherits a control that already
+  knows how to be busy.
 - **That "recipe work" is as cheap as it sounds.** The four existing presets are
   small, but each needed a differential test proving the picture changed, and
   the threshold for "changed" was argued over.

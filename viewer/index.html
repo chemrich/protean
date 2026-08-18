@@ -26,6 +26,16 @@
         font: 13px/1 sans-serif; opacity: 0.8;
       }
       #panel-tab:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
+      /* The view button borrows the tab's palette exactly. A control that asks
+         the server is new; a second visual language for it is not wanted. */
+      #view-ghost {
+        position: fixed; left: 40px; bottom: 8px;
+        z-index: 90; padding: 4px 10px; border: 0; border-radius: 4px;
+        cursor: pointer; background: rgba(0, 0, 0, 0.22); color: #fff;
+        font: 13px/1 sans-serif; opacity: 0.8;
+      }
+      #view-ghost:hover { background: rgba(0, 0, 0, 0.42); opacity: 1; }
+      #view-ghost:disabled { cursor: default; opacity: 0.5; }
     </style>
   </head>
   <body>
