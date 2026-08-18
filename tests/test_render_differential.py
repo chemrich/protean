@@ -852,7 +852,7 @@ async def _as_server(session, load: bool = False):
 
     `load` fills in the server's own copy of the structure, which
     `viewer_session` does not: it loads straight into the viewer, so anything
-    that resolves atom indices — the ghost-surface preset, for one — finds
+    that resolves atom indices — the ghost-heart preset, for one — finds
     nothing loaded.
 
     Filled in directly rather than by calling `fetch_structure()`, which would
@@ -1092,7 +1092,7 @@ async def test_putty_width_follows_the_bfactor_it_claims():
 # By the name the server uses, not by the label: the label reads "asking…" for
 # the length of a round trip, so anything keyed on text loses the element at
 # exactly the moment this waits on it.
-_ITEM = "document.querySelector('.view-menu-item[data-view=\"ghost-surface\"]')"
+_ITEM = "document.querySelector('.view-menu-item[data-view=\"ghost-heart\"]')"
 _CLICK_VIEW = (
     "(document.getElementById('view-menu-button').click(),"
     f" {_ITEM}.click(), JSON.stringify('ok'))"
@@ -1143,7 +1143,7 @@ async def test_a_click_draws_the_view_the_server_was_asked_for():
         before, of=background(before)
     )
     assert "auto_ghost" in handles, "the page drew this, not the server"
-    assert "ghost-surface" in reported["user_actions"]
+    assert "ghost-heart" in reported["user_actions"]
 
 
 async def test_a_click_for_a_view_that_cannot_apply_is_refused_on_the_button():
@@ -1163,7 +1163,7 @@ async def test_a_click_for_a_view_that_cannot_apply_is_refused_on_the_button():
     assert difference(before, after) == 0.0, "a refused click changed the picture"
 
 
-async def test_ghost_surface_layers_over_what_is_already_drawn():
+async def test_ghost_heart_layers_over_what_is_already_drawn():
     """The scoping claim, checked on screen rather than in the call log.
 
     A surface shown under the same handle rebuilds that component, so the
@@ -1174,7 +1174,7 @@ async def test_ghost_surface_layers_over_what_is_already_drawn():
     """
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         before = await _shot(session)
-        result = await server_mod.preset("ghost-surface")
+        result = await server_mod.preset("ghost-heart")
         after = await _shot(session)
 
     reference = background(before)
@@ -1713,3 +1713,45 @@ async def test_a_load_still_frames_the_molecule_itself():
 
         camera = await session.request("camera_state")
         assert camera["radius"] and camera["radius"] > 0, "camera never fitted"
+
+
+async def test_the_ghost_heart_is_scenery_and_takes_no_clicks():
+    """A see-through surface exists to be looked *through*.
+
+    Left pickable it intercepts every click meant for what is inside it, so a
+    selection lands on a jagged patch of mesh rather than on the residue
+    someone aimed at. `markerActions` matters as much as `pickable` and for a
+    different reason: picking decides what a click *hits*, marker actions
+    decide what lights up when something else is highlighted — so without both,
+    clicking the cartoon underneath still flares the surface over it.
+
+    Asserted on the representation's state rather than by dispatching a click,
+    because a synthetic click has to land on a pixel the surface actually
+    covers, and choosing that pixel is a second measurement that can be wrong
+    on its own.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("ghost-heart")
+
+        states = await session.evaluate(
+            "JSON.stringify(window.__protean.plugin.managers.structure.hierarchy"
+            ".current.structures[0].components"
+            ".flatMap(c => c.representations)"
+            ".map(r => ({"
+            "  type: r.cell.transform.params?.type?.name ?? null,"
+            "  pickable: r.cell.obj?.data?.repr?.state?.pickable ?? null,"
+            "  markers: r.cell.obj?.data?.repr?.state?.markerActions ?? null,"
+            "})))"
+        )
+
+    surfaces = [s for s in states if s["type"] == "molecular-surface"]
+    assert surfaces, f"no ghost surface was drawn at all: {states}"
+    for surface in surfaces:
+        assert surface["pickable"] is False, f"the ghost takes clicks: {surface}"
+        assert surface["markers"] == 0, f"the ghost still lights up: {surface}"
+
+    others = [s for s in states if s["type"] != "molecular-surface"]
+    assert others, "nothing else was drawn, so this proves nothing about scoping"
+    assert all(s["pickable"] is not False for s in others), (
+        f"everything became scenery, not just the ghost: {others}"
+    )

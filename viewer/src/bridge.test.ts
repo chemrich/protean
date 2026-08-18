@@ -296,11 +296,11 @@ describe('a view the page asks for', () => {
   it('sends the view name and nothing that looks like a tool call', async () => {
     const channel = connectBridge(async () => ({}));
     latest().onopen!();
-    void channel.invoke('ghost-surface');
+    void channel.invoke('ghost-heart');
     await flush();
 
     const asked = latest().sent.at(-1);
-    expect(asked).toMatchObject({ action: 'protean_invoke', view: 'ghost-surface' });
+    expect(asked).toMatchObject({ action: 'protean_invoke', view: 'ghost-heart' });
     // No args, no tool, no path. The page names a view; the server decides
     // what that means. Anything richer here is a channel to the tool surface
     // wearing a different name.
@@ -310,14 +310,14 @@ describe('a view the page asks for', () => {
   it('settles the click with what the server said', async () => {
     const channel = connectBridge(async () => ({}));
     latest().onopen!();
-    const settled = channel.invoke('ghost-surface');
+    const settled = channel.invoke('ghost-heart');
     await flush();
     const { id } = latest().sent.at(-1);
-    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-surface' });
+    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-heart' });
 
     await expect(settled).resolves.toEqual({
       ok: true,
-      view: 'ghost-surface',
+      view: 'ghost-heart',
       error: undefined,
     });
   });
@@ -342,7 +342,7 @@ describe('a view the page asks for', () => {
       return {};
     });
     latest().onopen!();
-    const settled = channel.invoke('ghost-surface');
+    const settled = channel.invoke('ghost-heart');
     await flush();
     const { id } = latest().sent.at(-1);
     latest().receive({ action: 'protean_invoked', id, ok: true });
@@ -357,7 +357,7 @@ describe('a view the page asks for', () => {
     // applied, so the honest answer is that we do not know.
     const channel = connectBridge(async () => ({}));
     latest().onopen!();
-    const settled = channel.invoke('ghost-surface');
+    const settled = channel.invoke('ghost-heart');
     await flush();
     latest().close();
 
@@ -369,7 +369,7 @@ describe('a view the page asks for', () => {
   it('refuses to ask at all when no socket is open', async () => {
     const channel = connectBridge(async () => ({}));
     // Never opened: no onopen, so `current` is null.
-    await expect(channel.invoke('ghost-surface')).resolves.toMatchObject({
+    await expect(channel.invoke('ghost-heart')).resolves.toMatchObject({
       ok: false,
     });
     expect(latest().sent).toEqual([]);
@@ -389,7 +389,7 @@ describe('a server that never answers a click', () => {
     vi.useFakeTimers();
     const channel = connectBridge(async () => ({}));
     latest().onopen!();
-    const settled = channel.invoke('ghost-surface');
+    const settled = channel.invoke('ghost-heart');
     // The socket stays open and the server says nothing at all.
     await vi.advanceTimersByTimeAsync(180_000);
 
@@ -402,10 +402,10 @@ describe('a server that never answers a click', () => {
     vi.useFakeTimers();
     const channel = connectBridge(async () => ({}));
     latest().onopen!();
-    const settled = channel.invoke('ghost-surface');
+    const settled = channel.invoke('ghost-heart');
     await vi.advanceTimersByTimeAsync(170_000);
     const { id } = latest().sent.at(-1);
-    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-surface' });
+    latest().receive({ action: 'protean_invoked', id, ok: true, view: 'ghost-heart' });
 
     await expect(settled).resolves.toMatchObject({ ok: true });
   });

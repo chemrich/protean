@@ -830,6 +830,7 @@ async def show(
     color: str | None = None,
     size: float | None = None,
     opacity: float | None = None,
+    pickable: bool | None = None,
     name: str = "sele",
 ) -> dict[str, Any]:
     """Display a selection, given either a handle or a selection string.
@@ -847,6 +848,11 @@ async def show(
       Waals radius, so an ion that would hide what it coordinates can be shrunk.
     opacity: 0 is invisible, 1 is solid. Use it to draw a surface you can see
       through to whatever is inside; opacity() changes it afterwards.
+    pickable: False makes this scenery — it cannot be clicked, and it does not
+      light up when something underneath it is. A see-through surface exists to
+      be looked *through*, and left pickable it takes every click meant for what
+      is inside it, putting a selection on a jagged patch of mesh rather than on
+      the residue that was aimed at.
     """
     if (selection is None) == (handle is None):
         raise ViewerError("Pass exactly one of selection or handle")
@@ -879,6 +885,8 @@ async def show(
         args["size"] = size
     if opacity is not None:
         args["opacity"] = opacity
+    if pickable is not None:
+        args["pickable"] = pickable
     await _call("show", args)
     return {"name": label, "representation": representation, **_summarise(array, indices)}
 
@@ -2319,7 +2327,7 @@ async def _preset_cinematic(target: str) -> list[str]:
     ]
 
 
-async def _preset_ghost_surface(target: str) -> list[str]:
+async def _preset_ghost_heart(target: str) -> list[str]:
     """A see-through surface that leaves what is inside it visible.
 
     The scoping is the point. A surface shown under the *same* handle would
@@ -2343,21 +2351,27 @@ async def _preset_ghost_surface(target: str) -> list[str]:
         indices = np.flatnonzero(mask)
         if not len(indices):
             raise ViewerError(
-                "This structure is nothing but solvent, so a ghost surface over "
+                "This structure is nothing but solvent, so a ghost heart over "
                 "it would wrap water. Pass a handle naming what to wrap."
             )
-        origin = "preset(ghost-surface) over everything but the solvent"
+        origin = "preset(ghost-heart) over everything but the solvent"
     else:
         try:
             indices = _handles.get(target).indices
         except HandleError as exc:
             raise ViewerError(str(exc)) from exc
-        origin = f"preset(ghost-surface) over {target}"
+        origin = f"preset(ghost-heart) over {target}"
 
     ghost = f"{target}_ghost"
     _register(ghost, indices, origin)
     return [
-        await _run(show, representation="molecular-surface", handle=ghost, opacity=0.25),
+        await _run(
+            show,
+            representation="molecular-surface",
+            handle=ghost,
+            opacity=0.25,
+            pickable=False,
+        ),
         await _run(shading, style="xray", name=ghost),
         await _run(material, finish="glossy", name=ghost),
     ]
@@ -2389,7 +2403,7 @@ _SIDECHAIN_HANDLE = "sidechains"
 async def _preset_sidechains(target: str) -> list[str]:
     """Sidechain sticks over whatever is already drawn.
 
-    Its own handle, for the reason the ghost surface has one: drawing under an
+    Its own handle, for the reason the ghost heart has one: drawing under an
     existing handle rebuilds that component rather than layering on it, so the
     cartoon these are meant to sit on would disappear.
 
@@ -2550,7 +2564,7 @@ _PRESETS: dict[str, Any] = {
     "publication-cartoon": _preset_publication_cartoon,
     "illustrative": _preset_illustrative,
     "cinematic": _preset_cinematic,
-    "ghost-surface": _preset_ghost_surface,
+    "ghost-heart": _preset_ghost_heart,
     "active-site": _preset_active_site,
     "light-ground": _preset_light_ground,
     "dark-ground": _preset_dark_ground,
@@ -2599,7 +2613,7 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 
       Add to what is there:
 
-      ghost-surface        A see-through surface over the selection, leaving
+      ghost-heart        A see-through surface over the selection, leaving
                            whatever is inside it visible. Drawn under its own
                            handle so it layers over the existing representation
                            rather than replacing it.
@@ -2684,7 +2698,7 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "cinematic": ("cinematic", _VIEW_STYLES),
     "light-ground": ("light-ground", _VIEW_STYLES),
     "dark-ground": ("dark-ground", _VIEW_STYLES),
-    "ghost-surface": ("ghost-surface", _VIEW_LAYERS),
+    "ghost-heart": ("ghost-heart", _VIEW_LAYERS),
     "sidechains": ("sidechains", _VIEW_LAYERS),
     "hide-sidechains": ("hide-sidechains", _VIEW_LAYERS),
 }

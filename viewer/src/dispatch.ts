@@ -52,6 +52,8 @@ interface ShowArgs extends SelectArgs {
   size?: number;
   /** 0 invisible, 1 solid. Mol* calls this `alpha`. */
   opacity?: number;
+  /** False makes this scenery: it cannot be clicked and never lights up. */
+  pickable?: boolean;
 }
 
 interface EffectsArgs {
@@ -938,6 +940,7 @@ export function createDispatcher(plugin: any): Handler {
         color,
         size,
         opacity,
+        pickable,
         limit,
       }: ShowArgs) {
         checkName('representation', representation, representationTypes());
@@ -975,7 +978,11 @@ export function createDispatcher(plugin: any): Handler {
         if (size !== undefined) typeParams.sizeFactor = size;
         if (opacity !== undefined) typeParams.alpha = opacity;
         if (Object.keys(typeParams).length) params.typeParams = typeParams;
-        await plugin.builders.structure.representation.addRepresentation(selector, params);
+        const built = await plugin.builders.structure.representation.addRepresentation(
+          selector,
+          params
+        );
+        if (pickable === false) markAsScenery(built);
         return {
           name,
           representation,
@@ -2254,6 +2261,28 @@ function keepCameraBounded(plugin: any): boolean {
   }
   camera.setState({ radiusMax: radius }, 0);
   return false;
+}
+
+/** Take a representation out of picking and highlighting both.
+ *
+ * A see-through surface drawn over a chain is scenery: it exists to be looked
+ * *through*. Left pickable it intercepts every click meant for what is inside
+ * it, and a selection lands on a jagged patch of mesh rather than on the
+ * residue someone aimed at.
+ *
+ * `markerActions` matters as much as `pickable` and for a different reason.
+ * Picking decides what a click *hits*; marker actions decide what lights up
+ * when something else is highlighted. Without both, clicking the cartoon
+ * underneath — or picking a residue from the sequence strip — still flares the
+ * surface over it, which is the same mess arriving by another route.
+ *
+ * `0` is `MarkerAction.None`. The prebuilt Mol* bundle does not export the
+ * enum, so the number is written out rather than imported; Mol* sets exactly
+ * this pair itself, in `mol-plugin-state/transforms/representation.js`, for a
+ * representation that should be seen and not touched.
+ */
+function markAsScenery(built: any): void {
+  built?.obj?.data?.repr?.setState?.({ pickable: false, markerActions: 0 });
 }
 
 /** Build a StructureElement.Loci covering every atom of *structure*.

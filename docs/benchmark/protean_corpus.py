@@ -207,7 +207,7 @@ async def careful(session):
             "ok",
             s.background(gradient=gradient, **kwargs),
         )
-    for name in ("publication-cartoon", "illustrative", "ghost-surface"):
+    for name in ("publication-cartoon", "illustrative", "ghost-heart"):
         await probe("careful", f"preset {name}", "ok", s.preset(name))
     for effect in (
         {"outline": True},

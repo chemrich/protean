@@ -102,7 +102,7 @@ every request.
 **A button never draws. It asks the server, and the server drives the viewer.**
 
 ```
-page   →  server   {action: 'protean_invoke', view: 'ghost-surface', args: {}}
+page   →  server   {action: 'protean_invoke', view: 'ghost-heart', args: {}}
 server →  server   the same code path preset() runs for a model
 server →  page     {id, action: 'show', args: {…}}      ← the ordinary channel
 ```
@@ -160,7 +160,7 @@ than echoing the request. The server records user-initiated actions, and the
 next tool reply carries them:
 
 ```
-"…, and since your last call the user applied the ghost-surface view."
+"…, and since your last call the user applied the ghost-heart view."
 ```
 
 No client support needed, and a model cannot act on a stale picture without
@@ -178,7 +178,7 @@ which is the claim that matters, because pixels alone would pass with the page
 drawing for itself. All eight criteria are met; what the work added to the plan
 is below.
 
-**Chosen view: `ghost-surface`**, because it already exists as a preset, takes
+**Chosen view: `ghost-heart`**, because it already exists as a preset, takes
 only a handle, and its effect is obvious in a screenshot.
 
 ### 4.1 Acceptance criteria
@@ -501,7 +501,7 @@ so the pairs are honest rather than good.
 
 - The server records what is applied — which drawing view, which styling,
   which layers are up. `_handles` already knows the layers by name, so
-  `sidechains` and `ghost-surface` are nearly free; the drawing and styling
+  `sidechains` and `ghost-heart` are nearly free; the drawing and styling
   presets record nothing today.
 - That state reaches the page. It cannot ride the handshake alone: a model can
   change the scene at any moment, so the page has to be *told* when it changes,
@@ -531,7 +531,7 @@ The candidates here, stated in advance so they can be checked off or laughed at:
   loopback, so it should. If it does not, §5.2 changes shape entirely.
 
   **Right, with a caveat nobody predicted, checked 2026-08-17.** The transport
-  is not the cost — the *view* is. `ghost-surface` meshes a molecular surface,
+  is not the cost — the *view* is. `ghost-heart` meshes a molecular surface,
   which takes as long from a click as it does from a tool, and under software
   rendering that is seconds rather than milliseconds. So the button disables
   itself for the round trip and says so, which is the affordance a switcher

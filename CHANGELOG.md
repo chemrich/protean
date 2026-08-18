@@ -8,7 +8,7 @@ nothing is released yet, so everything below is unreleased.
 ### Views
 
 - **A control in the viewer that asks the server rather than drawing.** One
-  button, one view — `ghost-surface` — and the rule that makes it worth having:
+  button, one view — `ghost-heart` — and the rule that makes it worth having:
   **a button never draws, it asks**, and the server runs the same `preset()` a
   model would call. One code path, two entry points, so a handle made by a click
   is an ordinary handle and the picture a click makes is the picture the model
@@ -23,7 +23,7 @@ nothing is released yet, so everything below is unreleased.
   finds the nine tools taking a path, and asserts none is reachable from the
   page.
 
-- **`ghost-surface` no longer wraps the water.** A molecular surface is computed
+- **`ghost-heart` no longer wraps the water.** A molecular surface is computed
   per atom, so an isolated solvent molecule gets its own closed blob: 1UBQ drew
   fifty-eight of them, detached spheres floating around the fold and 14% of
   everything on screen — coverage fell from 0.1154 to 0.0996 with them gone.
@@ -469,7 +469,7 @@ nothing is released yet, so everything below is unreleased.
 - `shading()` (cel, xray, flat), `material()` with five PBR finishes, and
   `path_trace()` for Mol\*'s progressive path tracer.
 - `preset()` composes those into publication-cartoon, illustrative,
-  ghost-surface and active-site.
+  ghost-heart and active-site.
 - A pixel-assertion harness underpins all of it: rendering is verified by
   reading the image, not the reply.
 

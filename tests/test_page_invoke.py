@@ -135,11 +135,11 @@ async def test_a_click_runs_the_same_calls_the_tool_would(wired, tmp_path):
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     calls: list[tuple[str, dict[str, Any]]] = []
     _record(wired, calls)
-    clicked_reply = await _click(wired, "ghost-surface")
+    clicked_reply = await _click(wired, "ghost-heart")
     clicked = list(calls)
     calls.clear()
     serving = wired.serve(len(clicked))
-    await server_mod.preset("ghost-surface")
+    await server_mod.preset("ghost-heart")
     await serving
     by_tool = list(calls)
 
@@ -216,9 +216,9 @@ async def test_a_click_with_nothing_loaded_fails_like_the_tool_does(wired):
     server_mod._structure = None
     server_mod._structure_error = None
 
-    by_click = await _click(wired, "ghost-surface")
+    by_click = await _click(wired, "ghost-heart")
     with pytest.raises(ViewerError) as by_tool:
-        await server_mod.preset("ghost-surface")
+        await server_mod.preset("ghost-heart")
 
     assert by_click["ok"] is False
     assert by_click["error"] == str(by_tool.value)
@@ -235,7 +235,7 @@ async def test_a_click_is_answered_while_the_handler_drives_the_viewer(wired, tm
     """
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired, [])
-    reply = await asyncio.wait_for(_click(wired, "ghost-surface"), INVOKE_TIMEOUT)
+    reply = await asyncio.wait_for(_click(wired, "ghost-heart"), INVOKE_TIMEOUT)
 
     assert reply["ok"] is True, reply.get("error")
 
@@ -247,11 +247,11 @@ async def test_the_next_tool_reply_names_what_the_user_did(wired, tmp_path):
     """Without this the model answers about a scene it did not produce."""
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired, [])
-    await _click(wired, "ghost-surface")
+    await _click(wired, "ghost-heart")
     told = await server_mod.list_selections()
     again = await server_mod.list_selections()
 
-    assert "ghost-surface" in told["user_actions"]
+    assert "ghost-heart" in told["user_actions"]
     assert "user_actions" not in again, "one click was reported twice"
 
 
@@ -270,7 +270,7 @@ async def test_the_news_survives_a_tool_that_reaches_other_tools(wired, tmp_path
     """
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired, [])
-    await _click(wired, "ghost-surface")
+    await _click(wired, "ghost-heart")
 
     task = wired.serve(20)
     try:
@@ -280,7 +280,7 @@ async def test_the_news_survives_a_tool_that_reaches_other_tools(wired, tmp_path
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    assert "ghost-surface" in told["user_actions"]
+    assert "ghost-heart" in told["user_actions"]
 
 
 async def test_a_second_click_does_not_swallow_the_first(wired, tmp_path):
@@ -293,8 +293,8 @@ async def test_a_second_click_does_not_swallow_the_first(wired, tmp_path):
     """
     await _load(wired, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired, [])
-    await _click(wired, "ghost-surface", rid="click-1")
-    await _click(wired, "ghost-surface", rid="click-2")
+    await _click(wired, "ghost-heart", rid="click-1")
+    await _click(wired, "ghost-heart", rid="click-2")
 
     assert len(server_mod._user_actions) == 2
 
@@ -332,7 +332,7 @@ def test_the_catalogue_says_what_each_view_does_to_the_scene():
     kinds = {entry["name"]: entry["kind"] for entry in catalogue}
     assert kinds["putty"] == server_mod._VIEW_DRAWS
     assert kinds["cinematic"] == server_mod._VIEW_STYLES
-    assert kinds["ghost-surface"] == server_mod._VIEW_LAYERS
+    assert kinds["ghost-heart"] == server_mod._VIEW_LAYERS
 
 
 async def test_the_page_is_told_what_it_may_ask_for(wired):

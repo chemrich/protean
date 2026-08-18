@@ -1801,7 +1801,7 @@ async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
     assert len(out["steps"]) == len(calls)
 
 
-async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
+async def test_ghost_heart_draws_under_its_own_handle(wired_bridge, tmp_path):
     """The scoping this preset exists to get right.
 
     Showing a surface under the *same* handle rebuilds that component, so the
@@ -1814,7 +1814,7 @@ async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
 
     task = wired_bridge.serve(20)
     await select("all", name="site")
-    out = await preset("ghost-surface", handle="site")
+    out = await preset("ghost-heart", handle="site")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1829,7 +1829,7 @@ async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
     assert out["applied_to"] == "site"
 
 
-async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
+async def test_ghost_heart_over_the_whole_scene_leaves_the_solvent_out(
     wired_bridge, tmp_path
 ):
     """A molecular surface is per atom, so an isolated water gets its own blob.
@@ -1842,7 +1842,7 @@ async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
     _record(wired_bridge, [])
     task = wired_bridge.serve(20)
     try:
-        await preset("ghost-surface")
+        await preset("ghost-heart")
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1855,20 +1855,20 @@ async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
     assert "HOH" not in {str(r) for r in array[ghost.indices].res_name}
 
 
-async def test_ghost_surface_refuses_a_structure_that_is_only_solvent(
+async def test_ghost_heart_refuses_a_structure_that_is_only_solvent(
     wired_bridge, tmp_path
 ):
     await _load(wired_bridge, _water_only_pdb(tmp_path / "wet.pdb"))
     with pytest.raises(ViewerError, match="nothing but solvent"):
-        await preset("ghost-surface")
+        await preset("ghost-heart")
 
 
-async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
+async def test_ghost_heart_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired_bridge, [])
     task = wired_bridge.serve(20)
     await select("name CA", name="site")
-    await preset("ghost-surface", handle="site")
+    await preset("ghost-heart", handle="site")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1878,10 +1878,10 @@ async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, t
     assert ghost.indices.tolist() == source.indices.tolist()
 
 
-async def test_ghost_surface_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
+async def test_ghost_heart_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     with pytest.raises(ViewerError, match="No selection named 'nope'"):
-        await preset("ghost-surface", handle="nope")
+        await preset("ghost-heart", handle="nope")
 
 
 async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_path):
@@ -2146,7 +2146,7 @@ async def test_capabilities_reports_the_presets(wired_bridge):
     out = await capabilities()
     await task
 
-    assert "ghost-surface" in out["presets"]
+    assert "ghost-heart" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
 
 
@@ -2778,7 +2778,7 @@ async def test_a_ground_view_sets_the_background_and_nothing_else(
 async def test_sidechains_draw_over_what_is_there_rather_than_replacing_it(
     wired_bridge, tmp_path
 ):
-    """Its own handle, for the reason the ghost surface has one: drawing under
+    """Its own handle, for the reason the ghost heart has one: drawing under
     an existing handle rebuilds that component rather than layering on it."""
     await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
     await _preset_calls(wired_bridge, tmp_path, "sidechains")
