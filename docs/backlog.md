@@ -881,6 +881,37 @@ tests that could not fail: PR 61's compared residue sets while its fixture's
 only alternate sat outside the conserved quartile, so the obvious wrong
 implementation passed it.
 
+### 35. A screenshot cannot tell a model the user changed the scene — open
+
+Found by being caught by it, 2026-08-18, within a day of building the thing
+that reports user actions.
+
+Every tool reply carries what the person did in the viewer since the last call
+— *"since your last call the user applied the skeleton view"* — except one.
+`screenshot` replies with image content and has nowhere to put a sentence, so
+`_carrying_user_actions` leaves the news queued for the next reply that can
+take it. That was a deliberate choice and it is written down as one.
+
+**It is deliberate in the wrong place.** A screenshot is the moment a model is
+looking at pixels and about to draw conclusions from them, which is precisely
+when "the user just applied a view" is load-bearing. It happened exactly that
+way: a viewer was loaded, a screenshot taken, and the picture showed an
+all-atom stick model where a cartoon was expected. The reasonable reading was a
+regression in the default load, and two headless reproductions were run against
+it before `capabilities()` — the next reply that *could* carry the news —
+reported eight view clicks. Nothing was broken. The instrument had simply been
+unable to say so.
+
+**What to build.** MCP content can carry more than one part: an image and a
+short text part in the same reply. If that works through the clients protean is
+used from, the news rides along and this closes. If it does not, the fallback
+is worse but still better than silence — hold the queue and let the *following*
+reply say when the news is stale, or refuse to drain it into anything that
+cannot show it.
+
+Worth doing because the failure is silent and points at the model rather than
+at the tool: what it looks like is protean rendering the wrong thing.
+
 ## Two findings from chasing a flaky test, 2026-08-16
 
 ### 23. A capture's budget did not depend on the capture — fixed

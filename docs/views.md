@@ -44,9 +44,13 @@ over primitives that exist. That is the finding that makes this cheap.
 
 **Three things the measurement changed:**
 
-- **pLDDT is not in the base theme registry.** It lives in the
-  `model-archive/quality-assessment` extension, which protean's build does not
-  register. Colouring by pLDDT is therefore a build change, not a recipe.
+- ~~**pLDDT is not in the base theme registry.**~~ **Wrong, corrected
+  2026-08-18.** It is not in `mol-theme/color/`, which is where this was read
+  from — but the *prebuilt bundle protean serves* registers the extensions, and
+  `capabilities()` on a live viewer lists `plddt-confidence` along with
+  `qmean-score` and the RCSB and PDBe quality themes. Reading the source tree
+  answered a question about a build that is not the one shipped. **Ask the
+  running viewer, which is what `capabilities()` is for.**
 - **Pharmacophore is much cheaper than it looks.** Mol\* ships an `interactions`
   extension that computes `hydrophobic`, `ionic`, `cation-pi`, `pi-stacking` and
   `metal-coordination`, with visuals. Most of a pharmacophore is already there.
