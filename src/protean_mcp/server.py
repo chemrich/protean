@@ -30,6 +30,7 @@ from PIL import Image as PILImage
 # lowers wiggles-em scenes onto this viewer, so they have to agree.
 from wiggles_em.provenance import Provenance
 
+from . import __version__, vintage
 from .analysis.conservation import ConservationError
 from .analysis.conservation import chain_sequence as _chain_sequence
 from .analysis.conservation import fetch_msa as _fetch_msa
@@ -456,6 +457,35 @@ def _visibility_note(bridge: ViewerBridge) -> str:
     return f" (tab is {visibility} — rendering runs on the background-tab pump)"
 
 
+#: Enough to recognise what moved without pasting a directory listing.
+_STALE_FILES_NAMED = 3
+
+
+def _vintage_note() -> str:
+    """What build answered, and whether it is the one on disk.
+
+    Appended to `open_viewer` because that is the first call of every session
+    and the one that fails when a long-lived server meets a newer page. The
+    version alone would not have identified the incident that motivated this —
+    every build so far reads `0.1.0.dev0` — so the staleness is the part that
+    carries the information, and the version rides along for the case where
+    someone is comparing two machines rather than two moments.
+    """
+    note = f" [protean {__version__}, running since {vintage.running_since()}"
+    stale = vintage.changed_since_load()
+    if stale:
+        shown = stale[:_STALE_FILES_NAMED]
+        named = ", ".join(shown)
+        if len(stale) > len(shown):
+            named += " and others"
+        note += (
+            f"; **this process is running older code than the files on disk** "
+            f"({named} changed since it started) — restart the MCP server, "
+            f"because a rebuilt viewer can meet a server that predates it"
+        )
+    return note + "]"
+
+
 @_tool()
 async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     """Launch the protean viewer in a browser tab and wait for it to connect.
@@ -479,16 +509,19 @@ async def open_viewer(timeout: float = 20, reveal_url: bool = False) -> str:
     launch_url = bridge.viewer_url
     shown = launch_url if reveal_url else bridge.display_url
     if bridge.viewer_connected:
-        return f"Viewer already connected at {shown}{_visibility_note(bridge)}"
+        return (
+            f"Viewer already connected at {shown}"
+            f"{_visibility_note(bridge)}{_vintage_note()}"
+        )
     if _static_dir() is None:
         return (
             f"Bridge is listening at {shown}, but the viewer app is not built. "
             "Run `npm install && npm run build` in the viewer/ directory, "
-            "then call open_viewer again."
+            "then call open_viewer again." + _vintage_note()
         )
     webbrowser.open(launch_url)
     await bridge.wait_for_viewer(timeout)
-    return f"Viewer connected at {shown}{_visibility_note(bridge)}"
+    return f"Viewer connected at {shown}{_visibility_note(bridge)}{_vintage_note()}"
 
 
 @_tool()

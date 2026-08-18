@@ -78,6 +78,8 @@ export function connectBridge(handle: Handler): PageChannel {
   // the same event. The message therefore names both causes rather than
   // guessing at one.
   let attempts = 0;
+  // The server's protocol number when it differs from this bundle's, else null.
+  let mismatched: number | null = null;
   let gaveUp = false;
 
   // Requests received and not yet answered, and replies that were ready while
@@ -171,6 +173,14 @@ export function connectBridge(handle: Handler): PageChannel {
       status.classList.remove('connected');
       return;
     }
+    if (mismatched !== null) {
+      status.textContent =
+        `protocol mismatch — this viewer speaks ${PROTOCOL_VERSION}, the server ` +
+        `speaks ${mismatched}. One of them is from a different build; restart ` +
+        'the protean MCP server and reload.';
+      status.classList.remove('connected');
+      return;
+    }
     const hidden = document.visibilityState !== 'visible';
     status.textContent = connected ? (hidden ? 'connected (hidden)' : 'connected') : 'disconnected';
     status.classList.toggle('connected', connected);
@@ -208,6 +218,18 @@ export function connectBridge(handle: Handler): PageChannel {
         // the socket was down go now, for the same reason — an unauthenticated
         // socket would never carry them.
         attempts = 0;
+        // The server's protocol number, which until now neither side read.
+        //
+        // Honest about what this catches: **not** the incident that motivated
+        // it. `PROTOCOL_VERSION` has been 1 since the first commit and did not
+        // move when the handshake gained a required token, so the stale server
+        // and the new page that could not talk to each other agreed on this
+        // number exactly. It catches a *deliberate* break, from here on, and
+        // costs nothing. What identifies a stale process is on the server side
+        // — see `vintage.py`.
+        mismatched = typeof msg.version === 'number' && msg.version !== PROTOCOL_VERSION
+          ? msg.version
+          : null;
         setStatus(true);
         flushOutbox(ws);
         return;
