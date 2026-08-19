@@ -258,7 +258,11 @@ export const LIGHTING_RIGS: Record<
  * would enable an effect with no parameters at all, which is the kind of input
  * Mol* accepts and then renders something arbitrary from.
  *
- * Values are Mol* 4.18's own defaults, from mol-canvas3d/passes/*.
+ * Values are Mol* 5.11's own defaults, from mol-canvas3d/passes/*. Checked
+ * key by key at the 4.18 -> 5.11 upgrade: only bloom moved, gaining
+ * `transparency`. A key missing here is the same hazard as a missing params
+ * object — Mol* fills it from its own default, so the effect renders from
+ * something this table does not state.
  */
 const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
   outline: { scale: 1, threshold: 0.33, color: 0x000000, includeTransparent: true },
@@ -282,7 +286,7 @@ const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
     center: 'camera-target',
     mode: 'plane',
   },
-  bloom: { strength: 1, radius: 0, threshold: 0, mode: 'emissive' },
+  bloom: { strength: 1, radius: 0, threshold: 0, mode: 'emissive', transparency: true },
   sharpening: { sharpness: 0.5, denoise: true },
 };
 

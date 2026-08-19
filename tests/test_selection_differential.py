@@ -97,7 +97,6 @@ EXPECTED: dict[str, int] = {
     "hydro": 0,
     "b > 50": 271,
     "b < 20": 2284,
-    "byres (chain A within 4 of chain B)": 130,
     "(chain A or chain B) and resi 1-50 and polymer": 782,
     # Bond topology. Both counts confirmed against PyMOL 3.1.0 on this file:
     # residue 50's CA in four chains, three bonded partners each; and every
@@ -120,6 +119,24 @@ DIVERGENCES: dict[str, int] = {
     "metals": 4,  # their keyword table has a @desc but no implementation
     "chain A and not hydro": 1168,  # their `not` collapses on an empty operand
     "within 5 of resn HEM": 535,  # they require an explicit left operand
+    # Everything below arrived with Mol* 5, which changed what `within` means
+    # when it *does* have a left operand — undocumented, nothing in their
+    # changelog. Under 4.18 these five agreed exactly; under 5.11 their counts
+    # come back larger, 456 against our 121 for the first.
+    #
+    # Checked against a third opinion rather than assumed, because "the other
+    # implementation changed" is the comfortable answer and not always the
+    # true one: a plain numpy distance calculation — every polymer atom whose
+    # nearest heme atom is within the cutoff, owing nothing to either
+    # transpiler — returns 121 and 137, which is what we return. PyMOL
+    # documents `within` as exactly that.
+    "polymer within 4 of resn HEM": 121,
+    "chain A within 5 of resn HEM": 137,
+    # The three below inherit the same defect through `byres`, which widens
+    # whatever `within` handed it.
+    "byres (polymer within 4 of resn HEM)": 535,
+    "(byres (polymer within 4 of resn HEM)) and sidechain": 295,
+    "byres (chain A within 4 of chain B)": 130,
     "first chain A": 1,  # silently 0
     # Silently 0 for them. 4779 is PyMOL's answer: `bychain` widens over the
     # same chain id it selected on, so the hemes come with their chain. The
@@ -147,14 +164,8 @@ DIVERGENCES: dict[str, int] = {
 # Cross-checked against the transpiler but without an independently derived
 # count. Useful for isolating where a composite selection starts to drift.
 AGREEMENT_ONLY: tuple[str, ...] = (
-    "polymer within 4 of resn HEM",
-    "byres (polymer within 4 of resn HEM)",
-    "chain A within 5 of resn HEM",
     "resn HEM expand 5",
     "byres name CA",
-    # Fully disambiguated, both engines agree — the control for the precedence
-    # divergence below.
-    "(byres (polymer within 4 of resn HEM)) and sidechain",
 )
 
 CORPUS = list(EXPECTED) + list(AGREEMENT_ONLY) + list(DIVERGENCES)

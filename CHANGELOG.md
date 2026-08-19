@@ -5,6 +5,49 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Mol\* 5
+
+- **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
+  releases behind, which was making every "can Mol\* do this?" answer
+  unreliable. Nothing protean uses went away: the live registries gained a
+  `polyhedron` representation and the `residue-charge` and `volume-instance`
+  colour themes, and lost nothing. All 114 render differentials pass at their
+  existing thresholds, which is the claim worth making — a renderer upgrade
+  that shifted shading would have moved numbers tuned to three decimal places.
+
+- **`spin(speed=)` means turns per second now, not radians.** Mol\* 5 changed
+  what the number means without changing its name, so the same call spins
+  2\*pi times faster. protean follows the new unit rather than converting: one
+  value, held in one place, rather than a reported number that disagrees with
+  the viewer's. A model reading the docstring gets "1 is one revolution a
+  second", which is the more useful thing to be told anyway.
+
+- **Mol\*'s licence notice is shipped again.** 4.18 built with webpack, which
+  extracted every bundled licence into `molstar.js.LICENSE.txt`; 5.11 builds
+  with esbuild, which emits no such file and leaves its dependencies' notices
+  inline in the JavaScript instead. Mol\*'s own is in neither place — searched
+  for in the 5.11 bundle, "Mol\* contributors" appears zero times — so the
+  upgrade would have redistributed Mol\* with no notice at all. `sync-molstar`
+  copies the package's own LICENSE now, as `molstar-LICENSE.txt`. The
+  packaging test that exists for this would have passed anyway, because a
+  stale file from the previous version was still sitting in `public/`.
+
+- **Mol\*'s PyMOL transpiler changed what `within` means, and we did not.**
+  Five selections that agreed exactly under 4.18 disagree under 5.11, all of
+  them a `within` with an explicit left operand: they return 456 where we
+  return 121 for `polymer within 4 of resn HEM`. Nothing in their changelog
+  mentions it. Checked against a third opinion before assuming the other
+  implementation was the one that moved — a plain numpy distance calculation,
+  owing nothing to either transpiler, returns our numbers. They are recorded
+  as divergences, which assert both halves, so if upstream restores the old
+  behaviour the test fails and the claim gets retired rather than carried.
+
+- **`bloom` gained a parameter.** protean spells every screen-space effect's
+  parameters out rather than toggling a name, because a Mol\* effect enabled
+  with an empty params object renders from something nobody chose. A key
+  missing from that table is the same hazard, and 5.11 added `transparency`
+  to bloom. Checked key by key across all six effects; bloom was the only one.
+
 ### Views
 
 - **A control in the viewer that asks the server rather than drawing.** One

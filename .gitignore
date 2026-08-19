@@ -19,7 +19,7 @@ wheels/
 # working across checkouts, so the rule has to cover both shapes.
 viewer/node_modules
 viewer/dist
-viewer/public/molstar.*
+viewer/public/molstar*
 src/protean_mcp/static
 
 # Misc

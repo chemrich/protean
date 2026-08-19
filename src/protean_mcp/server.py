@@ -1721,7 +1721,11 @@ async def spin(
     writes a sequence.
 
     mode: "spin" turns continuously, "rock" swings back and forth, "off" stops.
-    speed: radians per second. Mol*'s defaults are 1 spinning, 0.3 rocking.
+    speed: full turns per second — 1 is one revolution a second, 0.2 a slow
+      look-round. Mol*'s defaults are 1 spinning, 0.3 rocking. This was
+      radians per second until Mol* 5, where the same number came to mean
+      2*pi times as much; the unit here follows Mol*'s rather than converting,
+      so that what protean reports and what the viewer holds stay one value.
     angle: rock only — how far it swings either side, in degrees.
     """
     args: dict[str, Any] = {"mode": mode}

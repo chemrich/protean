@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "sync-molstar": "mkdir -p public && cp node_modules/molstar/build/viewer/molstar.js node_modules/molstar/build/viewer/molstar.css node_modules/molstar/build/viewer/molstar.js.LICENSE.txt public/",
+    "sync-molstar": "mkdir -p public && cp node_modules/molstar/build/viewer/molstar.js node_modules/molstar/build/viewer/molstar.css public/ && cp node_modules/molstar/LICENSE public/molstar-LICENSE.txt",
     "predev": "npm run sync-molstar",
     "prebuild": "npm run sync-molstar",
     "dev": "vite",
@@ -14,7 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "molstar": "^4.18.0"
+    "molstar": "^5.11.0"
   },
   "devDependencies": {
     "jsdom": "^25.0.1",
