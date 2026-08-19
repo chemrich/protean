@@ -1841,3 +1841,65 @@ async def _camera_position(session) -> list[float]:
         "JSON.stringify(window.__protean.plugin.canvas3d.camera.state.position)"
     )
     return [round(v, 6) for v in position]
+
+
+# -- width as a channel of its own ---------------------------------------------
+
+
+async def test_a_size_theme_changes_the_width_of_what_is_drawn():
+    """Colour was exposed and width was not, so `putty` varied with B-factor
+    because Mol* happened to default it that way and nothing could say
+    otherwise. This is the claim that `size()` reaches the pixels at all."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="putty", handle="fold")
+        varying = await _shot(session)
+
+        # `uniform` is the honest opposite of putty's default: one width
+        # everywhere, so the tube stops carrying the B-factor at all.
+        await server_mod.size("uniform", name="fold")
+        flattened = await _shot(session)
+
+        assert coverage(flattened) > 0.01, "the putty vanished rather than changing"
+        assert difference(varying, flattened) > STYLED, "the width did not change"
+
+
+async def test_a_cartoon_has_a_width_too():
+    """Written first as "sizing a cartoon is refused", on the assumption that
+    only tubes and spheres have a width. Measured before shipping: `physical`
+    moves 0.0337 of the frame on a cartoon, which is more than it moves on a
+    putty. The refusal would have blocked something that works.
+
+    Kept as a test rather than deleted, because the assumption is an easy one
+    to make again."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="cartoon", handle="fold")
+        uniform = await _shot(session)
+
+        await server_mod.size("physical", name="fold")
+        physical = await _shot(session)
+
+        assert difference(uniform, physical) > STYLED
+
+
+async def test_an_unknown_size_theme_is_refused_with_the_real_list():
+    """Validated against the live registry, like every other name protean
+    takes, so the message cannot go stale against the bundled Mol*."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="putty", handle="fold")
+
+        with pytest.raises(ViewerError, match="uncertainty"):
+            await server_mod.size("thickness", name="fold")
+
+
+async def test_size_themes_are_reported_as_a_capability():
+    """A model can only pick from what it can see at the point of use, which
+    is why the colour themes are already listed here."""
+    async with viewer_session(FIXTURE) as session:
+        caps = await session.request("capabilities", {})
+        assert "uncertainty" in caps["size_themes"]
+        assert "physical" in caps["size_themes"]

@@ -782,6 +782,8 @@ export function createDispatcher(plugin: any): Handler {
     registryNames(plugin.representation?.structure?.registry);
   const colorThemeNames = () =>
     registryNames(plugin.representation?.structure?.themes?.colorThemeRegistry);
+  const sizeThemeNames = () =>
+    registryNames(plugin.representation?.structure?.themes?.sizeThemeRegistry);
 
   /** Which params a representation actually accepts, for the same reason we
    * validate its name: an unsupported one is ignored rather than refused. */
@@ -2005,11 +2007,43 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    size: {
+      render: true,
+      async run({ name, size }: { name: string; size: string }) {
+        checkName('size theme', size, sizeThemeNames());
+        const entry = require(name);
+        const target = hierarchyComponents(entry.refs);
+        if (!target.length) {
+          throw new Error(`Selection '${name}' has no component in the hierarchy to size`);
+        }
+        // What each representation was sizing by before, which is the one
+        // thing the caller cannot see and the reply can cheaply say. It also
+        // makes a no-op legible: asking for the theme that is already set
+        // changes nothing on screen, and "was: physical, now: physical" says
+        // why, where a bare success would not.
+        const before = target
+          .flatMap((c: any) => c.representations ?? [])
+          .map((r: any) => r.cell.transform.params?.sizeTheme?.name)
+          .filter(Boolean);
+        await plugin.managers.structure.component.updateRepresentationsTheme(target, {
+          size,
+        });
+        return {
+          name,
+          size,
+          components: target.length,
+          representations: before.length,
+          was: [...new Set(before)],
+        };
+      },
+    },
+
     capabilities: {
       async run() {
         return {
           representations: representationTypes().sort(),
           color_themes: colorThemeNames().sort(),
+          size_themes: sizeThemeNames().sort(),
           // Named styles belong here for the same reason the two lists above
           // do: a model can only pick from what it can see at the point of use.
           lighting_rigs: Object.keys(LIGHTING_RIGS).sort(),

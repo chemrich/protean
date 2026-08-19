@@ -5,6 +5,28 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Views
+
+- **Width is a channel now, not a thing `putty` happened to do.** `size()` sets
+  what decides the width of a drawn selection — `uncertainty` for B-factor,
+  `physical` for van der Waals radius, `uniform` to flatten it — the same way
+  `color()` sets what decides its colour, validated against Mol\*'s live size
+  registry and reported in `capabilities()`.
+
+  This was written up as blocked. docs/views.md recorded `putty`'s tube width
+  as possibly needing "a size theme protean does not expose", which would have
+  tied it to the cryo-EM "size by scalar" work; and Mol\* 4.18 had a bug that
+  made a size-only theme update silently do nothing, so it could not have been
+  exposed cleanly anyway. Mol\* 5 fixed that bug, and nothing else was in the
+  way.
+
+  It also nearly shipped with a refusal for representations that "have no
+  width", written on the assumption that only tubes and spheres do. Measured
+  before shipping: `physical` moves 0.0337 of the frame on a **cartoon**, more
+  than it moves on a putty. Every representation has a width. The refusal would
+  have blocked something that works, and there is a test carrying that
+  measurement so the assumption is harder to make twice.
+
 ### Mol\* 5
 
 - **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
