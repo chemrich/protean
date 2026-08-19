@@ -902,6 +902,31 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
 
 
 @_tool()
+async def size(size: str, name: str = "sele") -> dict[str, Any]:
+    """Set what decides the *width* of an already-displayed selection.
+
+    Colour is one channel and width is another, and the second was not exposed
+    until now: `putty` has always varied its tube with B-factor because that is
+    Mol*'s default for it, and nothing could say otherwise or ask for the same
+    treatment anywhere else.
+
+    size: a Mol* size theme — capabilities() reports the live list. The useful
+      ones are `uncertainty` (B-factor, or whatever has been written into that
+      column), `physical` (van der Waals radius, the usual choice for
+      spacefill), and `uniform` (one width everywhere, which is how you flatten
+      a putty back into a plain tube).
+    name: the handle passed to a previous show().
+
+    Every representation has a width, including the ones where that is not
+    obvious: a cartoon's ribbon thickens under `physical` as much as a putty's
+    tube does. The reply says what each was sizing by before, so that asking
+    for the theme already in force reads as the no-op it is rather than as a
+    change that failed to appear.
+    """
+    return await _call("size", {"name": name, "size": size})
+
+
+@_tool()
 async def opacity(opacity: float, name: str = "sele") -> dict[str, Any]:
     """Make an already-displayed selection transparent.
 

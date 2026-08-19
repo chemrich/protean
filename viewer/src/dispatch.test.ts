@@ -162,7 +162,10 @@ function fakePlugin() {
                 : { alpha: 1, aspectRatio: 1 },
           }),
         },
-        themes: { colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] } },
+        themes: {
+          colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] },
+          sizeThemeRegistry: { types: [['uniform'], ['physical'], ['uncertainty']] },
+        },
       },
     },
     clear: vi.fn(async () => {}),
@@ -389,6 +392,13 @@ describe('createDispatcher', () => {
     ).rejects.toThrow(/Unknown colour theme 'nope'/);
   });
 
+  it('rejects an unknown size theme against the live registry', async () => {
+    const dispatch = createDispatcher(fakePlugin());
+    await expect(dispatch('size', { name: 's', size: 'thickness' })).rejects.toThrow(
+      /Unknown size theme 'thickness'\. Available: physical, uncertainty, uniform/
+    );
+  });
+
   it('treats a hex value as a literal colour, not a theme name', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(
@@ -403,6 +413,7 @@ describe('createDispatcher', () => {
     await expect(dispatch('capabilities', {})).resolves.toEqual({
       representations: ['cartoon', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
+      size_themes: ['physical', 'uncertainty', 'uniform'],
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
