@@ -2447,7 +2447,19 @@ async def _preset_hide_sidechains(target: str) -> list[str]:
             "No sidechains are drawn, so there are none to hide. Apply the "
             "sidechains view first."
         )
-    return [await _run(hide, name=_SIDECHAIN_HANDLE)]
+    # Not `_run`, which discards the reply. The handle survives being hidden,
+    # so the registry answers the same either way and this preset would report
+    # success for a second call that moved nothing — the exact failure the
+    # refusal above exists to prevent, one call further along. `changed` counts
+    # the components that actually flipped, and zero of them means the sticks
+    # were already away.
+    result = await hide(name=_SIDECHAIN_HANDLE)
+    if not result.get("changed"):
+        raise ViewerError(
+            "The sidechains are registered but already hidden, so this would "
+            "have changed nothing. Apply the sidechains view to bring them back."
+        )
+    return [_step("hide", name=_SIDECHAIN_HANDLE)]
 
 
 async def _preset_active_site(target: str) -> list[str]:
@@ -2598,25 +2610,30 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            look; pairs well with a simple cartoon.
       cinematic            Near-black ground, back light, ambient occlusion and
                            a shallow depth of field. A render, not a diagram.
+      light-ground         A white ground, and nothing else touched.
+      dark-ground          A near-black ground, and nothing else touched.
 
       Decide what is drawn:
 
       textbook             Cartoon by secondary structure, flat and outlined —
                            illustrative's styling with the drawing done too.
-      bfactor              Cartoon on the B-factor ramp: rigid core cold,
-                           mobile loops and termini warm.
       putty                A tube whose width *and* colour follow B-factor, so
                            a disordered loop reads as a fat warm bulge.
       hydrophobic-surface  A molecular surface coloured by hydrophobicity, ring
                            lit so the curvature survives.
-      pointillist          Every non-solvent atom as a point, on black.
+      spacefill            Every non-solvent atom as a CPK sphere, lit so the
+                           packing reads as volume rather than as a blob.
+      skeleton             Ball-and-stick over everything but the solvent.
 
       Add to what is there:
 
-      ghost-heart        A see-through surface over the selection, leaving
+      ghost-heart          A see-through surface over the selection, leaving
                            whatever is inside it visible. Drawn under its own
                            handle so it layers over the existing representation
-                           rather than replacing it.
+                           rather than replacing it, and it takes no clicks.
+      sidechains           Sidechain sticks over whatever is already drawn,
+                           under their own handle.
+      hide-sidechains      Puts those away again. Refuses when none are drawn.
       active-site          Ball-and-stick and residue labels on the given site,
                            the rest of the structure faded back. Needs a handle.
 
@@ -2624,9 +2641,10 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       scene — the drawing presets then hide what the viewer loaded, draw under
       the handle "auto_view", and reframe the camera on it, all of which the
       reply lists. What lands in "auto_view" is the view's own selection:
-      `polymer` for every one of them except pointillist, which takes
-      everything that is not solvent. **A whole-scene view therefore discards a
-      camera you had moved**, so apply the view first and orient afterwards.
+      `polymer` for textbook and putty, and everything that is not solvent for
+      hydrophobic-surface, spacefill and skeleton. **A whole-scene view
+      therefore discards a camera you had moved**, so apply the view first and
+      orient afterwards.
       Given a handle they leave the camera alone. active-site refuses an
       omitted handle, since a site has to be named.
 

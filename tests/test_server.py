@@ -8,6 +8,7 @@ import contextlib
 import gzip
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1769,6 +1770,32 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
 
         viewer.handlers[action] = handle
 
+    # `hide` and `show` get the real viewer's `changed` bookkeeping on top,
+    # because a preset now reads it. The real `setHidden` counts the components
+    # it actually flipped and returns zero when they were already that way; a
+    # recorder that always answered "done" would let a refusal built on that
+    # count pass a test it could not pass in the viewer.
+    # Held on the viewer, not in this closure: `_record` runs once per preset
+    # applied, and a per-call set would forget what the last one hid — which is
+    # precisely the state a second `hide-sidechains` has to see.
+    hidden: set[str] = viewer.__dict__.setdefault("hidden_names", set())
+
+    def on_hide(args):
+        calls.append(("hide", args))
+        name = args.get("name", "")
+        changed = 0 if name in hidden else 1
+        hidden.add(name)
+        return {"name": name, "hidden": True, "components": 1, "changed": changed}
+
+    def on_show(args):
+        calls.append(("show", args))
+        # Drawing under a handle builds a fresh, visible component.
+        hidden.discard(args.get("handle", ""))
+        return {"ok": True, "name": args.get("name", ""), "representations": 1}
+
+    viewer.handlers["hide"] = on_hide
+    viewer.handlers["show"] = on_show
+
 
 async def test_unknown_preset_is_refused_with_the_real_list(wired_bridge):
     with pytest.raises(ViewerError, match=r"Unknown preset 'noir'.*active-site"):
@@ -2800,3 +2827,42 @@ async def test_hiding_sidechains_that_were_never_drawn_is_refused(wired_bridge, 
     await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
     with pytest.raises(ViewerError, match="none to hide"):
         await preset("hide-sidechains")
+
+
+async def test_hiding_sidechains_twice_is_refused_the_second_time(wired_bridge, tmp_path):
+    """The handle survives being hidden, so the registry cannot tell the two
+    apart. Asked twice, the earlier check answered "done" both times while the
+    second call moved nothing — success reported for no effect, one call along
+    from the case the first refusal covers."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "sidechains")
+    await _preset_calls(wired_bridge, tmp_path, "hide-sidechains")
+
+    with pytest.raises(ViewerError, match="already hidden"):
+        await _preset_calls(wired_bridge, tmp_path, "hide-sidechains")
+
+
+def test_the_preset_docstring_lists_every_preset_and_no_others():
+    """The docstring is the catalogue a model reads, so drift in it is an API bug.
+
+    A review found `preset()` advertising two presets that had been deleted —
+    a model following it got `Unknown preset` — while six that had been added
+    were undocumented and therefore unreachable in practice. Nothing failed,
+    because nothing was checking.
+
+    Matched without depending on indentation: the docstring reaching a caller
+    has been dedented from the source, which the first version of this test did
+    not survive.
+    """
+    doc = preset.__doc__ or ""
+    # A catalogue line is a name, two or more spaces, then its description.
+    listed = {
+        match.group(1)
+        for match in re.finditer(r"^\s*([a-z][a-z-]+) {2,}\S", doc, re.MULTILINE)
+    }
+
+    missing = set(server_mod._PRESETS) - listed
+    assert not missing, f"presets the docstring never mentions: {sorted(missing)}"
+
+    gone = listed - set(server_mod._PRESETS)
+    assert not gone, f"the docstring offers presets that do not exist: {sorted(gone)}"
