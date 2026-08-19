@@ -84,8 +84,8 @@ rather than the harness needing fixing once. Worth more than the result.
 MCPymol makes each view a tool. protean should not, and the deciding factor is
 parameters rather than taste.
 
-`textbook`, `cinematic`, `pointillist`, `bfactor`, `hydrophobic-surface` and
-`putty` take nothing but an optional handle. `preset(name, handle)` expresses
+`textbook`, `cinematic`, `hydrophobic-surface`, `putty`, `spacefill` and
+`skeleton` take nothing but an optional handle. `preset(name, handle)` expresses
 them exactly.
 
 `ligand_view(resn)`, `interface_view(chain_a, chain_b)`,
@@ -263,6 +263,14 @@ Six recipes: `textbook`, `cinematic`, `pointillist`, `bfactor`,
 held: no new rendering, no new dependency, nothing but compositions of tools
 that already existed.
 
+**Two of the six were replaced after a look at the pictures** (2026-08-18).
+`bfactor` said what `putty` says, in colour alone rather than colour and width,
+and `pointillist` was a novelty rather than a way of reading a structure.
+`spacefill` and `skeleton` took their places, answering the two questions
+nothing else in the catalogue answered: how the molecule packs, and what the
+atoms are. The count is unchanged; the names below are the ones that shipped
+that day, not the ones in `preset()` now.
+
 **The one open question is answered, and the answer removes a dependency.**
 This stub asked whether `putty`'s tube width varies with B-factor by default or
 needs the `uncertainty` **size** theme, which protean does not expose — and
@@ -301,10 +309,11 @@ machine that was not this one.
 
 **Two limits worth stating rather than discovering later:**
 
-- **`bfactor` uses only the cold half of its ramp on an ordinary crystal
-  structure.** Mol\*'s `uncertainty` colour theme has a fixed `[0, 100]` domain
-  and `color()` passes no theme parameters, so 1UBQ's B-factors — 2 to 47 —
-  occupy 0.02 to 0.47 of it. The picture is correct and the contrast is lower
+- **A view coloured by B-factor uses only the cold half of its ramp on an
+  ordinary crystal structure.** Mol\*'s `uncertainty` colour theme has a fixed
+  `[0, 100]` domain and `color()` passes no theme parameters, so 1UBQ's
+  B-factors — 2 to 47 — occupy 0.02 to 0.47 of it. Found on `bfactor`; it
+  outlived that view, because `putty` colours the same way. The picture is correct and the contrast is lower
   than PyMOL's `spectrum b`, which fits the ramp to the data. The fix is a
   domain on `color()`, not a change to the preset; `color_by_rmsf` works around
   the same limit today by rescaling values before it sends them.

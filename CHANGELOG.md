@@ -39,14 +39,20 @@ nothing is released yet, so everything below is unreleased.
   can push notifications and client support is uneven, so it rides out on the
   next reply instead, which needs no client support at all.
 
-- **Six more presets, so `preset()` covers the styles worth borrowing from
-  MCPymol.** `textbook`, `bfactor`, `putty`, `hydrophobic-surface` and
-  `pointillist` decide what is drawn; `cinematic` only restyles what is there,
-  as `publication-cartoon` and `illustrative` already did. None of them needed
-  new rendering — Mol\* has the representations and the themes, and protean
-  validates against its live registries, so all six are compositions of tools
-  that already existed. The reply lists every call each one made, so any of it
-  can be adjusted afterwards.
+- **More presets, so `preset()` covers the styles worth borrowing from
+  MCPymol.** `textbook`, `putty`, `hydrophobic-surface`, `spacefill` and
+  `skeleton` decide what is drawn; `cinematic`, `light-ground` and `dark-ground`
+  only restyle what is there, as `publication-cartoon` and `illustrative`
+  already did. None of them needed new rendering — Mol\* has the
+  representations and the themes, and protean validates against its live
+  registries, so every one is a composition of tools that already existed. The
+  reply lists every call each one made, so any of it can be adjusted afterwards.
+
+  Two of these replaced earlier drafts. `bfactor` said the same thing `putty`
+  does, in one channel instead of two, and `pointillist` was a novelty rather
+  than a way of reading a structure; `spacefill` and `skeleton` answer questions
+  — how does this pack, and what are the atoms — that nothing else in the
+  catalogue answered.
 
   The drawing presets hide what the load preset built and draw through one
   shared handle, `auto_view`. Sharing it is the point: applying a second view
