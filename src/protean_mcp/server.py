@@ -294,6 +294,9 @@ _SKYBOX_FACES = ("nx", "ny", "nz", "px", "py", "pz")
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 
 _DOMAIN_BOUNDS = 2
+# A [low, high] or [thin, thick] pair, which is the only length either takes.
+_PAIR = 2
+
 # The uncertainty theme ramps over a fixed [0, 100] domain.
 _B_FACTOR_FULL = 100.0
 # A homogeneous transform is 4x4.
@@ -899,6 +902,104 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
     name: the handle passed to a previous select() or show().
     """
     return await _call("color", {"name": name, "color": color})
+
+
+@_tool()
+async def define_field(
+    name: str,
+    values: list[dict[str, Any]],
+    domain: list[float] | None = None,
+    palette: str = "blue-white-red",
+    sizes: list[float] | None = None,
+) -> dict[str, Any]:
+    """Register a per-residue number as something colour() and size() can use.
+
+    This is how any scalar you have computed becomes a picture. Register it
+    once under a name, then `color(name)` paints it and `size(name)` gives it
+    width — it is an ordinary theme from that point on, and appears in
+    capabilities() beside Mol*'s own.
+
+    values: what rmsf() and conservation() already return — a list of entries
+      carrying "chain", "seq", and the number. The number is read from a
+      "value" key, or from the only other numeric key in the entry, so the
+      output of an analysis tool can be handed over unchanged.
+    domain: [low, high] for the ends of the ramp. Omitted, it fits the data,
+      which is what makes a rigid core stand out; give it explicitly when two
+      structures have to be comparable.
+    palette: capabilities() lists them. The default runs blue through white to
+      red, the convention for a signed quantity.
+    sizes: [thin, thick] in angstroms, for what size() will do with this.
+
+    Refused when the field matches no residue in the loaded structure. Chain
+    and sequence number have to be the ones the viewer holds — a field keyed
+    on something else registers cleanly and paints the whole molecule the
+    "no data" grey, which looks like a rendering fault rather than a mistake
+    in the numbers.
+
+    Keyed by residue rather than by atom index on purpose: a biological
+    assembly holds symmetry copies the analysis array does not, so index
+    alignment would be silently wrong on exactly the structures where it
+    matters, while a residue key gives every copy the value that residue
+    earned.
+    """
+    if not values:
+        raise ViewerError(f"Field {name!r} was given no values")
+    for label, pair, ends in (
+        ("domain", domain, "[low, high]"),
+        ("sizes", sizes, "[thin, thick]"),
+    ):
+        if pair is not None and len(pair) != _PAIR:
+            raise ViewerError(f"{label} takes {ends}, got {len(pair)} numbers")
+
+    keyed: dict[str, float] = {}
+    for entry in values:
+        if "chain" not in entry or "seq" not in entry:
+            raise ViewerError(
+                f"Every entry needs 'chain' and 'seq'; got {sorted(entry)}. "
+                "The output of rmsf() or conservation() is already this shape."
+            )
+        number = _field_value(entry)
+        keyed[f"{entry['chain']}|{int(entry['seq'])}|{entry.get('ins_code', '')}"] = (
+            number
+        )
+
+    payload: dict[str, Any] = {"name": name, "values": keyed, "palette": palette}
+    if domain is not None:
+        payload["domain"] = [float(domain[0]), float(domain[1])]
+    if sizes is not None:
+        payload["sizes"] = [float(sizes[0]), float(sizes[1])]
+    return await _call("define_field", payload)
+
+
+def _field_value(entry: dict[str, Any]) -> float:
+    """The number in an analysis entry, whatever its author called it.
+
+    `rmsf()` names it "rmsf" and `conservation()` names it something else
+    again, and requiring a rename before the values can be drawn would make
+    the common case — hand the output of one tool to the next — the awkward
+    one. An entry carrying two numbers is ambiguous and says so rather than
+    picking.
+    """
+    if "value" in entry:
+        return float(entry["value"])
+    numeric = {
+        key: value
+        for key, value in entry.items()
+        if key not in ("seq", "chain", "ins_code")
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    }
+    if len(numeric) == 1:
+        return float(next(iter(numeric.values())))
+    if not numeric:
+        raise ViewerError(
+            f"No number to draw in entry {sorted(entry)}. Name it 'value', or "
+            "pass an entry that carries exactly one number."
+        )
+    raise ViewerError(
+        f"Entry carries more than one number ({sorted(numeric)}), so which to "
+        "draw is ambiguous. Name the one you mean 'value'."
+    )
 
 
 @_tool()

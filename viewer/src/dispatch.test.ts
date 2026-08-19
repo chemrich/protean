@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { colorParams, createDispatcher, lociOf, rotateAbout, summarise } from './dispatch';
+import {
+  colorParams,
+  createDispatcher,
+  lociOf,
+  rampColor,
+  rotateAbout,
+  summarise,
+} from './dispatch';
 
 /** A structure shaped like Mol*'s, with the table layout the real one uses:
  *  comp_id on the atom table, seq/ins_code on the residue table. */
@@ -1645,5 +1652,34 @@ describe('a camera that never came to rest', () => {
     });
 
     expect(loaded).not.toHaveProperty('camera_settled');
+  });
+});
+
+describe('rampColor', () => {
+  // The interpolator a registered field paints through. Pure, so it is worth
+  // pinning here rather than inferring it from a picture.
+  const RWB = [0xd7191c, 0xffffff, 0x2c7bb6];
+
+  it('returns the stops themselves at the ends and the middle', () => {
+    expect(rampColor(RWB, 0)).toBe(0xd7191c);
+    expect(rampColor(RWB, 0.5)).toBe(0xffffff);
+    expect(rampColor(RWB, 1)).toBe(0x2c7bb6);
+  });
+
+  it('interpolates between two stops', () => {
+    const quarter = rampColor(RWB, 0.25);
+    // Halfway from red to white: every channel between the two.
+    expect((quarter >> 16) & 0xff).toBeGreaterThan(0xd7);
+    expect((quarter >> 8) & 0xff).toBeGreaterThan(0x19);
+    expect((quarter >> 8) & 0xff).toBeLessThan(0xff);
+  });
+
+  it('clamps rather than wrapping — a value outside the domain is still a value', () => {
+    expect(rampColor(RWB, -5)).toBe(0xd7191c);
+    expect(rampColor(RWB, 5)).toBe(0x2c7bb6);
+  });
+
+  it('handles a single-stop palette without dividing by zero', () => {
+    expect(rampColor([0x123456], 0.7)).toBe(0x123456);
   });
 });

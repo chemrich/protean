@@ -174,6 +174,27 @@ declare global {
  * Mol* resolves preset names internally, but a ColorList *value* has to carry
  * real colours, so they are spelled out here.
  */
+/** Interpolate a palette at `t` in [0, 1], returning Mol*'s packed colour int.
+ *
+ * Mol* has colour-list machinery of its own, but it is not reachable from the
+ * prebuilt bundle, and a linear ramp over three stops is small enough that
+ * borrowing it would cost more than writing it.
+ */
+export function rampColor(ramp: number[], t: number): number {
+  if (ramp.length === 1) return ramp[0];
+  const scaled = Math.min(1, Math.max(0, t)) * (ramp.length - 1);
+  const i = Math.min(ramp.length - 2, Math.floor(scaled));
+  const f = scaled - i;
+  const lo = ramp[i];
+  const hi = ramp[i + 1];
+  const channel = (shift: number) => {
+    const a = (lo >> shift) & 0xff;
+    const b = (hi >> shift) & 0xff;
+    return Math.round(a + (b - a) * f) & 0xff;
+  };
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
+
 const PALETTES: Record<string, number[]> = {
   'red-white-blue': [0xd7191c, 0xffffff, 0x2c7bb6],
   'blue-white-red': [0x2c7bb6, 0xffffff, 0xd7191c],
@@ -2004,6 +2025,149 @@ export function createDispatcher(plugin: any): Handler {
           colorParams(color)
         );
         return { name, color, components: target.length };
+      },
+    },
+
+    /** Register a named per-residue scalar as both a colour and a size theme.
+     *
+     * The alternative, and what protean did before this, is to write the
+     * numbers into the B-factor column and re-send the whole structure so
+     * Mol*'s `uncertainty` theme can ramp over them. That costs an upload per
+     * colouring, flattens the values into that theme's fixed [0, 100] domain
+     * so they stop meaning what they measured, and allows exactly one scalar
+     * at a time because there is one B-factor column.
+     *
+     * Keyed by chain, sequence number and insertion code rather than by atom
+     * index. Index alignment would be shorter and would break on the first
+     * biological assembly, where the viewer holds symmetry copies the analysis
+     * array does not have; keyed this way every copy of a residue gets the
+     * value that residue earned, which is the answer you want anyway.
+     */
+    define_field: {
+      async run({
+        name,
+        values,
+        domain,
+        palette,
+        sizes,
+      }: {
+        name: string;
+        values: Record<string, number>;
+        domain?: [number, number];
+        palette?: string;
+        sizes?: [number, number];
+      }) {
+        const numbers = Object.values(values);
+        if (!numbers.length) throw new Error(`Field '${name}' carries no values`);
+
+        const [low, high] = domain ?? [Math.min(...numbers), Math.max(...numbers)];
+        const span = high - low;
+        const ramp = PALETTES[palette ?? 'blue-white-red'];
+        if (!ramp) {
+          throw new Error(
+            `Unknown palette '${palette}'. Available: ${Object.keys(PALETTES).sort().join(', ')}`
+          );
+        }
+        const [thin, thick] = sizes ?? [0.2, 1.5];
+
+        /** Where a value sits in the domain, clamped, 0 to 1. */
+        const fraction = (v: number) => (span > 0 ? Math.min(1, Math.max(0, (v - low) / span)) : 0.5);
+
+        const lookup = (location: any): number | undefined => {
+          const unit = location.unit;
+          const element = location.element;
+          if (!unit || element === undefined || !unit.model?.atomicHierarchy) return undefined;
+          const h = unit.model.atomicHierarchy;
+          const ri = h.residueAtomSegments.index[element];
+          const ci = h.chainAtomSegments.index[element];
+          const ins = h.residues.pdbx_PDB_ins_code.value(ri) || '';
+          return values[`${h.chains.auth_asym_id.value(ci)}|${h.residues.auth_seq_id.value(ri)}|${ins}`];
+        };
+
+        // Does any of this reach the structure on screen? A field whose keys
+        // match nothing registers happily and paints every residue the
+        // not-in-the-field grey, which looks like a rendering bug and reports
+        // as a success. Counted once, here, rather than discovered by looking.
+        // `rootStructure` refuses when nothing is loaded, which is the right
+        // answer here too: a field registered against no structure cannot be
+        // checked against one, and an unverifiable field is the thing this
+        // block exists to prevent.
+        let matched = 0;
+        const structure = rootStructure();
+        {
+          const seenResidues = new Set<string>();
+          for (const unit of structure.units) {
+            const h = unit.model.atomicHierarchy;
+            for (let i = 0, n = unit.elements.length; i < n; i++) {
+              const element = unit.elements[i];
+              const ri = h.residueAtomSegments.index[element];
+              if (seenResidues.has(`${unit.model.id}:${ri}`)) continue;
+              seenResidues.add(`${unit.model.id}:${ri}`);
+              const ci = h.chainAtomSegments.index[element];
+              const ins = h.residues.pdbx_PDB_ins_code.value(ri) || '';
+              const key = `${h.chains.auth_asym_id.value(ci)}|${h.residues.auth_seq_id.value(ri)}|${ins}`;
+              if (key in values) matched++;
+            }
+          }
+          if (!matched) {
+            const sample = Object.keys(values).slice(0, 3).join(', ');
+            throw new Error(
+              `Field '${name}' matches no residue in the loaded structure. ` +
+                `Its keys look like: ${sample}. Chain and sequence number have ` +
+                `to be the ones the viewer holds, which are the auth_* fields.`
+            );
+          }
+        }
+
+        const themes = plugin.representation.structure.themes;
+        themes.colorThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            // Grey for a residue the field says nothing about, which is
+            // honest: the alternative is an end-of-ramp colour that reads as
+            // a measurement rather than as a gap.
+            color: (location: any) => {
+              const v = lookup(location);
+              return v === undefined ? 0x808080 : rampColor(ramp, fraction(v));
+            },
+            props: {},
+            description: `protean field '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+        themes.sizeThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            size: (location: any) => {
+              const v = lookup(location);
+              return v === undefined ? thin : thin + (thick - thin) * fraction(v);
+            },
+            props: {},
+            description: `protean field '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+
+        return {
+          field: name,
+          residues: numbers.length,
+          matched,
+          domain: [low, high],
+          palette: palette ?? 'blue-white-red',
+          sizes: [thin, thick],
+        };
       },
     },
 

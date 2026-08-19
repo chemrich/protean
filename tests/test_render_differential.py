@@ -1914,3 +1914,58 @@ async def test_size_themes_are_reported_as_a_capability():
         caps = await session.request("capabilities", {})
         assert "uncertainty" in caps["size_themes"]
         assert "physical" in caps["size_themes"]
+
+
+# -- a number of your own, drawn ------------------------------------------------
+
+
+async def test_a_registered_field_paints_and_sizes_what_it_matches():
+    """The point of the exercise: an arbitrary per-residue number becomes both
+    a colour and a width, with no structure re-sent and no B-factor column
+    borrowed to carry it."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        # 1UBQ is one chain, 76 residues; a ramp along it is unmistakable.
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="putty", handle="fold", color="#ffffff")
+        plain = await _shot(session)
+
+        reply = await server_mod.define_field("ramp", values)
+        assert reply["matched"] > 0, "registered against nothing"
+
+        await server_mod.color("ramp", name="fold")
+        painted = await _shot(session)
+        assert difference(plain, painted) > STYLED, "the field did not colour anything"
+
+        await server_mod.size("ramp", name="fold")
+        widened = await _shot(session)
+        assert difference(painted, widened) > STYLED, "the field did not size anything"
+
+
+async def test_a_field_matching_no_residue_is_refused():
+    """Registering happily and painting the whole molecule the no-data grey is
+    indistinguishable from a rendering fault, and reports as success."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match="matches no residue"):
+            await server_mod.define_field(
+                "wrong", [{"chain": "Z", "seq": 9000, "value": 1.0}]
+            )
+
+
+async def test_a_field_takes_an_analysis_reply_unchanged():
+    """`rmsf()` names its number "rmsf" and conservation names its own; making
+    a caller rename before drawing would make the common case the awkward one.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        reply = await server_mod.define_field(
+            "as_returned",
+            [{"chain": "A", "seq": n, "rmsf": n / 10} for n in range(1, 77)],
+        )
+        assert reply["matched"] > 0
+
+        with pytest.raises(ViewerError, match="more than one number"):
+            await server_mod.define_field(
+                "ambiguous", [{"chain": "A", "seq": 1, "rmsf": 1.0, "plddt": 2.0}]
+            )
