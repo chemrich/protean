@@ -391,23 +391,22 @@ SUBTLE = 0.002
 # it measures the effect directly. The baseline is exactly 0.0 — not nearly
 # zero, exactly — which is what makes a small number here meaningful.
 #
-# This is a noise floor and not a fidelity check, because how much green the
-# outline puts on screen depends on the frame size and on the renderer. All
-# four of these are the same fixture and the same flags:
+# Counted in pixels rather than as a fraction of the frame, after a fraction
+# threshold had to be moved twice. The quantity varies with frame size, but
+# not the way a fraction assumes: these are the same fixture and flags.
 #
-#     Mol* 4.18, 722x311 (CI's headless default)   0.00107
-#     Mol* 5.11, 722x311                           0.00074
-#     Mol* 5.11, as measured in CI itself          0.00047
-#     Mol* 5.11, 2332x1274 (a retina window)       0.00446
+#     frame        green pixels   as a fraction
+#     746x335 (CI)          117       0.00047
+#     722x311               166       0.00074
+#     1166x937               83       0.000076
+#     2332x1274          13,258       0.00446
 #
-# The bar was 0.0005, derived from a measurement on a frame size CI does not
-# use, and 5.11 draws the outline thinner: CI came in at 0.00047 and failed.
-# Nothing was broken — the outline ran and took its colour — so the number to
-# change is this one. Set well below the smallest observed value, where it
-# still cannot be reached by stray pixels: 0.0001 of CI's frame is ~22 pixels.
-# Whether the outline is *faithful* is asserted separately, below, by a claim
-# that does not depend on the frame at all.
-OUTLINED = 0.0001
+# The fractions span 59x and the counts span 160x, so neither is stable — but
+# a count is the right unit for a *noise floor*, which is all this is: the
+# question it answers is "did any green arrive", and the baseline says stray
+# green does not exist in this scene at all. Whether the outline is faithful
+# is asserted separately, below, by a ratio the frame cannot affect.
+OUTLINE_PIXELS = 20
 
 OUTLINE_GREEN = (0, 255, 0, 255)
 
@@ -473,16 +472,28 @@ async def test_the_outline_is_drawn_in_the_colour_it_was_given(styled_effects):
     silhouette comparison could not separate.
     """
     assert color_fraction(styled_effects["base"], OUTLINE_GREEN) == 0.0
-    assert color_fraction(styled_effects["outline"], OUTLINE_GREEN) > OUTLINED
+    assert _green_pixels(styled_effects["outline"]) > OUTLINE_PIXELS
 
     # The floor above only says green arrived. This says the pass is really
     # drawing the outline: widen it and there has to be more of it. A ratio
     # rather than a level, so it holds at any frame size and survived the
     # renderer change that broke the level — 44x on the frame that failed.
     assert (
-        color_fraction(styled_effects["outline_wide"], OUTLINE_GREEN)
-        > color_fraction(styled_effects["outline"], OUTLINE_GREEN) * 3
+        _green_pixels(styled_effects["outline_wide"])
+        > _green_pixels(styled_effects["outline"]) * 3
     ), "widening the outline did not widen the outline"
+
+
+def _green_pixels(render: Render) -> int:
+    """How many pixels the outline actually painted, not what share of the frame.
+
+    A share divides by an area that changes with the window; the outline is a
+    line, so its pixel count follows the silhouette's perimeter instead and the
+    two disagree by two orders of magnitude between a retina window and CI's.
+    """
+    height = int(render.pixels.shape[0])
+    width = int(render.pixels.shape[1])
+    return round(color_fraction(render, OUTLINE_GREEN) * height * width)
 
 
 async def test_the_outline_adds_to_the_silhouette(styled_effects):
