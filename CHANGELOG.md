@@ -152,6 +152,25 @@ nothing is released yet, so everything below is unreleased.
 
 ### Fixed
 
+- **A stale server now says so, in the first reply of every session.** An MCP
+  server is long-lived: it keeps running the code it loaded at start while
+  serving the viewer page off disk, so a rebuilt page can meet a server from
+  three days ago. That happened, and took twenty minutes and a hand-rolled
+  WebSocket to diagnose. `open_viewer` now reports the build that answered,
+  when the process started, and — the part that carries the information —
+  whether its source still matches what is on disk, naming what changed.
+
+  **Version numbers could not have done this**, which is why they are not what
+  it relies on: `__version__` has read `0.1.0.dev0` for every build there has
+  been, and `PROTOCOL_VERSION` has been `1` since the first commit including
+  across the change that caused the incident. Both are reported anyway — they
+  are the right answer when two *machines* compare notes, just never when two
+  moments do. The viewer also compares the handshake's protocol number and says
+  so in its status pill, which catches a deliberate break from here on.
+
+  For an installed wheel none of this fires, because nothing rewrites the files
+  under one.
+
 - **A capture is allowed time in proportion to the pixels it asks for.** Every
   capture shared one fixed 300 s budget, which the range of sizes makes
   meaningless: 12000×9000 takes about 20 s on a real GPU, while under software

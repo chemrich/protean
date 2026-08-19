@@ -803,7 +803,7 @@ the flag, so this is not a barrier against a hostile call. It moves destruction
 from something that happens invisibly to something a caller has to ask for by
 name, in a call a reader can see.
 
-### 22. Nothing says which vintage of protean you are talking to — open
+### 22. Nothing says which vintage of protean you are talking to — fixed
 
 **Found by being bitten, 2026-08-15.** `open_viewer` timed out, and twenty
 minutes went into finding out why: the MCP server process had been started
@@ -844,6 +844,33 @@ Three pieces, smallest first:
 Worth doing before the flip, or soon after: a public repo means users running
 whatever they installed weeks ago and reporting bugs against a version neither
 of you can identify.
+
+**Fixed 2026-08-17, and the plan above is wrong in a way worth keeping.**
+Pieces 1 and 2 were checked before being built, and neither would have caught
+the incident they were written for:
+
+- `__version__` has read `0.1.0.dev0` for **every build there has ever been**,
+  so the server from three days ago and the server from today report the same
+  string. Piece 1 identifies a machine, never a moment.
+- `PROTOCOL_VERSION` has been `1` since the first Phase 1 commit and did not
+  move when the handshake gained a required token — *the change that caused
+  this*. Piece 2 would have compared 1 against 1 and said nothing.
+
+Ordered smallest-first, the list put the two ineffective pieces before the only
+one that works. Piece 3 — called "a decision rather than a patch" — was the
+whole item.
+
+**The decision it needed: report whether the running process still matches the
+code on disk.** `vintage.py` fingerprints every `.py` in the package by size
+and mtime as this process imported them; `open_viewer` compares against disk
+and names what changed. It catches exactly the failure, needs no version-bump
+discipline — the discipline that failed — and never fires for an installed
+wheel, because nothing rewrites the files under one.
+
+Pieces 1 and 2 shipped anyway. They cost nothing, and the version is the right
+answer for two *machines* comparing notes even though it is useless for two
+moments. The page's check says in its own comment that it only catches a
+deliberate break from here on.
 
 ### What the review is worth
 

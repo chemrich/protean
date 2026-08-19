@@ -410,3 +410,45 @@ describe('a server that never answers a click', () => {
     await expect(settled).resolves.toMatchObject({ ok: true });
   });
 });
+
+describe('a server from a different build', () => {
+  // Backlog 22. Honest about scope: this catches a *deliberate* protocol
+  // break. It would not have caught the incident that motivated it, where a
+  // stale server and a new page both said version 1 and could not talk. What
+  // identifies a stale process is on the server side, in vintage.py.
+
+  it('says so in the status pill when the numbers differ', () => {
+    connectBridge(async () => ({}));
+    latest().onopen!();
+
+    latest().receive({ action: 'protean_pong', version: 99 });
+
+    const pill = document.getElementById('status')!;
+    expect(pill.textContent).toContain('protocol mismatch');
+    expect(pill.textContent).toContain('99');
+    expect(pill.classList.contains('connected')).toBe(false);
+  });
+
+  it('stays quiet when the numbers agree', () => {
+    connectBridge(async () => ({}));
+    latest().onopen!();
+
+    latest().receive({ action: 'protean_pong', version: 1 });
+
+    const pill = document.getElementById('status')!;
+    expect(pill.textContent).not.toContain('mismatch');
+    expect(pill.classList.contains('connected')).toBe(true);
+  });
+
+  it('stays quiet when the server says nothing about its version', () => {
+    // An older server may omit the field entirely, and an absent number is
+    // not a mismatch — treating it as one would put a red pill in front of
+    // every user of a build that predates this check.
+    connectBridge(async () => ({}));
+    latest().onopen!();
+
+    latest().receive({ action: 'protean_pong' });
+
+    expect(document.getElementById('status')!.textContent).not.toContain('mismatch');
+  });
+});
