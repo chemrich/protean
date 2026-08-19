@@ -353,6 +353,20 @@ shape and three are recipes over machinery that already exists.
 | `ligand` | `active-site` already *is* this view. The gap is that it takes a handle where MCPymol takes a residue name |
 | `mutation` | parse `"A123G,V45L"`, select those residues |
 
+Three further improvements, approved 2026-08-18:
+
+- **Carbon colour on the all-atom views.** Mol\*'s `element-symbol` theme
+  defaults `carbonColor` to `chain-id`, which is why `skeleton` and `spacefill`
+  came out with green carbons rather than CPK grey. A neutral carbon would look
+  markedly more like a textbook model. Needs `show()` to pass theme parameters,
+  which it cannot today.
+- **A `default` entry restoring the load-time picture.** Watched go wrong:
+  clicking eight views in a row leaves no way back to what the load produced,
+  because every view replaces the last and nothing restores the start.
+- **Views report what they drew** — `interface` its contact count, `ligand`
+  which ligand and how many copies. The replies are already structured; making
+  them informative costs nothing and tells a model what to do next.
+
 **`plddt` is the exception and it is not cheap, because it cannot be reached.**
 The recipe is one theme, and Mol\* ships the official AlphaFold palette. But
 pLDDT is a property of a predicted model and protean cannot load one:
@@ -361,6 +375,24 @@ model fetched by hand fails the analysis parser under the default biological
 assembly. Backlog 33 and 34. **Do those first or leave `plddt` alone** — a view
 of a structure nobody can load is a view nobody can use, and building it would
 report progress that is not there.
+
+**Every one of these refuses when its target is not there, and says what is.**
+Charlie's call, 2026-08-18: the improvement below is not `mutation`'s alone.
+
+| view | what it refuses |
+|---|---|
+| `plddt` | an experimental structure — see why this one is a correctness fix, below |
+| `ligand`, `pocket` | a residue name the structure does not contain, naming the ligands it does |
+| `interface` | two chains that do not touch, rather than drawing an empty highlight |
+| `crosslink` | a structure with no disulfides and no metals, rather than a bare cartoon |
+| `mutation` | a residue that is not what the notation claims |
+
+**`plddt`'s refusal is a correctness fix and not a nicety.** pLDDT rides in the
+B-factor column, so colouring a crystal structure with the AlphaFold palette
+*works*: it maps B-factors of 2-80 onto a 0-100 confidence scale and produces a
+confident-looking picture that means nothing, from which someone reads "low
+confidence" off a well-ordered loop. It has to detect that the model is not
+predicted and refuse.
 
 `mutation` is the one worth doing better than the original. It should **verify
 the stated residue is what the file says it is** and refuse when it is not: a
@@ -577,6 +609,85 @@ a menu that shows state it infers rather than state it was told is the
 silent-success failure in a new place. It would look right and be wrong exactly
 when a model and a person are both working, which is the case protean exists
 for. Better no checkmark than a stale one.
+
+### 5.9 Illustration styles — planned 2026-08-18
+
+Three looks borrowed from how structures were drawn before they were rendered.
+The first two are recipes over controls protean already has; the third is not,
+and the difference is the whole of this section.
+
+**What is already exposed**, checked rather than assumed: shading `cel` (with a
+step count), `flat`, `normal`, `xray`; lighting rigs `flat`, `rim`, `ring`,
+`standard`, `studio`, `three-point`; materials `matte` through `chrome`; and
+effects for outline (colour and scale), occlusion, **shadow**, **depth of
+field**, bloom and sharpening.
+
+#### `painting` — after Irving Geis
+
+All-atom, painterly, depth carried by shading rather than by line. Sketch:
+spacefill or ball-and-stick, occlusion strong, **shadow on**, `ring` or `studio`
+lighting, matte, **no outline**, a warm muted ground, possibly a little depth of
+field. Geis's myoglobin is all-atom with soft modelled light, so the levers line
+up with the subject.
+
+**Named `painting` rather than `geis`, deliberately.** A view named after a
+person implies more than a recipe can deliver, and Geis's name does not have
+currency as a style term the way some do. The docstring credits him and says
+plainly that it is an homage and not a facsimile.
+
+#### `richardson` — the ribbon diagram
+
+Cartoon, pale flat palette, cel shading at two steps rather than four, a thinner
+outline, white ground. Mol\*'s cartoon already draws arrowed strands and coiled
+helices, which is her invention; this is mostly a matter of restraint in the
+styling.
+
+**Kept separate from `textbook` on purpose, for now.** They overlap heavily —
+`textbook` is cartoon, secondary-structure colours, cel and outline — and the
+honest expectation is that one of them ends up absorbing the other. Building
+both and looking at them side by side is the cheapest way to find out which,
+and *that* is the argument for two entries rather than a guess at one.
+
+Unlike `painting`, this name is the standard term: a Richardson diagram is what
+these are called, so using it credits her rather than borrowing her.
+
+#### Cross-hatching and hedcuts — a capture finish, not a view
+
+**Mol\* has no hatching, stippling or halftone anywhere.** The whole
+`mol-canvas3d` post-processing vocabulary is antialiasing, background, bloom,
+depth of field, occlusion, outline, shadow and sharpening. Checked across the
+tree, not inferred.
+
+Three routes, and the middle one is chosen:
+
+1. **Approximate with what exists.** Cel shading at two steps, black outline,
+   greyscale, white ground — a posterised line drawing. Print-like and
+   striking, and *not* cross-hatching. Worth building anyway because it is
+   nearly free, and it may turn out to be enough.
+2. **Do it in Python, at capture. Chosen.** `snapshot()` already returns a PNG
+   through Pillow. Hatching from a luminance map is ordinary image processing:
+   band the tones, overlay line patterns at a different angle per band,
+   composite. That gives a real hedcut, works over *any* view, and touches
+   Mol\* not at all.
+3. **A custom Mol\* post-processing pass.** The right answer technically and
+   blocked practically: it needs Mol\* built from source, which this project
+   deliberately does not do — the prebuilt bundle is shipped precisely because
+   a source build wants more than 4 GB. Charlie has raised forking Mol\* to
+   extend it, which would unblock this and more; recorded here as a direction
+   under consideration rather than a decision. It would buy a live preview and
+   cost a fork to maintain and a heavier CI.
+
+**It belongs on `snapshot()`, not in the menu**, and that is the design point
+rather than an implementation detail. Every entry in the menu changes the
+*scene*; a hatch is applied to the *capture*. Two consequences follow and both
+have to be stated where a caller meets them:
+
+- **The viewer will not show it.** There is no live preview, which cuts against
+  the menu being where looks are tried. A caller sees it only in the file.
+- **`snapshot()` would return something the viewer did not draw.** Still the
+  same molecule, rendered by a second renderer — but protean's whole claim is
+  that the picture and the analysis describe the same thing, so the reply has
+  to say the finish was applied after capture rather than leave it implied.
 
 ---
 
