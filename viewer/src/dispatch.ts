@@ -174,6 +174,27 @@ declare global {
  * Mol* resolves preset names internally, but a ColorList *value* has to carry
  * real colours, so they are spelled out here.
  */
+/** Interpolate a palette at `t` in [0, 1], returning Mol*'s packed colour int.
+ *
+ * Mol* has colour-list machinery of its own, but it is not reachable from the
+ * prebuilt bundle, and a linear ramp over three stops is small enough that
+ * borrowing it would cost more than writing it.
+ */
+export function rampColor(ramp: number[], t: number): number {
+  if (ramp.length === 1) return ramp[0];
+  const scaled = Math.min(1, Math.max(0, t)) * (ramp.length - 1);
+  const i = Math.min(ramp.length - 2, Math.floor(scaled));
+  const f = scaled - i;
+  const lo = ramp[i];
+  const hi = ramp[i + 1];
+  const channel = (shift: number) => {
+    const a = (lo >> shift) & 0xff;
+    const b = (hi >> shift) & 0xff;
+    return Math.round(a + (b - a) * f) & 0xff;
+  };
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
+
 const PALETTES: Record<string, number[]> = {
   'red-white-blue': [0xd7191c, 0xffffff, 0x2c7bb6],
   'blue-white-red': [0x2c7bb6, 0xffffff, 0xd7191c],
@@ -720,6 +741,27 @@ export function createDispatcher(plugin: any): Handler {
         sigma: stated.sigma ?? null,
       },
     };
+  }
+
+  /** Fields this page registered, so they can be replaced and cleared.
+   *
+   * Mol*'s theme registries are plugin-wide and survive `plugin.clear()`, so
+   * without this a field registered against one structure stays listed in
+   * `capabilities()` after the next load and paints the new molecule almost
+   * entirely the no-data grey — a rendering fault to look at, and a success to
+   * the caller.
+   */
+  const ownFields = new Set<string>();
+
+  function forgetField(name: string) {
+    const themes = plugin.representation?.structure?.themes;
+    for (const registry of [themes?.colorThemeRegistry, themes?.sizeThemeRegistry]) {
+      // `get` answers with an empty provider for an unknown name, so ask
+      // whether the registry lists it before taking what it hands back.
+      if (!registry || !registryNames(registry).includes(name)) continue;
+      registry.remove(registry.get(name));
+    }
+    ownFields.delete(name);
   }
 
   const currentStructure = () => {
@@ -2007,6 +2049,200 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    /** Register a named per-residue scalar as both a colour and a size theme.
+     *
+     * The alternative, and what protean did before this, is to write the
+     * numbers into the B-factor column and re-send the whole structure so
+     * Mol*'s `uncertainty` theme can ramp over them. That costs an upload per
+     * colouring, flattens the values into that theme's fixed [0, 100] domain
+     * so they stop meaning what they measured, and allows exactly one scalar
+     * at a time because there is one B-factor column.
+     *
+     * Keyed by chain, sequence number and insertion code rather than by atom
+     * index. Index alignment would be shorter and would break on the first
+     * biological assembly, where the viewer holds symmetry copies the analysis
+     * array does not have; keyed this way every copy of a residue gets the
+     * value that residue earned, which is the answer you want anyway.
+     */
+    define_field: {
+      async run({
+        name,
+        values,
+        domain,
+        palette,
+        sizes,
+      }: {
+        name: string;
+        values: Record<string, number>;
+        domain?: [number, number];
+        palette?: string;
+        sizes?: [number, number];
+      }) {
+        const numbers = Object.values(values);
+        if (!numbers.length) throw new Error(`Field '${name}' carries no values`);
+
+        const [low, high] = domain ?? [Math.min(...numbers), Math.max(...numbers)];
+        const span = high - low;
+        if (domain && span <= 0) {
+          throw new Error(
+            `Field '${name}' was given the domain [${low}, ${high}], which has no ` +
+              'width, so every residue would land in the middle of the ramp — one ' +
+              'flat colour and one flat width, indistinguishable from a broken ' +
+              'render. Pass [low, high] with low below high.'
+          );
+        }
+        const ramp = PALETTES[palette ?? 'blue-white-red'];
+        if (!ramp) {
+          throw new Error(
+            `Unknown palette '${palette}'. Available: ${Object.keys(PALETTES).sort().join(', ')}`
+          );
+        }
+        const [thin, thick] = sizes ?? [0.2, 1.5];
+
+        /** Where a value sits in the domain, clamped, 0 to 1. */
+        const fraction = (v: number) => (span > 0 ? Math.min(1, Math.max(0, (v - low) / span)) : 0.5);
+
+        const lookup = (location: any): number | undefined => {
+          // Three shapes arrive here, and only one of them is the obvious one.
+          // An atom location carries `unit`/`element`; a *bond* location
+          // carries `aUnit`/`aIndex` instead, which is what ball-and-stick
+          // sticks are — read the atom at one end, the way Mol*'s own themes
+          // do. And a coarse unit's `elements` index spheres rather than
+          // atoms, so its residue index is meaningless: `Unit.Kind.Atomic` is
+          // 0, and anything else has no per-residue answer to give.
+          const unit = location.unit ?? location.aUnit;
+          const element =
+            location.element ?? (location.aUnit ? location.aUnit.elements[location.aIndex] : undefined);
+          if (!unit || element === undefined || unit.kind !== 0) return undefined;
+          const h = unit.model.atomicHierarchy;
+          const ri = h.residueAtomSegments.index[element];
+          const ci = h.chainAtomSegments.index[element];
+          const ins = h.residues.pdbx_PDB_ins_code.value(ri) || '';
+          return values[`${h.chains.auth_asym_id.value(ci)}|${h.residues.auth_seq_id.value(ri)}|${ins}`];
+        };
+
+        // Does any of this reach the structure on screen? A field whose keys
+        // match nothing registers happily and paints every residue the
+        // not-in-the-field grey, which looks like a rendering bug and reports
+        // as a success. Counted once, here, rather than discovered by looking.
+        // `rootStructure` refuses when nothing is loaded, which is the right
+        // answer here too: a field registered against no structure cannot be
+        // checked against one, and an unverifiable field is the thing this
+        // block exists to prevent.
+        let matched = 0;
+        let unmatched = 0;
+        const structure = rootStructure();
+        {
+          const seenResidues = new Set<string>();
+          for (const unit of structure.units) {
+            if (unit.kind !== 0) continue; // coarse: no per-residue answer
+            const h = unit.model.atomicHierarchy;
+            for (let i = 0, n = unit.elements.length; i < n; i++) {
+              const element = unit.elements[i];
+              const ri = h.residueAtomSegments.index[element];
+              if (seenResidues.has(`${unit.model.id}:${ri}`)) continue;
+              seenResidues.add(`${unit.model.id}:${ri}`);
+              const ci = h.chainAtomSegments.index[element];
+              const ins = h.residues.pdbx_PDB_ins_code.value(ri) || '';
+              const key = `${h.chains.auth_asym_id.value(ci)}|${h.residues.auth_seq_id.value(ri)}|${ins}`;
+              if (key in values) matched++;
+            }
+          }
+          unmatched = seenResidues.size - matched;
+          if (!matched) {
+            const sample = Object.keys(values).slice(0, 3).join(', ');
+            throw new Error(
+              `Field '${name}' matches no residue in the loaded structure. ` +
+                `Its keys look like: ${sample}. Chain and sequence number have ` +
+                `to be the ones the viewer holds, which are the auth_* fields.`
+            );
+          }
+        }
+
+        const themes = plugin.representation.structure.themes;
+
+        // Registering the same name twice throws inside Mol* — and the obvious
+        // reason to do it is to correct a domain after looking at the result,
+        // which would then fail while leaving the wrong one installed. Ours
+        // are replaced instead. A name Mol* owns is refused rather than
+        // replaced, and refused *before* either registry is touched: some
+        // names exist in one registry and not the other (`physical` is a size
+        // theme with no colour twin), so adding first and checking later
+        // leaves half a field behind that nothing can remove.
+        for (const [kind, registry] of [
+          ['colour', themes.colorThemeRegistry],
+          ['size', themes.sizeThemeRegistry],
+        ] as const) {
+          // Asked through `types` rather than `get`, which answers with an
+          // empty provider for a name it does not hold — never falsy, so a
+          // check built on it called every name taken, including the ones
+          // nobody had registered.
+          if (!registryNames(registry).includes(name)) continue;
+          if (!ownFields.has(name)) {
+            throw new Error(
+              `'${name}' is one of Mol*'s own ${kind} themes and will not be ` +
+                'replaced. Choose another name for the field.'
+            );
+          }
+        }
+        if (ownFields.has(name)) forgetField(name);
+
+        themes.colorThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            // Grey for a residue the field says nothing about, which is
+            // honest: the alternative is an end-of-ramp colour that reads as
+            // a measurement rather than as a gap.
+            color: (location: any) => {
+              const v = lookup(location);
+              return v === undefined ? 0x808080 : rampColor(ramp, fraction(v));
+            },
+            props: {},
+            description: `protean field '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+        themes.sizeThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            size: (location: any) => {
+              const v = lookup(location);
+              return v === undefined ? thin : thin + (thick - thin) * fraction(v);
+            },
+            props: {},
+            description: `protean field '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+
+        ownFields.add(name);
+        return {
+          field: name,
+          residues: numbers.length,
+          matched,
+          // Residues on screen the field says nothing about. A truncated
+          // analysis reply — they list `residues` up to `limit` — produces a
+          // field that covers part of the molecule and looks deliberate.
+          unmatched,
+          domain: [low, high],
+          palette: palette ?? 'blue-white-red',
+          sizes: [thin, thick],
+        };
+      },
+    },
+
     size: {
       render: true,
       async run({ name, size }: { name: string; size: string }) {
@@ -2195,8 +2431,13 @@ export function createDispatcher(plugin: any): Handler {
       async run() {
         components.clear();
         forgetVolumes();
+        // Theme registries are plugin-wide and `plugin.clear()` leaves them
+        // alone, so a field would outlive the structure whose residues it was
+        // keyed to.
+        const fields = [...ownFields];
+        for (const name of fields) forgetField(name);
         await plugin.clear();
-        return {};
+        return { fields_forgotten: fields.length };
       },
     },
 

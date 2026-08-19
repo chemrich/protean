@@ -902,6 +902,133 @@ async def color(color: str, name: str = "sele") -> dict[str, Any]:
 
 
 @_tool()
+async def define_field(
+    name: str,
+    values: list[dict[str, Any]],
+    key: str | None = None,
+    domain: list[float] | None = None,
+    palette: str = "blue-white-red",
+    sizes: list[float] | None = None,
+) -> dict[str, Any]:
+    """Register a per-residue number as something colour() and size() can use.
+
+    This is how any scalar you have computed becomes a picture. Register it
+    once under a name, then `color(name)` paints it and `size(name)` gives it
+    width — it is an ordinary theme from that point on, and appears in
+    capabilities() beside Mol*'s own.
+
+    values: a list of entries carrying "chain", "seq", and the number — the
+      shape the analysis tools return. `rmsf()`'s residues go in unchanged,
+      because each carries exactly one number and it is found whatever it is
+      called. `conservation()`'s carry two, entropy and conservation, so say
+      which with `key`.
+    key: which field of each entry holds the number. Omitted, an entry with
+      one number uses it and an entry with several refuses rather than
+      guessing.
+
+      Mind where the entries come from: `rmsf()` lists them under
+      "most_mobile" and `conservation()` under "residues", and **both are
+      truncated to `limit`** — 50 by default for rmsf. A field built from a
+      truncated list covers part of the molecule and looks deliberate, so the
+      reply says how many residues on screen it did not reach. Raise `limit`
+      to cover the whole structure.
+    domain: [low, high] for the ends of the ramp. Omitted, it fits the data,
+      which is what makes a rigid core stand out; give it explicitly when two
+      structures have to be comparable.
+    palette: capabilities() lists them. The default runs blue through white to
+      red, the convention for a signed quantity.
+    sizes: [thin, thick] in angstroms, for what size() will do with this.
+
+    Refused when the field matches no residue in the loaded structure. Chain
+    and sequence number have to be the ones the viewer holds — a field keyed
+    on something else registers cleanly and paints the whole molecule the
+    "no data" grey, which looks like a rendering fault rather than a mistake
+    in the numbers.
+
+    Keyed by residue rather than by atom index on purpose: a biological
+    assembly holds symmetry copies the analysis array does not, so index
+    alignment would be silently wrong on exactly the structures where it
+    matters, while a residue key gives every copy the value that residue
+    earned.
+    """
+    if not values:
+        raise ViewerError(f"Field {name!r} was given no values")
+    for label, pair, ends in (
+        ("domain", domain, "[low, high]"),
+        ("sizes", sizes, "[thin, thick]"),
+    ):
+        if pair is not None and len(pair) != _DOMAIN_BOUNDS:
+            raise ViewerError(f"{label} takes {ends}, got {len(pair)} numbers")
+
+    keyed: dict[str, float] = {}
+    for entry in values:
+        if "chain" not in entry or "seq" not in entry:
+            raise ViewerError(
+                f"Every entry needs 'chain' and 'seq'; got {sorted(entry)}. "
+                "The residues an analysis tool returns are already this shape."
+            )
+        number = _field_value(entry, key)
+        residue = f"{entry['chain']}|{int(entry['seq'])}|{entry.get('ins_code', '')}"
+        # Two entries for one residue is not a merge, it is a loss: the second
+        # silently replaces the first. It happens for real — `rmsf(per="atom")`
+        # gives one entry per atom, and residues 100 and 100A collapse together
+        # unless the insertion code travels with them.
+        if residue in keyed:
+            raise ViewerError(
+                f"Two entries name residue {residue.replace('|', ' ')!r}, so one "
+                "would silently replace the other. Pass one number per residue — "
+                'rmsf(per="residue") rather than per="atom" — and carry '
+                "'ins_code' on any residue that has one."
+            )
+        keyed[residue] = number
+
+    payload: dict[str, Any] = {"name": name, "values": keyed, "palette": palette}
+    if domain is not None:
+        payload["domain"] = [float(domain[0]), float(domain[1])]
+    if sizes is not None:
+        payload["sizes"] = [float(sizes[0]), float(sizes[1])]
+    return await _call("define_field", payload)
+
+
+def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
+    """The number in an analysis entry, whatever its author called it.
+
+    `rmsf()` names it "rmsf", and requiring a rename before the values could be
+    drawn would make the common case — hand the output of one tool to the next
+    — the awkward one. `conservation()` carries two numbers, entropy and
+    conservation, which is why `key` exists: an entry with more than one number
+    is ambiguous and says so rather than picking.
+    """
+    if key is not None:
+        if key not in entry:
+            raise ViewerError(
+                f"No {key!r} in entry {sorted(entry)}. Name the field holding "
+                "the number to draw."
+            )
+        return float(entry[key])
+    if "value" in entry:
+        return float(entry["value"])
+    numeric = {
+        key: value
+        for key, value in entry.items()
+        if key not in ("seq", "chain", "ins_code")
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    }
+    if len(numeric) == 1:
+        return float(next(iter(numeric.values())))
+    if not numeric:
+        raise ViewerError(
+            f"No number to draw in entry {sorted(entry)}. Name it 'value', or "
+            "pass an entry that carries exactly one number."
+        )
+    raise ViewerError(
+        f"Entry carries more than one number ({sorted(numeric)}), so which to "
+        f'draw is ambiguous. Pass key="{sorted(numeric)[0]}" to say which.'
+    )
+
+
+@_tool()
 async def size(size: str, name: str = "sele") -> dict[str, Any]:
     """Set what decides the *width* of an already-displayed selection.
 
@@ -1363,12 +1490,17 @@ async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
             key = (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
             grouped.setdefault(key, []).append(float(values[i]))
             names[key] = str(array.res_name[i])
+        # The insertion code travels with the entry when there is one. It was
+        # grouped by and then dropped, so 100 and 100A came back as two
+        # entries that named the same residue — which anything keying on
+        # chain and number, `define_field` among them, cannot tell apart.
         entries = [
             {
                 "chain": chain,
                 "seq": seq,
                 "comp": names[(chain, seq, ins)],
                 "rmsf": round(float(np.mean(group)), 3),
+                **({"ins_code": ins.strip()} if ins.strip() else {}),
             }
             for (chain, seq, ins), group in grouped.items()
         ]

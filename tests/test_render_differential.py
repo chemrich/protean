@@ -391,23 +391,22 @@ SUBTLE = 0.002
 # it measures the effect directly. The baseline is exactly 0.0 — not nearly
 # zero, exactly — which is what makes a small number here meaningful.
 #
-# This is a noise floor and not a fidelity check, because how much green the
-# outline puts on screen depends on the frame size and on the renderer. All
-# four of these are the same fixture and the same flags:
+# Counted in pixels rather than as a fraction of the frame, after a fraction
+# threshold had to be moved twice. The quantity varies with frame size, but
+# not the way a fraction assumes: these are the same fixture and flags.
 #
-#     Mol* 4.18, 722x311 (CI's headless default)   0.00107
-#     Mol* 5.11, 722x311                           0.00074
-#     Mol* 5.11, as measured in CI itself          0.00047
-#     Mol* 5.11, 2332x1274 (a retina window)       0.00446
+#     frame        green pixels   as a fraction
+#     746x335 (CI)          117       0.00047
+#     722x311               166       0.00074
+#     1166x937               83       0.000076
+#     2332x1274          13,258       0.00446
 #
-# The bar was 0.0005, derived from a measurement on a frame size CI does not
-# use, and 5.11 draws the outline thinner: CI came in at 0.00047 and failed.
-# Nothing was broken — the outline ran and took its colour — so the number to
-# change is this one. Set well below the smallest observed value, where it
-# still cannot be reached by stray pixels: 0.0001 of CI's frame is ~22 pixels.
-# Whether the outline is *faithful* is asserted separately, below, by a claim
-# that does not depend on the frame at all.
-OUTLINED = 0.0001
+# The fractions span 59x and the counts span 160x, so neither is stable — but
+# a count is the right unit for a *noise floor*, which is all this is: the
+# question it answers is "did any green arrive", and the baseline says stray
+# green does not exist in this scene at all. Whether the outline is faithful
+# is asserted separately, below, by a ratio the frame cannot affect.
+OUTLINE_PIXELS = 20
 
 OUTLINE_GREEN = (0, 255, 0, 255)
 
@@ -473,16 +472,26 @@ async def test_the_outline_is_drawn_in_the_colour_it_was_given(styled_effects):
     silhouette comparison could not separate.
     """
     assert color_fraction(styled_effects["base"], OUTLINE_GREEN) == 0.0
-    assert color_fraction(styled_effects["outline"], OUTLINE_GREEN) > OUTLINED
+    assert _green_pixels(styled_effects["outline"]) > OUTLINE_PIXELS
 
     # The floor above only says green arrived. This says the pass is really
     # drawing the outline: widen it and there has to be more of it. A ratio
     # rather than a level, so it holds at any frame size and survived the
     # renderer change that broke the level — 44x on the frame that failed.
     assert (
-        color_fraction(styled_effects["outline_wide"], OUTLINE_GREEN)
-        > color_fraction(styled_effects["outline"], OUTLINE_GREEN) * 3
+        _green_pixels(styled_effects["outline_wide"])
+        > _green_pixels(styled_effects["outline"]) * 3
     ), "widening the outline did not widen the outline"
+
+
+def _green_pixels(render: Render) -> int:
+    """How many pixels the outline actually painted, not what share of the frame.
+
+    A share divides by an area that changes with the window; the outline is a
+    line, so its pixel count follows the silhouette's perimeter instead and the
+    two disagree by two orders of magnitude between a retina window and CI's.
+    """
+    return round(color_fraction(render, OUTLINE_GREEN) * render.height * render.width)
 
 
 async def test_the_outline_adds_to_the_silhouette(styled_effects):
@@ -1903,3 +1912,142 @@ async def test_size_themes_are_reported_as_a_capability():
         caps = await session.request("capabilities", {})
         assert "uncertainty" in caps["size_themes"]
         assert "physical" in caps["size_themes"]
+
+
+# -- a number of your own, drawn ------------------------------------------------
+
+
+async def test_a_registered_field_paints_and_sizes_what_it_matches():
+    """The point of the exercise: an arbitrary per-residue number becomes both
+    a colour and a width, with no structure re-sent and no B-factor column
+    borrowed to carry it."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        # 1UBQ is one chain, 76 residues; a ramp along it is unmistakable.
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="putty", handle="fold", color="#ffffff")
+        plain = await _shot(session)
+
+        reply = await server_mod.define_field("ramp", values)
+        assert reply["matched"] > 0, "registered against nothing"
+
+        await server_mod.color("ramp", name="fold")
+        painted = await _shot(session)
+        assert difference(plain, painted) > STYLED, "the field did not colour anything"
+
+        await server_mod.size("ramp", name="fold")
+        widened = await _shot(session)
+        assert difference(painted, widened) > STYLED, "the field did not size anything"
+
+
+async def test_a_field_matching_no_residue_is_refused():
+    """Registering happily and painting the whole molecule the no-data grey is
+    indistinguishable from a rendering fault, and reports as success."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match="matches no residue"):
+            await server_mod.define_field(
+                "wrong", [{"chain": "Z", "seq": 9000, "value": 1.0}]
+            )
+
+
+async def test_a_field_takes_an_analysis_reply_unchanged():
+    """`rmsf()` names its number "rmsf" and conservation names its own; making
+    a caller rename before drawing would make the common case the awkward one.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        reply = await server_mod.define_field(
+            "as_returned",
+            [{"chain": "A", "seq": n, "rmsf": n / 10} for n in range(1, 77)],
+        )
+        assert reply["matched"] > 0
+
+        with pytest.raises(ViewerError, match="more than one number"):
+            await server_mod.define_field(
+                "ambiguous", [{"chain": "A", "seq": 1, "rmsf": 1.0, "plddt": 2.0}]
+            )
+
+
+async def test_a_field_can_be_registered_again_with_a_better_domain():
+    """Looking at the result and re-fitting the domain is the obvious second
+    step, and Mol*'s registry throws on a name it already holds — which would
+    have failed the correction while leaving the wrong version installed."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        await server_mod.define_field("ramp", values)
+        again = await server_mod.define_field("ramp", values, domain=[0, 200])
+
+        assert again["domain"] == [0, 200], "the second registration did not take"
+
+
+async def test_a_field_does_not_outlive_the_structure_it_was_keyed_to():
+    """Mol*'s theme registries are plugin-wide and survive `plugin.clear()`, so
+    a field would stay in capabilities() after the next load and paint the new
+    molecule almost entirely the no-data grey."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.define_field(
+            "ramp", [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        )
+        assert "ramp" in (await session.request("capabilities", {}))["color_themes"]
+
+        await session.request("clear", {})
+        after = await session.request("capabilities", {})
+        assert "ramp" not in after["color_themes"], "the field outlived the structure"
+        assert "ramp" not in after["size_themes"]
+
+
+async def test_a_field_will_not_take_a_name_molstar_owns():
+    """`physical` is a size theme with no colour twin, so adding the colour
+    half first and discovering the collision second would leave an unpaired
+    theme installed that nothing can remove."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match=r"Mol\*'s own"):
+            await server_mod.define_field(
+                "physical", [{"chain": "A", "seq": 1, "value": 1.0}]
+            )
+        # And nothing was half-registered on the way out.
+        caps = await session.request("capabilities", {})
+        assert "physical" not in caps["color_themes"]
+
+
+async def test_a_field_colours_the_sticks_as_well_as_the_atoms():
+    """A bond location carries `aUnit`/`aIndex` rather than `unit`/`element`,
+    so the first version of the lookup returned "no data" for every stick: a
+    ball-and-stick with a ramp on the balls and grey on the sticks, which
+    reads as a half-broken render."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(
+            representation="ball-and-stick", handle="fold", color="#ffffff"
+        )
+        # Flat, unlit and unshaded: a lit white surface passes through mid-grey
+        # on its way to its dark side, which is indistinguishable from the
+        # no-data grey and made the first version of this test measure the
+        # lighting rig. Flat keeps the palette's own colours on screen.
+        await server_mod.lighting("flat")
+        await server_mod.shading("flat", name="fold")
+        await server_mod.effects(occlusion=False, shadow=False)
+        await server_mod.define_field(
+            "ramp",
+            [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)],
+            palette="white-red",
+        )
+        await server_mod.color("ramp", name="fold")
+        painted = await _shot(session)
+
+        # 0x808080 is what an unmatched location paints, and white-red never
+        # produces it. Measured: 0.0000 with bonds resolved, 0.0211 without.
+        assert color_fraction(painted, (0x80, 0x80, 0x80, 255), tolerance=6) < 0.0005
+
+
+async def test_a_domain_with_no_width_is_refused():
+    """[5, 5] or [5, 0] would paint every residue the middle of the ramp: one
+    flat colour at one flat width, which looks like a broken render and reports
+    as a success."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        for bad in ([5.0, 5.0], [5.0, 0.0]):
+            with pytest.raises(ViewerError, match="which has no width"):
+                await server_mod.define_field("flat", values, domain=bad)

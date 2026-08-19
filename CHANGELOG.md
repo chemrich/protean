@@ -7,6 +7,40 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **Any number you have computed can be drawn, without borrowing a column to
+  carry it.** `define_field(name, values)` registers a per-residue scalar as
+  both a colour theme and a size theme, after which `color(name)` paints it and
+  `size(name)` gives it width — an ordinary theme from that point on, listed in
+  `capabilities()` beside Mol\*'s own.
+
+  What it replaces: protean's existing scalar colouring writes the numbers into
+  the **B-factor column and re-sends the whole structure**, so that Mol\*'s
+  `uncertainty` theme has something to ramp over. That costs an upload per
+  colouring, flattens the values into that theme's fixed [0, 100] domain so they
+  stop meaning what they measured, and allows exactly one scalar at a time
+  because there is one B-factor column.
+
+  It takes the shape the analysis tools return — entries with `chain`, `seq`,
+  and a number — and finds the number whatever it is called, so `rmsf()`'s
+  residues go in unchanged. `conservation()`'s carry two numbers, entropy and
+  conservation, so that one needs `key=` to say which; an entry with more than
+  one number refuses rather than guessing, and names the choices. An earlier
+  draft of this entry claimed both tools went in unchanged, which was not true
+  of the second and was caught in review rather than by using it.
+
+  The reply says how many residues on screen the field did *not* reach, because
+  analysis replies truncate their residue list to `limit` and a field built from
+  a truncated one covers part of the molecule while looking deliberate.
+
+  **Keyed by residue, not by atom index.** Index alignment is shorter and breaks
+  on the first biological assembly, where the viewer holds symmetry copies the
+  analysis array does not — silently wrong on exactly the structures where it
+  matters. A residue key gives every copy the value that residue earned.
+
+  Refused when the field matches no residue in the loaded structure. Such a
+  field registers cleanly and paints the whole molecule the no-data grey, which
+  looks like a rendering fault rather than a mistake in the numbers.
+
 - **Width is a channel now, not a thing `putty` happened to do.** `size()` sets
   what decides the width of a drawn selection — `uncertainty` for B-factor,
   `physical` for van der Waals radius, `uniform` to flatten it — the same way
