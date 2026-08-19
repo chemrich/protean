@@ -743,6 +743,27 @@ export function createDispatcher(plugin: any): Handler {
     };
   }
 
+  /** Fields this page registered, so they can be replaced and cleared.
+   *
+   * Mol*'s theme registries are plugin-wide and survive `plugin.clear()`, so
+   * without this a field registered against one structure stays listed in
+   * `capabilities()` after the next load and paints the new molecule almost
+   * entirely the no-data grey — a rendering fault to look at, and a success to
+   * the caller.
+   */
+  const ownFields = new Set<string>();
+
+  function forgetField(name: string) {
+    const themes = plugin.representation?.structure?.themes;
+    for (const registry of [themes?.colorThemeRegistry, themes?.sizeThemeRegistry]) {
+      // `get` answers with an empty provider for an unknown name, so ask
+      // whether the registry lists it before taking what it hands back.
+      if (!registry || !registryNames(registry).includes(name)) continue;
+      registry.remove(registry.get(name));
+    }
+    ownFields.delete(name);
+  }
+
   const currentStructure = () => {
     const current = plugin.managers.structure.hierarchy.current.structures[0];
     if (!current) throw new Error('No structure loaded — call fetch_structure first.');
@@ -2062,6 +2083,14 @@ export function createDispatcher(plugin: any): Handler {
 
         const [low, high] = domain ?? [Math.min(...numbers), Math.max(...numbers)];
         const span = high - low;
+        if (domain && span <= 0) {
+          throw new Error(
+            `Field '${name}' was given the domain [${low}, ${high}], which has no ` +
+              'width, so every residue would land in the middle of the ramp — one ' +
+              'flat colour and one flat width, indistinguishable from a broken ' +
+              'render. Pass [low, high] with low below high.'
+          );
+        }
         const ramp = PALETTES[palette ?? 'blue-white-red'];
         if (!ramp) {
           throw new Error(
@@ -2074,9 +2103,17 @@ export function createDispatcher(plugin: any): Handler {
         const fraction = (v: number) => (span > 0 ? Math.min(1, Math.max(0, (v - low) / span)) : 0.5);
 
         const lookup = (location: any): number | undefined => {
-          const unit = location.unit;
-          const element = location.element;
-          if (!unit || element === undefined || !unit.model?.atomicHierarchy) return undefined;
+          // Three shapes arrive here, and only one of them is the obvious one.
+          // An atom location carries `unit`/`element`; a *bond* location
+          // carries `aUnit`/`aIndex` instead, which is what ball-and-stick
+          // sticks are — read the atom at one end, the way Mol*'s own themes
+          // do. And a coarse unit's `elements` index spheres rather than
+          // atoms, so its residue index is meaningless: `Unit.Kind.Atomic` is
+          // 0, and anything else has no per-residue answer to give.
+          const unit = location.unit ?? location.aUnit;
+          const element =
+            location.element ?? (location.aUnit ? location.aUnit.elements[location.aIndex] : undefined);
+          if (!unit || element === undefined || unit.kind !== 0) return undefined;
           const h = unit.model.atomicHierarchy;
           const ri = h.residueAtomSegments.index[element];
           const ci = h.chainAtomSegments.index[element];
@@ -2093,10 +2130,12 @@ export function createDispatcher(plugin: any): Handler {
         // checked against one, and an unverifiable field is the thing this
         // block exists to prevent.
         let matched = 0;
+        let unmatched = 0;
         const structure = rootStructure();
         {
           const seenResidues = new Set<string>();
           for (const unit of structure.units) {
+            if (unit.kind !== 0) continue; // coarse: no per-residue answer
             const h = unit.model.atomicHierarchy;
             for (let i = 0, n = unit.elements.length; i < n; i++) {
               const element = unit.elements[i];
@@ -2109,6 +2148,7 @@ export function createDispatcher(plugin: any): Handler {
               if (key in values) matched++;
             }
           }
+          unmatched = seenResidues.size - matched;
           if (!matched) {
             const sample = Object.keys(values).slice(0, 3).join(', ');
             throw new Error(
@@ -2120,6 +2160,33 @@ export function createDispatcher(plugin: any): Handler {
         }
 
         const themes = plugin.representation.structure.themes;
+
+        // Registering the same name twice throws inside Mol* — and the obvious
+        // reason to do it is to correct a domain after looking at the result,
+        // which would then fail while leaving the wrong one installed. Ours
+        // are replaced instead. A name Mol* owns is refused rather than
+        // replaced, and refused *before* either registry is touched: some
+        // names exist in one registry and not the other (`physical` is a size
+        // theme with no colour twin), so adding first and checking later
+        // leaves half a field behind that nothing can remove.
+        for (const [kind, registry] of [
+          ['colour', themes.colorThemeRegistry],
+          ['size', themes.sizeThemeRegistry],
+        ] as const) {
+          // Asked through `types` rather than `get`, which answers with an
+          // empty provider for a name it does not hold — never falsy, so a
+          // check built on it called every name taken, including the ones
+          // nobody had registered.
+          if (!registryNames(registry).includes(name)) continue;
+          if (!ownFields.has(name)) {
+            throw new Error(
+              `'${name}' is one of Mol*'s own ${kind} themes and will not be ` +
+                'replaced. Choose another name for the field.'
+            );
+          }
+        }
+        if (ownFields.has(name)) forgetField(name);
+
         themes.colorThemeRegistry.add({
           name,
           label: name,
@@ -2160,10 +2227,15 @@ export function createDispatcher(plugin: any): Handler {
           isApplicable: () => true,
         });
 
+        ownFields.add(name);
         return {
           field: name,
           residues: numbers.length,
           matched,
+          // Residues on screen the field says nothing about. A truncated
+          // analysis reply — they list `residues` up to `limit` — produces a
+          // field that covers part of the molecule and looks deliberate.
+          unmatched,
           domain: [low, high],
           palette: palette ?? 'blue-white-red',
           sizes: [thin, thick],
@@ -2359,8 +2431,13 @@ export function createDispatcher(plugin: any): Handler {
       async run() {
         components.clear();
         forgetVolumes();
+        // Theme registries are plugin-wide and `plugin.clear()` leaves them
+        // alone, so a field would outlive the structure whose residues it was
+        // keyed to.
+        const fields = [...ownFields];
+        for (const name of fields) forgetField(name);
         await plugin.clear();
-        return {};
+        return { fields_forgotten: fields.length };
       },
     },
 

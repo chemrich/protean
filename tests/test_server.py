@@ -2866,3 +2866,82 @@ def test_the_preset_docstring_lists_every_preset_and_no_others():
 
     gone = listed - set(server_mod._PRESETS)
     assert not gone, f"the docstring offers presets that do not exist: {sorted(gone)}"
+
+
+async def test_two_entries_for_one_residue_are_refused():
+    """Last-wins is a loss, not a merge, and it happens for real: `rmsf(per=
+    "atom")` gives an entry per atom, and every atom of a residue keys the
+    same. The reply would name a plausible match count for one arbitrary
+    atom's value."""
+    with pytest.raises(ViewerError, match="would silently replace"):
+        await server_mod.define_field(
+            "dup",
+            [
+                {"chain": "A", "seq": 1, "value": 1.0},
+                {"chain": "A", "seq": 1, "value": 2.0},
+            ],
+        )
+
+
+async def test_an_entry_with_two_numbers_says_which_to_pass():
+    """`conservation()` carries entropy and conservation, so the docstring's
+    promise that analysis output goes in unchanged is true of rmsf and not of
+    it. The refusal names the choices rather than picking one."""
+    entry = {"chain": "A", "seq": 1, "entropy": 0.4, "conservation": 0.6}
+    with pytest.raises(ViewerError, match='key="conservation"'):
+        await server_mod.define_field("amb", [entry])
+
+
+async def test_naming_the_key_resolves_the_ambiguity(wired_bridge):
+    """Which is what `key` is for."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def on_field(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(("define_field", args))
+        return {"field": args["name"], "matched": 1}
+
+    wired_bridge.handlers["define_field"] = on_field
+    task = wired_bridge.serve(1)
+    await server_mod.define_field(
+        "cons",
+        [{"chain": "A", "seq": 1, "entropy": 0.4, "conservation": 0.6}],
+        key="conservation",
+    )
+    await task
+
+    assert calls[0][1]["values"] == {"A|1|": 0.6}
+
+
+async def test_rmsf_residues_carry_the_insertion_code_they_were_grouped_by(
+    monkeypatch,
+):
+    """Grouped by (chain, seq, ins) and then reported without the ins, so 100
+    and 100A came back as two entries naming the same residue — which anything
+    keying on chain and number, `define_field` among them, cannot tell apart.
+
+    Antibodies number this way as a matter of course, so it is not exotic.
+    """
+
+    def residue(seq: int, ins: str, x: float) -> Atom:
+        return Atom(
+            [x, 0.0, 0.0],
+            chain_id="A",
+            res_id=seq,
+            ins_code=ins,
+            res_name="ALA",
+            atom_name="CA",
+            element="C",
+        )
+
+    first = atom_array([residue(100, "", 0.0), residue(100, "A", 5.0)])
+    second = first.copy()
+    second.coord[1, 0] += 1.0  # only the inserted residue moves
+    monkeypatch.setattr(server_mod, "_trajectory", atom_stack([first, second]))
+
+    entries = (await server_mod.rmsf(per="residue"))["most_mobile"]
+    keyed = {f"{e['chain']}|{e['seq']}|{e.get('ins_code', '')}" for e in entries}
+
+    assert len(entries) == 2
+    assert keyed == {"A|100|", "A|100|A"}, (
+        "both residues came back under the same key, so one silently wins"
+    )

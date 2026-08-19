@@ -20,10 +20,17 @@ nothing is released yet, so everything below is unreleased.
   stop meaning what they measured, and allows exactly one scalar at a time
   because there is one B-factor column.
 
-  It takes what `rmsf()` and `conservation()` already return — entries with
-  `chain`, `seq`, and a number — and reads the number from a `value` key or from
-  whatever the analysis tool called it, so the output of one tool goes into the
-  next unchanged. Two numbers in an entry is ambiguous and says so.
+  It takes the shape the analysis tools return — entries with `chain`, `seq`,
+  and a number — and finds the number whatever it is called, so `rmsf()`'s
+  residues go in unchanged. `conservation()`'s carry two numbers, entropy and
+  conservation, so that one needs `key=` to say which; an entry with more than
+  one number refuses rather than guessing, and names the choices. An earlier
+  draft of this entry claimed both tools went in unchanged, which was not true
+  of the second and was caught in review rather than by using it.
+
+  The reply says how many residues on screen the field did *not* reach, because
+  analysis replies truncate their residue list to `limit` and a field built from
+  a truncated one covers part of the molecule while looking deliberate.
 
   **Keyed by residue, not by atom index.** Index alignment is shorter and breaks
   on the first biological assembly, where the viewer holds symmetry copies the

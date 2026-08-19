@@ -491,9 +491,7 @@ def _green_pixels(render: Render) -> int:
     line, so its pixel count follows the silhouette's perimeter instead and the
     two disagree by two orders of magnitude between a retina window and CI's.
     """
-    height = int(render.pixels.shape[0])
-    width = int(render.pixels.shape[1])
-    return round(color_fraction(render, OUTLINE_GREEN) * height * width)
+    return round(color_fraction(render, OUTLINE_GREEN) * render.height * render.width)
 
 
 async def test_the_outline_adds_to_the_silhouette(styled_effects):
@@ -1969,3 +1967,87 @@ async def test_a_field_takes_an_analysis_reply_unchanged():
             await server_mod.define_field(
                 "ambiguous", [{"chain": "A", "seq": 1, "rmsf": 1.0, "plddt": 2.0}]
             )
+
+
+async def test_a_field_can_be_registered_again_with_a_better_domain():
+    """Looking at the result and re-fitting the domain is the obvious second
+    step, and Mol*'s registry throws on a name it already holds — which would
+    have failed the correction while leaving the wrong version installed."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        await server_mod.define_field("ramp", values)
+        again = await server_mod.define_field("ramp", values, domain=[0, 200])
+
+        assert again["domain"] == [0, 200], "the second registration did not take"
+
+
+async def test_a_field_does_not_outlive_the_structure_it_was_keyed_to():
+    """Mol*'s theme registries are plugin-wide and survive `plugin.clear()`, so
+    a field would stay in capabilities() after the next load and paint the new
+    molecule almost entirely the no-data grey."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.define_field(
+            "ramp", [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        )
+        assert "ramp" in (await session.request("capabilities", {}))["color_themes"]
+
+        await session.request("clear", {})
+        after = await session.request("capabilities", {})
+        assert "ramp" not in after["color_themes"], "the field outlived the structure"
+        assert "ramp" not in after["size_themes"]
+
+
+async def test_a_field_will_not_take_a_name_molstar_owns():
+    """`physical` is a size theme with no colour twin, so adding the colour
+    half first and discovering the collision second would leave an unpaired
+    theme installed that nothing can remove."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match=r"Mol\*'s own"):
+            await server_mod.define_field(
+                "physical", [{"chain": "A", "seq": 1, "value": 1.0}]
+            )
+        # And nothing was half-registered on the way out.
+        caps = await session.request("capabilities", {})
+        assert "physical" not in caps["color_themes"]
+
+
+async def test_a_field_colours_the_sticks_as_well_as_the_atoms():
+    """A bond location carries `aUnit`/`aIndex` rather than `unit`/`element`,
+    so the first version of the lookup returned "no data" for every stick: a
+    ball-and-stick with a ramp on the balls and grey on the sticks, which
+    reads as a half-broken render."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(
+            representation="ball-and-stick", handle="fold", color="#ffffff"
+        )
+        # Flat, unlit and unshaded: a lit white surface passes through mid-grey
+        # on its way to its dark side, which is indistinguishable from the
+        # no-data grey and made the first version of this test measure the
+        # lighting rig. Flat keeps the palette's own colours on screen.
+        await server_mod.lighting("flat")
+        await server_mod.shading("flat", name="fold")
+        await server_mod.effects(occlusion=False, shadow=False)
+        await server_mod.define_field(
+            "ramp",
+            [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)],
+            palette="white-red",
+        )
+        await server_mod.color("ramp", name="fold")
+        painted = await _shot(session)
+
+        # 0x808080 is what an unmatched location paints, and white-red never
+        # produces it. Measured: 0.0000 with bonds resolved, 0.0211 without.
+        assert color_fraction(painted, (0x80, 0x80, 0x80, 255), tolerance=6) < 0.0005
+
+
+async def test_a_domain_with_no_width_is_refused():
+    """[5, 5] or [5, 0] would paint every residue the middle of the ramp: one
+    flat colour at one flat width, which looks like a broken render and reports
+    as a success."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        values = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+        for bad in ([5.0, 5.0], [5.0, 0.0]):
+            with pytest.raises(ViewerError, match="which has no width"):
+                await server_mod.define_field("flat", values, domain=bad)
