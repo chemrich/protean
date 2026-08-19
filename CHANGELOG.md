@@ -33,15 +33,28 @@ nothing is released yet, so everything below is unreleased.
   the viewer's. A model reading the docstring gets "1 is one revolution a
   second", which is the more useful thing to be told anyway.
 
-- **Mol\*'s licence notice is shipped again.** 4.18 built with webpack, which
-  extracted every bundled licence into `molstar.js.LICENSE.txt`; 5.11 builds
-  with esbuild, which emits no such file and leaves its dependencies' notices
-  inline in the JavaScript instead. Mol\*'s own is in neither place — searched
-  for in the 5.11 bundle, "Mol\* contributors" appears zero times — so the
-  upgrade would have redistributed Mol\* with no notice at all. `sync-molstar`
-  copies the package's own LICENSE now, as `molstar-LICENSE.txt`. The
-  packaging test that exists for this would have passed anyway, because a
-  stale file from the previous version was still sitting in `public/`.
+- **Mol\*'s licence notice is shipped — for the first time, it turns out.**
+  4.18 built with webpack, which extracted bundled licences into
+  `molstar.js.LICENSE.txt`; 5.11 builds with esbuild, which emits no such file
+  and leaves its dependencies' notices inline in the JavaScript instead.
+  Noticing that file was gone is what prompted a look at what it had contained,
+  and the answer was: safe-buffer, immutable, and React. **Not Mol\*'s own.**
+
+  Neither published bundle carries it. Searched in both, "mol\* contributors"
+  appears zero times in 4.18 and zero times in 5.11 — the only copyright line
+  in either is a third-party shader's. Mol\*'s own notice lives in the npm
+  package's top-level LICENSE, which nothing was copying. So this is not
+  something the upgrade broke: protean had been redistributing Mol\* without
+  Mol\*'s notice for as long as it has redistributed Mol\* at all.
+
+  `sync-molstar` copies that LICENSE now, as `molstar-LICENSE.txt`. The
+  packaging test written to catch exactly this had been passing throughout, on
+  React's and immutable's notices, because it asked whether the file contained
+  "MIT License" and "Copyright" rather than whose. It asks for "Mol\*
+  contributors" now. Reported upstream: their own source headers say
+  `/** Copyright ... mol* contributors` with no `@license` marker, so their
+  bundler treats them as ordinary comments and drops them, while React's
+  `/** @license` survives.
 
 - **Mol\*'s PyMOL transpiler changed what `within` means, and we did not.**
   Five selections that agreed exactly under 4.18 disagree under 5.11, all of
