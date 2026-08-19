@@ -44,9 +44,13 @@ over primitives that exist. That is the finding that makes this cheap.
 
 **Three things the measurement changed:**
 
-- **pLDDT is not in the base theme registry.** It lives in the
-  `model-archive/quality-assessment` extension, which protean's build does not
-  register. Colouring by pLDDT is therefore a build change, not a recipe.
+- ~~**pLDDT is not in the base theme registry.**~~ **Wrong, corrected
+  2026-08-18.** It is not in `mol-theme/color/`, which is where this was read
+  from — but the *prebuilt bundle protean serves* registers the extensions, and
+  `capabilities()` on a live viewer lists `plddt-confidence` along with
+  `qmean-score` and the RCSB and PDBe quality themes. Reading the source tree
+  answered a question about a build that is not the one shipped. **Ask the
+  running viewer, which is what `capabilities()` is for.**
 - **Pharmacophore is much cheaper than it looks.** Mol\* ships an `interactions`
   extension that computes `hydrophobic`, `ionic`, `cation-pi`, `pi-stacking` and
   `metal-coordination`, with visuals. Most of a pharmacophore is already there.
@@ -80,8 +84,8 @@ rather than the harness needing fixing once. Worth more than the result.
 MCPymol makes each view a tool. protean should not, and the deciding factor is
 parameters rather than taste.
 
-`textbook`, `cinematic`, `pointillist`, `bfactor`, `hydrophobic-surface` and
-`putty` take nothing but an optional handle. `preset(name, handle)` expresses
+`textbook`, `cinematic`, `hydrophobic-surface`, `putty`, `spacefill` and
+`skeleton` take nothing but an optional handle. `preset(name, handle)` expresses
 them exactly.
 
 `ligand_view(resn)`, `interface_view(chain_a, chain_b)`,
@@ -102,7 +106,7 @@ every request.
 **A button never draws. It asks the server, and the server drives the viewer.**
 
 ```
-page   →  server   {action: 'protean_invoke', view: 'ghost-surface', args: {}}
+page   →  server   {action: 'protean_invoke', view: 'ghost-heart', args: {}}
 server →  server   the same code path preset() runs for a model
 server →  page     {id, action: 'show', args: {…}}      ← the ordinary channel
 ```
@@ -160,7 +164,7 @@ than echoing the request. The server records user-initiated actions, and the
 next tool reply carries them:
 
 ```
-"…, and since your last call the user applied the ghost-surface view."
+"…, and since your last call the user applied the ghost-heart view."
 ```
 
 No client support needed, and a model cannot act on a stale picture without
@@ -178,7 +182,7 @@ which is the claim that matters, because pixels alone would pass with the page
 drawing for itself. All eight criteria are met; what the work added to the plan
 is below.
 
-**Chosen view: `ghost-surface`**, because it already exists as a preset, takes
+**Chosen view: `ghost-heart`**, because it already exists as a preset, takes
 only a handle, and its effect is obvious in a screenshot.
 
 ### 4.1 Acceptance criteria
@@ -259,6 +263,14 @@ Six recipes: `textbook`, `cinematic`, `pointillist`, `bfactor`,
 held: no new rendering, no new dependency, nothing but compositions of tools
 that already existed.
 
+**Two of the six were replaced after a look at the pictures** (2026-08-18).
+`bfactor` said what `putty` says, in colour alone rather than colour and width,
+and `pointillist` was a novelty rather than a way of reading a structure.
+`spacefill` and `skeleton` took their places, answering the two questions
+nothing else in the catalogue answered: how the molecule packs, and what the
+atoms are. The count is unchanged; the names below are the ones that shipped
+that day, not the ones in `preset()` now.
+
 **The one open question is answered, and the answer removes a dependency.**
 This stub asked whether `putty`'s tube width varies with B-factor by default or
 needs the `uncertainty` **size** theme, which protean does not expose — and
@@ -297,10 +309,11 @@ machine that was not this one.
 
 **Two limits worth stating rather than discovering later:**
 
-- **`bfactor` uses only the cold half of its ramp on an ordinary crystal
-  structure.** Mol\*'s `uncertainty` colour theme has a fixed `[0, 100]` domain
-  and `color()` passes no theme parameters, so 1UBQ's B-factors — 2 to 47 —
-  occupy 0.02 to 0.47 of it. The picture is correct and the contrast is lower
+- **A view coloured by B-factor uses only the cold half of its ramp on an
+  ordinary crystal structure.** Mol\*'s `uncertainty` colour theme has a fixed
+  `[0, 100]` domain and `color()` passes no theme parameters, so 1UBQ's
+  B-factors — 2 to 47 — occupy 0.02 to 0.47 of it. Found on `bfactor`; it
+  outlived that view, because `putty` colours the same way. The picture is correct and the contrast is lower
   than PyMOL's `spectrum b`, which fits the ramp to the data. The fix is a
   domain on `color()`, not a change to the preset; `color_by_rmsf` works around
   the same limit today by rescaling values before it sends them.
@@ -332,13 +345,83 @@ different affordance from the drawing ones. A click that changes the lighting
 and a click that changes the whole picture reading identically is the obvious
 way for this to get confusing.
 
-### 5.3 Parameterised view tools — stub
+### 5.3 The rest of the catalogue — planned 2026-08-18
 
-`ligand`, `mutation`, `crosslink`. Each takes a target and gets its own tool per
-§2.
+Seven MCPymol views remain. Re-read against their implementations rather than
+their names, they fall into three tiers, and two of them are not where this
+document previously put them.
 
-Known: `crosslink` is nearly free — residue-pair geometry is `near()` plus a
-distance filter. Unknown: whether `mutation` should verify the stated residue
+**Tier 1 — a recipe plus a parameter.** Each takes a target, so each is a tool
+rather than a menu entry, per §2. Doing them together because they share that
+shape and three are recipes over machinery that already exists.
+
+| view | what it needs |
+|---|---|
+| `plddt` | a colour theme — but **blocked**, see below |
+| `interface` | `interface()` already computes and returns the handles; this colours the two chains and picks out the contact residues |
+| `ligand` | `active-site` already *is* this view. The gap is that it takes a handle where MCPymol takes a residue name |
+| `mutation` | parse `"A123G,V45L"`, select those residues |
+
+Three further improvements, approved 2026-08-18:
+
+- **Carbon colour on the all-atom views.** Mol\*'s `element-symbol` theme
+  defaults `carbonColor` to `chain-id`, which is why `skeleton` and `spacefill`
+  came out with green carbons rather than CPK grey. A neutral carbon would look
+  markedly more like a textbook model. Needs `show()` to pass theme parameters,
+  which it cannot today.
+- **A `default` entry restoring the load-time picture.** Watched go wrong:
+  clicking eight views in a row leaves no way back to what the load produced,
+  because every view replaces the last and nothing restores the start.
+- **Views report what they drew** — `interface` its contact count, `ligand`
+  which ligand and how many copies. The replies are already structured; making
+  them informative costs nothing and tells a model what to do next.
+
+**`plddt` is the exception and it is not cheap, because it cannot be reached.**
+The recipe is one theme, and Mol\* ships the official AlphaFold palette. But
+pLDDT is a property of a predicted model and protean cannot load one:
+`fetch_structure(source="alphafold")` is pinned to a retired `model_v4`, and a
+model fetched by hand fails the analysis parser under the default biological
+assembly. Backlog 33 and 34. **Do those first or leave `plddt` alone** — a view
+of a structure nobody can load is a view nobody can use, and building it would
+report progress that is not there.
+
+**Every one of these refuses when its target is not there, and says what is.**
+Charlie's call, 2026-08-18: the improvement below is not `mutation`'s alone.
+
+| view | what it refuses |
+|---|---|
+| `plddt` | an experimental structure — see why this one is a correctness fix, below |
+| `ligand`, `pocket` | a residue name the structure does not contain, naming the ligands it does |
+| `interface` | two chains that do not touch, rather than drawing an empty highlight |
+| `crosslink` | a structure with no disulfides and no metals, rather than a bare cartoon |
+| `mutation` | a residue that is not what the notation claims |
+
+**`plddt`'s refusal is a correctness fix and not a nicety.** pLDDT rides in the
+B-factor column, so colouring a crystal structure with the AlphaFold palette
+*works*: it maps B-factors of 2-80 onto a 0-100 confidence scale and produces a
+confident-looking picture that means nothing, from which someone reads "low
+confidence" off a well-ordered loop. It has to detect that the model is not
+predicted and refuse.
+
+`mutation` is the one worth doing better than the original. It should **verify
+the stated residue is what the file says it is** and refuse when it is not: a
+mutation view that silently highlights the wrong residue because the numbering
+is offset is this project's failure mode wearing a lab coat. MCPymol does not
+check.
+
+**Tier 2 — small analysis from pieces that exist.**
+
+`crosslink` is disulfides and metal coordination: cysteine SG pairs inside
+bonding distance, plus metals and what they touch. protean has a `metals`
+selection keyword and `near()`, so this is a distance filter rather than new
+machinery.
+
+`pocket` belongs here too, **and that is a correction to §5.5 below.**
+
+**Tier 3 — genuinely open, and nobody has asked.** `pharmacophore`, for the
+reason §6 predicted and this document then got wrong anyway. Detail in §5.4.
+
+Unknown, still: whether `mutation` should verify the stated residue
 actually matches the structure, which it should, and what it does when it does
 not.
 
@@ -371,10 +454,24 @@ probe once mistook for the theme working. Each needs the differential treatment
 anything is built on it.
 
 Still open, and untouched by the correction: whether to use Mol\*'s pLDDT theme
-or protean's own banded palette (the bands are conventional and readers expect
-the standard colours), and whether the `interactions` types are the ones a
-pharmacophore wants or merely adjacent. §6 predicted that last one would be the
-gap, and nothing here has tested it.
+or protean's own banded palette, since the bands are conventional and readers
+expect the standard colours.
+
+**And the `interactions` question is now answered, against this document.**
+Reading MCPymol's `pharmacophore_view`: it colours *a ligand's own atoms* by
+feature type — donor, acceptor, hydrophobe. The `interactions` extension
+computes **interactions between atoms**, which is a different claim entirely.
+It cannot type a ligand's atoms and was never going to.
+
+So pharmacophore needs two things protean does not have: per-atom chemical
+typing from element and connectivity, and **per-atom categorical colouring** —
+`color_by_potential`, `_conservation` and `_rmsf` all colour by a *scalar*, and
+a feature class is not one. Neither is enormous; neither is free, and "nearly
+free via the interactions extension" was wrong.
+
+§6 predicted exactly this — *"It computes contacts. A pharmacophore is a claim
+about what a site wants, which is not the same thing"* — and the prediction was
+written, then ignored, then confirmed. Predicting an error does not prevent it.
 
 **The blocker is elsewhere, and it is real.** pLDDT is a property of a predicted
 model, and protean cannot currently load one: `fetch_structure(source=
@@ -389,12 +486,18 @@ meaningful for a predicted structure and meaningless for an experimental one, so
 it belongs where it can be offered when applicable rather than sitting in a menu
 that is wrong most of the time.
 
-### 5.5 Pocket detection — stub
+### 5.5 Pocket detection — ~~the one genuinely open problem~~ two problems
 
-The one genuinely open problem. Everything else here is exposure or recipe; this
-is an algorithm and probably a dependency.
+**Corrected 2026-08-18 by reading MCPymol's implementation instead of its
+name.** Its `pocket_view` is *"all residues within 5 Å of the ligand shown as a
+surface"* — a selection and a surface. **Matching it is Tier 2 work**, and it
+was called the hardest thing here on the strength of the word "pocket".
 
-Unknown: everything. Whether to compute it, borrow it, or decline it.
+The hard thing is real cavity detection: finding pockets *without being told
+where to look*, which is an algorithm and probably a dependency (fpocket and
+its kin). That is still genuinely open — and **nobody has asked for it**, which
+is the more useful half of this correction. The version people want is the
+cheap one.
 
 ### 5.6 Dynamics — decided, and the decision is to not build it
 
@@ -481,6 +584,120 @@ path got, not a weaker one); it emits or can be made to emit OpenDX, or
 protein of ordinary size is not so much worse that `auto` would rather have the
 binary.
 
+### 5.8 A menu that knows what is in force — stub, and wanted
+
+Every entry the menu offers is **one-shot**: ask for a view, the server applies
+it. Nothing anywhere records what was applied, which has two visible costs.
+
+**The menu cannot tick the active view**, so it looks unfinished, and someone
+has no way to see which of the five drawing views they are looking at.
+
+**And it forced two entries where one control belongs.** Charlie asked for
+toggles — light/dark ground, show/hide sidechains — and they shipped as pairs
+(`light-ground`/`dark-ground`, `sidechains`/`hide-sidechains`) because a toggle
+has to know which way it is currently set. Tracking that in the page would be a
+lie the moment a model changes the background, which it can at any time. A
+control that misreports its own state is worse than one that needs two entries,
+so the pairs are honest rather than good.
+
+**What a stateful version needs**, none of it built:
+
+- The server records what is applied — which drawing view, which styling,
+  which layers are up. `_handles` already knows the layers by name, so
+  `sidechains` and `ghost-heart` are nearly free; the drawing and styling
+  presets record nothing today.
+- That state reaches the page. It cannot ride the handshake alone: a model can
+  change the scene at any moment, so the page has to be *told* when it changes,
+  the way `protean_views` is pushed when the catalogue arrives late.
+- A model is told too, or the two disagree. The user-action channel already
+  carries the reverse direction — what the person did, into the model's next
+  reply — and this is the same problem pointing the other way.
+
+**The trap to avoid**, and it is the reason this is a stub rather than a patch:
+a menu that shows state it infers rather than state it was told is the
+silent-success failure in a new place. It would look right and be wrong exactly
+when a model and a person are both working, which is the case protean exists
+for. Better no checkmark than a stale one.
+
+### 5.9 Illustration styles — planned 2026-08-18
+
+Three looks borrowed from how structures were drawn before they were rendered.
+The first two are recipes over controls protean already has; the third is not,
+and the difference is the whole of this section.
+
+**What is already exposed**, checked rather than assumed: shading `cel` (with a
+step count), `flat`, `normal`, `xray`; lighting rigs `flat`, `rim`, `ring`,
+`standard`, `studio`, `three-point`; materials `matte` through `chrome`; and
+effects for outline (colour and scale), occlusion, **shadow**, **depth of
+field**, bloom and sharpening.
+
+#### `painting` — after Irving Geis
+
+All-atom, painterly, depth carried by shading rather than by line. Sketch:
+spacefill or ball-and-stick, occlusion strong, **shadow on**, `ring` or `studio`
+lighting, matte, **no outline**, a warm muted ground, possibly a little depth of
+field. Geis's myoglobin is all-atom with soft modelled light, so the levers line
+up with the subject.
+
+**Named `painting` rather than `geis`, deliberately.** A view named after a
+person implies more than a recipe can deliver, and Geis's name does not have
+currency as a style term the way some do. The docstring credits him and says
+plainly that it is an homage and not a facsimile.
+
+#### `richardson` — the ribbon diagram
+
+Cartoon, pale flat palette, cel shading at two steps rather than four, a thinner
+outline, white ground. Mol\*'s cartoon already draws arrowed strands and coiled
+helices, which is her invention; this is mostly a matter of restraint in the
+styling.
+
+**Kept separate from `textbook` on purpose, for now.** They overlap heavily —
+`textbook` is cartoon, secondary-structure colours, cel and outline — and the
+honest expectation is that one of them ends up absorbing the other. Building
+both and looking at them side by side is the cheapest way to find out which,
+and *that* is the argument for two entries rather than a guess at one.
+
+Unlike `painting`, this name is the standard term: a Richardson diagram is what
+these are called, so using it credits her rather than borrowing her.
+
+#### Cross-hatching and hedcuts — a capture finish, not a view
+
+**Mol\* has no hatching, stippling or halftone anywhere.** The whole
+`mol-canvas3d` post-processing vocabulary is antialiasing, background, bloom,
+depth of field, occlusion, outline, shadow and sharpening. Checked across the
+tree, not inferred.
+
+Three routes, and the middle one is chosen:
+
+1. **Approximate with what exists.** Cel shading at two steps, black outline,
+   greyscale, white ground — a posterised line drawing. Print-like and
+   striking, and *not* cross-hatching. Worth building anyway because it is
+   nearly free, and it may turn out to be enough.
+2. **Do it in Python, at capture. Chosen.** `snapshot()` already returns a PNG
+   through Pillow. Hatching from a luminance map is ordinary image processing:
+   band the tones, overlay line patterns at a different angle per band,
+   composite. That gives a real hedcut, works over *any* view, and touches
+   Mol\* not at all.
+3. **A custom Mol\* post-processing pass.** The right answer technically and
+   blocked practically: it needs Mol\* built from source, which this project
+   deliberately does not do — the prebuilt bundle is shipped precisely because
+   a source build wants more than 4 GB. Charlie has raised forking Mol\* to
+   extend it, which would unblock this and more; recorded here as a direction
+   under consideration rather than a decision. It would buy a live preview and
+   cost a fork to maintain and a heavier CI.
+
+**It belongs on `snapshot()`, not in the menu**, and that is the design point
+rather than an implementation detail. Every entry in the menu changes the
+*scene*; a hatch is applied to the *capture*. Two consequences follow and both
+have to be stated where a caller meets them:
+
+- **The viewer will not show it.** There is no live preview, which cuts against
+  the menu being where looks are tried. A caller sees it only in the file.
+- **`snapshot()` would return something the viewer did not draw.** Still the
+  same molecule, rendered by a second renderer — but protean's whole claim is
+  that the picture and the analysis describe the same thing, so the reply has
+  to say the finish was applied after capture rather than leave it implied.
+
 ---
 
 ## 6. What this plan will get wrong
@@ -496,7 +713,7 @@ The candidates here, stated in advance so they can be checked off or laughed at:
   loopback, so it should. If it does not, §5.2 changes shape entirely.
 
   **Right, with a caveat nobody predicted, checked 2026-08-17.** The transport
-  is not the cost — the *view* is. `ghost-surface` meshes a molecular surface,
+  is not the cost — the *view* is. `ghost-heart` meshes a molecular surface,
   which takes as long from a click as it does from a tool, and under software
   rendering that is seconds rather than milliseconds. So the button disables
   itself for the round trip and says so, which is the affordance a switcher

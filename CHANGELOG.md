@@ -8,7 +8,7 @@ nothing is released yet, so everything below is unreleased.
 ### Views
 
 - **A control in the viewer that asks the server rather than drawing.** One
-  button, one view — `ghost-surface` — and the rule that makes it worth having:
+  button, one view — `ghost-heart` — and the rule that makes it worth having:
   **a button never draws, it asks**, and the server runs the same `preset()` a
   model would call. One code path, two entry points, so a handle made by a click
   is an ordinary handle and the picture a click makes is the picture the model
@@ -23,7 +23,7 @@ nothing is released yet, so everything below is unreleased.
   finds the nine tools taking a path, and asserts none is reachable from the
   page.
 
-- **`ghost-surface` no longer wraps the water.** A molecular surface is computed
+- **`ghost-heart` no longer wraps the water.** A molecular surface is computed
   per atom, so an isolated solvent molecule gets its own closed blob: 1UBQ drew
   fifty-eight of them, detached spheres floating around the fold and 14% of
   everything on screen — coverage fell from 0.1154 to 0.0996 with them gone.
@@ -39,14 +39,20 @@ nothing is released yet, so everything below is unreleased.
   can push notifications and client support is uneven, so it rides out on the
   next reply instead, which needs no client support at all.
 
-- **Six more presets, so `preset()` covers the styles worth borrowing from
-  MCPymol.** `textbook`, `bfactor`, `putty`, `hydrophobic-surface` and
-  `pointillist` decide what is drawn; `cinematic` only restyles what is there,
-  as `publication-cartoon` and `illustrative` already did. None of them needed
-  new rendering — Mol\* has the representations and the themes, and protean
-  validates against its live registries, so all six are compositions of tools
-  that already existed. The reply lists every call each one made, so any of it
-  can be adjusted afterwards.
+- **More presets, so `preset()` covers the styles worth borrowing from
+  MCPymol.** `textbook`, `putty`, `hydrophobic-surface`, `spacefill` and
+  `skeleton` decide what is drawn; `cinematic`, `light-ground` and `dark-ground`
+  only restyle what is there, as `publication-cartoon` and `illustrative`
+  already did. None of them needed new rendering — Mol\* has the
+  representations and the themes, and protean validates against its live
+  registries, so every one is a composition of tools that already existed. The
+  reply lists every call each one made, so any of it can be adjusted afterwards.
+
+  Two of these replaced earlier drafts. `bfactor` said the same thing `putty`
+  does, in one channel instead of two, and `pointillist` was a novelty rather
+  than a way of reading a structure; `spacefill` and `skeleton` answer questions
+  — how does this pack, and what are the atoms — that nothing else in the
+  catalogue answered.
 
   The drawing presets hide what the load preset built and draw through one
   shared handle, `auto_view`. Sharing it is the point: applying a second view
@@ -170,6 +176,22 @@ nothing is released yet, so everything below is unreleased.
 
   For an installed wheel none of this fires, because nothing rewrites the files
   under one.
+- **`show()` no longer takes the camera at a moment nobody chose.** Drawing a
+  handle moved the camera roughly one time in seven and held still the rest,
+  because Mol\* requests an automatic camera fit whenever a scene commit decides
+  the visible bounding sphere has moved out from under it — and a commit has a
+  250 ms budget, so which boundary a `hide` and a `show` landed on decided
+  whether that test ran against the old scene or the new one. A caller could
+  rely neither on the camera moving nor on it staying, which is worse than
+  either: a figure captured after a draw was framed unpredictably, and applying
+  the same view twice could give two pictures.
+
+  The viewer now takes the camera off automatic fitting and asks for the one
+  fit a load wants. `focus()` and `reset_view()` are unchanged, so the camera
+  moves where a caller asked for it and nowhere else. The camera's *limits*
+  still follow the scene, because the flag that stops Mol\* re-framing also
+  stops it maintaining them — left alone, a map spanning more than its protein
+  would be clipped away by a slab drawn from the protein's radius.
 
 - **A capture is allowed time in proportion to the pixels it asks for.** Every
   capture shared one fixed 300 s budget, which the range of sizes makes
@@ -453,7 +475,7 @@ nothing is released yet, so everything below is unreleased.
 - `shading()` (cel, xray, flat), `material()` with five PBR finishes, and
   `path_trace()` for Mol\*'s progressive path tracer.
 - `preset()` composes those into publication-cartoon, illustrative,
-  ghost-surface and active-site.
+  ghost-heart and active-site.
 - A pixel-assertion harness underpins all of it: rendering is verified by
   reading the image, not the reply.
 

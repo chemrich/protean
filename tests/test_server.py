@@ -8,6 +8,7 @@ import contextlib
 import gzip
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1769,6 +1770,32 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
 
         viewer.handlers[action] = handle
 
+    # `hide` and `show` get the real viewer's `changed` bookkeeping on top,
+    # because a preset now reads it. The real `setHidden` counts the components
+    # it actually flipped and returns zero when they were already that way; a
+    # recorder that always answered "done" would let a refusal built on that
+    # count pass a test it could not pass in the viewer.
+    # Held on the viewer, not in this closure: `_record` runs once per preset
+    # applied, and a per-call set would forget what the last one hid — which is
+    # precisely the state a second `hide-sidechains` has to see.
+    hidden: set[str] = viewer.__dict__.setdefault("hidden_names", set())
+
+    def on_hide(args):
+        calls.append(("hide", args))
+        name = args.get("name", "")
+        changed = 0 if name in hidden else 1
+        hidden.add(name)
+        return {"name": name, "hidden": True, "components": 1, "changed": changed}
+
+    def on_show(args):
+        calls.append(("show", args))
+        # Drawing under a handle builds a fresh, visible component.
+        hidden.discard(args.get("handle", ""))
+        return {"ok": True, "name": args.get("name", ""), "representations": 1}
+
+    viewer.handlers["hide"] = on_hide
+    viewer.handlers["show"] = on_show
+
 
 async def test_unknown_preset_is_refused_with_the_real_list(wired_bridge):
     with pytest.raises(ViewerError, match=r"Unknown preset 'noir'.*active-site"):
@@ -1801,7 +1828,7 @@ async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
     assert len(out["steps"]) == len(calls)
 
 
-async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
+async def test_ghost_heart_draws_under_its_own_handle(wired_bridge, tmp_path):
     """The scoping this preset exists to get right.
 
     Showing a surface under the *same* handle rebuilds that component, so the
@@ -1814,7 +1841,7 @@ async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
 
     task = wired_bridge.serve(20)
     await select("all", name="site")
-    out = await preset("ghost-surface", handle="site")
+    out = await preset("ghost-heart", handle="site")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1829,7 +1856,7 @@ async def test_ghost_surface_draws_under_its_own_handle(wired_bridge, tmp_path):
     assert out["applied_to"] == "site"
 
 
-async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
+async def test_ghost_heart_over_the_whole_scene_leaves_the_solvent_out(
     wired_bridge, tmp_path
 ):
     """A molecular surface is per atom, so an isolated water gets its own blob.
@@ -1842,7 +1869,7 @@ async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
     _record(wired_bridge, [])
     task = wired_bridge.serve(20)
     try:
-        await preset("ghost-surface")
+        await preset("ghost-heart")
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1855,20 +1882,20 @@ async def test_ghost_surface_over_the_whole_scene_leaves_the_solvent_out(
     assert "HOH" not in {str(r) for r in array[ghost.indices].res_name}
 
 
-async def test_ghost_surface_refuses_a_structure_that_is_only_solvent(
+async def test_ghost_heart_refuses_a_structure_that_is_only_solvent(
     wired_bridge, tmp_path
 ):
     await _load(wired_bridge, _water_only_pdb(tmp_path / "wet.pdb"))
     with pytest.raises(ViewerError, match="nothing but solvent"):
-        await preset("ghost-surface")
+        await preset("ghost-heart")
 
 
-async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
+async def test_ghost_heart_covers_the_same_atoms_as_its_source(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     _record(wired_bridge, [])
     task = wired_bridge.serve(20)
     await select("name CA", name="site")
-    await preset("ghost-surface", handle="site")
+    await preset("ghost-heart", handle="site")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1878,10 +1905,10 @@ async def test_ghost_surface_covers_the_same_atoms_as_its_source(wired_bridge, t
     assert ghost.indices.tolist() == source.indices.tolist()
 
 
-async def test_ghost_surface_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
+async def test_ghost_heart_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_path):
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     with pytest.raises(ViewerError, match="No selection named 'nope'"):
-        await preset("ghost-surface", handle="nope")
+        await preset("ghost-heart", handle="nope")
 
 
 async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_path):
@@ -1898,7 +1925,7 @@ async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_pa
 # the viewer's load preset, so a view has to hide it and take the scene over, and
 # two views in a row have to replace each other rather than stack.
 
-_DRAWING_PRESETS = ["textbook", "bfactor", "putty", "hydrophobic-surface", "pointillist"]
+_DRAWING_PRESETS = ["textbook", "putty", "hydrophobic-surface", "spacefill", "skeleton"]
 
 
 async def _preset_calls(
@@ -2122,10 +2149,17 @@ async def test_a_view_refuses_a_handle_that_does_not_exist(wired_bridge, tmp_pat
         await preset("putty", handle="nope")
 
 
-async def test_pointillist_leaves_the_solvent_out(wired_bridge, tmp_path):
-    """Waters are most of the atoms in a crystal structure and none of the shape."""
+@pytest.mark.parametrize("view", ["spacefill", "skeleton"])
+async def test_an_all_atom_view_leaves_the_solvent_out(wired_bridge, tmp_path, view):
+    """Waters are most of the atoms in a crystal structure and none of the shape.
+
+    It matters more for these two than for a cartoon: drawing every water as a
+    sphere or a stick puts a haze around the molecule rather than a few extra
+    marks. Ligands and ions stay, because in an all-atom view they are usually
+    the point.
+    """
     await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
-    await _preset_calls(wired_bridge, tmp_path, "pointillist")
+    await _preset_calls(wired_bridge, tmp_path, view)
 
     scene = server_mod._handles.get("auto_view")
     array = server_mod._structure
@@ -2139,7 +2173,7 @@ async def test_capabilities_reports_the_presets(wired_bridge):
     out = await capabilities()
     await task
 
-    assert "ghost-surface" in out["presets"]
+    assert "ghost-heart" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
 
 
@@ -2716,3 +2750,119 @@ async def test_an_unknown_provenance_is_refused_before_anything_is_read(
     # And the refusal is about the provenance, not the missing file — proof the
     # check ran first rather than the read failing for its own reasons.
     assert not missing.exists()
+
+
+# -- ground and sidechains, the stateless pairs --------------------------------
+
+
+def _alanine_with_sidechain_pdb(path: Path, n: int = 3) -> Path:
+    """Alanine *including* CB, because the other fixtures stop at the backbone.
+
+    Worth its own helper: `_tiny_protein_pdb` is glycine, whose sidechain is a
+    hydrogen, and `_peptide_pdb` writes N/CA/C/O only. Both have no sidechain
+    at all, which is a real structure protean has to answer about — and is why
+    the refusal below is reachable rather than defensive.
+    """
+    lines = []
+    serial = 1
+    for res in range(1, n + 1):
+        for i, (name, elem) in enumerate(
+            (("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"))
+        ):
+            lines.append(
+                _pdb_line(
+                    serial, name, "ALA", "A", res, (float(res) * 4, float(i), 0.0), elem
+                )
+            )
+            serial += 1
+    path.write_text("\n".join(lines) + "\nEND\n")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("view", "expected"),
+    [("light-ground", "#ffffff"), ("dark-ground", "#05070c")],
+)
+async def test_a_ground_view_sets_the_background_and_nothing_else(
+    wired_bridge, tmp_path, view, expected
+):
+    """Two entries rather than one toggle, deliberately.
+
+    Nothing records which ground is in force — the server does not track what
+    was last applied — so a toggle would report state it cannot know. See
+    docs/views.md §5.8 for what a stateful version would need.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    _, calls = await _preset_calls(wired_bridge, tmp_path, view)
+
+    actions = [action for action, _ in calls]
+    assert actions == ["background"], (
+        f"a ground view touched more than the ground: {actions}"
+    )
+    assert calls[0][1]["color"] == expected
+
+
+async def test_sidechains_draw_over_what_is_there_rather_than_replacing_it(
+    wired_bridge, tmp_path
+):
+    """Its own handle, for the reason the ghost heart has one: drawing under
+    an existing handle rebuilds that component rather than layering on it."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "sidechains")
+
+    assert server_mod._SIDECHAIN_HANDLE in server_mod._handles.names()
+
+
+async def test_sidechains_on_a_structure_that_has_none_is_refused(wired_bridge, tmp_path):
+    """Glycine's sidechain is a hydrogen, so this is a real structure and not a
+    contrived one. Drawing nothing and reporting success is the alternative."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="has a sidechain"):
+        await preset("sidechains")
+
+
+async def test_hiding_sidechains_that_were_never_drawn_is_refused(wired_bridge, tmp_path):
+    """A control reporting success for doing nothing is this project's oldest
+    failure, and a hide with nothing to hide is exactly that shape."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    with pytest.raises(ViewerError, match="none to hide"):
+        await preset("hide-sidechains")
+
+
+async def test_hiding_sidechains_twice_is_refused_the_second_time(wired_bridge, tmp_path):
+    """The handle survives being hidden, so the registry cannot tell the two
+    apart. Asked twice, the earlier check answered "done" both times while the
+    second call moved nothing — success reported for no effect, one call along
+    from the case the first refusal covers."""
+    await _load(wired_bridge, _alanine_with_sidechain_pdb(tmp_path / "ala.pdb"))
+    await _preset_calls(wired_bridge, tmp_path, "sidechains")
+    await _preset_calls(wired_bridge, tmp_path, "hide-sidechains")
+
+    with pytest.raises(ViewerError, match="already hidden"):
+        await _preset_calls(wired_bridge, tmp_path, "hide-sidechains")
+
+
+def test_the_preset_docstring_lists_every_preset_and_no_others():
+    """The docstring is the catalogue a model reads, so drift in it is an API bug.
+
+    A review found `preset()` advertising two presets that had been deleted —
+    a model following it got `Unknown preset` — while six that had been added
+    were undocumented and therefore unreachable in practice. Nothing failed,
+    because nothing was checking.
+
+    Matched without depending on indentation: the docstring reaching a caller
+    has been dedented from the source, which the first version of this test did
+    not survive.
+    """
+    doc = preset.__doc__ or ""
+    # A catalogue line is a name, two or more spaces, then its description.
+    listed = {
+        match.group(1)
+        for match in re.finditer(r"^\s*([a-z][a-z-]+) {2,}\S", doc, re.MULTILINE)
+    }
+
+    missing = set(server_mod._PRESETS) - listed
+    assert not missing, f"presets the docstring never mentions: {sorted(missing)}"
+
+    gone = listed - set(server_mod._PRESETS)
+    assert not gone, f"the docstring offers presets that do not exist: {sorted(gone)}"

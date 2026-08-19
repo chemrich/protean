@@ -82,22 +82,104 @@ function mountControlsTab(plugin: any): void {
  * The button reports what the server said, including refusals, because a
  * control that cannot report failure is a control that reports success.
  */
-function mountViewButton(channel: PageChannel): void {
+/** Section headings, and the order the kinds appear in.
+ *
+ * The kinds are not decoration. A `draws` view replaces what is on screen and
+ * brings its own styling with it, so choosing one *after* a `styles` silently
+ * discards the styling — while `styles` chosen after a `draws` keeps the
+ * geometry and only changes the look. One flat list of nine equal items would
+ * hide that, and the first surprise would be a dark cinematic ground vanishing
+ * when someone asked to see B-factors.
+ */
+const VIEW_SECTIONS: ReadonlyArray<{ kind: string; heading: string }> = [
+  { kind: 'draws', heading: 'What is drawn' },
+  { kind: 'styles', heading: 'How it looks' },
+  { kind: 'layers', heading: 'Over the top' },
+];
+
+/** A label a person reads, from the name the server uses. */
+function readable(name: string): string {
+  const words = name.replace(/-/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function mountViewMenu(channel: PageChannel): void {
   const button = document.createElement('button');
-  button.id = 'view-ghost';
-  button.textContent = 'Ghost surface';
-  button.title = 'Ask protean for the ghost-surface view';
+  button.id = 'view-menu-button';
+  button.textContent = 'Views';
+  button.title = 'Ask protean for a view';
   document.body.appendChild(button);
 
-  button.addEventListener('click', async () => {
-    button.disabled = true;
-    button.textContent = 'asking…';
-    const reply = await channel.invoke('ghost-surface');
-    button.disabled = false;
-    button.textContent = reply.ok ? 'Ghost surface' : 'Ghost surface — refused';
+  const menu = document.createElement('div');
+  menu.id = 'view-menu';
+  menu.hidden = true;
+  document.body.appendChild(menu);
+
+  const close = () => {
+    menu.hidden = true;
+  };
+  button.addEventListener('click', () => {
+    menu.hidden = !menu.hidden;
+  });
+  // Clicking the molecule should put the menu away, the way a menu does.
+  document.addEventListener('click', (event) => {
+    if (event.target !== button && !menu.contains(event.target as Node)) close();
+  });
+
+  const ask = async (view: string, item: HTMLButtonElement) => {
+    const label = item.textContent ?? view;
+    item.disabled = true;
+    item.textContent = 'asking…';
+    const reply = await channel.invoke(view);
+    item.disabled = false;
+    item.textContent = label;
+    // Reported on the button rather than swallowed: a control that cannot
+    // report failure is a control that reports success.
+    button.textContent = reply.ok ? 'Views' : 'Views — refused';
     button.title = reply.ok
-      ? 'Ask protean for the ghost-surface view'
+      ? 'Ask protean for a view'
       : (reply.error ?? 'protean refused, and said nothing about why');
+    if (reply.ok) close();
+  };
+
+  // Drawn from what the server offers, every handshake. Nothing here knows the
+  // names, so this menu cannot come to disagree with the allowlist that gates
+  // the channel — the drift this project keeps meeting.
+  channel.onViews((views) => {
+    menu.replaceChildren();
+    for (const section of VIEW_SECTIONS) {
+      const offered = views.filter((v) => v.kind === section.kind);
+      if (!offered.length) continue;
+      const heading = document.createElement('div');
+      heading.className = 'view-menu-heading';
+      heading.textContent = section.heading;
+      menu.appendChild(heading);
+      for (const view of offered) {
+        const item = document.createElement('button');
+        item.className = 'view-menu-item';
+        // The name the server uses, kept as an attribute because the label is
+        // not stable: it reads "asking…" for the length of a round trip, and
+        // anything identifying the item by its text loses it exactly then.
+        item.dataset.view = view.name;
+        item.textContent = readable(view.name);
+        item.addEventListener('click', () => void ask(view.name, item));
+        menu.appendChild(item);
+      }
+    }
+    // A kind the server grew that this page has no section for still has to
+    // reach someone, or the menu quietly hides half of what is available.
+    const unplaced = views.filter(
+      (v) => !VIEW_SECTIONS.some((s) => s.kind === v.kind)
+    );
+    for (const view of unplaced) {
+      const item = document.createElement('button');
+      item.className = 'view-menu-item';
+      item.dataset.view = view.name;
+      item.textContent = readable(view.name);
+      item.addEventListener('click', () => void ask(view.name, item));
+      menu.appendChild(item);
+    }
+    button.hidden = menu.childElementCount === 0;
   });
 }
 
@@ -150,7 +232,7 @@ async function init() {
     plugin: viewer.plugin,
   });
   mountControlsTab(viewer.plugin);
-  mountViewButton(connectBridge(createDispatcher(viewer.plugin)));
+  mountViewMenu(connectBridge(createDispatcher(viewer.plugin)));
 }
 
 init();

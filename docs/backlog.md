@@ -881,6 +881,37 @@ tests that could not fail: PR 61's compared residue sets while its fixture's
 only alternate sat outside the conserved quartile, so the obvious wrong
 implementation passed it.
 
+### 35. A screenshot cannot tell a model the user changed the scene — open
+
+Found by being caught by it, 2026-08-18, within a day of building the thing
+that reports user actions.
+
+Every tool reply carries what the person did in the viewer since the last call
+— *"since your last call the user applied the skeleton view"* — except one.
+`screenshot` replies with image content and has nowhere to put a sentence, so
+`_carrying_user_actions` leaves the news queued for the next reply that can
+take it. That was a deliberate choice and it is written down as one.
+
+**It is deliberate in the wrong place.** A screenshot is the moment a model is
+looking at pixels and about to draw conclusions from them, which is precisely
+when "the user just applied a view" is load-bearing. It happened exactly that
+way: a viewer was loaded, a screenshot taken, and the picture showed an
+all-atom stick model where a cartoon was expected. The reasonable reading was a
+regression in the default load, and two headless reproductions were run against
+it before `capabilities()` — the next reply that *could* carry the news —
+reported eight view clicks. Nothing was broken. The instrument had simply been
+unable to say so.
+
+**What to build.** MCP content can carry more than one part: an image and a
+short text part in the same reply. If that works through the clients protean is
+used from, the news rides along and this closes. If it does not, the fallback
+is worse but still better than silence — hold the queue and let the *following*
+reply say when the news is stale, or refuse to drain it into anything that
+cannot show it.
+
+Worth doing because the failure is silent and points at the model rather than
+at the tool: what it looks like is protean rendering the wrong thing.
+
 ## Two findings from chasing a flaky test, 2026-08-16
 
 ### 23. A capture's budget did not depend on the capture — fixed
@@ -1033,7 +1064,7 @@ Three changes, and the order matters:
 
 ## One finding from building the style presets, 2026-08-17
 
-### 26. `show()` on a handle moves the camera the second time, not the first — open
+### 26. `show()` on a handle moves the camera the second time, not the first — fixed
 
 Found while making a view idempotent, and it belongs to `show()` rather than to
 the presets: reproduced with plain `hide()`/`select()`/`show()` calls and no
@@ -1065,12 +1096,104 @@ three frames are identical. The style presets take the `reset_view()` route for
 whole-scene views (docs/views.md §5.1), which fixes it *there* and leaves
 `show()` itself as it is.
 
-**What is not known** is which end is wrong. Mol\* auto-fitting the camera on a
-component rebuild may be the intended behaviour, in which case the defect is
-only that it does not happen on the first draw; or the auto-fit may be something
-protean should be suppressing so a caller's camera is never taken from them.
-Deciding needs a reading of when Mol\* requests a camera reset, which was out of
-scope for the presets and is the whole of this item.
+**Corrected 2026-08-18: it is intermittent, not deterministic.** The reading of
+Mol\* this item asked for was done, and so was the measurement, and the
+measurement is the part that changed the entry. Running the reproduction above
+unchanged, fourteen times:
+
+```
+12 runs   show #1 vs #2   0.000000
+ 2 runs   show #1 vs #2   0.030043
+```
+
+So the numbers above were one observation of an event that fires roughly one
+time in seven, written up as though it always happened. Fourteen runs is enough
+to say "intermittent" and not enough to put a rate on it with any confidence,
+which is why the two counts are given rather than a percentage. Everything else in the entry
+holds — caught in the act, the camera genuinely moves and then stays:
+
+```
+after show #1:  camera z = 80.952   coverage 0.0050
+after show #2:  camera z = 36.061   coverage 0.0251   <- refit, closer
+after show #3:  camera z = 36.061   coverage 0.0251   <- and holds
+```
+
+**Where it comes from.** `commitScene` in `canvas3d.js` snapshots the visible
+bounding sphere *before* committing, then requests a camera reset if
+`reprCount === 0 || shouldResetCamera()`. `shouldResetCamera` asks whether any
+visible renderable has moved outside that old sphere and whether the camera
+sphere overlaps anything. A commit has a 250 ms budget and returns early when it
+cannot finish, so **which commit boundary a `hide` and a `show` land on decides
+whether the test is taken against the old scene or the new one** — and that is
+the race.
+
+**Which end is wrong, decided on the evidence:** the defect is that `show()` is
+neither. A caller cannot rely on the camera moving or on it staying, which is
+worse than either. `p.camera.manualReset` is Mol\*'s own lever — it gates every
+auto-reset in `commitScene`, defaults to `false`, and **protean has never set
+it**. Turning it on after the initial load would make `show()` deterministic and
+leave the camera to `focus()` and `reset_view()`, which is where a caller can
+see it move. The cost is that protean would then owe an explicit fit at load,
+where it currently gets one free.
+
+**Possibly the same thing as item 32**, which is also an intermittent framing
+difference at a similar rate. Not established: 32's control renders identical
+geometry, and whether its camera moves has not been measured. Doing that
+measurement is the cheapest way to find out, and would either merge the two
+items or separate them properly.
+
+**Fixed 2026-08-18 by taking the route above.** `load_structure` sets
+`manualReset` on the canvas after `clear()`, which gates off every automatic
+request in `commitScene`, and then asks for the one fit a load actually wants —
+`managers.camera.reset()` sets the flag directly, so an explicit reset still
+works. `focus()` and `reset_view()` are unaffected, which leaves the camera
+moving only where a caller asked for it.
+
+Both halves are load-bearing and each has its own test: remove `manualReset`
+and the mechanism test fails; remove the explicit fit and the load frames
+nothing, which the second test catches. The prop is set after `clear()` because
+clearing rebuilds canvas3d state and a prop set before it does not survive.
+
+**A code review found four gaps in the first version of this fix**, and they
+are the reason the prop is set where it is:
+
+- `manualReset` gates more than the auto-fit. `commitScene` ends with
+  `if (!p.camera.manualReset) camera.setState({ radiusMax: getSceneRadius() })`,
+  and the trackball's min/max distances are recomputed only inside
+  `resolveCameraReset`. So the camera's *limits* stopped tracking the scene, and
+  a volume spanning more than the protein would be clipped away by a slab drawn
+  from the protein's radius. The dispatcher now maintains `radiusMax` after
+  every draw, deliberately without moving the camera: framing belongs to the
+  caller, bounds belong to the scene.
+- Setting it inside `load_structure` left every path that draws *without*
+  loading one still auto-fitting — a volume into an empty viewer, or anything
+  after `clear_viewer`. It is set once at start-up instead.
+- The first version's comment justified that placement by claiming a prop set
+  before `plugin.clear()` would not survive. **That was asserted, not checked,
+  and it is false**: `clear()` takes `resetViewportSettings` and protean passes
+  nothing, so canvas3d props are untouched. The same wrong reason was written
+  into this entry as fact.
+- `load_session` re-applies a snapshot's canvas3d props, where `manualReset`
+  defaults to false — so restoring any session written before this existed
+  would hand automatic fitting back for the viewer's life. Re-asserted after
+  `setSnapshot`.
+
+**One of those is fixed but untested, and that is worth stating.** The
+`radiusMax` maintenance has no test, because three attempts to build a scene
+that actually grows — a large spacefill, a 300 A volume cell, a volume at an
+offset — each failed to move `boundingSphere.radius` at all, and a test whose
+own guard says "the scene did not grow" proves nothing about what happens when
+it does. The mechanism is read straight out of `canvas3d.js` and the fix is
+four lines, but nothing in the suite would catch its removal. Finding a scene
+that grows is the next piece of work here.
+
+**The tests that do exist assert the property, not the picture**, and the rate
+is why: at one
+in seven, a repeated-`show()` comparison would pass six times out of seven
+against a regression — a test that mostly cannot fail. Verified with the
+mechanism engaged in a live viewer (`manualReset: true` after load *and* after
+a draw) and fourteen consecutive clean runs of the reproduction, where 0 in 14
+alone would have been ~11% likely by luck.
 
 ### 27. `load_structure` never waited for the camera it moved — fixed
 

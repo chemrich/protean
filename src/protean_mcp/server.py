@@ -387,7 +387,7 @@ def use_bridge(bridge: ViewerBridge) -> ViewerBridge:
     """
     global _bridge  # noqa: PLW0603 - deliberate module-level singleton
     _bridge = bridge
-    bridge.on_invoke(_invoke_from_page)
+    bridge.on_invoke(_invoke_from_page, _page_view_catalogue())
     return bridge
 
 
@@ -830,6 +830,7 @@ async def show(
     color: str | None = None,
     size: float | None = None,
     opacity: float | None = None,
+    pickable: bool | None = None,
     name: str = "sele",
 ) -> dict[str, Any]:
     """Display a selection, given either a handle or a selection string.
@@ -847,6 +848,11 @@ async def show(
       Waals radius, so an ion that would hide what it coordinates can be shrunk.
     opacity: 0 is invisible, 1 is solid. Use it to draw a surface you can see
       through to whatever is inside; opacity() changes it afterwards.
+    pickable: False makes this scenery — it cannot be clicked, and it does not
+      light up when something underneath it is. A see-through surface exists to
+      be looked *through*, and left pickable it takes every click meant for what
+      is inside it, putting a selection on a jagged patch of mesh rather than on
+      the residue that was aimed at.
     """
     if (selection is None) == (handle is None):
         raise ViewerError("Pass exactly one of selection or handle")
@@ -879,6 +885,8 @@ async def show(
         args["size"] = size
     if opacity is not None:
         args["opacity"] = opacity
+    if pickable is not None:
+        args["pickable"] = pickable
     await _call("show", args)
     return {"name": label, "representation": representation, **_summarise(array, indices)}
 
@@ -2319,7 +2327,7 @@ async def _preset_cinematic(target: str) -> list[str]:
     ]
 
 
-async def _preset_ghost_surface(target: str) -> list[str]:
+async def _preset_ghost_heart(target: str) -> list[str]:
     """A see-through surface that leaves what is inside it visible.
 
     The scoping is the point. A surface shown under the *same* handle would
@@ -2343,24 +2351,115 @@ async def _preset_ghost_surface(target: str) -> list[str]:
         indices = np.flatnonzero(mask)
         if not len(indices):
             raise ViewerError(
-                "This structure is nothing but solvent, so a ghost surface over "
+                "This structure is nothing but solvent, so a ghost heart over "
                 "it would wrap water. Pass a handle naming what to wrap."
             )
-        origin = "preset(ghost-surface) over everything but the solvent"
+        origin = "preset(ghost-heart) over everything but the solvent"
     else:
         try:
             indices = _handles.get(target).indices
         except HandleError as exc:
             raise ViewerError(str(exc)) from exc
-        origin = f"preset(ghost-surface) over {target}"
+        origin = f"preset(ghost-heart) over {target}"
 
     ghost = f"{target}_ghost"
     _register(ghost, indices, origin)
     return [
-        await _run(show, representation="molecular-surface", handle=ghost, opacity=0.25),
+        await _run(
+            show,
+            representation="molecular-surface",
+            handle=ghost,
+            opacity=0.25,
+            pickable=False,
+        ),
         await _run(shading, style="xray", name=ghost),
         await _run(material, finish="glossy", name=ghost),
     ]
+
+
+async def _preset_light_ground(target: str) -> list[str]:
+    """A white ground, and nothing else touched.
+
+    Paired with `dark-ground` rather than made a toggle, because nothing here
+    records which one is in force: the server does not track what was last
+    applied, and a control that reports state it cannot know is worse than one
+    that needs two entries. Stated in docs/views.md §5.8, which is where the
+    stateful version would start.
+    """
+    del target  # the ground is the scene's, not any selection's
+    return [await _run(background, color="#ffffff", gradient="off")]
+
+
+async def _preset_dark_ground(target: str) -> list[str]:
+    """A near-black ground, for a lit render or a dark room."""
+    del target
+    return [await _run(background, color="#05070c", gradient="off")]
+
+
+#: The handle `sidechains` draws under, so `hide-sidechains` can find it again.
+_SIDECHAIN_HANDLE = "sidechains"
+
+
+async def _preset_sidechains(target: str) -> list[str]:
+    """Sidechain sticks over whatever is already drawn.
+
+    Its own handle, for the reason the ghost heart has one: drawing under an
+    existing handle rebuilds that component rather than layering on it, so the
+    cartoon these are meant to sit on would disappear.
+
+    Solvent and the backbone are both out. `sidechain` is already the variable
+    part of a residue — the thing worth looking at when someone asks to see
+    them — and adding waters would bury it.
+    """
+    del target
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection("sidechain and not solvent"), array)
+    except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+        raise ViewerError(str(exc)) from exc
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        raise ViewerError(
+            "Nothing here has a sidechain — a nucleic acid or a bare backbone "
+            "has none to draw."
+        )
+    _register(_SIDECHAIN_HANDLE, indices, "preset(sidechains)")
+    return [
+        await _run(
+            show,
+            representation="ball-and-stick",
+            handle=_SIDECHAIN_HANDLE,
+            color="element-symbol",
+        )
+    ]
+
+
+async def _preset_hide_sidechains(target: str) -> list[str]:
+    """Put the sidechain sticks away again, leaving everything else alone.
+
+    Refuses rather than passing quietly when there are none drawn: a control
+    that reports success for doing nothing is the failure this project spends
+    most of its time on.
+    """
+    del target
+    if _SIDECHAIN_HANDLE not in _handles.names():
+        raise ViewerError(
+            "No sidechains are drawn, so there are none to hide. Apply the "
+            "sidechains view first."
+        )
+    # Not `_run`, which discards the reply. The handle survives being hidden,
+    # so the registry answers the same either way and this preset would report
+    # success for a second call that moved nothing — the exact failure the
+    # refusal above exists to prevent, one call further along. `changed` counts
+    # the components that actually flipped, and zero of them means the sticks
+    # were already away.
+    result = await hide(name=_SIDECHAIN_HANDLE)
+    if not result.get("changed"):
+        raise ViewerError(
+            "The sidechains are registered but already hidden, so this would "
+            "have changed nothing. Apply the sidechains view to bring them back."
+        )
+    return [_step("hide", name=_SIDECHAIN_HANDLE)]
 
 
 async def _preset_active_site(target: str) -> list[str]:
@@ -2391,15 +2490,6 @@ async def _preset_active_site(target: str) -> list[str]:
 # `cinematic`'s depth of field survived into every view that did not mention it,
 # and three views described a call they had not quite made. One helper and a
 # table of the differences makes both impossible rather than unlikely.
-
-
-async def _pointillist_style(_target: str, _handle: str) -> list[str]:
-    """Dark ground and no lighting model, so dots read as dots."""
-    return [
-        await _run(background, color="#05070c", gradient="off"),
-        await _run(lighting, rig="flat"),
-        await _set_effects(),
-    ]
 
 
 async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
@@ -2435,12 +2525,6 @@ _VIEWS: dict[str, _View] = {
         color="secondary-structure",
         style=lambda target, handle: _preset_illustrative(target),
     ),
-    "bfactor": _View(
-        selection="polymer",
-        representation="cartoon",
-        color="uncertainty",
-        style=lambda target, handle: _preset_publication_cartoon(target),
-    ),
     "putty": _View(
         selection="polymer",
         representation="putty",
@@ -2453,13 +2537,24 @@ _VIEWS: dict[str, _View] = {
         color="hydrophobicity",
         style=_hydrophobic_style,
     ),
-    # Solvent is left out: waters are most of the atoms in a crystal structure
-    # and none of the shape, so including them draws a haze around the molecule.
-    "pointillist": _View(
+    # Solvent is left out of both of these: waters are most of the atoms in a
+    # crystal structure and none of the shape, so drawing them puts a haze of
+    # spheres or sticks around the molecule. Ligands and ions are kept, because
+    # in an all-atom view they are usually the point.
+    "spacefill": _View(
         selection="not solvent",
-        representation="point",
+        representation="spacefill",
         color="element-symbol",
-        style=_pointillist_style,
+        style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    # Ball-and-stick rather than `line`: a line model has no thickness to
+    # shade, so the ambient occlusion that makes this look like an object
+    # instead of a diagram would have nothing to work on.
+    "skeleton": _View(
+        selection="not solvent",
+        representation="ball-and-stick",
+        color="element-symbol",
+        style=lambda target, handle: _preset_publication_cartoon(target),
     ),
 }
 
@@ -2481,8 +2576,12 @@ _PRESETS: dict[str, Any] = {
     "publication-cartoon": _preset_publication_cartoon,
     "illustrative": _preset_illustrative,
     "cinematic": _preset_cinematic,
-    "ghost-surface": _preset_ghost_surface,
+    "ghost-heart": _preset_ghost_heart,
     "active-site": _preset_active_site,
+    "light-ground": _preset_light_ground,
+    "dark-ground": _preset_dark_ground,
+    "sidechains": _preset_sidechains,
+    "hide-sidechains": _preset_hide_sidechains,
     **{name: functools.partial(_draw_view, name) for name in _VIEWS},
 }
 
@@ -2511,25 +2610,30 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            look; pairs well with a simple cartoon.
       cinematic            Near-black ground, back light, ambient occlusion and
                            a shallow depth of field. A render, not a diagram.
+      light-ground         A white ground, and nothing else touched.
+      dark-ground          A near-black ground, and nothing else touched.
 
       Decide what is drawn:
 
       textbook             Cartoon by secondary structure, flat and outlined —
                            illustrative's styling with the drawing done too.
-      bfactor              Cartoon on the B-factor ramp: rigid core cold,
-                           mobile loops and termini warm.
       putty                A tube whose width *and* colour follow B-factor, so
                            a disordered loop reads as a fat warm bulge.
       hydrophobic-surface  A molecular surface coloured by hydrophobicity, ring
                            lit so the curvature survives.
-      pointillist          Every non-solvent atom as a point, on black.
+      spacefill            Every non-solvent atom as a CPK sphere, lit so the
+                           packing reads as volume rather than as a blob.
+      skeleton             Ball-and-stick over everything but the solvent.
 
       Add to what is there:
 
-      ghost-surface        A see-through surface over the selection, leaving
+      ghost-heart          A see-through surface over the selection, leaving
                            whatever is inside it visible. Drawn under its own
                            handle so it layers over the existing representation
-                           rather than replacing it.
+                           rather than replacing it, and it takes no clicks.
+      sidechains           Sidechain sticks over whatever is already drawn,
+                           under their own handle.
+      hide-sidechains      Puts those away again. Refuses when none are drawn.
       active-site          Ball-and-stick and residue labels on the given site,
                            the rest of the structure faded back. Needs a handle.
 
@@ -2537,9 +2641,10 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       scene — the drawing presets then hide what the viewer loaded, draw under
       the handle "auto_view", and reframe the camera on it, all of which the
       reply lists. What lands in "auto_view" is the view's own selection:
-      `polymer` for every one of them except pointillist, which takes
-      everything that is not solvent. **A whole-scene view therefore discards a
-      camera you had moved**, so apply the view first and orient afterwards.
+      `polymer` for textbook and putty, and everything that is not solvent for
+      hydrophobic-surface, spacefill and skeleton. **A whole-scene view
+      therefore discards a camera you had moved**, so apply the view first and
+      orient afterwards.
       Given a handle they leave the camera alone. active-site refuses an
       omitted handle, since a site has to be named.
 
@@ -2578,8 +2683,54 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 #: The tools a page-initiated request may reach, by name in the MCP registry.
 _PAGE_TOOLS = frozenset({"preset"})
 
-#: View names a click may ask for, and the preset each one means.
-_PAGE_VIEWS: dict[str, str] = {"ghost-surface": "ghost-surface"}
+#: What a view does to the scene, which decides how a menu may present it.
+#:
+#: Not a detail of presentation: the three behave differently enough that one
+#: flat list would misdescribe two of them.
+#:
+#: - `draws` replaces what is on screen. `_take_the_scene` hides `auto` and
+#:   draws its own selection, so these replace each other *and* whatever was
+#:   there. Each also applies a styling preset of its own, so a `draws` chosen
+#:   after a `styles` silently discards it.
+#: - `styles` changes how the scene looks and never what is drawn. These
+#:   replace each other — all of them set background and lighting — and compose
+#:   with any `draws`.
+#: - `layers` draws over what is already there, under its own handle, and
+#:   composes with everything.
+_VIEW_DRAWS = "draws"
+_VIEW_STYLES = "styles"
+_VIEW_LAYERS = "layers"
+
+#: View names a click may ask for, the preset each means, and what it does.
+#:
+#: `active-site` is deliberately absent: it needs a handle to point at, and a
+#: button has none to give.
+_PAGE_VIEWS: dict[str, tuple[str, str]] = {
+    "textbook": ("textbook", _VIEW_DRAWS),
+    "putty": ("putty", _VIEW_DRAWS),
+    "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
+    "spacefill": ("spacefill", _VIEW_DRAWS),
+    "skeleton": ("skeleton", _VIEW_DRAWS),
+    "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
+    "illustrative": ("illustrative", _VIEW_STYLES),
+    "cinematic": ("cinematic", _VIEW_STYLES),
+    "light-ground": ("light-ground", _VIEW_STYLES),
+    "dark-ground": ("dark-ground", _VIEW_STYLES),
+    "ghost-heart": ("ghost-heart", _VIEW_LAYERS),
+    "sidechains": ("sidechains", _VIEW_LAYERS),
+    "hide-sidechains": ("hide-sidechains", _VIEW_LAYERS),
+}
+
+
+def _page_view_catalogue() -> list[dict[str, str]]:
+    """What the page may ask for, in the order a menu should show it.
+
+    Sent to the page rather than written there. A copy in `index.html` is the
+    list-that-drifts this project keeps meeting — a hand-written nine where
+    fourteen tools existed, a named-file CI list that stopped running new
+    suites — and two lists cannot disagree if only one of them exists.
+    """
+    return [{"name": name, "kind": kind} for name, (_, kind) in _PAGE_VIEWS.items()]
 
 
 async def _invoke_from_page(view: str) -> str:
@@ -2591,11 +2742,12 @@ async def _invoke_from_page(view: str) -> str:
     Any other arrangement lets the two render the same view differently, and
     eventually they will.
     """
-    preset_name = _PAGE_VIEWS.get(view)
-    if preset_name is None:
+    entry = _PAGE_VIEWS.get(view)
+    if entry is None:
         raise ViewerError(
             f"Unknown view {view!r}. Available: {', '.join(sorted(_PAGE_VIEWS))}"
         )
+    preset_name = entry[0]
     # A click is not a reply to the model, so nothing it runs may drain the
     # queue: without this the `preset` below would take an earlier click's news
     # into a reply that goes back to the page, where the model never sees it.

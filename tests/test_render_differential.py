@@ -852,7 +852,7 @@ async def _as_server(session, load: bool = False):
 
     `load` fills in the server's own copy of the structure, which
     `viewer_session` does not: it loads straight into the viewer, so anything
-    that resolves atom indices — the ghost-surface preset, for one — finds
+    that resolves atom indices — the ghost-heart preset, for one — finds
     nothing loaded.
 
     Filled in directly rather than by calling `fetch_structure()`, which would
@@ -935,11 +935,11 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 
 _VIEW_SEQUENCE = [
     "textbook",
-    "bfactor",
     "putty",
     "hydrophobic-surface",
     "cinematic",
-    "pointillist",
+    "spacefill",
+    "skeleton",
 ]
 
 
@@ -1084,9 +1084,21 @@ async def test_putty_width_follows_the_bfactor_it_claims():
 
 # -- a control that asks the server, from docs/views.md §4 ---------------------
 
-_CLICK_VIEW = "(document.getElementById('view-ghost').click(), JSON.stringify('ok'))"
-_BUTTON_IDLE = "JSON.stringify(!document.getElementById('view-ghost').disabled)"
-_BUTTON_LABEL = "JSON.stringify(document.getElementById('view-ghost').textContent)"
+# Driven by what a person does — open the menu, click the entry — rather than by
+# reaching for an element id the page happens to use. The single button these
+# once addressed became a menu, and the tests failed on `null.click()` rather
+# than on anything about the behaviour, which is the wrong way for a test to
+# notice a redesign.
+# By the name the server uses, not by the label: the label reads "asking…" for
+# the length of a round trip, so anything keyed on text loses the element at
+# exactly the moment this waits on it.
+_ITEM = "document.querySelector('.view-menu-item[data-view=\"ghost-heart\"]')"
+_CLICK_VIEW = (
+    "(document.getElementById('view-menu-button').click(),"
+    f" {_ITEM}.click(), JSON.stringify('ok'))"
+)
+_BUTTON_IDLE = f"JSON.stringify(!{_ITEM}.disabled)"
+_BUTTON_LABEL = "JSON.stringify(document.getElementById('view-menu-button').textContent)"
 
 
 async def _click_and_settle(session, timeout: float = 60) -> str:
@@ -1131,7 +1143,7 @@ async def test_a_click_draws_the_view_the_server_was_asked_for():
         before, of=background(before)
     )
     assert "auto_ghost" in handles, "the page drew this, not the server"
-    assert "ghost-surface" in reported["user_actions"]
+    assert "ghost-heart" in reported["user_actions"]
 
 
 async def test_a_click_for_a_view_that_cannot_apply_is_refused_on_the_button():
@@ -1151,7 +1163,7 @@ async def test_a_click_for_a_view_that_cannot_apply_is_refused_on_the_button():
     assert difference(before, after) == 0.0, "a refused click changed the picture"
 
 
-async def test_ghost_surface_layers_over_what_is_already_drawn():
+async def test_ghost_heart_layers_over_what_is_already_drawn():
     """The scoping claim, checked on screen rather than in the call log.
 
     A surface shown under the same handle rebuilds that component, so the
@@ -1162,7 +1174,7 @@ async def test_ghost_surface_layers_over_what_is_already_drawn():
     """
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         before = await _shot(session)
-        result = await server_mod.preset("ghost-surface")
+        result = await server_mod.preset("ghost-heart")
         after = await _shot(session)
 
     reference = background(before)
@@ -1594,14 +1606,27 @@ async def test_a_timeline_needs_two_keyframes():
 # thing being measured. Worth stating because the broken version looked correct
 # and produced a confident, wrong answer.
 
-# Every theme the view catalogue needs, and what each is for there.
-_VIEW_THEMES = [
-    "uncertainty",  # B-factor: the bfactor and putty views
-    "hydrophobicity",  # the hydrophobic-surface view
-    "illustrative",  # the textbook and cinematic views
-    "partial-charge",  # the charge-colouring view (a proxy, not a solve)
-    "secondary-structure",  # a staple of every cartoon figure
-]
+# Read off the live catalogue rather than listed here. The hand-kept version
+# this replaces went stale the moment the catalogue changed: it still named the
+# colour of a deleted view and knew nothing of `spacefill` or `skeleton`, so it
+# was pinning a vocabulary nothing used while the one in use went unchecked.
+_VIEW_THEMES = sorted(
+    {view.color for view in server_mod._VIEWS.values()}
+    | {
+        # Not a view's colour today, and both spoken for in docs/views.md: the
+        # charge view is planned on partial-charge (a proxy, not a solve), and
+        # `illustrative` is the colour half of the styling preset of that name.
+        "partial-charge",
+        "illustrative",
+    }
+)
+
+# `cartoon` is what `_bare_fold` draws as its baseline, so drawing it again
+# would be comparing a picture with itself. That baseline asserts its own
+# coverage, which is the same claim for that one primitive.
+_VIEW_REPRESENTATIONS = sorted(
+    {view.representation for view in server_mod._VIEWS.values()} - {"cartoon"}
+)
 
 
 @contextlib.asynccontextmanager
@@ -1630,9 +1655,9 @@ async def test_a_colour_theme_the_views_need_reaches_the_pixels(theme):
         assert difference(white, painted) > STYLED, f"{theme} changed nothing"
 
 
-@pytest.mark.parametrize("representation", ["putty", "point"])
+@pytest.mark.parametrize("representation", _VIEW_REPRESENTATIONS)
 async def test_a_representation_the_views_need_draws_something(representation):
-    """`putty` carries the putty view, `point` the pointillist one."""
+    """One case per primitive some view in the catalogue is built on."""
     async with viewer_session(FIXTURE) as session, _bare_fold(session):
         as_cartoon = await _shot(session)
 
@@ -1657,3 +1682,89 @@ async def test_ellipsoid_draws_after_all():
         await server_mod.show(representation="ellipsoid", handle="fold")
         after = await _shot(session)
         assert difference(before, after) > STYLED
+
+
+# -- the camera belongs to the caller ------------------------------------------
+
+
+async def test_a_load_takes_the_camera_off_automatic_fitting():
+    """Backlog 26, pinned at the mechanism rather than at the symptom.
+
+    Mol\\*'s `commitScene` requests a camera reset whenever `shouldResetCamera()`
+    decides the visible bounding sphere has moved out from under the camera, and
+    a commit has a 250 ms budget it can run out of. Which commit boundary a
+    `hide` and a `show` land on then decided whether that test ran against the
+    old scene or the new one, so `show()` moved the camera about **one time in
+    seven** and held still the rest — measured, fourteen runs, twelve at 0.0 and
+    two at 0.030043.
+
+    That rate is why this test asserts the property and not the picture. A
+    repeated-`show()` comparison would pass six times in seven against a
+    regression, which is a test that mostly cannot fail.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        # Stringified because `evaluate` parses what comes back as JSON, and a
+        # bare boolean is not a JSON document.
+        camera = await session.evaluate(
+            "JSON.stringify(window.__protean.plugin.canvas3d.props.camera)"
+        )
+        assert camera["manualReset"] is True, (
+            "the automatic fit is live again, and show() can take the camera"
+        )
+
+
+async def test_a_load_still_frames_the_molecule_itself():
+    """The other half: `manualReset` suppresses the fit a load used to get free.
+
+    Without an explicit reset beside it this leaves every load framed by
+    whatever the camera was doing before, which looks like nothing at all on an
+    empty canvas and like the wrong molecule on a second load.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        drawn = await _shot(session)
+        assert coverage(drawn) > 0.02, "loaded and framed nothing"
+
+        camera = await session.request("camera_state")
+        assert camera["radius"] and camera["radius"] > 0, "camera never fitted"
+
+
+async def test_the_ghost_heart_is_scenery_and_takes_no_clicks():
+    """A see-through surface exists to be looked *through*.
+
+    Left pickable it intercepts every click meant for what is inside it, so a
+    selection lands on a jagged patch of mesh rather than on the residue
+    someone aimed at. `markerActions` matters as much as `pickable` and for a
+    different reason: picking decides what a click *hits*, marker actions
+    decide what lights up when something else is highlighted — so without both,
+    clicking the cartoon underneath still flares the surface over it.
+
+    Asserted on the representation's state rather than by dispatching a click,
+    because a synthetic click has to land on a pixel the surface actually
+    covers, and choosing that pixel is a second measurement that can be wrong
+    on its own.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("ghost-heart")
+
+        states = await session.evaluate(
+            "JSON.stringify(window.__protean.plugin.managers.structure.hierarchy"
+            ".current.structures[0].components"
+            ".flatMap(c => c.representations)"
+            ".map(r => ({"
+            "  type: r.cell.transform.params?.type?.name ?? null,"
+            "  pickable: r.cell.obj?.data?.repr?.state?.pickable ?? null,"
+            "  markers: r.cell.obj?.data?.repr?.state?.markerActions ?? null,"
+            "})))"
+        )
+
+    surfaces = [s for s in states if s["type"] == "molecular-surface"]
+    assert surfaces, f"no ghost surface was drawn at all: {states}"
+    for surface in surfaces:
+        assert surface["pickable"] is False, f"the ghost takes clicks: {surface}"
+        assert surface["markers"] == 0, f"the ghost still lights up: {surface}"
+
+    others = [s for s in states if s["type"] != "molecular-surface"]
+    assert others, "nothing else was drawn, so this proves nothing about scoping"
+    assert all(s["pickable"] is not False for s in others), (
+        f"everything became scenery, not just the ghost: {others}"
+    )
