@@ -5,6 +5,93 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Mol\* 5
+
+- **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
+  releases behind, which was making every "can Mol\* do this?" answer
+  unreliable. Nothing protean uses went away: the live registries gained a
+  `polyhedron` representation and the `residue-charge` and `volume-instance`
+  colour themes, and lost nothing. Every render differential passes, and all
+  but one at its existing threshold — which is the claim worth making, because
+  a renderer that shaded differently would have moved numbers tuned to three
+  decimals.
+
+  The exception is the outline, and it is worth stating plainly because the
+  first version of this entry claimed the clean sweep: 5.11 draws a thinner
+  outline than 4.18. Measured on the same fixture and flags at CI's headless
+  frame size, the green it puts on screen fell from 0.00107 to 0.00074, and CI
+  itself came in at 0.00047 against a bar of 0.0005. The bar had been derived
+  from a measurement taken at a different frame size, so it was never really
+  2.5x of margin. It is now a noise floor, with the fidelity claim moved to
+  something the frame cannot affect: widening the outline has to widen the
+  outline, which it does by 44x on the frame that failed.
+
+- **`spin()` and `rock()` turned nothing at all, briefly.** Mol\* 5 added a
+  required `axis` parameter to both animation groups and dereferences it every
+  frame, and `TrackballControls.setProps` shallow-assigns rather than filling
+  in group defaults — so protean's params object replaced the animation with
+  one Mol\* could not run. The tool answered `{mode: 'spin', speed: 1}` and the
+  camera sat byte-identical. Caught in review of this branch, not by the suite,
+  which had been asking the viewer what it had been told rather than asking the
+  camera where it was. There is a test for that now, and it fails when the axis
+  is taken away again.
+
+  Same shape as the `bloom` parameter below, and the reason to state it twice:
+  the audit that caught bloom went through the six postprocessing effects and
+  did not think to check the trackball. "Nothing protean uses went away" was
+  true and beside the point — this was something new that became required.
+
+- **`spin(speed=)` means turns per second now, not radians.** Mol\* 5 changed
+  what the number means without changing its name, so the same call spins
+  2\*pi times faster. protean follows the new unit rather than converting: one
+  value, held in one place, rather than a reported number that disagrees with
+  the viewer's. A model reading the docstring gets "1 is one revolution a
+  second", which is the more useful thing to be told anyway.
+
+- **Mol\*'s licence notice is shipped — for the first time, it turns out.**
+  4.18 built with webpack, which extracted bundled licences into
+  `molstar.js.LICENSE.txt`; 5.11 builds with esbuild, which emits no such file
+  and leaves its dependencies' notices inline in the JavaScript instead.
+  Noticing that file was gone is what prompted a look at what it had contained,
+  and the answer was: safe-buffer, immutable, and React. **Not Mol\*'s own.**
+
+  Neither published bundle carries it. Searched in both, "mol\* contributors"
+  appears zero times in 4.18 and zero times in 5.11 — the only copyright line
+  in either is a third-party shader's. Mol\*'s own notice lives in the npm
+  package's top-level LICENSE, which nothing was copying. So this is not
+  something the upgrade broke: protean had been redistributing Mol\* without
+  Mol\*'s notice for as long as it has redistributed Mol\* at all.
+
+  `sync-molstar` copies that LICENSE now, as `molstar-LICENSE.txt`. The
+  packaging test written to catch exactly this had been passing throughout, on
+  React's and immutable's notices, because it asked whether the file contained
+  "MIT License" and "Copyright" rather than whose. It asks for "Mol\*
+  contributors" now. Reported upstream: their own source headers say
+  `/** Copyright ... mol* contributors` with no `@license` marker, so their
+  bundler treats them as ordinary comments and drops them, while React's
+  `/** @license` survives.
+
+- **Mol\*'s PyMOL transpiler changed what `within` means, and we did not.**
+  Five selections that agreed exactly under 4.18 disagree under 5.11, all of
+  them a `within` with an explicit left operand: they return 456 where we
+  return 121 for `polymer within 4 of resn HEM`. Nothing in their changelog
+  mentions it. Checked against a third opinion before assuming the other
+  implementation was the one that moved — a plain numpy distance calculation,
+  owing nothing to either transpiler, returns our numbers. They are recorded
+  as divergences, which assert both halves, so if upstream restores the old
+  behaviour the test fails and the claim gets retired rather than carried.
+
+- **CI runs Node 22.** Mol\* 5.11 declares `node >=22.0.0`; CI was on 20, which
+  npm reported as a warning and then built anyway. A dependency's stated
+  engine requirement is not a suggestion, and finding out which parts of it
+  were load-bearing during a later debugging session is the expensive way.
+
+- **`bloom` gained a parameter.** protean spells every screen-space effect's
+  parameters out rather than toggling a name, because a Mol\* effect enabled
+  with an empty params object renders from something nobody chose. A key
+  missing from that table is the same hazard, and 5.11 added `transparency`
+  to bloom. Checked key by key across all six effects; bloom was the only one.
+
 ### Views
 
 - **A control in the viewer that asks the server rather than drawing.** One

@@ -76,22 +76,37 @@ def test_the_wheel_carries_molstars_licence_notice(wheel):
     """MIT requires the notice to travel with the copy, and this wheel is a copy.
 
     `artifacts` puts the built viewer in the wheel, so a `pip install` ships
-    Mol\\* and everything webpack bundled into it — React, immutable,
-    safe-buffer. The bundle's own first line reads "For license information
-    please see molstar.js.LICENSE.txt", and `sync-molstar` copied the script
-    and the stylesheet but not that file: the artifact shipped a dangling
-    reference to the notice it is obliged to carry.
+    Mol\\* itself along with what its bundler pulled in.
+
+    Where that notice comes from changed under us. Mol\\* 4 built with webpack,
+    which extracted every bundled licence into `molstar.js.LICENSE.txt` beside
+    the script and wrote "For license information please see" into the
+    bundle's first line; `sync-molstar` copied the script and the stylesheet
+    but not that file, which is the failure this test was written for. Mol\\* 5
+    builds with esbuild, which emits no such file and instead leaves its
+    dependencies' notices — React's, immutable's — inline in the JavaScript.
+
+    **Mol\\*'s own notice is in neither place**: searched for in the 5.11
+    bundle, "Mol\\* contributors" appears zero times. So the upgrade would have
+    shipped Mol\\* with no notice at all, and passed, because a stale file from
+    the previous version was still sitting in `public/`. `sync-molstar` now
+    copies the package's own LICENSE, under a name that says what it is rather
+    than naming a bundle that no longer points at it.
     """
     names = zipfile.ZipFile(wheel).namelist()
-    assert any(name.endswith("static/molstar.js.LICENSE.txt") for name in names), (
+    assert any(name.endswith("static/molstar-LICENSE.txt") for name in names), (
         "the wheel ships Mol* without the notice its own bundle points at"
     )
     with zipfile.ZipFile(wheel) as archive:
-        entry = next(n for n in names if n.endswith("static/molstar.js.LICENSE.txt"))
+        entry = next(n for n in names if n.endswith("static/molstar-LICENSE.txt"))
         notice = archive.read(entry).decode()
     # Present is not enough: it has to be the notice rather than a stub.
     assert "MIT License" in notice
     assert "Copyright" in notice
+    # Whose licence it is, not merely that it is one: React's notice rides
+    # inline in the bundle and would satisfy a laxer check while Mol*'s own
+    # went missing.
+    assert "Mol* contributors" in notice
 
 
 def test_the_wheel_exposes_the_command(wheel):

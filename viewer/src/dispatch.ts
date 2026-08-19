@@ -258,7 +258,11 @@ export const LIGHTING_RIGS: Record<
  * would enable an effect with no parameters at all, which is the kind of input
  * Mol* accepts and then renders something arbitrary from.
  *
- * Values are Mol* 4.18's own defaults, from mol-canvas3d/passes/*.
+ * Values are Mol* 5.11's own defaults, from mol-canvas3d/passes/*. Checked
+ * key by key at the 4.18 -> 5.11 upgrade: only bloom moved, gaining
+ * `transparency`. A key missing here is the same hazard as a missing params
+ * object — Mol* fills it from its own default, so the effect renders from
+ * something this table does not state.
  */
 const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
   outline: { scale: 1, threshold: 0.33, color: 0x000000, includeTransparent: true },
@@ -282,7 +286,7 @@ const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
     center: 'camera-target',
     mode: 'plane',
   },
-  bloom: { strength: 1, radius: 0, threshold: 0, mode: 'emissive' },
+  bloom: { strength: 1, radius: 0, threshold: 0, mode: 'emissive', transparency: true },
   sharpening: { sharpness: 0.5, denoise: true },
 };
 
@@ -1223,11 +1227,22 @@ export function createDispatcher(plugin: any): Handler {
           throw new Error(`Spin speed must be above 0, got ${speed}`);
         }
 
+        // `axis` is required, not optional. Mol* 5 added it to both groups and
+        // dereferences `params.axis[0]` every frame, and `setProps` shallow-
+        // assigns rather than filling group defaults — so omitting it replaced
+        // the whole params object with one Mol* could not animate. The tool
+        // still answered `{mode: 'spin', speed: 1}` and the camera did not
+        // move at all: exactly the silent success this project exists to
+        // avoid, introduced by an upgrade. [0, -1, 0] is Mol*'s own default.
+        //
+        // Speeds are Mol*'s defaults too, and they are not what they were:
+        // spin was 1 radian/s in Mol* 4 and is 0.1 rotations/s in Mol* 5, so
+        // reusing the old number would have meant one revolution a second.
         const params: Record<string, unknown> =
           mode === 'rock'
-            ? { speed: speed ?? 0.3, angle: angle ?? 10 }
+            ? { speed: speed ?? 0.3, angle: angle ?? 10, axis: [0, -1, 0] }
             : mode === 'spin'
-              ? { speed: speed ?? 1 }
+              ? { speed: speed ?? 0.1, axis: [0, -1, 0] }
               : {};
         canvas3d.setProps({ trackball: { animate: { name: mode, params } } });
 

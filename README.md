@@ -280,8 +280,9 @@ scrutinised and used at scale by people who are not us.
 If you use protean for published work, cite Mol\*. It is
 [MIT licensed](https://github.com/molstar/molstar/blob/master/LICENSE), and the
 protean wheel redistributes the built viewer, so it carries Mol\*'s licence
-notice with it as `molstar.js.LICENSE.txt` — a packaging test fails if that
-file ever goes missing.
+notice with it as `molstar-LICENSE.txt` — a packaging test fails if that file
+ever goes missing, and checks it is Mol\*'s notice rather than merely some
+MIT text.
 
 **What protean changes about it.** The viewer opens as a canvas rather than as
 Mol\*'s full control layout: the left panel is collapsed to Mol\*'s own icon
