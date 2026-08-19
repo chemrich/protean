@@ -11,9 +11,20 @@ nothing is released yet, so everything below is unreleased.
   releases behind, which was making every "can Mol\* do this?" answer
   unreliable. Nothing protean uses went away: the live registries gained a
   `polyhedron` representation and the `residue-charge` and `volume-instance`
-  colour themes, and lost nothing. All 114 render differentials pass at their
-  existing thresholds, which is the claim worth making — a renderer upgrade
-  that shifted shading would have moved numbers tuned to three decimal places.
+  colour themes, and lost nothing. Every render differential passes, and all
+  but one at its existing threshold — which is the claim worth making, because
+  a renderer that shaded differently would have moved numbers tuned to three
+  decimals.
+
+  The exception is the outline, and it is worth stating plainly because the
+  first version of this entry claimed the clean sweep: 5.11 draws a thinner
+  outline than 4.18. Measured on the same fixture and flags at CI's headless
+  frame size, the green it puts on screen fell from 0.00107 to 0.00074, and CI
+  itself came in at 0.00047 against a bar of 0.0005. The bar had been derived
+  from a measurement taken at a different frame size, so it was never really
+  2.5x of margin. It is now a noise floor, with the fidelity claim moved to
+  something the frame cannot affect: widening the outline has to widen the
+  outline, which it does by 44x on the frame that failed.
 
 - **`spin(speed=)` means turns per second now, not radians.** Mol\* 5 changed
   what the number means without changing its name, so the same call spins
@@ -41,6 +52,11 @@ nothing is released yet, so everything below is unreleased.
   owing nothing to either transpiler, returns our numbers. They are recorded
   as divergences, which assert both halves, so if upstream restores the old
   behaviour the test fails and the claim gets retired rather than carried.
+
+- **CI runs Node 22.** Mol\* 5.11 declares `node >=22.0.0`; CI was on 20, which
+  npm reported as a warning and then built anyway. A dependency's stated
+  engine requirement is not a suggestion, and finding out which parts of it
+  were load-bearing during a later debugging session is the expensive way.
 
 - **`bloom` gained a parameter.** protean spells every screen-space effect's
   parameters out rather than toggling a name, because a Mol\* effect enabled
