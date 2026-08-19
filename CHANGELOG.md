@@ -26,6 +26,21 @@ nothing is released yet, so everything below is unreleased.
   something the frame cannot affect: widening the outline has to widen the
   outline, which it does by 44x on the frame that failed.
 
+- **`spin()` and `rock()` turned nothing at all, briefly.** Mol\* 5 added a
+  required `axis` parameter to both animation groups and dereferences it every
+  frame, and `TrackballControls.setProps` shallow-assigns rather than filling
+  in group defaults — so protean's params object replaced the animation with
+  one Mol\* could not run. The tool answered `{mode: 'spin', speed: 1}` and the
+  camera sat byte-identical. Caught in review of this branch, not by the suite,
+  which had been asking the viewer what it had been told rather than asking the
+  camera where it was. There is a test for that now, and it fails when the axis
+  is taken away again.
+
+  Same shape as the `bloom` parameter below, and the reason to state it twice:
+  the audit that caught bloom went through the six postprocessing effects and
+  did not think to check the trackball. "Nothing protean uses went away" was
+  true and beside the point — this was something new that became required.
+
 - **`spin(speed=)` means turns per second now, not radians.** Mol\* 5 changed
   what the number means without changing its name, so the same call spins
   2\*pi times faster. protean follows the new unit rather than converting: one

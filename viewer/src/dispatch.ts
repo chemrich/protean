@@ -1227,11 +1227,22 @@ export function createDispatcher(plugin: any): Handler {
           throw new Error(`Spin speed must be above 0, got ${speed}`);
         }
 
+        // `axis` is required, not optional. Mol* 5 added it to both groups and
+        // dereferences `params.axis[0]` every frame, and `setProps` shallow-
+        // assigns rather than filling group defaults — so omitting it replaced
+        // the whole params object with one Mol* could not animate. The tool
+        // still answered `{mode: 'spin', speed: 1}` and the camera did not
+        // move at all: exactly the silent success this project exists to
+        // avoid, introduced by an upgrade. [0, -1, 0] is Mol*'s own default.
+        //
+        // Speeds are Mol*'s defaults too, and they are not what they were:
+        // spin was 1 radian/s in Mol* 4 and is 0.1 rotations/s in Mol* 5, so
+        // reusing the old number would have meant one revolution a second.
         const params: Record<string, unknown> =
           mode === 'rock'
-            ? { speed: speed ?? 0.3, angle: angle ?? 10 }
+            ? { speed: speed ?? 0.3, angle: angle ?? 10, axis: [0, -1, 0] }
             : mode === 'spin'
-              ? { speed: speed ?? 1 }
+              ? { speed: speed ?? 0.1, axis: [0, -1, 0] }
               : {};
         canvas3d.setProps({ trackball: { animate: { name: mode, params } } });
 

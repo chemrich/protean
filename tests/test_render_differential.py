@@ -1799,3 +1799,45 @@ async def test_the_ghost_heart_is_scenery_and_takes_no_clicks():
     assert all(s["pickable"] is not False for s in others), (
         f"everything became scenery, not just the ghost: {others}"
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "args"),
+    [("spin", {}), ("rock", {"angle": 30})],
+)
+async def test_a_turning_view_actually_turns(mode, args):
+    """`spin()` reported success while the camera sat perfectly still.
+
+    Mol\\* 5 added an `axis` parameter to both the spin and rock groups and
+    dereferences it every frame, and `TrackballControls.setProps` shallow-
+    assigns rather than filling in group defaults — so a params object without
+    it replaced the animation with one that could not run. The reply said
+    `{mode: 'spin', speed: 1}` either way.
+
+    Nothing caught it. The suite checked what the viewer *reported*, and the
+    viewer reported what it had been asked for rather than what it did. This
+    asks the camera instead, which is the only thing that knows.
+    """
+    async with viewer_session(FIXTURE) as session:
+        await session.request("spin", {"mode": "off"})
+        before = await _camera_position(session)
+
+        await session.request("spin", {"mode": mode, "speed": 1, **args})
+        await asyncio.sleep(2.0)
+        turning = await _camera_position(session)
+        assert turning != before, f"{mode} reported success and moved nothing"
+
+        # And stopping has to stop it, or the viewer is left animating under
+        # whatever is captured next.
+        await session.request("spin", {"mode": "off"})
+        stopped = await _camera_position(session)
+        await asyncio.sleep(1.0)
+        assert await _camera_position(session) == stopped, "off did not stop it"
+
+
+async def _camera_position(session) -> list[float]:
+    """Where the camera actually is, rounded past floating-point jitter."""
+    position = await session.evaluate(
+        "JSON.stringify(window.__protean.plugin.canvas3d.camera.state.position)"
+    )
+    return [round(v, 6) for v in position]

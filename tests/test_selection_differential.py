@@ -133,7 +133,12 @@ DIVERGENCES: dict[str, int] = {
     "polymer within 4 of resn HEM": 121,
     "chain A within 5 of resn HEM": 137,
     # The three below inherit the same defect through `byres`, which widens
-    # whatever `within` handed it.
+    # whatever `within` handed it. These had been agreement-only, so moving
+    # them here — where the value is asserted as the correct count — would
+    # have left the Python engine grading its own homework. Each was derived
+    # the same independent way instead: the numpy atom set above, widened to
+    # whole residues by a chain/resid/inscode key built from the file rather
+    # than by the engine's own `byres`.
     "byres (polymer within 4 of resn HEM)": 535,
     "(byres (polymer within 4 of resn HEM)) and sidechain": 295,
     "byres (chain A within 4 of chain B)": 130,
@@ -145,9 +150,17 @@ DIVERGENCES: dict[str, int] = {
     "bychain resi 50": 4779,
     # Prefix-operator precedence. PyMOL binds `byres` tighter than `and`, so
     # this is (byres X) and Y = 295. The transpiler swallows the `and` across
-    # the parenthesis boundary and computes byres (X and Y) = 502 — which is
-    # the right answer to a different question. Confirmed by the disambiguated
-    # control above, where both engines return 295.
+    # the parenthesis boundary and asks byres (X and Y) instead — the right
+    # answer to a different question.
+    #
+    # The control that used to demonstrate this cleanly no longer can. Fully
+    # parenthesised, `(byres (polymer within 4 of resn HEM)) and sidechain`
+    # once returned 295 from both engines; under Mol* 5 it returns 434 from
+    # theirs, because the `within` inside it is inflated before `byres` ever
+    # sees it. So the two defects now overlap and their numbers are no longer
+    # separable from the outside: 818 here, and 0 for the explicit form below,
+    # against 502 under 4.18. Ours are unchanged, which is the claim these
+    # entries actually make.
     "byres (polymer within 4 of resn HEM) and sidechain": 295,
     # ...and when you write that other question explicitly, they return 0.
     "byres ((polymer within 4 of resn HEM) and sidechain)": 502,
