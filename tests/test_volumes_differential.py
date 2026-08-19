@@ -402,3 +402,48 @@ async def test_an_isosurface_draws_and_its_units_agree(tmp_path):
         f"({difference(drawn, same):.4%} of the frame), so one of the two "
         f"conversions is wrong"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_volume_in_an_emptied_viewer_is_framed(tmp_path):
+    """The case the first-fit branch exists for, which could not run.
+
+    protean takes the camera off Mol\\*'s automatic fitting (backlog 26), and
+    the only explicit fit is inside `load_structure`. So anything drawn without
+    loading a structure — a map into an emptied viewer — depends on the
+    dispatcher noticing that nothing has ever framed this scene.
+
+    That check tested `radiusMax`, which `Camera.createDefaultSnapshot` sets to
+    **10**, so it was never true and the branch never ran: geometry built,
+    camera left where it was, and `isosurface` reporting success. A code review
+    found it; `radius` is the field that defaults to 0.
+
+    **Asserted on the camera having moved, not on it being non-zero.** The
+    first version of this test checked `radius > 0` and passed against the dead
+    guard, because clearing the viewer does not reset the camera — the radius
+    left over from the structure this session loaded satisfied it. What
+    separates fitted-to-the-map from pointing-wherever-it-was is that the fit
+    changes it.
+    """
+    async with viewer_session(STRUCTURE) as session:
+        await session.request("clear")
+        before = await session.request("camera_state")
+
+        raw = _write_mrc(tmp_path / "alone.map", _grid())
+        await _load(session, "alone", raw)
+        await session.request(
+            "isosurface",
+            {"name": "alone", "level": 1.0, "unit": "sigma", "style": "surface"},
+        )
+        after = await session.request("camera_state")
+
+    assert before["radius"], "nothing had framed anything, so this proves nothing"
+    # The *target*, specifically. Radius alone moves either way: bounding the
+    # camera sets `radiusMax`, and the camera clamps its radius to it — so a
+    # version that never framed anything still changed that number. Where the
+    # camera is *pointing* is what separates fitted-to-the-map from
+    # left-on-the-structure-that-was-cleared.
+    assert after["target"] != before["target"], (
+        "the camera still points where the cleared structure was, so the map "
+        f"was drawn somewhere off to one side: {before} -> {after}"
+    )

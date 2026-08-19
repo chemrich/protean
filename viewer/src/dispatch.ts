@@ -2187,9 +2187,12 @@ export function createDispatcher(plugin: any): Handler {
     const spec = actions[action];
     if (!spec) throw new Error(`Unknown action: ${action}`);
     if (!spec.render) return spec.run(args);
+    // Read before the action: whether the scene was empty is what decides
+    // framing, and afterwards it never is.
+    const wasEmpty = !plugin.canvas3d?.reprCount?.value;
     const result = await withRenderPump(plugin, action, () => spec.run(args));
-    // Bounds after every draw, framing only when nothing ever has been.
-    const fitted = keepCameraBounded(plugin);
+    // Bounds after every draw, framing only when the scene had nothing in it.
+    const fitted = keepCameraBounded(plugin, wasEmpty);
     // After the pump, never inside the action. Mol* resolves a requested
     // camera reset from `commit()`, and only when `commitScene` reports
     // everything committed — "Only reset the camera after the full scene has
@@ -2251,11 +2254,34 @@ function takeTheCameraOffAutomaticFitting(plugin: any): void {
  * own `reprCount === 0` branch handled: there is no caller framing to protect,
  * and leaving it unfitted shows a blank canvas and reports success.
  */
-function keepCameraBounded(plugin: any): boolean {
-  const camera = plugin.canvas3d?.camera;
-  const radius = plugin.canvas3d?.boundingSphere?.radius ?? 0;
-  if (!camera || radius <= 0) return false;
-  if (!camera.state?.radiusMax) {
+function keepCameraBounded(plugin: any, wasEmpty: boolean): boolean {
+  const canvas = plugin.canvas3d;
+  const camera = canvas?.camera;
+  if (!camera) return false;
+
+  // Touched to force the recompute, not for its value. `canvas3d.boundingSphere`
+  // is the object captured from `scene.boundingSphere` when the canvas was
+  // built, and the scene only recalculates it when something *reads the
+  // getter*. Across the whole bundle three things do, and the per-commit one is
+  // `getSceneRadius()` inside `if (!p.camera.manualReset)` — the line this file
+  // turns off. `getProps()` reads it too, so asking for the props brings the
+  // sphere up to date; without this the radius below is the one from the last
+  // camera reset, which is the scene *before* whatever just drew.
+  void canvas.props;
+  const radius = canvas.boundingSphere?.radius ?? 0;
+  if (radius <= 0) return false;
+
+  // Mol*'s own condition, which is about the *scene* and not the camera:
+  // `commitScene` fitted whenever `reprCount.value === 0` before the commit.
+  //
+  // Two earlier versions asked the camera instead and both were wrong.
+  // `radiusMax` is 10 in `createDefaultSnapshot`, so that branch could never
+  // run at all. `radius` looked right — it defaults to 0 — but a viewer that
+  // has been *cleared* keeps the fit from whatever it held before, so the
+  // first geometry drawn after a `clear` still found a non-zero radius and
+  // went unframed. Measured: target stayed at the old structure's centre while
+  // the map was drawn somewhere else entirely.
+  if (wasEmpty) {
     plugin.managers.camera.reset();
     return true;
   }
