@@ -336,13 +336,51 @@ different affordance from the drawing ones. A click that changes the lighting
 and a click that changes the whole picture reading identically is the obvious
 way for this to get confusing.
 
-### 5.3 Parameterised view tools — stub
+### 5.3 The rest of the catalogue — planned 2026-08-18
 
-`ligand`, `mutation`, `crosslink`. Each takes a target and gets its own tool per
-§2.
+Seven MCPymol views remain. Re-read against their implementations rather than
+their names, they fall into three tiers, and two of them are not where this
+document previously put them.
 
-Known: `crosslink` is nearly free — residue-pair geometry is `near()` plus a
-distance filter. Unknown: whether `mutation` should verify the stated residue
+**Tier 1 — a recipe plus a parameter.** Each takes a target, so each is a tool
+rather than a menu entry, per §2. Doing them together because they share that
+shape and three are recipes over machinery that already exists.
+
+| view | what it needs |
+|---|---|
+| `plddt` | a colour theme — but **blocked**, see below |
+| `interface` | `interface()` already computes and returns the handles; this colours the two chains and picks out the contact residues |
+| `ligand` | `active-site` already *is* this view. The gap is that it takes a handle where MCPymol takes a residue name |
+| `mutation` | parse `"A123G,V45L"`, select those residues |
+
+**`plddt` is the exception and it is not cheap, because it cannot be reached.**
+The recipe is one theme, and Mol\* ships the official AlphaFold palette. But
+pLDDT is a property of a predicted model and protean cannot load one:
+`fetch_structure(source="alphafold")` is pinned to a retired `model_v4`, and a
+model fetched by hand fails the analysis parser under the default biological
+assembly. Backlog 33 and 34. **Do those first or leave `plddt` alone** — a view
+of a structure nobody can load is a view nobody can use, and building it would
+report progress that is not there.
+
+`mutation` is the one worth doing better than the original. It should **verify
+the stated residue is what the file says it is** and refuse when it is not: a
+mutation view that silently highlights the wrong residue because the numbering
+is offset is this project's failure mode wearing a lab coat. MCPymol does not
+check.
+
+**Tier 2 — small analysis from pieces that exist.**
+
+`crosslink` is disulfides and metal coordination: cysteine SG pairs inside
+bonding distance, plus metals and what they touch. protean has a `metals`
+selection keyword and `near()`, so this is a distance filter rather than new
+machinery.
+
+`pocket` belongs here too, **and that is a correction to §5.5 below.**
+
+**Tier 3 — genuinely open, and nobody has asked.** `pharmacophore`, for the
+reason §6 predicted and this document then got wrong anyway. Detail in §5.4.
+
+Unknown, still: whether `mutation` should verify the stated residue
 actually matches the structure, which it should, and what it does when it does
 not.
 
@@ -375,10 +413,24 @@ probe once mistook for the theme working. Each needs the differential treatment
 anything is built on it.
 
 Still open, and untouched by the correction: whether to use Mol\*'s pLDDT theme
-or protean's own banded palette (the bands are conventional and readers expect
-the standard colours), and whether the `interactions` types are the ones a
-pharmacophore wants or merely adjacent. §6 predicted that last one would be the
-gap, and nothing here has tested it.
+or protean's own banded palette, since the bands are conventional and readers
+expect the standard colours.
+
+**And the `interactions` question is now answered, against this document.**
+Reading MCPymol's `pharmacophore_view`: it colours *a ligand's own atoms* by
+feature type — donor, acceptor, hydrophobe. The `interactions` extension
+computes **interactions between atoms**, which is a different claim entirely.
+It cannot type a ligand's atoms and was never going to.
+
+So pharmacophore needs two things protean does not have: per-atom chemical
+typing from element and connectivity, and **per-atom categorical colouring** —
+`color_by_potential`, `_conservation` and `_rmsf` all colour by a *scalar*, and
+a feature class is not one. Neither is enormous; neither is free, and "nearly
+free via the interactions extension" was wrong.
+
+§6 predicted exactly this — *"It computes contacts. A pharmacophore is a claim
+about what a site wants, which is not the same thing"* — and the prediction was
+written, then ignored, then confirmed. Predicting an error does not prevent it.
 
 **The blocker is elsewhere, and it is real.** pLDDT is a property of a predicted
 model, and protean cannot currently load one: `fetch_structure(source=
@@ -393,12 +445,18 @@ meaningful for a predicted structure and meaningless for an experimental one, so
 it belongs where it can be offered when applicable rather than sitting in a menu
 that is wrong most of the time.
 
-### 5.5 Pocket detection — stub
+### 5.5 Pocket detection — ~~the one genuinely open problem~~ two problems
 
-The one genuinely open problem. Everything else here is exposure or recipe; this
-is an algorithm and probably a dependency.
+**Corrected 2026-08-18 by reading MCPymol's implementation instead of its
+name.** Its `pocket_view` is *"all residues within 5 Å of the ligand shown as a
+surface"* — a selection and a surface. **Matching it is Tier 2 work**, and it
+was called the hardest thing here on the strength of the word "pocket".
 
-Unknown: everything. Whether to compute it, borrow it, or decline it.
+The hard thing is real cavity detection: finding pockets *without being told
+where to look*, which is an algorithm and probably a dependency (fpocket and
+its kin). That is still genuinely open — and **nobody has asked for it**, which
+is the more useful half of this correction. The version people want is the
+cheap one.
 
 ### 5.6 Dynamics — decided, and the decision is to not build it
 
