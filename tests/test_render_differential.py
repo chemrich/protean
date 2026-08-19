@@ -1606,14 +1606,27 @@ async def test_a_timeline_needs_two_keyframes():
 # thing being measured. Worth stating because the broken version looked correct
 # and produced a confident, wrong answer.
 
-# Every theme the view catalogue needs, and what each is for there.
-_VIEW_THEMES = [
-    "uncertainty",  # B-factor: the bfactor and putty views
-    "hydrophobicity",  # the hydrophobic-surface view
-    "illustrative",  # the textbook and cinematic views
-    "partial-charge",  # the charge-colouring view (a proxy, not a solve)
-    "secondary-structure",  # a staple of every cartoon figure
-]
+# Read off the live catalogue rather than listed here. The hand-kept version
+# this replaces went stale the moment the catalogue changed: it still named the
+# colour of a deleted view and knew nothing of `spacefill` or `skeleton`, so it
+# was pinning a vocabulary nothing used while the one in use went unchecked.
+_VIEW_THEMES = sorted(
+    {view.color for view in server_mod._VIEWS.values()}
+    | {
+        # Not a view's colour today, and both spoken for in docs/views.md: the
+        # charge view is planned on partial-charge (a proxy, not a solve), and
+        # `illustrative` is the colour half of the styling preset of that name.
+        "partial-charge",
+        "illustrative",
+    }
+)
+
+# `cartoon` is what `_bare_fold` draws as its baseline, so drawing it again
+# would be comparing a picture with itself. That baseline asserts its own
+# coverage, which is the same claim for that one primitive.
+_VIEW_REPRESENTATIONS = sorted(
+    {view.representation for view in server_mod._VIEWS.values()} - {"cartoon"}
+)
 
 
 @contextlib.asynccontextmanager
@@ -1642,9 +1655,9 @@ async def test_a_colour_theme_the_views_need_reaches_the_pixels(theme):
         assert difference(white, painted) > STYLED, f"{theme} changed nothing"
 
 
-@pytest.mark.parametrize("representation", ["putty", "point"])
+@pytest.mark.parametrize("representation", _VIEW_REPRESENTATIONS)
 async def test_a_representation_the_views_need_draws_something(representation):
-    """`putty` carries the putty view, `point` the pointillist one."""
+    """One case per primitive some view in the catalogue is built on."""
     async with viewer_session(FIXTURE) as session, _bare_fold(session):
         as_cartoon = await _shot(session)
 
