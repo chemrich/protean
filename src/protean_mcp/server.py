@@ -48,6 +48,7 @@ from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
+from .analysis.hatching import apply_finish, ink_fraction
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.timeline import EASINGS as _EASINGS
@@ -1286,6 +1287,7 @@ async def snapshot(
     format: str = "png",
     transparent: bool | None = None,
     crop: bool = False,
+    finish: str | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Save a publication-resolution figure at a real physical size.
@@ -1304,6 +1306,19 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
+    finish: redraw the capture in ink — "cross-hatch" or "hedcut". Tone becomes
+      line: the image is banded by brightness and each band filled with
+      strokes, more of them where it is darker, the way an engraving carries
+      shading without any greys.
+
+      **Applied after the capture, in Python, and the viewer will not show
+      it.** Mol* has no hatching of any kind, so there is no live preview and
+      no menu entry — a caller sees this only in the file, and the reply says
+      so rather than leaving it to be noticed.
+
+      It reads what is on screen as tone, so it wants a light ground and shape
+      carried by shading: `publication-cartoon` or `painting` engrave well, a
+      near-black `cinematic` ground comes out almost solid ink.
     overwrite: replace the file at `path` even when it holds something other
       than what this tool writes. Off by default so a call cannot quietly turn
       one kind of file into another — the shape of every destructive write
@@ -1357,6 +1372,14 @@ async def snapshot(
             "does so well before a real GPU does. Lower the dpi or the width, "
             "or capture on a machine with a GPU."
         )
+    inked: float | None = None
+    if finish is not None:
+        try:
+            image = apply_finish(image, finish)
+        except KeyError as exc:
+            raise ViewerError(str(exc).strip("\"'")) from exc
+        inked = ink_fraction(image)
+
     saved_dpi = float(dpi)
     save: dict[str, Any] = {"dpi": (dpi, dpi)}
     if chosen == "jpeg":
@@ -1378,6 +1401,25 @@ async def snapshot(
         "requested_width_mm": millimetres,
         "cropped": bool(result.get("cropped")),
         "bytes": out.stat().st_size,
+        # Said outright, not implied by the picture: this file is not what the
+        # viewer drew. protean's claim is that the picture and the analysis
+        # describe the same thing, and a second renderer having touched it
+        # afterwards is exactly the sort of thing that claim depends on
+        # knowing.
+        **(
+            {
+                "finish": finish,
+                "finish_applied": "after the capture, in Python — the viewer "
+                "does not show this",
+                # The caller usually cannot look at the result. Near 1 means
+                # the tone had nowhere to go — a dark ground engraves to a
+                # filled rectangle with the molecule showing through as a few
+                # light strokes.
+                "ink": inked,
+            }
+            if finish is not None
+            else {}
+        ),
         **({"traced_ms": result["traced_ms"]} if "traced_ms" in result else {}),
     }
 
