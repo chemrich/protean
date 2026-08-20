@@ -909,6 +909,14 @@ async def _as_server(session, load: bool = False):
     # does not exist in production.
     server_mod.use_bridge(session.bridge)
     saved = (server_mod._structure, server_mod._structure_identifier)
+    # The handle table is module state and the browser is not: a test that
+    # drew a view left `auto_view` registered here while the next test's fresh
+    # viewer knew only `auto`, so a styling preset resolved its target to a
+    # handle that page had never heard of. It failed as "No selection named
+    # 'auto_view'" in whichever test happened to run after one that drew, and
+    # passed on its own — which is the shape of thing that gets called flaky.
+    saved_handles = dict(server_mod._handles.handles)
+    server_mod._handles.clear()
     try:
         if load:
             fetched = await fetch_structure_data(FIXTURE)
@@ -920,6 +928,8 @@ async def _as_server(session, load: bool = False):
     finally:
         server_mod._bridge = previous
         server_mod._structure, server_mod._structure_identifier = saved
+        server_mod._handles.clear()
+        server_mod._handles.handles.update(saved_handles)
 
 
 async def _apply(session, *args, **kwargs) -> dict[str, Any]:
