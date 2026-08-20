@@ -1762,6 +1762,7 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "select",
         "hide",
         "reset_view",
+        "define_elements",
     ):
 
         def handle(args, action=action):
@@ -2945,3 +2946,18 @@ async def test_rmsf_residues_carry_the_insertion_code_they_were_grouped_by(
     assert keyed == {"A|100|", "A|100|A"}, (
         "both residues came back under the same key, so one silently wins"
     )
+
+
+async def test_a_glycine_still_refuses_once_the_anchors_are_drawn(wired_bridge, tmp_path):
+    """Glycine's sidechain is a hydrogen, so there is nothing to draw — and the
+    view now draws alpha carbons as well, which every polymer has.
+
+    Conflating "is there anything to show" with "what do we show" broke this
+    the moment the anchor joined the drawing: the mask stopped being empty and
+    a structure with no sidechains started reporting a view of nothing but
+    anchors. Caught by this test rather than by looking, which is the whole
+    reason it was written.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="has a sidechain"):
+        await preset("sidechains")

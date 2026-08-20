@@ -2089,3 +2089,54 @@ async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path)
         out = tmp_path / "nope.png"
         with pytest.raises(ViewerError, match="cross-hatch, hedcut"):
             await server_mod.snapshot(str(out), width_mm=60, finish="woodblock")
+
+
+# -- sidechains that are attached to something ---------------------------------
+
+
+async def test_sidechains_are_drawn_from_the_alpha_carbon():
+    """They floated. `sidechain` is "polymer and not backbone" and CA *is*
+    backbone, so the sticks began at CB with no bond back to anything — a
+    cloud of fragments beside the ribbon they belong to.
+
+    Reported by looking at it, and the fix is to draw the anchor too. The
+    selection keyword is untouched: its definition is right and heavily
+    tested, and only what this view draws changes.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("textbook")
+        await server_mod.preset("sidechains")
+
+        drawn = server_mod._handles.get(server_mod._SIDECHAIN_HANDLE).indices
+        names = set(server_mod._structure.atom_name[drawn].tolist())
+
+        assert "CA" in names, "the anchor is missing, so the sticks float"
+        assert "N" not in names and "C" not in names, (
+            "the rest of the backbone came too, which draws a second chain"
+        )
+
+
+async def test_sidechains_take_protean_element_colours():
+    """Mol*'s `element-symbol` can recolour carbon and nothing else, so an
+    all-atom view could not be made to agree with the cartoon under it."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("textbook")
+        await server_mod.preset("sidechains")
+
+        painted = await _shot(session)
+        # Teal nitrogen, from protean's palette and from nothing in Mol*'s.
+        assert color_fraction(painted, (0x4E, 0xC9, 0xC9, 255), tolerance=24) > 0.0005
+
+
+async def test_an_element_palette_refuses_a_colour_that_is_not_one():
+    """`parseInt('#oops'.slice(1), 16)` is NaN and NaN paints black without
+    complaint, which reads as a render failure rather than a bad argument."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match="not a colour"):
+            await server_mod.define_elements(colors={"C": "burnt sienna"})
+
+
+async def test_an_element_palette_will_not_take_a_name_molstar_owns():
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match=r"Mol\*'s own"):
+            await server_mod.define_elements(name="element-symbol")

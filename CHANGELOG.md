@@ -7,6 +7,35 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **Sidechains are attached to the molecule now.** They floated: `sidechain` is
+  "polymer and not backbone" and the alpha carbon *is* backbone, so every stick
+  began at CB with no bond back to anything — a cloud of fragments beside the
+  ribbon they belong to. The view draws the anchor as well. The selection
+  keyword is untouched, because its definition is right; only what this view
+  draws changed.
+
+  That broke the refusal, and a test caught it before it shipped: every polymer
+  has an alpha carbon, so "does this have sidechains" became always true and
+  glycine — whose sidechain is a hydrogen — would have reported success for a
+  view of nothing but anchors. What exists and what is drawn are now asked
+  separately.
+
+- **An element palette you can choose, because Mol\* has none.** Its
+  `element-symbol` theme takes exactly one parameter, `carbonColor`; oxygen,
+  nitrogen and sulfur come from a fixed CPK table with no way in. So an
+  all-atom view could not be made to agree with the cartoon under it.
+  `define_elements()` registers a theme that reads the element symbol, and the
+  sidechains view uses it: light grey carbon, teal nitrogen, mauve oxygen,
+  burnt sienna sulfur, and a fallback colour so an unusual metal is never
+  invisible. Chosen to sit quietly next to a secondary-structure cartoon rather
+  than to match CPK.
+
+- **And they are thicker.** Mol\*'s default of 0.15 drew hairlines that read as
+  noise. 0.22, picked by rendering three widths and looking; 0.4 was tried
+  first and buried the ribbon completely, which is the opposite failure and
+  just as useless.
+
+
 - **`snapshot(finish="hedcut")` redraws a capture in ink.** Tone becomes line:
   the image is banded by brightness and each band filled with strokes, more of
   them where it is darker, the way an engraving carries shading without any

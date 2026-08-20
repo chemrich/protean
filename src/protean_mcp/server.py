@@ -1029,6 +1029,61 @@ def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
     )
 
 
+# The palette an all-atom view uses unless told otherwise.
+#
+# Not CPK. Mol*'s CPK reds and blues fight a secondary-structure cartoon, and
+# the carbons come out chain-coloured, so a sidechain drawn over a ribbon looks
+# like a different molecule. These are quieter and chosen to sit on one:
+# Charlie's brief was a light grey carbon and "a tacky 90s pastel palette",
+# which is a better description of what reads well next to a cartoon than
+# anything more principled would be.
+_ELEMENT_PALETTE: dict[str, str] = {
+    "C": "#d3d3d3",  # light grey — the backbone of every organic molecule
+    "N": "#4ec9c9",  # teal
+    "O": "#c9a0dc",  # mauve
+    "S": "#e97451",  # burnt sienna
+    "P": "#f2c14e",  # butterscotch, for nucleic acids and phosphates
+    "H": "#ececec",
+    "X": "#b0a8b9",  # anything unlisted, so a metal is never invisible
+}
+
+_ELEMENT_THEME = "protean-elements"
+
+
+@_tool()
+async def define_elements(
+    name: str = _ELEMENT_THEME, colors: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Register a colour theme that paints each element a colour you choose.
+
+    Mol* cannot do this. Its `element-symbol` theme takes exactly one
+    parameter, `carbonColor`, and every other element comes from a fixed CPK
+    table with no way in — so carbon can be changed and oxygen, nitrogen and
+    sulfur cannot. An all-atom view that has to sit on a cartoon needs all of
+    them.
+
+    Registered like any field: `color(name)` applies it afterwards, and it
+    appears in capabilities() beside Mol*'s own.
+
+    colors: element symbol to hex, e.g. {"C": "#d3d3d3", "O": "#c9a0dc"}.
+      Omitted, protean's own palette is used — light grey carbon with teal
+      nitrogen, mauve oxygen and burnt sienna sulfur, chosen to sit quietly
+      next to a secondary-structure cartoon rather than to match CPK.
+      "X" names the colour for anything not listed, so an unusual metal is
+      never invisible.
+    """
+    chosen = colors or _ELEMENT_PALETTE
+    packed: dict[str, int] = {}
+    for element, value in chosen.items():
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise ViewerError(
+                f"{element}: {value!r} is not a colour. Hex like '#c9a0dc', "
+                "six digits, because a near-miss paints black without saying so."
+            )
+        packed[element] = int(value[1:], 16)
+    return await _call("define_elements", {"name": name, "colors": packed})
+
+
 @_tool()
 async def size(size: str, name: str = "sele") -> dict[str, Any]:
     """Set what decides the *width* of an already-displayed selection.
@@ -2622,23 +2677,45 @@ async def _preset_sidechains(target: str) -> list[str]:
     del target
     array = _require_structure()
     try:
-        mask = _evaluate(_parse_selection("sidechain and not solvent"), array)
+        # The alpha carbon comes along, and it is not a detail. `sidechain` is
+        # "polymer and not backbone", and CA is backbone — so drawing the
+        # selection alone gives sticks that begin at CB with no bond back to
+        # anything, floating beside the ribbon they belong to. Including CA
+        # gives each one the bond that attaches it.
+        # Asked twice, and the two questions are different. Whether there is
+        # anything to draw is about sidechain atoms; what gets drawn includes
+        # the alpha carbons that anchor them. Conflating the two broke the
+        # refusal the moment CA joined the drawing — every polymer has one, so
+        # glycine, whose sidechain is a hydrogen, started reporting success
+        # for a view of nothing but anchors.
+        present = _evaluate(_parse_selection("sidechain and not solvent"), array)
+        mask = _evaluate(
+            _parse_selection("(sidechain or (polymer and name CA)) and not solvent"),
+            array,
+        )
     except SelectionError as exc:  # pragma: no cover - the grammar is fixed
         raise ViewerError(str(exc)) from exc
-    indices = np.flatnonzero(mask)
-    if not len(indices):
+    if not present.any():
         raise ViewerError(
             "Nothing here has a sidechain — a nucleic acid or a bare backbone "
             "has none to draw."
         )
+    indices = np.flatnonzero(mask)
     _register(_SIDECHAIN_HANDLE, indices, "preset(sidechains)")
+    steps = [await _run(define_elements)]
     return [
+        *steps,
         await _run(
             show,
             representation="ball-and-stick",
             handle=_SIDECHAIN_HANDLE,
-            color="element-symbol",
-        )
+            color=_ELEMENT_THEME,
+            # Mol*'s own default is 0.15, which drew hairlines against a
+            # cartoon and read as noise. Picked by looking at 0.15, 0.22 and
+            # 0.3 side by side: 0.4 was tried first and buried the ribbon
+            # completely, which is the opposite failure and just as useless.
+            size=0.22,
+        ),
     ]
 
 
