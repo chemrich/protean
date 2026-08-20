@@ -909,6 +909,14 @@ async def _as_server(session, load: bool = False):
     # does not exist in production.
     server_mod.use_bridge(session.bridge)
     saved = (server_mod._structure, server_mod._structure_identifier)
+    # The handle table is module state and the browser is not: a test that
+    # drew a view left `auto_view` registered here while the next test's fresh
+    # viewer knew only `auto`, so a styling preset resolved its target to a
+    # handle that page had never heard of. It failed as "No selection named
+    # 'auto_view'" in whichever test happened to run after one that drew, and
+    # passed on its own — which is the shape of thing that gets called flaky.
+    saved_handles = dict(server_mod._handles.handles)
+    server_mod._handles.clear()
     try:
         if load:
             fetched = await fetch_structure_data(FIXTURE)
@@ -920,6 +928,8 @@ async def _as_server(session, load: bool = False):
     finally:
         server_mod._bridge = previous
         server_mod._structure, server_mod._structure_identifier = saved
+        server_mod._handles.clear()
+        server_mod._handles.handles.update(saved_handles)
 
 
 async def _apply(session, *args, **kwargs) -> dict[str, Any]:
@@ -2051,3 +2061,31 @@ async def test_a_domain_with_no_width_is_refused():
         for bad in ([5.0, 5.0], [5.0, 0.0]):
             with pytest.raises(ViewerError, match="which has no width"):
                 await server_mod.define_field("flat", values, domain=bad)
+
+
+async def test_a_snapshot_can_be_engraved_on_the_way_out(tmp_path):
+    """The finish runs on the file, not in the viewer, so this is the only
+    place the whole path is exercised: capture, engrave, save, reopen."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("publication-cartoon")
+        plain = await server_mod.snapshot(str(tmp_path / "plain.png"), width_mm=60)
+        inked = await server_mod.snapshot(
+            str(tmp_path / "inked.png"), width_mm=60, finish="hedcut"
+        )
+
+        assert inked["finish"] == "hedcut"
+        assert "after the capture" in inked["finish_applied"]
+        assert 0.0 < inked["ink"] < 0.9, "a cartoon on white should not fill in"
+        assert inked["pixels"] == plain["pixels"], "the finish changed the size"
+
+        # Two tones and nothing between, which is what makes it an engraving.
+        engraved = decode((tmp_path / "inked.png").read_bytes())
+        assert set(np.unique(engraved.pixels[:, :, :3]).tolist()) <= {0, 255}
+
+
+async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path):
+    """A file half-written in a style nobody asked for is worse than an error."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        out = tmp_path / "nope.png"
+        with pytest.raises(ViewerError, match="cross-hatch, hedcut"):
+            await server_mod.snapshot(str(out), width_mm=60, finish="woodblock")

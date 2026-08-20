@@ -7,6 +7,36 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`snapshot(finish="hedcut")` redraws a capture in ink.** Tone becomes line:
+  the image is banded by brightness and each band filled with strokes, more of
+  them where it is darker, the way an engraving carries shading without any
+  greys. Two styles — `cross-hatch` lays a second and third direction across
+  the first as the tone deepens, `hedcut` keeps one direction and thickens the
+  stroke, which is what makes it read as engraved rather than sketched.
+
+  **Mol\* has no hatching, stippling or halftone anywhere** — its whole
+  post-processing vocabulary is antialiasing, background, bloom, depth of
+  field, occlusion, outline, shadow and sharpening, checked across the tree.
+  Adding one would mean a custom render pass and a Mol\* built from source. So
+  this runs afterwards, on the pixels, which is where engravers worked too.
+
+  The cost is stated where a caller meets it: **the viewer cannot show it.**
+  There is no live preview and no menu entry, a caller sees it only in the
+  file, and the reply says the finish was applied after the capture rather than
+  leaving that to be noticed. It also reports the **ink fraction**, because the
+  caller is usually a model that cannot look: a near-black ground engraves to
+  an almost solid rectangle with the molecule showing through as a few light
+  strokes, and nothing else in the reply would say so.
+
+  Three things the plan for this had wrong, all found by looking at the output.
+  A "white" ground is about 252, not 255, so the lightest band caught the whole
+  background and sprinkled strokes over the empty half of the frame. Mapping
+  darkness straight onto bands put a mid grey two thirds of the way to solid,
+  so a cartoon came out a black mass with holes; darkness is raised to 1.7
+  first. And strokes three pixels apart with four crossed directions is not
+  cross-hatching but a dot screen.
+
+
 - **Any number you have computed can be drawn, without borrowing a column to
   carry it.** `define_field(name, values)` registers a per-residue scalar as
   both a colour theme and a size theme, after which `color(name)` paints it and

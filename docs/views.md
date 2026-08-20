@@ -673,11 +673,32 @@ Three routes, and the middle one is chosen:
    greyscale, white ground — a posterised line drawing. Print-like and
    striking, and *not* cross-hatching. Worth building anyway because it is
    nearly free, and it may turn out to be enough.
-2. **Do it in Python, at capture. Chosen.** `snapshot()` already returns a PNG
-   through Pillow. Hatching from a luminance map is ordinary image processing:
-   band the tones, overlay line patterns at a different angle per band,
-   composite. That gives a real hedcut, works over *any* view, and touches
-   Mol\* not at all.
+2. **Do it in Python, at capture. Chosen — and shipped 2026-08-19.**
+   `snapshot()` already returns a PNG through Pillow. Hatching from a luminance
+   map is ordinary image processing: band the tones, overlay line patterns at a
+   different angle per band, composite. That gives a real hedcut, works over
+   *any* view, and touches Mol\* not at all.
+
+   **Three things the sketch above did not know**, all found by looking at the
+   output rather than by reasoning about it:
+
+   - **A white ground is not white.** The publication preset's is about 252, so
+     the lightest band caught the entire background and sprinkled strokes
+     across the empty half of the frame. It looked like dirt on the plate.
+     Anything brighter than 0.94 luma takes no ink at all now.
+   - **Proportional tone is far too dark.** Mapping darkness straight onto
+     bands put a mid grey two thirds of the way to solid, and a cartoon whose
+     shading sits mostly in the middle came out as a black mass with holes in
+     it. Darkness is raised to 1.7 before banding, which is what engravers do
+     by hand and for the same reason.
+   - **Strokes have to be visibly apart.** At a 240th of the frame they landed
+     about three pixels apart, and four crossed directions at that spacing is
+     not cross-hatching but a dot screen. A 110th, with three directions.
+
+   The reply also reports the **ink fraction**, which was not planned. The
+   caller is usually a model and cannot look at the file, and the difference
+   between a good print and a solid black rectangle is not visible in a byte
+   count.
 3. **A custom Mol\* post-processing pass.** The right answer technically and
    blocked practically: it needs Mol\* built from source, which this project
    deliberately does not do — the prebuilt bundle is shipped precisely because
