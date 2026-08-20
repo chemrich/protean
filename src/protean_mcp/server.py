@@ -1049,6 +1049,12 @@ _ELEMENT_PALETTE: dict[str, str] = {
 
 _ELEMENT_THEME = "protean-elements"
 
+# The field `superpose` registers, so a caller can paint divergence directly.
+_DEVIATION_FIELD = "deviation"
+
+# The target half of a superposed pair, which is the copy the field describes.
+_SUPERPOSED_TARGET = "superposed_target"
+
 
 @_tool()
 async def define_elements(
@@ -2799,6 +2805,14 @@ class _View:
     color: str
     style: Any
 
+    draws_ligands: bool = False
+    """Does this view need what is bound drawn separately?
+
+    True for the views that select `polymer`, which drops every ligand. The
+    all-atom views take `not solvent` and have it already; drawing it twice
+    would put a second, differently-styled copy on top of the first.
+    """
+
 
 _VIEWS: dict[str, _View] = {
     # `illustrative` is the styling half of textbook and stays a preset in its
@@ -2806,12 +2820,14 @@ _VIEWS: dict[str, _View] = {
     # from deciding what to draw. Called here rather than repeated.
     "textbook": _View(
         selection="polymer",
+        draws_ligands=True,
         representation="cartoon",
         color="secondary-structure",
         style=lambda target, handle: _preset_illustrative(target),
     ),
     "putty": _View(
         selection="polymer",
+        draws_ligands=True,
         representation="putty",
         color="uncertainty",
         style=lambda target, handle: _preset_publication_cartoon(target),
@@ -2844,6 +2860,47 @@ _VIEWS: dict[str, _View] = {
 }
 
 
+_LIGAND_HANDLE = "auto_ligand"
+
+
+async def _draw_the_ligands(target: str) -> list[str]:
+    """Draw whatever is bound, for the views whose selection would drop it.
+
+    `textbook` and `putty` select `polymer`, and a ligand is not polymer — so
+    maltose-binding protein came up with no maltose in it, which is most of the
+    reason anyone loads that structure. Reported by looking at a picture and
+    asking where the sugar was.
+
+    Solvent stays out: a crystal structure's waters are most of its non-polymer
+    atoms and none of its point. Under its own handle so it survives the next
+    view taking the scene, and drawn in the same element palette the sidechains
+    use so the two agree.
+    """
+    if target != _WHOLE_SCENE:
+        return []  # a handle names what to draw; nothing is implied alongside it
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection("not polymer and not solvent"), array)
+    except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+        raise ViewerError(str(exc)) from exc
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return []
+    _register(_LIGAND_HANDLE, indices, "view(ligand)")
+    return [
+        await _run(define_elements),
+        await _run(
+            show,
+            representation="ball-and-stick",
+            handle=_LIGAND_HANDLE,
+            color=_ELEMENT_THEME,
+            # Thicker than the sidechains: a ligand is the subject when it is
+            # there, and should not be mistaken for one more sidechain.
+            size=0.35,
+        ),
+    ]
+
+
 async def _draw_view(name: str, target: str) -> list[str]:
     """Take the scene, draw the view through it, style it, then frame it."""
     view = _VIEWS[name]
@@ -2853,6 +2910,8 @@ async def _draw_view(name: str, target: str) -> list[str]:
             show, representation=view.representation, handle=handle, color=view.color
         )
     )
+    if view.draws_ligands:
+        steps += await _draw_the_ligands(target)
     steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
@@ -3593,6 +3652,44 @@ async def _display_superposition(
     viewer = await _send_structure(combined, f"{target}+{mobile}")
     ours = int(combined.array_length())
     theirs = viewer.get("atom_count")
+
+    # A superposed pair drawn in two colours is the picture everyone reaches
+    # for and it is close to unreadable: where the two agree the backbones
+    # interleave at the same depth and read as a mottle of both colours, and
+    # where they disagree looks the same. What you actually want to see is
+    # *how far* each residue moved, painted onto one copy — so it is registered
+    # here, ready for `color("deviation")`, rather than left as an exercise.
+    deviation_field = None
+    if result.deviations:
+        registered = await define_field(
+            _DEVIATION_FIELD,
+            [entry.as_dict() for entry in result.deviations],
+            key="deviation",
+            palette="white-red",
+            domain=[0.0, max(entry.deviation for entry in result.deviations)],
+        )
+        # A handle for the target half alone. The field describes that copy,
+        # and the mobile one carries no value — so colouring the whole scene
+        # paints half of it the no-data grey and looks half-broken. Registered
+        # here so the readable picture is two calls rather than a puzzle.
+        kept = np.flatnonzero(np.isin(combined.chain_id, list(taken)))
+        _register(_SUPERPOSED_TARGET, kept, "superpose(target)")
+        deviation_field = {
+            "name": _DEVIATION_FIELD,
+            "residues": registered.get("matched"),
+            "target_handle": _SUPERPOSED_TARGET,
+            "how": (
+                f'hide("auto"), then show(handle="{_SUPERPOSED_TARGET}", '
+                f'representation="cartoon") and color("{_DEVIATION_FIELD}", '
+                f'name="{_SUPERPOSED_TARGET}"). That paints one copy by how far '
+                "the other moved — white where they agree, red at the hinge — "
+                "which is legible where two interleaved colours are not. "
+                "Measured over every residue the two share, not only the ones "
+                "the fit kept: on a hinge motion the fit discards exactly the "
+                "residues that moved."
+            ),
+        }
+
     return {
         "displayed": True,
         "structure": _structure_identifier,
@@ -3602,6 +3699,7 @@ async def _display_superposition(
         "atoms": ours,
         "viewer_atom_count": theirs,
         "agree": theirs is None or int(theirs) == ours,
+        **({"deviation_field": deviation_field} if deviation_field else {}),
         "note": (
             "The loaded structure is now the superposed pair, so selections and "
             "analysis address both. The mobile copy is in the target's frame; "

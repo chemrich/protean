@@ -887,7 +887,7 @@ STYLED = 0.008
 
 
 @contextlib.asynccontextmanager
-async def _as_server(session, load: bool = False):
+async def _as_server(session, load: bool = False, pdb_id: str = FIXTURE):
     """Point the server module's tools at this browser session.
 
     `load` fills in the server's own copy of the structure, which
@@ -919,11 +919,16 @@ async def _as_server(session, load: bool = False):
     server_mod._handles.clear()
     try:
         if load:
-            fetched = await fetch_structure_data(FIXTURE)
+            # `pdb_id` has to match what the session opened, and nothing here
+            # can check that: the two are filled in separately, so a test that
+            # opens one structure and analyses another gets a server confidently
+            # describing a molecule that is not on screen. Cost one debugging
+            # session already.
+            fetched = await fetch_structure_data(pdb_id)
             server_mod._structure = load_structure(
                 fetched.data, fetched.format, "asymmetric"
             ).array
-            server_mod._structure_identifier = FIXTURE
+            server_mod._structure_identifier = pdb_id
         yield
     finally:
         server_mod._bridge = previous
@@ -2140,3 +2145,62 @@ async def test_an_element_palette_will_not_take_a_name_molstar_owns():
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         with pytest.raises(ViewerError, match=r"Mol\*'s own"):
             await server_mod.define_elements(name="element-symbol")
+
+
+# -- comparing two structures without interleaving them -------------------------
+
+
+async def test_superposing_registers_a_field_over_every_shared_residue():
+    """A superposed pair drawn in two colours is close to unreadable: where the
+    two agree the backbones interleave at one depth and read as a mottle, and
+    where they disagree looks the same.
+
+    The field is the answer, and it has to cover the whole molecule. The fit
+    discards outliers to find its transform, and on a hinge motion the
+    discarded residues are the ones that moved — 185 of maltose-binding
+    protein's 370. A field built from the fit alone paints the rigid lobe and
+    leaves the hinge blank.
+    """
+    async with (
+        viewer_session("1omp") as session,
+        _as_server(session, load=True, pdb_id="1omp"),
+    ):
+        out = await server_mod.superpose("1anf", "1omp", show=True)
+        field = out["deviation_field"]
+
+        assert out["aligned_residues"] < 250, "the fit kept more than expected"
+        assert field["residues"] > 350, (
+            "the field covers only what the fit kept, so the hinge is blank"
+        )
+
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.show(representation="cartoon", handle=field["target_handle"])
+        plain = await _shot(session)
+        await server_mod.color("deviation", name=field["target_handle"])
+        painted = await _shot(session)
+
+        assert difference(plain, painted) > STYLED, "the deviation did not paint"
+
+
+async def test_a_view_draws_what_is_bound_as_well_as_the_polymer():
+    """`textbook` selects `polymer` and a ligand is not polymer, so
+    maltose-binding protein came up with no maltose in it — which is most of
+    the reason anyone loads that structure."""
+    async with (
+        viewer_session("1anf") as session,
+        _as_server(session, load=True, pdb_id="1anf"),
+    ):
+        await server_mod.preset("textbook")
+
+        assert server_mod._LIGAND_HANDLE in server_mod._handles.names()
+        drawn = server_mod._handles.get(server_mod._LIGAND_HANDLE).indices
+        assert set(server_mod._structure.res_name[drawn].tolist()) == {"GLC"}
+
+
+async def test_a_structure_with_nothing_bound_draws_no_ligand():
+    """No handle rather than an empty one: a handle naming nothing is the kind
+    of thing a later call resolves successfully and draws nothing from."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("textbook")
+
+        assert server_mod._LIGAND_HANDLE not in server_mod._handles.names()

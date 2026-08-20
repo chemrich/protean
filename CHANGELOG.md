@@ -7,6 +7,33 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A view draws what is bound, not only the polymer.** `textbook` and `putty`
+  select `polymer`, and a ligand is not polymer — so maltose-binding protein
+  came up with no maltose in it, which is most of the reason anyone loads that
+  structure. Non-solvent hetero is drawn alongside, under its own handle and in
+  the same element palette the sidechains use. Solvent stays out: a crystal
+  structure's waters are most of its non-polymer atoms and none of its point.
+
+- **`superpose()` registers a field of how far each residue moved.** A
+  superposed pair drawn in two colours is close to unreadable — where the two
+  agree the backbones interleave at one depth and read as a mottle of both, and
+  where they disagree looks no different. Painting one copy by the distance the
+  other moved says the thing the picture was for.
+
+  **Measured over every residue the two share, not the ones the fit kept**, and
+  the difference is the whole point. `superimpose_homologs` discards outliers
+  to find its transform, and on a hinge motion the residues it discards are
+  exactly the ones that moved: superposing the open and closed states of
+  maltose-binding protein keeps 185 residues of 370, and the 185 are the half
+  that stayed put. A field built from the fit paints the rigid lobe and leaves
+  the hinge blank. Residues are matched by chain, number *and* name — two
+  structures numbered differently would otherwise pair off residues that are
+  not the same residue and report the mismatch as motion.
+
+  A handle for the target copy is registered with it, because the mobile copy
+  carries no value and colouring the whole scene paints half of it the no-data
+  grey.
+
 - **Sidechains are attached to the molecule now.** They floated: `sidechain` is
   "polymer and not backbone" and the alpha carbon *is* backbone, so every stick
   began at CB with no bond back to anything — a cloud of fragments beside the

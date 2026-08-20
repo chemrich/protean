@@ -1073,10 +1073,18 @@ class _FakeFetched:
 
 
 class _FakeResult:
-    """A superposition result carrying a known transform."""
+    """A superposition result carrying a known transform.
 
-    def __init__(self, matrix: Any) -> None:
+    `deviations` is empty rather than absent: these tests are about the
+    transform and the chain bookkeeping, and an empty list is the honest
+    stand-in for "this superposition found nothing to paint" — which the
+    caller has to handle anyway, since a pair with no aligned residues is a
+    real outcome.
+    """
+
+    def __init__(self, matrix: Any, deviations: list[Any] | None = None) -> None:
         self.transform = matrix
+        self.deviations = deviations or []
 
 
 async def _combine(
