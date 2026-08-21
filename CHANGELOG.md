@@ -7,6 +7,87 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A review found fifteen things wrong with the views below.** The worst:
+  `not metals within X of metals` parses as `not (metals within X of metals)`,
+  so `crosslink_view` on a metalloprotein selected everything *not* near a
+  metal — 1260 atoms of 1260 on myoglobin — drew the whole structure as
+  ball-and-stick and called every residue coordinating. Neither structure in
+  its own tests has a metal, which is why nothing caught it.
+
+  The others, in one line each: `_residue_count` was handed index arrays where
+  it expects masks, so interface contact counts described the first N atoms of
+  the structure; `buried_area_a2` is a key that has never existed, so every
+  interface reply said `null`; disulfide detection paired the two conformers of
+  one cysteine with each other; `pocket` and `pharmacophore` hid the scene by
+  hand and so left `_styleable` pointing at a hidden component; `default` knew
+  three handles when eight views register their own; `define_atom_classes`
+  deleted the theme it was replacing *before* validating; and the
+  pharmacophore's "greasy" and "no feature" colours were two near-identical
+  greys with opposite meanings.
+
+- **`crosslink_view()` picks out what holds a fold together** — cysteine sulfurs
+  within bonding distance, plus metals and whatever coordinates them. A
+  distance filter over pieces that already existed, as the plan estimated.
+  Refuses a structure with neither: a cartoon with nothing picked out looks the
+  same as a search that failed. Four disulfides on lysozyme, all under 2.5 A.
+
+- **`pocket_view(resn)` shows the cavity a ligand sits in**, as a
+  half-transparent surface over the lining residues with the ligand inside.
+  **Not cavity detection** — it shows the pocket around a ligand you name and
+  cannot find one in an apo structure, which is an algorithm and probably a
+  dependency. The plan called that the hard part, then found the view everyone
+  actually wants is this one.
+
+- **`pharmacophore_view(resn)` types a ligand's atoms by what each can do.** It
+  cost what the plan finally said it would, after two wrong estimates: Mol\*'s
+  `interactions` extension computes interactions *between* atoms and cannot
+  type one ligand's atoms at all. Both halves are new — chemical typing from
+  element and heavy-atom connectivity, and **per-atom categorical colouring**,
+  a third kind of registered theme now that fields are per-residue scalars and
+  palettes are per-element.
+
+  **The typing is inferred, not measured, and the reply says so.** Most crystal
+  structures carry no hydrogens, so an oxygen with one heavy neighbour is
+  treated as a hydroxyl that both donates and accepts, and one with two as an
+  ether that only accepts. Rules of thumb, wrong where a chemist would be wrong
+  — and the picture looks equally confident whichever fired, which is why the
+  counts come back with it. Twelve tests pin the rules against molecules whose
+  answer chemistry already gives.
+
+
+- **`default` is the way back.** Every drawing view hides the scene the load
+  built and replaces the one handle they share, so a run of them left no way to
+  the picture you started from — watched go wrong, eight clicks in. It restores
+  what is *drawn* and leaves lighting and ground alone: a "default" that
+  silently reset carefully built lighting because someone wanted the cartoon
+  back would be a worse surprise than the one it fixes.
+
+- **Three views that take an argument**, which is why they are tools rather
+  than menu entries — a button has nothing to type into.
+
+  `ligand_view("GLC")` takes the name a caller actually has where `active-site`
+  wanted a handle, draws the ligand and the residues lining its pocket, and
+  reports which ligand, how many copies and how many residues line it. Refused
+  when the structure does not contain it, naming what is bound instead.
+
+  `interface_view(a, b)` puts two chains down in flat contrasting colours and
+  brings the contact residues up as sticks. Refused when the chains do not
+  touch, rather than drawing an empty highlight over an ordinary two-colour
+  cartoon — which looks like an interface with nothing in it.
+
+  `mutation_view("A123G,V45L")` draws the positions a mutation would change,
+  **and checks the residue is what the notation says it is.** MCPymol does not,
+  and this is the one worth doing better: a view that highlights the wrong
+  residue because the numbering is offset by a construct tag looks exactly like
+  one that worked. It refuses with "position 1 holds MET, not TRP".
+
+- **A second palette, for whatever the picture is about.** A ligand drawn in
+  the pocket's own grey disappears into the sidechains around it; drawn in
+  Mol\*'s default it comes out chain-coloured brown, which is the thing the
+  palette exists to fix and only looks deliberate by accident. Same colours,
+  warmer carbon.
+
+
 - **A review found fifteen things wrong with the three entries below**, and
   they are fixed rather than filed. The ones worth naming: `define_elements`
   checked a name against the colour registry alone, so `"physical"` — a size

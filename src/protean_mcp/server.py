@@ -49,6 +49,12 @@ from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
 from .analysis.hatching import apply_finish, ink_fraction
+from .analysis.pharmacophore import (
+    CLASS_COLOURS,
+    UNCLASSIFIED,
+    NoConnectivity,
+    classify,
+)
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.timeline import EASINGS as _EASINGS
@@ -68,7 +74,7 @@ from .handles import summarise as _summarise
 from .handles import to_molscript as _indices_to_molscript
 from .selections import SelectionError
 from .selections import parse as _parse_selection
-from .selections_numpy import _residue_keys
+from .selections_numpy import _residue_keys, bond_pairs
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
 from .selections_numpy import conformer_state as _conformer_state
@@ -1049,6 +1055,13 @@ _ELEMENT_PALETTE: dict[str, str] = {
 
 _ELEMENT_THEME = "protean-elements"
 
+# The same palette with a warmer carbon, for whatever the picture is *about*.
+# A ligand drawn in the pocket's own grey disappears into the sidechains around
+# it; drawn in Mol*'s default it comes out chain-coloured brown, which is the
+# thing the palette exists to fix and only looks deliberate by accident.
+_SUBJECT_THEME = "protean-subject"
+_SUBJECT_CARBON = "#e8b04b"
+
 # Every symbol a palette may name, plus "X" for the fallback. Taken from the
 # periodic table rather than from what protean has happened to meet, so an
 # unusual metal is a colour someone can set rather than a refusal.
@@ -1173,6 +1186,580 @@ _SUPERPOSED_TARGET = "superposed_target"
 # Below this, in angstroms, two structures have not moved relative to each
 # other and a ramp fitted to the range would be painting rounding error.
 _DEVIATION_FLOOR = 0.05
+
+
+@_tool()
+async def ligand_view(resn: str, around: float = 5.0) -> dict[str, Any]:
+    """Draw a bound ligand and the residues that line its pocket.
+
+    `preset("active-site")` already does the drawing; what it wants is a
+    handle, and the thing a caller has is a name — "HEM", "ATP", "GLC". This
+    turns one into the other, and says what it found.
+
+    resn: the residue name as the file spells it. Refused when the structure
+      does not contain it, and the refusal names the ones it does — a view of
+      a ligand that is not there would otherwise draw an empty selection and
+      report success.
+    around: how far to reach for the lining residues, in angstroms. Whole
+      residues, so a sidechain reaching into the pocket brings its backbone.
+
+    Reports which ligand, how many copies, and how many residues line it. A
+    structure with four copies of a heme is a different picture from one with
+    a single site, and a caller cannot see the screen.
+    """
+    if around <= 0:
+        raise ViewerError(
+            f"around={around} matches nothing, so this would draw the ligand "
+            "with no pocket around it and report success."
+        )
+    array = _require_structure()
+    wanted = resn.strip().upper()
+    try:
+        found = _evaluate(_parse_selection(f"resn {wanted}"), array)
+    except SelectionError as exc:
+        raise ViewerError(str(exc)) from exc
+    if not found.any():
+        raise ViewerError(_no_such_residue(array, wanted))
+
+    copies = len(
+        {
+            (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
+            for i in np.flatnonzero(found)
+        }
+    )
+    site = f"ligand_{wanted.lower()}"
+    _register(site, np.flatnonzero(found), f"ligand_view({wanted})")
+
+    lining = _evaluate(
+        _parse_selection(f"byres (polymer within {around} of resn {wanted})"), array
+    )
+    if not lining.any():
+        raise ViewerError(
+            f"{wanted} is here but nothing lines it within {around} A. Drawing "
+            "an empty pocket handle would report success for a picture with "
+            "nothing in it — raise `around`, or the ligand is on the surface."
+        )
+    pocket = f"{site}_pocket"
+    _register(pocket, np.flatnonzero(lining), f"ligand_view({wanted})")
+
+    steps = await _preset_active_site(site)
+    steps += await _element_coloured(pocket, 0.25)
+    # The ligand last and in the warmer carbon, so it reads as the subject
+    # rather than as one more residue in the lining.
+    steps += await _element_coloured(site, 0.4, subject=True)
+    return {
+        "view": "ligand",
+        "ligand": wanted,
+        "copies": copies,
+        "atoms": int(found.sum()),
+        "lining_residues": _residue_count(array, lining),
+        "handles": [site, pocket],
+        "steps": steps,
+    }
+
+
+@_tool()
+async def interface_view(chain_a: str, chain_b: str) -> dict[str, Any]:
+    """Draw two chains apart and pick out where they touch.
+
+    `interface()` already computes the contact residues and registers handles
+    for them; this is the picture. The two chains go down in flat colours so
+    the eye can tell them apart, and the contact residues come up as sticks on
+    top, which is the whole point of looking at an interface.
+
+    Refuses when the two chains do not touch, rather than drawing an empty
+    highlight over an ordinary two-colour cartoon — which looks like an
+    interface with nothing interesting in it rather than like no interface.
+
+    Reports how many residues line each side, because a caller cannot see the
+    screen and "they touch" is not the same claim as "they touch here".
+    """
+    described = await interface(chain_a, chain_b)
+    touching = "iface_a" in _handles.names() and len(_handles.get("iface_a")) > 0
+    if not touching:
+        raise ViewerError(
+            f"Chains {chain_a} and {chain_b} do not touch, so there is no "
+            "interface to draw. interface() reports the numbers either way."
+        )
+
+    array = _require_structure()
+    # The load's own scene goes first. Without it these cartoons are drawn over
+    # a chain-coloured copy of the same backbone — two coincident
+    # representations reading as one muddy one, which is what
+    # `_take_the_scene` exists to prevent — and any third chain stays in its
+    # load colours with nothing saying it was not part of the interface.
+    steps: list[str] = []
+    with contextlib.suppress(ViewerError):
+        steps.append(await _run(hide, name=_WHOLE_SCENE))
+    for chain, colour in ((chain_a, "#7ba7d7"), (chain_b, "#e6a86c")):
+        handle = f"chain_{chain}"
+        mask = _evaluate(_parse_selection(f"chain {chain} and polymer"), array)
+        _register(handle, np.flatnonzero(mask), f"interface_view({chain_a},{chain_b})")
+        steps.append(await _run(show, representation="cartoon", handle=handle))
+        steps.append(await _run(color, color=colour, name=handle))
+
+    for side in ("iface_a", "iface_b"):
+        if side in _handles.names():
+            steps += await _element_coloured(side, 0.3)
+
+    steps.append(await _run(focus, name="iface_a"))
+    return {
+        "view": "interface",
+        "chains": [chain_a, chain_b],
+        # Counted from masks. `Handle.indices` is an index array, and
+        # `_residue_count` calls `np.flatnonzero` — so passing indices dropped
+        # atom 0 as falsy and treated the rest as positions, returning a
+        # plausible small number about the first N atoms of the structure
+        # rather than about the interface.
+        "contact_residues": {
+            side: _residue_count(array, _mask_of(array, _handles.get(side).indices))
+            for side in ("iface_a", "iface_b")
+        },
+        "buried_area": described.get("buried_area"),
+        "handles": [f"chain_{chain_a}", f"chain_{chain_b}", "iface_a", "iface_b"],
+        "steps": steps,
+    }
+
+
+# One-letter to three-letter, for checking a mutation's notation against the
+# file. Only the twenty; anything else in a mutation string is a mistake worth
+# refusing rather than guessing at.
+_ONE_LETTER = {
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "E": "GLU",
+    "Q": "GLN",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
+}
+
+
+@_tool()
+async def mutation_view(mutations: str, chain: str | None = None) -> dict[str, Any]:
+    """Draw the residues named in a mutation string, checking they are those.
+
+    mutations: the usual notation, comma-separated — "A123G", "V45L,T67S".
+      The first letter is the residue that should be there now, the number is
+      its position, the last letter is what it becomes.
+    chain: which chain, when the structure has more than one and the notation
+      does not say. A mutation string rarely carries it.
+
+    **Verifies the stated residue is what the file says it is, and refuses when
+    it is not.** MCPymol does not, and that is the one thing worth doing better
+    here: a mutation view that highlights the wrong residue because the
+    numbering is offset by a construct tag looks exactly like one that worked.
+    The picture is confident either way, and the person reading it has no way
+    to tell. An offset of one is the most common thing that goes wrong with
+    residue numbering and the least visible.
+
+    The *new* residue is not checked, because it is not there — this draws the
+    structure you have, at the positions a mutation would change.
+    """
+    array = _require_structure()
+    wanted: list[tuple[str, int, str]] = []
+    for piece in mutations.split(","):
+        text = piece.strip().upper()
+        match = re.fullmatch(r"([A-Z])(\d+)([A-Z])", text)
+        if not match:
+            raise ViewerError(
+                f"{piece.strip()!r} is not a mutation. The notation is one "
+                "letter, a number, one letter — 'A123G' — comma-separated."
+            )
+        was, position, becomes = match.group(1), int(match.group(2)), match.group(3)
+        for letter in (was, becomes):
+            if letter not in _ONE_LETTER:
+                raise ViewerError(
+                    f"{letter!r} in {text!r} is not one of the twenty amino acid letters."
+                )
+        wanted.append((was, position, becomes))
+
+    where = f" and chain {chain}" if chain else ""
+    checked: list[dict[str, Any]] = []
+    mismatched: list[str] = []
+    indices: list[int] = []
+    for was, position, becomes in wanted:
+        mask = _evaluate(_parse_selection(f"resi {position}{where}"), array)
+        if not mask.any():
+            mismatched.append(f"{was}{position}{becomes}: no residue {position} here")
+            continue
+        names = {str(array.res_name[i]) for i in np.flatnonzero(mask)}
+        expected = _ONE_LETTER[was]
+        if names != {expected}:
+            mismatched.append(
+                f"{was}{position}{becomes}: position {position} holds "
+                f"{'/'.join(sorted(names))}, not {expected}"
+            )
+            continue
+        indices.extend(np.flatnonzero(mask).tolist())
+        checked.append(
+            {
+                "mutation": f"{was}{position}{becomes}",
+                "residue": expected,
+                "seq": position,
+            }
+        )
+
+    if mismatched:
+        raise ViewerError(
+            "The structure does not match the notation, so this would have "
+            "highlighted the wrong residues: "
+            + "; ".join(mismatched)
+            + ". Numbering offset by a construct tag is the usual cause; pass "
+            "chain= if the structure has more than one."
+        )
+
+    handle = "mutations"
+    _register(handle, np.asarray(indices), f"mutation_view({mutations})")
+    steps = await _preset_active_site(handle)
+    return {
+        "view": "mutation",
+        "verified": checked,
+        "handle": handle,
+        "steps": steps,
+    }
+
+
+@_tool()
+async def pocket_view(resn: str, around: float = 5.0) -> dict[str, Any]:
+    """Show the cavity a ligand sits in, as a surface.
+
+    The same lining residues `ligand_view` draws as sticks, drawn as a surface
+    instead — which is what a pocket looks like, and what you want when the
+    question is about shape rather than about which residues touch what.
+
+    **This is not cavity detection.** It shows the pocket around a ligand you
+    name; it cannot find pockets in an apo structure, which is a different and
+    much harder problem needing an algorithm and probably a dependency. The
+    plan for this document called that the hard part and then found that the
+    view everyone actually wants is this one.
+
+    resn: the bound residue whose pocket to show. Refused when absent, naming
+      what is bound.
+    around: how far the lining reaches, in angstroms. Whole residues.
+    """
+    if around <= 0:
+        raise ViewerError(
+            f"around={around} matches nothing, so this would draw the ligand "
+            "with no pocket around it and report success."
+        )
+    array = _require_structure()
+    wanted = resn.strip().upper()
+    try:
+        found = _evaluate(_parse_selection(f"resn {wanted}"), array)
+    except SelectionError as exc:
+        raise ViewerError(str(exc)) from exc
+    if not found.any():
+        raise ViewerError(_no_such_residue(array, wanted))
+
+    lining = _evaluate(
+        _parse_selection(f"byres (polymer within {around} of resn {wanted})"), array
+    )
+    if not lining.any():
+        raise ViewerError(
+            f"{wanted} is here but nothing lines it within {around} A — it is "
+            "not in a pocket. Raise `around`, or look at it with ligand_view."
+        )
+
+    pocket = f"pocket_{wanted.lower()}"
+    site = f"pocket_{wanted.lower()}_ligand"
+    _register(pocket, np.flatnonzero(lining), f"pocket_view({wanted})")
+    _register(site, np.flatnonzero(found), f"pocket_view({wanted})")
+
+    steps = [
+        await _run(hide, name=_WHOLE_SCENE),
+        await _run(
+            show,
+            representation="molecular-surface",
+            handle=pocket,
+            color="hydrophobicity",
+        ),
+        # Half-transparent, because a pocket you cannot see into is a lump.
+        await _run(opacity, opacity=0.55, name=pocket),
+    ]
+    steps += await _element_coloured(site, 0.4, subject=True)
+    steps.append(await _run(focus, name=site))
+    return {
+        "view": "pocket",
+        "ligand": wanted,
+        "lining_residues": _residue_count(array, lining),
+        "handles": [pocket, site],
+        "steps": steps,
+    }
+
+
+@_tool()
+async def crosslink_view(distance: float = 2.5) -> dict[str, Any]:
+    """Pick out what holds a fold together: disulfides and metal sites.
+
+    Two things, both distance filters over what protean already has rather than
+    new machinery. Cysteine sulfurs within bonding distance of each other are
+    disulfides; metals and whatever they touch are coordination sites.
+
+    Refuses when a structure has neither, rather than drawing a bare cartoon
+    and calling it a crosslink view — the picture would be indistinguishable
+    from one where the search failed.
+
+    distance: how close two sulfurs must be to count as bonded. 2.5 A is
+      generous for a disulfide, whose bond is about 2.05.
+    """
+    # One conformer, resolved first. A cysteine modelled in two positions has
+    # two SG atoms a fraction of an angstrom apart, well inside any bonding
+    # cutoff, so the raw array reports each such residue as a disulfide with
+    # itself — and a real bridge between two such cysteines as four. Every tool
+    # that reads coordinates resolves a state; this one did not.
+    full = _require_structure()
+    array = full[_conformer_state(full)]
+    sulfurs = _evaluate(_parse_selection("resn CYS and name SG"), array)
+    indices = np.flatnonzero(sulfurs)
+    coords = np.asarray(array.coord)
+
+    bridges: list[dict[str, Any]] = []
+    paired: list[int] = []
+    for a_pos, i in enumerate(indices):
+        for j in indices[a_pos + 1 :]:
+            if float(np.linalg.norm(coords[i] - coords[j])) <= distance:
+                paired.extend((int(i), int(j)))
+                bridges.append(
+                    {
+                        "a": f"{array.chain_id[i]} {int(array.res_id[i])}",
+                        "b": f"{array.chain_id[j]} {int(array.res_id[j])}",
+                        "angstroms": round(
+                            float(np.linalg.norm(coords[i] - coords[j])), 2
+                        ),
+                    }
+                )
+
+    metals = _evaluate(_parse_selection("metals"), array)
+    coordinating = (
+        _evaluate(
+            # Parenthesised, and the parentheses are the whole thing. `not`
+            # binds looser than `within`, so `not metals within X of metals`
+            # asks for everything that is *not* near a metal — 1260 atoms of
+            # 1260 on myoglobin, which drew the entire structure as
+            # ball-and-stick and called every residue coordinating. Neither
+            # structure the other tests use has a metal, so nothing caught it.
+            _parse_selection(f"byres ((not metals) within {2 * distance} of metals)"),
+            array,
+        )
+        if metals.any()
+        else np.zeros(len(metals), dtype=bool)
+    )
+
+    if not bridges and not metals.any():
+        raise ViewerError(
+            "No disulfides and no metals here, so there is nothing holding "
+            "this together to draw. A cartoon with nothing picked out would "
+            "look the same as a search that failed."
+        )
+
+    steps = [await _run(preset, name="publication-cartoon")]
+    handles: list[str] = []
+    if bridges:
+        # Whole cysteines, not the sulfurs alone: a bridge drawn as two dots
+        # says where it is and not what it joins.
+        bridge_mask = _evaluate(
+            _parse_selection("byres (resn CYS and name SG)"), array
+        ) & _in_residues_of(array, paired)
+        _register("disulfides", np.flatnonzero(bridge_mask), "crosslink_view()")
+        handles.append("disulfides")
+        steps += await _element_coloured("disulfides", 0.35, subject=True)
+    if metals.any():
+        _register(
+            "metal_sites", np.flatnonzero(metals | coordinating), "crosslink_view()"
+        )
+        handles.append("metal_sites")
+        steps += await _element_coloured("metal_sites", 0.3)
+
+    steps.append(await _run(opacity, opacity=0.25, name=_styleable(_WHOLE_SCENE)))
+    return {
+        "view": "crosslink",
+        "disulfides": bridges,
+        "metal_atoms": int(metals.sum()),
+        "coordinating_residues": _residue_count(array, coordinating),
+        "handles": handles,
+        "steps": steps,
+    }
+
+
+@_tool()
+async def pharmacophore_view(resn: str) -> dict[str, Any]:
+    r"""Colour a ligand's atoms by what each can do: donate, accept, or be greasy.
+
+    A pharmacophore is a claim about what a site *wants*. It is not a list of
+    contacts, which is what this document's plan twice assumed Mol\*'s
+    `interactions` extension could provide — it computes interactions between
+    atoms and cannot type one ligand's atoms at all.
+
+    **The typing is inferred, not measured, and the reply says which rules
+    fired.** Most crystal structures carry no hydrogens, so donor and acceptor
+    cannot be read off the file; they follow from element and heavy-atom
+    connectivity, the same rules a chemist applies by eye and wrong in the same
+    places. An oxygen with one heavy neighbour is a hydroxyl and does both; with
+    two it is an ether and only accepts. A nitrogen with three heavy neighbours
+    has no hydrogen left to give.
+
+    Argue with the counts in the reply rather than trusting the picture: it
+    looks equally confident whichever rule fired.
+
+    Grey means "no feature here", not "unknown" — a carbon next to an oxygen
+    is part of a polar group rather than a greasy patch, so a sugar comes out
+    almost entirely oxygens with grey carbons between them. That is the right
+    answer for a sugar and would be the wrong-looking one for a drug, where
+    the aromatic ring is the point and shows as hydrophobe.
+    """
+    array = _require_structure()
+    wanted = resn.strip().upper()
+    try:
+        found = _evaluate(_parse_selection(f"resn {wanted}"), array)
+    except SelectionError as exc:
+        raise ViewerError(str(exc)) from exc
+    if not found.any():
+        raise ViewerError(_no_such_residue(array, wanted))
+
+    indices = np.flatnonzero(found)
+    try:
+        bonds = bond_pairs(array)
+    except SelectionError as exc:
+        raise ViewerError(
+            f"Cannot type {wanted} without knowing what is bonded to what: {exc}"
+        ) from exc
+    try:
+        assigned, counts = classify(array, indices, bonds)
+    except NoConnectivity as exc:
+        raise ViewerError(
+            f"Cannot type {wanted}: {exc}. The file carries no bonds for it "
+            "and the residue-template dictionary does not know the name — "
+            "which is the case for every UNL and LIG, so a docking pose needs "
+            "its bonds in the file. Typed from element alone this would call "
+            "every oxygen a hydroxyl and say so as confidently as a real "
+            "answer."
+        ) from exc
+    if not assigned:
+        raise ViewerError(
+            f"Nothing in {wanted} typed as a pharmacophore feature — it holds "
+            "no polar or greasy atoms this can recognise."
+        )
+
+    keyed = {
+        f"{array.chain_id[i]}|{int(array.res_id[i])}|"
+        f"{str(array.ins_code[i]).strip()}|{array.atom_name[i]}": feature
+        for i, feature in assigned.items()
+    }
+    site = f"pharmacophore_{wanted.lower()}"
+    _register(site, indices, f"pharmacophore_view({wanted})")
+    typed = await _call(
+        "define_atom_classes",
+        {
+            "name": site,
+            "classes": keyed,
+            "colors": {
+                feature: int(colour[1:], 16) for feature, colour in CLASS_COLOURS.items()
+            },
+        },
+    )
+    # How many of the typed atoms the viewer could actually find. The theme
+    # registers when *any* key matches, so a partial match paints most of the
+    # ligand the no-feature grey while the counts below still claim every atom
+    # was typed.
+    reached = int(typed.get("matched", 0))
+
+    _, steps = await _take_the_scene(_WHOLE_SCENE, f"resn {wanted}")
+    steps += [
+        await _run(show, representation="ball-and-stick", handle=site, size=0.45),
+        await _run(color, color=site, name=site),
+        await _run(focus, name=site),
+        await _run(lighting, rig="studio"),
+    ]
+    return {
+        "view": "pharmacophore",
+        "ligand": wanted,
+        "features": counts,
+        "atoms_the_viewer_matched": reached,
+        **(
+            {
+                "partial": (
+                    f"Only {reached} of {len(assigned)} typed atoms were found "
+                    "on screen, so the rest are painted the no-feature grey."
+                )
+            }
+            if reached < len(assigned)
+            else {}
+        ),
+        "colours": CLASS_COLOURS,
+        "grey_means": f"no feature here, not unknown ({CLASS_COLOURS[UNCLASSIFIED]})",
+        "inferred": (
+            "Donor and acceptor come from element and heavy-atom connectivity, "
+            "not from hydrogens, which this structure most likely does not "
+            "carry. Rules of thumb, reported so they can be argued with."
+        ),
+        "handle": site,
+        "steps": steps,
+    }
+
+
+def _mask_of(array: Any, indices: Any) -> Any:
+    """An index array as a boolean mask over the structure."""
+    mask = np.zeros(array.array_length(), dtype=bool)
+    mask[np.asarray(indices, dtype=int)] = True
+    return mask
+
+
+def _in_residues_of(array: Any, atoms: list[int]) -> Any:
+    """A mask over every atom sharing a residue with one of *atoms*.
+
+    Through the selection engine's own residue keys rather than a Python loop
+    over three numpy arrays: it is the same question `byres` answers, and a
+    second definition of what makes a residue identity is a second set of
+    answers to it.
+    """
+    keys = _residue_keys(array)
+    return np.isin(keys, keys[np.asarray(atoms, dtype=int)])
+
+
+def _no_such_residue(array: Any, wanted: str) -> str:
+    """Refuse by naming what is actually here.
+
+    "No HEM in this structure" leaves a caller guessing whether they misspelled
+    it or loaded the wrong file. The list settles it in one reply.
+    """
+    present = sorted(
+        {
+            str(name)
+            for name, hetero in zip(array.res_name, array.hetero, strict=False)
+            if hetero
+        }
+        - {"HOH", "DOD", "WAT"}
+    )
+    if not present:
+        return (
+            f"No residue named {wanted!r} here, and nothing is bound to this "
+            "structure at all — it holds only polymer and solvent."
+        )
+    return f"No residue named {wanted!r} here. What is bound: {', '.join(present)}."
+
+
+def _residue_count(array: Any, mask: Any) -> int:
+    """Residues, not atoms — which is what a caller means by "how many".
+
+    Takes a **mask**. Handed an index array it silently counted something else
+    entirely, because `np.flatnonzero` on indices drops atom 0 and reads the
+    rest as positions.
+    """
+    return int(np.unique(_residue_keys(array)[np.asarray(mask, dtype=bool)]).size)
 
 
 @_tool()
@@ -2801,6 +3388,69 @@ async def _preset_dark_ground(target: str) -> list[str]:
 _SIDECHAIN_HANDLE = "sidechains"
 
 
+async def _element_coloured(
+    handle: str, size: float, *, subject: bool = False
+) -> list[str]:
+    """Ball-and-stick in protean's element palette, registering it first.
+
+    Four views want this now, and the fourth is where it was noticed: the
+    palette is registered by the page rather than shipped by Mol*, so a view
+    that asks for it by name without registering it first is refused with
+    "Unknown colour theme". Registering is idempotent — the viewer skips an
+    identical re-register rather than churning the theme under a live
+    representation — so calling it every time costs nothing.
+    """
+    theme = _SUBJECT_THEME if subject else _ELEMENT_THEME
+    palette = {**_ELEMENT_PALETTE, "C": _SUBJECT_CARBON} if subject else _ELEMENT_PALETTE
+    return [
+        await _run(define_elements, name=theme, colors=palette),
+        await _run(
+            show,
+            representation="ball-and-stick",
+            handle=handle,
+            color=theme,
+            size=size,
+        ),
+    ]
+
+
+async def _preset_default(target: str) -> list[str]:
+    """Put back the picture the load produced, and take the views' own away.
+
+    Watched go wrong: eight views clicked in a row leave no way back, because
+    every drawing view hides `auto` and replaces the one handle they share, so
+    the scene the load built is still there and still hidden with nothing
+    naming it.
+
+    This restores what is *drawn* and does not touch lighting, ground or
+    effects. Those are the styling presets' business — `light-ground` and
+    `dark-ground` exist for exactly that — and a "default" that silently reset
+    someone's carefully built lighting because they wanted the cartoon back
+    would be a worse surprise than the one it fixes. The reply says so rather
+    than leaving it to be discovered.
+    """
+    del target
+    steps: list[str] = []
+    # Removed rather than hidden: a hidden component still answers to its
+    # handle, so a later `unhide` or a styling call would bring back a picture
+    # the caller thought they had put away.
+    #
+    # Every handle a view made, not a list of three. The first version named
+    # the scene, the ligand and the sidechains — which was already false when
+    # it was written, because `ghost-heart` is one click away and leaves its
+    # translucent surface wrapped around whatever comes next, and every view
+    # added since registers handles of its own. A view's handles are the ones
+    # whose origin says a view made them, which is a fact the registry already
+    # keeps rather than a list to maintain.
+    for handle in _handles.names():
+        origin = _handles.get(handle).origin
+        if handle == _SCENE_HANDLE or "view" in origin or "preset" in origin:
+            with contextlib.suppress(ViewerError):
+                steps.append(await _run(remove, name=handle))
+    steps.append(await _run(unhide, name=_WHOLE_SCENE))
+    return [*steps, await _run(reset_view)]
+
+
 async def _preset_sidechains(target: str) -> list[str]:
     """Sidechain sticks over whatever is already drawn.
 
@@ -2851,21 +3501,10 @@ async def _preset_sidechains(target: str) -> list[str]:
         )
     indices = np.flatnonzero(mask)
     _register(_SIDECHAIN_HANDLE, indices, "preset(sidechains)")
-    steps = [await _run(define_elements)]
-    return [
-        *steps,
-        await _run(
-            show,
-            representation="ball-and-stick",
-            handle=_SIDECHAIN_HANDLE,
-            color=_ELEMENT_THEME,
-            # Mol*'s own default is 0.15, which drew hairlines against a
-            # cartoon and read as noise. Picked by looking at 0.15, 0.22 and
-            # 0.3 side by side: 0.4 was tried first and buried the ribbon
-            # completely, which is the opposite failure and just as useless.
-            size=0.22,
-        ),
-    ]
+    # 0.22 against Mol*'s own default of 0.15, which drew hairlines that read
+    # as noise against a cartoon. Picked by looking at 0.15, 0.22 and 0.3 side
+    # by side; 0.4 was tried first and buried the ribbon completely.
+    return await _element_coloured(_SIDECHAIN_HANDLE, 0.22)
 
 
 async def _preset_hide_sidechains(target: str) -> list[str]:
@@ -3037,18 +3676,9 @@ async def _draw_the_ligands(target: str) -> list[str]:
     if not len(indices):
         return []
     _register(_LIGAND_HANDLE, indices, "view(ligand)")
-    return [
-        await _run(define_elements),
-        await _run(
-            show,
-            representation="ball-and-stick",
-            handle=_LIGAND_HANDLE,
-            color=_ELEMENT_THEME,
-            # Thicker than the sidechains: a ligand is the subject when it is
-            # there, and should not be mistaken for one more sidechain.
-            size=0.35,
-        ),
-    ]
+    # Thicker and warmer than the sidechains: a ligand is the subject when it
+    # is there, and should not read as one more sidechain.
+    return await _element_coloured(_LIGAND_HANDLE, 0.35, subject=True)
 
 
 async def _draw_view(name: str, target: str) -> list[str]:
@@ -3083,6 +3713,7 @@ _PRESETS: dict[str, Any] = {
     "active-site": _preset_active_site,
     "light-ground": _preset_light_ground,
     "dark-ground": _preset_dark_ground,
+    "default": _preset_default,
     "sidechains": _preset_sidechains,
     "hide-sidechains": _preset_hide_sidechains,
     **{name: functools.partial(_draw_view, name) for name in _VIEWS},
@@ -3118,6 +3749,10 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
 
       Decide what is drawn:
 
+      default              The picture the load produced. Every view below
+                           replaces the last, so this is the way back; it
+                           restores what is drawn and leaves lighting and
+                           ground alone.
       textbook             Cartoon by secondary structure, flat and outlined —
                            illustrative's styling with the drawing done too.
       putty                A tube whose width *and* colour follow B-factor, so
@@ -3209,6 +3844,11 @@ _VIEW_LAYERS = "layers"
 #: `active-site` is deliberately absent: it needs a handle to point at, and a
 #: button has none to give.
 _PAGE_VIEWS: dict[str, tuple[str, str]] = {
+    # First, and named for what it does rather than for what it undoes: after
+    # a run of views there is otherwise no way back to the picture the load
+    # produced, because each one hides `auto` and replaces the handle they all
+    # share.
+    "default": ("default", _VIEW_DRAWS),
     "textbook": ("textbook", _VIEW_DRAWS),
     "putty": ("putty", _VIEW_DRAWS),
     "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),

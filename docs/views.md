@@ -326,7 +326,7 @@ otherwise be near-duplicates: `illustrative` is the styling, `textbook` is the
 styling plus the decision about what to draw. Composing them keeps one recipe
 and makes the relationship visible in the reply's `steps`.
 
-### 5.2 The view switcher — stub
+### 5.2 The view switcher — shipped 2026-08-18
 
 Turning one button into several. Depends entirely on how §4 feels: if the
 round-trip is sluggish, the answer is a different UI, not more buttons.
@@ -339,11 +339,15 @@ structure cannot take **refuses and says so on the control**, which is what
 `textbook` on a ligand-only entry already does. Adding a view is now two lines —
 an entry in `_PAGE_VIEWS` and a button that names it.
 
-Still unknown: whether the control is a strip, a menu, or keyboard shortcuts;
-and whether the *styling* presets, which compose rather than replace, want a
-different affordance from the drawing ones. A click that changes the lighting
-and a click that changes the whole picture reading identically is the obvious
-way for this to get confusing.
+**It is a menu**, grouped into what draws, what restyles and what layers on
+top — which answers the affordance question the other way from how it was
+posed: the grouping carries the distinction, so a click that changes lighting
+and a click that changes the whole picture do not read identically. Keyboard
+shortcuts were never needed.
+
+One thing the stub did not anticipate, found by watching someone use it: a run
+of views leaves no way back, because each hides `auto` and replaces the shared
+handle. `default` is the first entry now.
 
 ### 5.3 The rest of the catalogue — planned 2026-08-18
 
@@ -358,9 +362,9 @@ shape and three are recipes over machinery that already exists.
 | view | what it needs |
 |---|---|
 | `plddt` | a colour theme — but **blocked**, see below |
-| `interface` | `interface()` already computes and returns the handles; this colours the two chains and picks out the contact residues |
-| `ligand` | `active-site` already *is* this view. The gap is that it takes a handle where MCPymol takes a residue name |
-| `mutation` | parse `"A123G,V45L"`, select those residues |
+| `interface` | **shipped**: `interface_view(a, b)` |
+| `ligand` | **shipped**: `ligand_view(resn)` |
+| `mutation` | **shipped**: `mutation_view("A123G,V45L")`, and it verifies |
 
 Three further improvements, approved 2026-08-18:
 
@@ -409,21 +413,44 @@ mutation view that silently highlights the wrong residue because the numbering
 is offset is this project's failure mode wearing a lab coat. MCPymol does not
 check.
 
-**Tier 2 — small analysis from pieces that exist.**
+**Tier 2 — small analysis from pieces that exist. Shipped 2026-08-21.**
 
-`crosslink` is disulfides and metal coordination: cysteine SG pairs inside
-bonding distance, plus metals and what they touch. protean has a `metals`
-selection keyword and `near()`, so this is a distance filter rather than new
-machinery.
+`crosslink_view()` is disulfides and metal coordination: cysteine SG pairs
+inside bonding distance, plus metals and what they touch — a distance filter
+over the `metals` keyword rather than new machinery, as estimated. It refuses a
+structure with neither, because a cartoon with nothing picked out looks the
+same as a search that failed. Four disulfides on lysozyme, all under 2.5 A.
 
-`pocket` belongs here too, **and that is a correction to §5.5 below.**
+`pocket_view(resn)` is the lining as a half-transparent surface with the ligand
+inside it. Tier 2 as §5.5's correction said, and **not** cavity detection,
+which stays unbuilt and unasked for.
 
-**Tier 3 — genuinely open, and nobody has asked.** `pharmacophore`, for the
-reason §6 predicted and this document then got wrong anyway. Detail in §5.4.
+**Tier 3 — `pharmacophore`, shipped 2026-08-21, and it cost what §5.4 said it
+would.** Both halves had to be built, because the estimate that they did was
+the one thing this document got right about it after getting it wrong twice:
+per-atom chemical typing from element and heavy-atom connectivity, and per-atom
+*categorical* colouring — a third kind of registered theme, since fields are
+per-residue scalars and palettes are per-element.
 
-Unknown, still: whether `mutation` should verify the stated residue
-actually matches the structure, which it should, and what it does when it does
-not.
+The honest part is the one worth keeping: most crystal structures carry no
+hydrogens, so donor and acceptor are **inferred rather than read**, and the
+reply says which rules fired. A picture of a typing decision looks equally
+confident whichever rule produced it.
+
+Answered: `mutation` verifies, and **refuses** when the file disagrees —
+"position 1 holds MET, not TRP" rather than a confident picture of the wrong
+residue. The new residue is not checked, because it is not there.
+
+Two things the tier-1 work turned up that this table did not have:
+
+- **A ligand drawn in the pocket's own colours disappears into it.** There is a
+  second palette — the same colours with a warmer carbon — for whatever the
+  picture is *about*. Before that the maltose came out brown from Mol\*'s
+  chain-id carbon default, which reads acceptably by luck rather than design.
+- **`carbohydrate` is a representation and a colour theme in Mol\***, and the
+  load preset already draws sugars with both. So a bound sugar was visible on
+  load and vanished under `textbook` — the ligand gap was easy to miss for that
+  one class of ligand and obvious for every other.
 
 ### 5.4 Pharmacophore and pLDDT — stub, and cheaper than it says
 
@@ -497,7 +524,7 @@ The hard thing is real cavity detection: finding pockets *without being told
 where to look*, which is an algorithm and probably a dependency (fpocket and
 its kin). That is still genuinely open — and **nobody has asked for it**, which
 is the more useful half of this correction. The version people want is the
-cheap one.
+cheap one, and it shipped 2026-08-21 as `pocket_view(resn)`.
 
 ### 5.6 Dynamics — decided, and the decision is to not build it
 

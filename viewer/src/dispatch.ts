@@ -192,6 +192,18 @@ export function atomAt(location: any): { unit: any; element: number } | undefine
   return { unit, element };
 }
 
+/** chain|seq|ins|atom — the key an atom-keyed theme looks itself up by. */
+export function atomKey(unit: any, element: number): string {
+  const h = unit.model.atomicHierarchy;
+  const ri = h.residueAtomSegments.index[element];
+  const ci = h.chainAtomSegments.index[element];
+  const ins = h.residues.pdbx_PDB_ins_code.value(ri) || '';
+  return (
+    `${h.chains.auth_asym_id.value(ci)}|${h.residues.auth_seq_id.value(ri)}|` +
+    `${ins}|${h.atoms.label_atom_id.value(element)}`
+  );
+}
+
 /** Interpolate a palette at `t` in [0, 1], returning Mol*'s packed colour int.
  *
  * Mol* has colour-list machinery of its own, but it is not reachable from the
@@ -2334,6 +2346,97 @@ export function createDispatcher(plugin: any): Handler {
         ownFields.add(name);
         paletteSignatures.set(name, signature);
         return { palette: name, elements: Object.keys(table).sort() };
+      },
+    },
+
+    /** A colour theme keyed on individual atoms, for a categorical claim.
+     *
+     * The third kind, and the plan for the pharmacophore view named both
+     * halves it needed: per-atom chemical typing, which is Python's job, and
+     * per-atom *categorical* colouring, which is this. Fields are per-residue
+     * and scalar; palettes are per-element. A feature class — donor, acceptor,
+     * hydrophobe — is neither.
+     *
+     * Keyed by chain, residue, insertion code and atom name rather than by
+     * index, for the reason `define_field` is: a biological assembly holds
+     * symmetry copies the analysis array does not, and index alignment would
+     * be silently wrong on exactly the structures where it matters. Every copy
+     * of an atom gets the type that atom earned.
+     */
+    define_atom_classes: {
+      async run({
+        name,
+        classes,
+        colors,
+      }: {
+        name: string;
+        classes: Record<string, string>;
+        colors: Record<string, number>;
+      }) {
+        if (!Object.keys(classes).length) {
+          throw new Error(`Atom classes '${name}' carries no atoms`);
+        }
+        const themes = plugin.representation.structure.themes;
+
+        // Identical to what is already registered? Leave it alone, for the
+        // reason `define_elements` does: re-registering removes the provider
+        // before adding it back, and a representation drawn moments ago still
+        // names it.
+        const signature = JSON.stringify([
+          Object.entries(classes).sort(),
+          Object.entries(colors).sort(),
+        ]);
+        if (paletteSignatures.get(name) === signature && ownFields.has(name)) {
+          return { classes: name, atoms: Object.keys(classes).length, reused: true };
+        }
+
+        // Everything that can refuse, refuses *before* the name is claimed.
+        // `claimName` removes the theme it is replacing, so validating after
+        // it meant a second call whose keys stopped matching — a different
+        // structure loaded, an atom-name mismatch — deleted the working theme
+        // and then threw, leaving a live representation naming one that no
+        // longer exists. `define_field` checks first for exactly this reason.
+        const unclassified = colors.none ?? 0x9aa0a6;
+        const structure = rootStructure();
+        let matched = 0;
+        for (const unit of structure.units) {
+          if (unit.kind !== 0) continue;
+          const h = unit.model.atomicHierarchy;
+          for (let i = 0, n = unit.elements.length; i < n; i++) {
+            if (atomKey(unit, unit.elements[i]) in classes) matched++;
+          }
+        }
+        if (!matched) {
+          throw new Error(
+            `'${name}' matches no atom in the loaded structure. Keys look ` +
+              `like: ${Object.keys(classes).slice(0, 3).join(', ')}.`
+          );
+        }
+
+        claimName(name, 'atom classes');
+        themes.colorThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            color: (location: any) => {
+              const at = atomAt(location);
+              if (!at) return unclassified;
+              const assigned = classes[atomKey(at.unit, at.element)];
+              return assigned === undefined ? unclassified : (colors[assigned] ?? unclassified);
+            },
+            props: {},
+            description: `protean atom classes '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+        ownFields.add(name);
+        paletteSignatures.set(name, signature);
+        return { classes: name, atoms: Object.keys(classes).length, matched };
       },
     },
 
