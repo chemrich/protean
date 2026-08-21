@@ -981,12 +981,13 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 
 # -- the style presets from docs/views.md §5.1 ---------------------------------
 #
-# Six views borrowed from MCPymol, four of which decide what is drawn rather
-# than only restyling it. Taken in one session, in this order, because a browser
-# launch is the expensive part: each frame is compared with the one before it,
-# and then all seven are compared with each other. The second claim is the one
-# worth having — two recipes that composed to the same picture would both pass
-# "it changed something" and still be one view wearing two names.
+# Eight views: six borrowed from MCPymol, of which four decide what is drawn
+# rather than only restyling it, plus the two illustration styles of §5.9. Taken
+# in one session, in this order, because a browser launch is the expensive part:
+# each frame is compared with the one before it, and then all nine are compared
+# with each other. The second claim is the one worth having — two recipes that
+# composed to the same picture would both pass "it changed something" and still
+# be one view wearing two names.
 
 _VIEW_SEQUENCE = [
     "textbook",
@@ -995,6 +996,8 @@ _VIEW_SEQUENCE = [
     "cinematic",
     "spacefill",
     "skeleton",
+    "painting",
+    "richardson",
 ]
 
 
@@ -1024,6 +1027,99 @@ async def test_every_view_looks_different_from_every_other(views):
             assert difference(left_frame, right_frame) > STYLED, (
                 f"{left} and {right} render the same picture"
             )
+
+
+def _frame(views: list[tuple[str, Render]], name: str) -> Render:
+    return dict(views)[name]
+
+
+# Measured on 1UBQ rather than guessed, and the tolerance is the point. The
+# painting ground is #efe9dc, which covers 0.918 of the frame under it and
+# 0.0025 of the white-ground frames — but at tolerance 40 plain white *also*
+# matches it, at 0.969, because white is within 40 of buff on every channel. A
+# looser tolerance would have made this test pass for every view in the
+# catalogue while appearing to check the one thing that is different.
+PAPER = (0xEF, 0xE9, 0xDC, 255)
+PAPER_TOLERANCE = 20
+
+
+async def test_painting_lays_down_the_ground_it_names(views):
+    """A view whose ground is nine tenths of the frame has to have that ground.
+
+    The cheapest thing to get wrong here is the order: the recipe recolours the
+    molecule after drawing it, and a `background()` that never landed would
+    leave the previous view's white behind a correctly repainted structure —
+    which reads as "nearly right" rather than as a failure.
+    """
+    painted = color_fraction(_frame(views, "painting"), PAPER, PAPER_TOLERANCE)
+    plain = color_fraction(_frame(views, "plain"), PAPER, PAPER_TOLERANCE)
+    assert painted > 0.5 and plain < 0.01, (
+        f"painting covers {painted:.4f} of the frame in its own ground against "
+        f"{plain:.4f} for the plain load"
+    )
+
+
+async def test_painting_takes_down_a_line_the_previous_view_left_up():
+    """`painting` is the one view with no line at all, and pixels cannot see it.
+
+    The obvious check — count near-black pixels — was written first and is
+    wrong, which is worth recording because it is convincing: ambient occlusion
+    and a cast shadow on a sphere model drive the crevices to near-black at
+    0.0056 of the frame, against 0.0017 for the black outline `textbook`
+    actually draws. The darkest view in the catalogue is the one with no line
+    in it.
+
+    So the claim is made against the renderer's own state instead, read out of
+    the page. Applied after a view that leaves an outline on, because "off" is
+    also what a recipe that never ran would find.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        read = (
+            "JSON.stringify(window.__protean.plugin"
+            ".canvas3d.props.postprocessing.outline.name)"
+        )
+        await server_mod.preset("textbook")
+        before = await session.evaluate(read)
+        await server_mod.preset("painting")
+        after = await session.evaluate(read)
+
+    assert before == "on", f"textbook left the outline {before!r}, so this proves nothing"
+    assert after == "off", "painting left an outline on the canvas"
+
+
+# The line colours, and the two numbers that separate them. Measured on 1UBQ:
+# a *black* outline — the one `textbook` draws — reads 0.00088 of the frame as
+# near-black and 0.0023 as near-#4a4a4a, because an antialiased black line has a
+# grey halo wider than its core. `richardson`'s grey line reads 0.0000 black and
+# 0.0030 grey. So grey-versus-black is not the discriminating comparison and the
+# absence of black is: the first version of this test asserted grey > black,
+# which is true of a black line too, and it duly passed with the colour mutated
+# back to black.
+INK_TOLERANCE = 24
+NO_BLACK = 0.0002
+SOME_LINE = 0.001
+
+
+async def test_richardson_draws_its_line_in_grey_rather_than_black(views):
+    """§5.9 asked for a thinner line; Mol* has no thinner line.
+
+    `outline.scale` is `min: 1, step: 1` and `illustrative` already sits at the
+    floor, so the quieter edge comes from colour instead. That substitution is
+    the kind that silently does nothing — `effects()` would accept a smaller
+    scale and clamp it — so the colour is measured rather than assumed.
+
+    Both halves are needed and each is mutation-tested: without the first, a
+    black line passes; without the second, no line at all passes.
+    """
+    frame = _frame(views, "richardson")
+    black = color_fraction(frame, (0, 0, 0, 255), tolerance=INK_TOLERANCE)
+    grey = color_fraction(frame, (0x4A, 0x4A, 0x4A, 255), tolerance=INK_TOLERANCE)
+    assert black < NO_BLACK, (
+        f"richardson reads {black:.5f} near-black: the outline colour never took"
+    )
+    assert grey > SOME_LINE, (
+        f"richardson reads {grey:.5f} near-grey: there is no line at all"
+    )
 
 
 async def test_a_second_view_replaces_the_first_rather_than_stacking():

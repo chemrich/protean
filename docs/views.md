@@ -646,7 +646,7 @@ silent-success failure in a new place. It would look right and be wrong exactly
 when a model and a person are both working, which is the case protean exists
 for. Better no checkmark than a stale one.
 
-### 5.9 Illustration styles — planned 2026-08-18
+### 5.9 Illustration styles — planned 2026-08-18, built 2026-08-21
 
 Three looks borrowed from how structures were drawn before they were rendered.
 The first two are recipes over controls protean already has; the third is not,
@@ -671,6 +671,33 @@ person implies more than a recipe can deliver, and Geis's name does not have
 currency as a style term the way some do. The docstring credits him and says
 plainly that it is an homage and not a facsimile.
 
+**Built, and the sketch's open choice is settled: spheres.** Both were drawn on
+myoglobin and looked at. Ball-and-stick — the nearer relative of what Geis
+actually drew — came out as a thicket of green wire with no depth in it at all,
+because occlusion and a cast shadow need a surface to fall across and a stick
+model gives them almost nothing. The sphere model is the only one of the two
+this lighting can model. What it costs is the interior, which a spacefill always
+costs.
+
+**Two things the sketch did not have, both visible only in the picture:**
+
+- **CPK is what makes a spacefill read as a rendering.** Hard green carbon
+  against hard red oxygen is the loudest thing in an all-atom frame, and no
+  amount of ground and light gets past it. `painting` registers its own element
+  palette through `define_elements` — warm stone carbon, slate nitrogen, brick
+  oxygen, ochre sulfur, and the iron named so a heme is findable — which is
+  machinery that already existed for the ligand views. It is applied *after* the
+  draw, because a palette has to be registered with the viewer before anything
+  can name it and registering is itself a viewer call; the reported steps say
+  so rather than leaving it implied.
+- **Depth of field was left off.** The sketch allowed "possibly a little".
+  `cinematic` is the view that owns blur, and a figure that quietly defocuses
+  part of the molecule is a cost paid by every caller who did not ask for it.
+
+`ring` versus `studio`: `studio` — a warm key against a cool fill is the closer
+description of how the original was lit, and `ring` is nearly shadowless, which
+throws away the one effect the recipe most depends on.
+
 #### `richardson` — the ribbon diagram
 
 Cartoon, pale flat palette, cel shading at two steps rather than four, a thinner
@@ -686,6 +713,26 @@ and *that* is the argument for two entries rather than a guess at one.
 
 Unlike `painting`, this name is the standard term: a Richardson diagram is what
 these are called, so using it credits her rather than borrowing her.
+
+**Built, and the answer to the overlap is that both stay.** `richardson` and
+`textbook` render measurably differently from each other and from every other
+view in the catalogue, which is what the suite asserts — so neither absorbs the
+other. This section expected one of them to, and building both rather than
+guessing is what settled it.
+
+**The thinner outline does not exist.** Mol\*'s `outline.scale` is
+`min: 1, step: 1` (`mol-canvas3d/passes/outline.js`), and `illustrative` already
+sits at 1, so the floor *is* the default and a smaller number would have been
+clamped and reported as applied — this project's own failure mode, arriving
+through a lever the plan named. The available way to make an edge recede is
+colour: the line is `#4a4a4a`, and the suite measures it, because a substitution
+like that is exactly the kind that silently does nothing.
+
+What the picture turned out to want, and the sketch had not said: `standard`
+lighting rather than `flat`. Two cel bands under a purely ambient rig have
+nothing to band, and the lit-side/shaded-side pair is what makes a ribbon read
+as a drawn object rather than a silhouette. On myoglobin the lit side goes
+nearly white, which is what her drawings look like.
 
 #### Cross-hatching and hedcuts — a capture finish, not a view
 
