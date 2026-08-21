@@ -7,6 +7,39 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`default` is the way back.** Every drawing view hides the scene the load
+  built and replaces the one handle they share, so a run of them left no way to
+  the picture you started from — watched go wrong, eight clicks in. It restores
+  what is *drawn* and leaves lighting and ground alone: a "default" that
+  silently reset carefully built lighting because someone wanted the cartoon
+  back would be a worse surprise than the one it fixes.
+
+- **Three views that take an argument**, which is why they are tools rather
+  than menu entries — a button has nothing to type into.
+
+  `ligand_view("GLC")` takes the name a caller actually has where `active-site`
+  wanted a handle, draws the ligand and the residues lining its pocket, and
+  reports which ligand, how many copies and how many residues line it. Refused
+  when the structure does not contain it, naming what is bound instead.
+
+  `interface_view(a, b)` puts two chains down in flat contrasting colours and
+  brings the contact residues up as sticks. Refused when the chains do not
+  touch, rather than drawing an empty highlight over an ordinary two-colour
+  cartoon — which looks like an interface with nothing in it.
+
+  `mutation_view("A123G,V45L")` draws the positions a mutation would change,
+  **and checks the residue is what the notation says it is.** MCPymol does not,
+  and this is the one worth doing better: a view that highlights the wrong
+  residue because the numbering is offset by a construct tag looks exactly like
+  one that worked. It refuses with "position 1 holds MET, not TRP".
+
+- **A second palette, for whatever the picture is about.** A ligand drawn in
+  the pocket's own grey disappears into the sidechains around it; drawn in
+  Mol\*'s default it comes out chain-coloured brown, which is the thing the
+  palette exists to fix and only looks deliberate by accident. Same colours,
+  warmer carbon.
+
+
 - **A review found fifteen things wrong with the three entries below**, and
   they are fixed rather than filed. The ones worth naming: `define_elements`
   checked a name against the colour registry alone, so `"physical"` — a size

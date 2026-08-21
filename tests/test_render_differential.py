@@ -2204,3 +2204,77 @@ async def test_a_structure_with_nothing_bound_draws_no_ligand():
         await server_mod.preset("textbook")
 
         assert server_mod._LIGAND_HANDLE not in server_mod._handles.names()
+
+
+# -- the views that take an argument -------------------------------------------
+
+
+async def test_a_ligand_view_finds_the_ligand_by_name():
+    """`active-site` already draws this; what a caller has is a name, not a
+    handle. The reply says which ligand and how many copies, because four
+    hemes is a different picture from one and nobody can see the screen."""
+    async with (
+        viewer_session("1anf") as session,
+        _as_server(session, load=True, pdb_id="1anf"),
+    ):
+        before = await _shot(session)
+        out = await server_mod.ligand_view("GLC")
+        after = await _shot(session)
+
+        assert out["ligand"] == "GLC"
+        assert out["copies"] == 2, "maltose is two glucose units"
+        assert out["lining_residues"] > 0
+        # Not `coverage`: this view focuses on the site, so the molecule fills
+        # the frame and the corners stop agreeing on what the background is.
+        assert difference(before, after) > STYLED
+
+
+async def test_a_ligand_that_is_not_there_names_the_ones_that_are():
+    """ "No HEM here" leaves a caller guessing whether they misspelled it or
+    loaded the wrong file. The list settles it in one reply."""
+    async with (
+        viewer_session("1anf") as session,
+        _as_server(session, load=True, pdb_id="1anf"),
+    ):
+        with pytest.raises(ViewerError, match="GLC"):
+            await server_mod.ligand_view("HEM")
+
+
+async def test_a_mutation_view_refuses_a_residue_that_is_not_what_it_claims():
+    """The one thing worth doing better than MCPymol, which does not check.
+
+    A mutation view that highlights the wrong residue because the numbering is
+    offset by a construct tag looks exactly like one that worked — confident
+    either way, with no way for the reader to tell.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        # 1UBQ position 1 is methionine.
+        out = await server_mod.mutation_view("M1A")
+        assert out["verified"][0]["residue"] == "MET"
+
+        with pytest.raises(ViewerError, match="holds MET, not TRP"):
+            await server_mod.mutation_view("W1A")
+
+
+async def test_a_mutation_that_is_not_notation_says_what_notation_is():
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match="not a mutation"):
+            await server_mod.mutation_view("the first one")
+
+
+async def test_default_puts_back_the_picture_the_load_produced():
+    """Watched go wrong: eight views clicked in a row leave no way back,
+    because each hides `auto` and replaces the handle they share."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        loaded = await _shot(session)
+        await server_mod.preset("spacefill")
+        away = await _shot(session)
+        assert difference(loaded, away) > STYLED, "the view changed nothing"
+
+        await server_mod.preset("default")
+        back = await _shot(session)
+
+        assert server_mod._SCENE_HANDLE not in server_mod._handles.names()
+        assert difference(loaded, back) < difference(loaded, away), (
+            "default did not get closer to the picture the load produced"
+        )

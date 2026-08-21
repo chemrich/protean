@@ -326,7 +326,7 @@ otherwise be near-duplicates: `illustrative` is the styling, `textbook` is the
 styling plus the decision about what to draw. Composing them keeps one recipe
 and makes the relationship visible in the reply's `steps`.
 
-### 5.2 The view switcher — stub
+### 5.2 The view switcher — shipped 2026-08-18
 
 Turning one button into several. Depends entirely on how §4 feels: if the
 round-trip is sluggish, the answer is a different UI, not more buttons.
@@ -339,11 +339,15 @@ structure cannot take **refuses and says so on the control**, which is what
 `textbook` on a ligand-only entry already does. Adding a view is now two lines —
 an entry in `_PAGE_VIEWS` and a button that names it.
 
-Still unknown: whether the control is a strip, a menu, or keyboard shortcuts;
-and whether the *styling* presets, which compose rather than replace, want a
-different affordance from the drawing ones. A click that changes the lighting
-and a click that changes the whole picture reading identically is the obvious
-way for this to get confusing.
+**It is a menu**, grouped into what draws, what restyles and what layers on
+top — which answers the affordance question the other way from how it was
+posed: the grouping carries the distinction, so a click that changes lighting
+and a click that changes the whole picture do not read identically. Keyboard
+shortcuts were never needed.
+
+One thing the stub did not anticipate, found by watching someone use it: a run
+of views leaves no way back, because each hides `auto` and replaces the shared
+handle. `default` is the first entry now.
 
 ### 5.3 The rest of the catalogue — planned 2026-08-18
 
@@ -358,9 +362,9 @@ shape and three are recipes over machinery that already exists.
 | view | what it needs |
 |---|---|
 | `plddt` | a colour theme — but **blocked**, see below |
-| `interface` | `interface()` already computes and returns the handles; this colours the two chains and picks out the contact residues |
-| `ligand` | `active-site` already *is* this view. The gap is that it takes a handle where MCPymol takes a residue name |
-| `mutation` | parse `"A123G,V45L"`, select those residues |
+| `interface` | **shipped**: `interface_view(a, b)` |
+| `ligand` | **shipped**: `ligand_view(resn)` |
+| `mutation` | **shipped**: `mutation_view("A123G,V45L")`, and it verifies |
 
 Three further improvements, approved 2026-08-18:
 
@@ -421,9 +425,20 @@ machinery.
 **Tier 3 — genuinely open, and nobody has asked.** `pharmacophore`, for the
 reason §6 predicted and this document then got wrong anyway. Detail in §5.4.
 
-Unknown, still: whether `mutation` should verify the stated residue
-actually matches the structure, which it should, and what it does when it does
-not.
+Answered: `mutation` verifies, and **refuses** when the file disagrees —
+"position 1 holds MET, not TRP" rather than a confident picture of the wrong
+residue. The new residue is not checked, because it is not there.
+
+Two things the tier-1 work turned up that this table did not have:
+
+- **A ligand drawn in the pocket's own colours disappears into it.** There is a
+  second palette — the same colours with a warmer carbon — for whatever the
+  picture is *about*. Before that the maltose came out brown from Mol\*'s
+  chain-id carbon default, which reads acceptably by luck rather than design.
+- **`carbohydrate` is a representation and a colour theme in Mol\***, and the
+  load preset already draws sugars with both. So a bound sugar was visible on
+  load and vanished under `textbook` — the ligand gap was easy to miss for that
+  one class of ligand and obvious for every other.
 
 ### 5.4 Pharmacophore and pLDDT — stub, and cheaper than it says
 
