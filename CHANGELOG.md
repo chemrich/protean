@@ -7,6 +7,45 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`painting` and `richardson`, the last two entries in the catalogue**
+  (docs/views.md §5.9). `painting` is all-atom spheres in a gouache palette
+  over a paper ground, lit with a warm key against a cool fill, occluded,
+  shadowed, and with **no outline at all** — depth from light rather than from
+  line, an homage to Irving Geis and named for the technique rather than the
+  man. `richardson` is the ribbon diagram held back to what Jane Richardson
+  drew: cartoon in one pale tone, cel shaded at two steps rather than four, a
+  grey line, white paper.
+
+  **Four things neither the plan nor the first draft of the tests knew**, each
+  found by looking or by mutation rather than by reasoning:
+
+  - **The thinner outline §5.9 asked for does not exist.** Mol\*'s
+    `outline.scale` is `min: 1, step: 1` and `illustrative` already sits at the
+    floor, so a smaller number would have been clamped and reported as applied.
+    `richardson`'s line is quieter by being grey rather than by being thin.
+  - **`painting` had to be spheres, not sticks.** The plan offered either.
+    Ball-and-stick came out as a thicket of wire with no depth: occlusion and a
+    cast shadow need something to fall across, and a stick model gives them
+    almost nothing. The cost is the interior, which a spacefill always costs.
+  - **The obvious test for "draws no line" is wrong, and convincingly so.**
+    Counting near-black pixels makes `painting` the *darkest* view in the
+    catalogue — 0.0056 of the frame against 0.0017 for the black outline
+    `textbook` really draws — because ambient occlusion and a cast shadow drive
+    the crevices between spheres to near-black. The claim is made against the
+    renderer's own state instead, read out of the page.
+  - **The test written for `richardson`'s grey line could not fail.** It
+    asserted more near-grey than near-black pixels, which is true of a *black*
+    line too: an antialiased black line has a grey halo wider than its core, so
+    `textbook`'s black outline reads 0.0023 grey against 0.00088 black. It
+    passed with the colour mutated back to black. The discriminating number is
+    the absence of near-black, and both halves of the claim are now checked by
+    mutation: against a line that is black, and against no line at all.
+
+  They also settle the question §5.9 left open. `richardson` and `textbook`
+  overlap on paper and do not overlap in pixels: every view in the catalogue
+  now renders measurably differently from every other, so neither absorbs the
+  other and both stay.
+
 - **A review found fifteen things wrong with the views below.** The worst:
   `not metals within X of metals` parses as `not (metals within X of metals)`,
   so `crosslink_view` on a metalloprotein selected everything *not* near a

@@ -3578,6 +3578,81 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
     ]
 
 
+# Gouache rather than CPK. Geis mixed his own colours and the plastic-sphere
+# palette did not exist yet; more to the point, hard green carbon against hard
+# red oxygen is the single loudest thing in an all-atom picture, and it is what
+# makes a spacefill read as a rendering. Warm stone carbon, slate nitrogen and a
+# brick oxygen let the light do the work instead. The iron is named so the heme
+# is findable, though on myoglobin the sphere model buries it — which is the
+# honest behaviour of a spacefill and not something the palette can fix.
+_PAINTING_PALETTE = {
+    "C": "#cdbfa6",
+    "N": "#8397ad",
+    "O": "#b25a4a",
+    "S": "#c8a13c",
+    "P": "#a9825c",
+    "H": "#e8e0d2",
+    "FE": "#8f3222",
+    "X": "#94897b",
+}
+_PAINTING_THEME = "protean-painting"
+
+
+async def _painting_style(_target: str, handle: str) -> list[str]:
+    """Depth carried by light rather than by line — after Irving Geis.
+
+    An homage to how structures were drawn before they were rendered, and not a
+    facsimile: Geis worked in gouache from coordinates on paper, and what can be
+    borrowed here is the set of decisions, not the hand. No outline at all,
+    which is what separates this from every other styled view in the catalogue;
+    form comes from a warm key against a cool fill, occlusion in the crevices
+    and a cast shadow, over a ground that is paper rather than white.
+
+    Named for the technique and not for the man. A view named `geis` would
+    promise more than a recipe can deliver, and his name has no currency as a
+    style term the way `richardson` does.
+    """
+    return [
+        # Not white. A painting has a ground, and pure white makes the matte
+        # atoms read as cut out and pasted on; this is about a quarter of the
+        # way to buff, which is where the cast shadow has somewhere to fall.
+        await _run(background, color="#efe9dc", gradient="off"),
+        await _run(lighting, rig="studio"),
+        await _set_effects(occlusion=True, shadow=True),
+        await _run(shading, style="normal", name=handle),
+        await _run(material, finish="matte", name=handle),
+        # Recoloured after the draw rather than at it, because the palette has
+        # to be registered with the viewer before anything can name it, and
+        # registering is itself a viewer call. The steps say so.
+        await _run(define_elements, name=_PAINTING_THEME, colors=_PAINTING_PALETTE),
+        await _run(color, color=_PAINTING_THEME, name=handle),
+    ]
+
+
+async def _richardson_style(_target: str, handle: str) -> list[str]:
+    """The ribbon diagram's restraint: two tones, a quiet line, white paper.
+
+    Mol\\*'s cartoon already draws arrowed strands and coiled helices, which is
+    Jane Richardson's invention, so almost all of this view is styling held
+    back rather than anything added.
+
+    **The outline cannot be made thinner, and this is where that was found.**
+    §5.9 asked for one; Mol\\*'s outline scale is `min: 1, step: 1`
+    (`mol-canvas3d/passes/outline.js`) and `illustrative` already sits at 1, so
+    the floor is the default and a smaller number would have been clamped and
+    reported as applied. A grey line at scale 1 is the available way to make an
+    edge recede, and it is closer to a drawn line than black is anyway.
+    """
+    return [
+        await _run(background, color="#ffffff", gradient="off"),
+        # Two bands rather than four, which is the whole difference in the
+        # shading: a lit side and a shaded side, the way a wash drawing has.
+        await _run(shading, style="cel", name=handle, cel_steps=2),
+        await _run(lighting, rig="standard"),
+        await _set_effects(outline=True, outline_color="#4a4a4a"),
+    ]
+
+
 @dataclass(frozen=True)
 class _View:
     """What separates one drawing view from another, and nothing else."""
@@ -3645,6 +3720,39 @@ _VIEWS: dict[str, _View] = {
         representation="ball-and-stick",
         color="element-symbol",
         style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    # The two illustration styles of docs/views.md §5.9. Both are drawing views
+    # rather than styling ones, because each is a look *and* the subject that
+    # look was invented for: Geis painted all the atoms, Richardson drew the
+    # fold, and either recipe applied to the other's subject is not the thing.
+    "painting": _View(
+        selection="not solvent",
+        # Spheres, and this was settled by looking at both. Ball-and-stick is
+        # the nearer relative of what Geis actually drew, and on myoglobin it
+        # came out as a thicket of green wire with no depth at all: occlusion
+        # and a cast shadow need something to fall across, and a stick model
+        # gives them almost nothing. The sphere model is the only one of the
+        # two that this lighting can model. What it costs is the interior,
+        # which a spacefill always costs.
+        representation="spacefill",
+        # Mol*'s own, and overwritten a moment later by the style, which
+        # registers the palette it wants and applies it. It has to be a theme
+        # that already exists: `show()` refuses a name the viewer has never
+        # heard of, and a protean palette exists only once something has
+        # registered it.
+        color="element-symbol",
+        style=_painting_style,
+    ),
+    "richardson": _View(
+        selection="polymer",
+        representation="cartoon",
+        # Flat and pale, and one tone for the whole fold. Secondary structure is
+        # already drawn here — arrowed strands, coiled helices — so colouring by
+        # it would say the same thing twice, and saying it in colour is what
+        # `textbook` does. The shape carries it, which is the entire argument of
+        # a ribbon diagram.
+        color="#d8d3c8",
+        style=_richardson_style,
     ),
 }
 
@@ -3762,6 +3870,11 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       spacefill            Every non-solvent atom as a CPK sphere, lit so the
                            packing reads as volume rather than as a blob.
       skeleton             Ball-and-stick over everything but the solvent.
+      painting             All-atom, no outline at all, warm ground, studio
+                           light and a cast shadow. Depth from light rather
+                           than from line — an homage to Irving Geis.
+      richardson           The ribbon diagram: cartoon in one pale tone, cel
+                           shaded at two steps, a grey line, white paper.
 
       Add to what is there:
 
@@ -3854,6 +3967,8 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
     "spacefill": ("spacefill", _VIEW_DRAWS),
     "skeleton": ("skeleton", _VIEW_DRAWS),
+    "painting": ("painting", _VIEW_DRAWS),
+    "richardson": ("richardson", _VIEW_DRAWS),
     "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
     "illustrative": ("illustrative", _VIEW_STYLES),
     "cinematic": ("cinematic", _VIEW_STYLES),
