@@ -48,6 +48,7 @@ class ResidueDeviation:
     seq: int
     comp: str
     deviation: float
+    ins_code: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class ResidueDeviation:
             "seq": self.seq,
             "comp": self.comp,
             "deviation": round(self.deviation, 3),
+            **({"ins_code": self.ins_code} if self.ins_code else {}),
         }
 
 
@@ -101,7 +103,7 @@ class SuperpositionResult:
 
 
 def _every_deviation(
-    target: Any, moved: Any, target_fit: Any, mobile_fit: Any, offsets: Any
+    target: Any, moved: Any, target_fit: Any, offsets: Any
 ) -> list[ResidueDeviation]:
     """How far each residue moved — over the whole correspondence, not the fit.
 
@@ -149,8 +151,17 @@ def _every_deviation(
             )
         )
 
-    if len(full) >= len(offsets):
-        return full
+    # A count is not evidence about which correspondence is right. In
+    # `structural` mode the two proteins may share neither numbering nor most
+    # residue names, and a few dozen chance agreements on chain, number and
+    # name would outnumber a real structural fit — then dominate the domain and
+    # paint the whole molecule red. So the wider set is only preferred when it
+    # also *agrees* with the fit: its residues have to sit about as close as
+    # the fit's own do.
+    if len(full) >= len(offsets) and full:
+        spread = float(np.median([entry.deviation for entry in full]))
+        if spread <= max(float(np.max(offsets)), 1.0):
+            return full
     return [
         ResidueDeviation(
             chain=str(target_fit.chain_id[i]),
@@ -324,7 +335,7 @@ def superpose(
         )
         for i in order
     ]
-    deviations = _every_deviation(target, fitted, target_fit, mobile_fit, offsets)
+    deviations = _every_deviation(target, fitted, target_fit, offsets)
 
     matrix = np.asarray(transform.as_matrix())
     if matrix.ndim > _SINGLE_MATRIX_DIMS:

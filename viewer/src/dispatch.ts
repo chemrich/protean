@@ -771,6 +771,45 @@ export function createDispatcher(plugin: any): Handler {
    */
   const ownFields = new Set<string>();
 
+  /** What each registered palette was built from, so an identical re-register
+   * can be skipped rather than churning the registry under a live component. */
+  const paletteSignatures = new Map<string, string>();
+
+  /** Take a name for one of ours, or refuse it to Mol*.
+   *
+   * Both registries are checked, and checked *before* either is touched. Some
+   * names exist in one and not the other — `physical` is a size theme with no
+   * colour twin — so a guard that consults only the colour registry lets that
+   * name through, and `forgetField` later removes it from **both**, deleting
+   * Mol*'s own size theme from the page for good. Found in review; the field
+   * registrar had this right and the palette registrar, written afterwards,
+   * had a copy of half of it.
+   *
+   * Registering the same name twice throws inside Mol*, and the obvious reason
+   * to do it — correcting a palette or a domain after looking at the result —
+   * would then fail while leaving the wrong version installed. Ours are
+   * replaced.
+   */
+  function claimName(name: string, kind: string) {
+    const themes = plugin.representation?.structure?.themes;
+    for (const [where, registry] of [
+      ['colour', themes?.colorThemeRegistry],
+      ['size', themes?.sizeThemeRegistry],
+    ] as const) {
+      // Asked through `types` rather than `get`, which answers with an empty
+      // provider for a name it does not hold — never falsy, so a check built
+      // on it called every name taken, including ones nobody had registered.
+      if (!registry || !registryNames(registry).includes(name)) continue;
+      if (!ownFields.has(name)) {
+        throw new Error(
+          `'${name}' is one of Mol*'s own ${where} themes and will not be ` +
+            `replaced. Choose another name for the ${kind}.`
+        );
+      }
+    }
+    if (ownFields.has(name)) forgetField(name);
+  }
+
   function forgetField(name: string) {
     const themes = plugin.representation?.structure?.themes;
     for (const registry of [themes?.colorThemeRegistry, themes?.sizeThemeRegistry]) {
@@ -780,6 +819,7 @@ export function createDispatcher(plugin: any): Handler {
       registry.remove(registry.get(name));
     }
     ownFields.delete(name);
+    paletteSignatures.delete(name);
   }
 
   const currentStructure = () => {
@@ -2171,31 +2211,7 @@ export function createDispatcher(plugin: any): Handler {
 
         const themes = plugin.representation.structure.themes;
 
-        // Registering the same name twice throws inside Mol* — and the obvious
-        // reason to do it is to correct a domain after looking at the result,
-        // which would then fail while leaving the wrong one installed. Ours
-        // are replaced instead. A name Mol* owns is refused rather than
-        // replaced, and refused *before* either registry is touched: some
-        // names exist in one registry and not the other (`physical` is a size
-        // theme with no colour twin), so adding first and checking later
-        // leaves half a field behind that nothing can remove.
-        for (const [kind, registry] of [
-          ['colour', themes.colorThemeRegistry],
-          ['size', themes.sizeThemeRegistry],
-        ] as const) {
-          // Asked through `types` rather than `get`, which answers with an
-          // empty provider for a name it does not hold — never falsy, so a
-          // check built on it called every name taken, including the ones
-          // nobody had registered.
-          if (!registryNames(registry).includes(name)) continue;
-          if (!ownFields.has(name)) {
-            throw new Error(
-              `'${name}' is one of Mol*'s own ${kind} themes and will not be ` +
-                'replaced. Choose another name for the field.'
-            );
-          }
-        }
-        if (ownFields.has(name)) forgetField(name);
+        claimName(name, 'field');
 
         themes.colorThemeRegistry.add({
           name,
@@ -2270,13 +2286,19 @@ export function createDispatcher(plugin: any): Handler {
           throw new Error(`Element palette '${name}' carries no colours`);
         }
         const themes = plugin.representation.structure.themes;
-        if (registryNames(themes.colorThemeRegistry).includes(name) && !ownFields.has(name)) {
-          throw new Error(
-            `'${name}' is one of Mol*'s own colour themes and will not be ` +
-              'replaced. Choose another name for the palette.'
-          );
+
+        // Identical to what is already registered? Then leave it alone.
+        // Re-registering removes the provider before adding it back, and a
+        // representation drawn moments earlier still names it — so the
+        // sidechains view, applied after the ligand view, pulled the theme out
+        // from under a live component to put an identical one in its place.
+        // Both views ask for this palette every time they draw, and it is
+        // byte-identical every time.
+        const signature = JSON.stringify(Object.entries(colors).sort());
+        if (paletteSignatures.get(name) === signature && ownFields.has(name)) {
+          return { palette: name, elements: Object.keys(colors).sort(), reused: true };
         }
-        if (ownFields.has(name)) forgetField(name);
+        claimName(name, 'palette');
 
         // Upper-cased on the way in, because `type_symbol` is upper-cased in
         // the file and a palette written as {c: ..., o: ...} would otherwise
@@ -2310,6 +2332,7 @@ export function createDispatcher(plugin: any): Handler {
           isApplicable: () => true,
         });
         ownFields.add(name);
+        paletteSignatures.set(name, signature);
         return { palette: name, elements: Object.keys(table).sort() };
       },
     },

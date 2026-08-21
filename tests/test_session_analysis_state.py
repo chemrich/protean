@@ -202,8 +202,28 @@ async def test_the_viewer_still_restores(tmp_path, viewer):
         str(write_session(tmp_path / "s.protean", data=cif_text()))
     )
 
-    assert viewer.calls == ["load_session"]
+    assert viewer.calls == ["load_session", "define_elements"]
     assert reply["restored"] == ["auto"]
+
+
+async def test_restoring_puts_proteans_own_element_palette_back(tmp_path, viewer):
+    """A snapshot records the *name* of a colour theme, and protean's own are
+    registered by the page rather than shipped by Mol*.
+
+    So a session saved with sidechains showing, reopened in a fresh page, asked
+    Mol* for a theme its registry did not hold — a regression created by giving
+    that view a palette of its own, on the one path where the page starts
+    empty. The palette goes back on restore; a field registered by hand cannot,
+    because a session records theme names and not the numbers behind them, and
+    the reply says so.
+    """
+    reply = await load_session(
+        str(write_session(tmp_path / "s.protean", data=cif_text()))
+    )
+
+    assert "define_elements" in viewer.calls
+    assert reply["element_palette_restored"] is True
+    assert "define_field" in reply["fields_not_restored"]
 
 
 def test_the_format_follows_the_transform_molstar_used():

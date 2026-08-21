@@ -7,6 +7,18 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A review found fifteen things wrong with the three entries below**, and
+  they are fixed rather than filed. The ones worth naming: `define_elements`
+  checked a name against the colour registry alone, so `"physical"` — a size
+  theme with no colour twin — could be claimed and then **deleted from Mol\***
+  by the cleanup path; `superpose`'s deviations dropped insertion codes, so
+  residue 8 could be painted with 8A's motion; registering the field could
+  fail a superposition that had already happened, discarding the rmsd and the
+  transform with it; the ligand stayed on screen when the next view took over,
+  which is the double-draw its own handle exists to prevent; and two identical
+  structures stretched a colour ramp across floating-point noise and painted a
+  speckle that read as a hinge.
+
 - **A view draws what is bound, not only the polymer.** `textbook` and `putty`
   select `polymer`, and a ligand is not polymer — so maltose-binding protein
   came up with no maltose in it, which is most of the reason anyone loads that

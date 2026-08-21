@@ -4,6 +4,7 @@ import {
   colorParams,
   createDispatcher,
   lociOf,
+  atomAt,
   rampColor,
   rotateAbout,
   summarise,
@@ -1681,5 +1682,34 @@ describe('rampColor', () => {
 
   it('handles a single-stop palette without dividing by zero', () => {
     expect(rampColor([0x123456], 0.7)).toBe(0x123456);
+  });
+});
+
+describe('atomAt', () => {
+  // The resolver both registered themes read through. Exported because it is
+  // the piece that was wrong first: a bond location carries `aUnit`/`aIndex`
+  // rather than `unit`/`element`, so every ball-and-stick stick came back as
+  // "no data" until it handled that.
+  const unit = { kind: 0, elements: [10, 11, 12] };
+
+  it('reads an atom location directly', () => {
+    expect(atomAt({ unit, element: 7 })).toEqual({ unit, element: 7 });
+  });
+
+  it('reads the atom at one end of a bond', () => {
+    expect(atomAt({ aUnit: unit, aIndex: 2, bUnit: unit, bIndex: 0 })).toEqual({
+      unit,
+      element: 12,
+    });
+  });
+
+  it('has nothing to say about a coarse unit', () => {
+    // Kind 0 is atomic; a sphere unit indexes spheres, so a per-atom answer
+    // would be about the wrong thing entirely.
+    expect(atomAt({ unit: { ...unit, kind: 1 }, element: 7 })).toBeUndefined();
+  });
+
+  it('has nothing to say about a location that is neither', () => {
+    expect(atomAt({})).toBeUndefined();
   });
 });
