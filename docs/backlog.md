@@ -1386,3 +1386,66 @@ means. Worth settling together.
 The reply does say what happened, which is the difference between this and a
 silent failure. It says it in a note a caller has to read, at the end of a line
 about a successful load.
+
+## Three findings from building the view catalogue, 2026-08-19 to 21
+
+### 36. A structure will not load into a hidden tab — open
+
+`open_viewer` reports "rendering runs on the background-tab pump", and captures
+do work that way: the raf-pump exists precisely because browsers stop
+`requestAnimationFrame` in a background tab and Mol\* needs it to build
+representations.
+
+A **load** does not. Observed twice in a row, with the viewer tab hidden:
+
+```
+Viewer timed out on 'load_structure' after 60s. The viewer tab is hidden:
+browsers pause requestAnimationFrame in background tabs, which Mol* needs to
+build representations. Bring the protean tab to the front and retry.
+```
+
+Two minutes of wall clock for a structure that loads in under a second with the
+tab in front. The error message diagnoses it correctly and says what to do,
+which is why this is a backlog entry rather than a bug — but the pump's claim is
+broader than what it delivers, and the reply that makes the claim is
+`open_viewer`'s, at the start of a session, where it will be read once and
+believed for the rest.
+
+Unknown: whether the pump could carry a load at all, or whether representation
+building needs something a synthetic rAF cannot provide. Worth measuring before
+deciding, because "bring the tab forward" is a fine answer if the alternative is
+a pump that lies less often but still lies.
+
+### 37. One fallback colour, written twice, in two languages — open
+
+`_ELEMENT_PALETTE["X"] = "#b0a8b9"` in `server.py` names the colour an element
+palette paints anything it was not given. `dispatch.ts` writes the same value
+again as `table.X ?? 0xb0a8b9`, because the viewer has to have an answer when a
+palette omits `X` entirely.
+
+Editing one leaves the other silently authoritative for exactly the case nobody
+tests: a caller-supplied palette with no `X` in it. The two agree today because
+they were written in the same hour.
+
+The same shape as the `EFFECT_PARAMS` table, and the reason that one has a
+comment about drift. Fixing it means either sending the fallback with every
+palette — so the viewer never needs a default of its own — or accepting the
+duplication and pinning it with a test that reads both files. The first is
+cleaner and is what the next person should do.
+
+### 38. `_draw_the_ligands` and `_preset_sidechains` were one recipe twice — fixed
+
+Both did: require the structure, evaluate a selection, `np.flatnonzero`,
+`_register`, register the element palette, `show` as ball-and-stick in it.
+Only the selection, the handle and the thickness differed.
+
+Flagged in review on 2026-08-19 and left alone at the time, because that branch
+was already fifteen fixes deep and a refactor on top would have made the diff
+harder to read than the bugs it removed. Folded into `_element_coloured` on
+2026-08-21 when a fourth and fifth caller arrived — and the fourth was where it
+was noticed, because it asked for the palette by name without registering it
+first and was refused.
+
+Recorded because the shape recurs: the moment to fold duplication is when the
+third caller appears, and the cost of waiting is that the third caller is
+usually the one that gets it wrong.
