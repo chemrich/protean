@@ -2332,3 +2332,40 @@ async def test_a_pharmacophore_view_types_a_ligand_and_says_how():
         assert out["features"].get("both", 0) > 0, out["features"]
         assert "inferred" in out
         assert difference(before, after) > STYLED
+
+
+async def test_a_crosslink_view_finds_a_metal_site_without_taking_the_whole_structure():
+    """`not metals within X of metals` parses as `not (metals within X of
+    metals)`, which is everything *not* near a metal — 1260 atoms of 1260 on
+    myoglobin, drawn as ball-and-stick and reported as coordinating.
+
+    Neither structure the other crosslink tests use has a metal, which is why
+    nothing caught it.
+    """
+    async with (
+        viewer_session("1mbn") as session,
+        _as_server(session, load=True, pdb_id="1mbn"),
+    ):
+        out = await server_mod.crosslink_view()
+
+        assert out["metal_atoms"] >= 1
+        total = server_mod._residue_count(
+            server_mod._structure,
+            np.ones(server_mod._structure.array_length(), dtype=bool),
+        )
+        assert out["coordinating_residues"] < total / 2, (
+            "the coordination selection took most of the structure"
+        )
+
+
+async def test_default_takes_away_a_layer_view_too():
+    """`ghost-heart` is one click away and registers a handle of its own, so a
+    "way back" that knew only the scene, ligand and sidechain handles left its
+    translucent surface wrapped around whatever came next."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("ghost-heart")
+        assert any("ghost" in name for name in server_mod._handles.names())
+
+        await server_mod.preset("default")
+
+        assert not any("ghost" in name for name in server_mod._handles.names())

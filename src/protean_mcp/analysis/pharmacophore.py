@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["CLASS_COLOURS", "classify"]
+__all__ = ["CLASS_COLOURS", "UNCLASSIFIED", "classify"]
 
 # Deliberately few. A dozen feature classes is a taxonomy nobody reads off a
 # picture; these four are the ones a person looks for.
@@ -33,8 +33,18 @@ CLASS_COLOURS: dict[str, str] = {
     "donor": "#4ec9c9",  # teal, as nitrogen is in the element palette
     "acceptor": "#c9a0dc",  # mauve, as oxygen is
     "both": "#8fb8e0",  # a hydroxyl does both, and reads as its own thing
-    "hydrophobe": "#d3d3d3",  # light grey, as carbon is
+    # Butterscotch rather than the carbon grey it started as. A greasy carbon
+    # and a carbon that is merely *not* a feature were two near-identical
+    # greys carrying opposite meanings, and on a drug-like ligand the aromatic
+    # ring — the point of the picture — was indistinguishable from the carbons
+    # flanking an amide.
+    "hydrophobe": "#e8b04b",
+    # Not assignable, and listed anyway: it is what an atom with no feature is
+    # painted, and a caller reading the reply could not otherwise decode it.
+    "none": "#9aa0a6",
 }
+
+UNCLASSIFIED = "none"
 
 _POLAR = frozenset({"N", "O"})
 _GREASY = frozenset({"C", "S", "F", "CL", "BR", "I"})
@@ -43,6 +53,19 @@ _GREASY = frozenset({"C", "S", "F", "CL", "BR", "I"})
 _SATURATED_NITROGEN = 3
 # An oxygen with more than one heavy neighbour is an ether or an ester.
 _HYDROXYL_NEIGHBOURS = 1
+
+
+class NoConnectivity(Exception):
+    """Raised when nothing in the atoms to be typed is bonded to anything.
+
+    Not the same as connectivity that happens to say little. `bond_pairs`
+    falls back to residue templates when a file carries no bonds, and a
+    template lookup returns nothing at all for a residue name the dictionary
+    does not know — which is every `UNL` and `LIG`, meaning every docking pose
+    and every novel compound. Typed from element alone each of those comes
+    back with every oxygen a hydroxyl and every carbon greasy, reported with
+    exactly the confidence of a real answer.
+    """
 
 
 def classify(array: Any, atoms: Any, bonds: Any) -> tuple[dict[int, str], dict[str, int]]:
@@ -63,6 +86,11 @@ def classify(array: Any, atoms: Any, bonds: Any) -> tuple[dict[int, str], dict[s
             neighbours[first].append(second)
         if second in wanted:
             neighbours[second].append(first)
+
+    if wanted and not any(neighbours[i] for i in wanted):
+        raise NoConnectivity(
+            "nothing here is bonded to anything, so there is no connectivity to type from"
+        )
 
     elements = np.char.upper(np.asarray(array.element, dtype=str))
     assigned: dict[int, str] = {}

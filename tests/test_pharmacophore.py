@@ -15,7 +15,12 @@ import pytest
 from biotite.structure import Atom
 from biotite.structure import array as atom_array
 
-from protean_mcp.analysis.pharmacophore import CLASS_COLOURS, classify
+from protean_mcp.analysis.pharmacophore import (
+    CLASS_COLOURS,
+    UNCLASSIFIED,
+    NoConnectivity,
+    classify,
+)
 
 
 def _molecule(*atoms: tuple[str, str]) -> Any:
@@ -116,3 +121,24 @@ def test_halogens_count_as_greasy(halogen):
     typed, _ = _typed(molecule, np.array([[0, 1]]))
 
     assert typed["X1"] == "hydrophobe"
+
+
+def test_typing_refuses_when_there_is_no_connectivity_at_all():
+    """`bond_pairs` falls back to residue templates, and a template lookup
+    returns nothing for a name the dictionary does not know — every UNL and
+    LIG, which is every docking pose and every novel compound.
+
+    Typed from element alone, each of those comes back with every oxygen a
+    hydroxyl and every carbon greasy, stated as confidently as a real answer.
+    """
+    unknown = _molecule(("C1", "C"), ("O1", "O"), ("N1", "N"))
+    with pytest.raises(NoConnectivity):
+        classify(unknown, range(3), np.zeros((0, 2), dtype=int))
+
+
+def test_greasy_and_featureless_are_not_the_same_colour():
+    """They started as two near-identical greys carrying opposite meanings. On
+    a drug-like ligand that made the aromatic ring — the point of the picture —
+    indistinguishable from the carbons flanking an amide."""
+    assert CLASS_COLOURS["hydrophobe"] != CLASS_COLOURS[UNCLASSIFIED]
+    assert UNCLASSIFIED in CLASS_COLOURS, "a caller cannot decode a colour it is not told"

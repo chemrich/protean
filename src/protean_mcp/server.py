@@ -49,7 +49,12 @@ from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
 from .analysis.hatching import apply_finish, ink_fraction
-from .analysis.pharmacophore import CLASS_COLOURS, classify
+from .analysis.pharmacophore import (
+    CLASS_COLOURS,
+    UNCLASSIFIED,
+    NoConnectivity,
+    classify,
+)
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.timeline import EASINGS as _EASINGS
@@ -1202,6 +1207,11 @@ async def ligand_view(resn: str, around: float = 5.0) -> dict[str, Any]:
     structure with four copies of a heme is a different picture from one with
     a single site, and a caller cannot see the screen.
     """
+    if around <= 0:
+        raise ViewerError(
+            f"around={around} matches nothing, so this would draw the ligand "
+            "with no pocket around it and report success."
+        )
     array = _require_structure()
     wanted = resn.strip().upper()
     try:
@@ -1223,6 +1233,12 @@ async def ligand_view(resn: str, around: float = 5.0) -> dict[str, Any]:
     lining = _evaluate(
         _parse_selection(f"byres (polymer within {around} of resn {wanted})"), array
     )
+    if not lining.any():
+        raise ViewerError(
+            f"{wanted} is here but nothing lines it within {around} A. Drawing "
+            "an empty pocket handle would report success for a picture with "
+            "nothing in it — raise `around`, or the ligand is on the surface."
+        )
     pocket = f"{site}_pocket"
     _register(pocket, np.flatnonzero(lining), f"ligand_view({wanted})")
 
@@ -1267,11 +1283,18 @@ async def interface_view(chain_a: str, chain_b: str) -> dict[str, Any]:
         )
 
     array = _require_structure()
+    # The load's own scene goes first. Without it these cartoons are drawn over
+    # a chain-coloured copy of the same backbone — two coincident
+    # representations reading as one muddy one, which is what
+    # `_take_the_scene` exists to prevent — and any third chain stays in its
+    # load colours with nothing saying it was not part of the interface.
     steps: list[str] = []
+    with contextlib.suppress(ViewerError):
+        steps.append(await _run(hide, name=_WHOLE_SCENE))
     for chain, colour in ((chain_a, "#7ba7d7"), (chain_b, "#e6a86c")):
         handle = f"chain_{chain}"
         mask = _evaluate(_parse_selection(f"chain {chain} and polymer"), array)
-        _register(handle, np.flatnonzero(mask), f"interface_view({chain},{chain_b})")
+        _register(handle, np.flatnonzero(mask), f"interface_view({chain_a},{chain_b})")
         steps.append(await _run(show, representation="cartoon", handle=handle))
         steps.append(await _run(color, color=colour, name=handle))
 
@@ -1283,11 +1306,16 @@ async def interface_view(chain_a: str, chain_b: str) -> dict[str, Any]:
     return {
         "view": "interface",
         "chains": [chain_a, chain_b],
+        # Counted from masks. `Handle.indices` is an index array, and
+        # `_residue_count` calls `np.flatnonzero` — so passing indices dropped
+        # atom 0 as falsy and treated the rest as positions, returning a
+        # plausible small number about the first N atoms of the structure
+        # rather than about the interface.
         "contact_residues": {
-            "iface_a": _residue_count(array, _handles.get("iface_a").indices),
-            "iface_b": _residue_count(array, _handles.get("iface_b").indices),
+            side: _residue_count(array, _mask_of(array, _handles.get(side).indices))
+            for side in ("iface_a", "iface_b")
         },
-        "buried_area": described.get("buried_area_a2"),
+        "buried_area": described.get("buried_area"),
         "handles": [f"chain_{chain_a}", f"chain_{chain_b}", "iface_a", "iface_b"],
         "steps": steps,
     }
@@ -1423,6 +1451,11 @@ async def pocket_view(resn: str, around: float = 5.0) -> dict[str, Any]:
       what is bound.
     around: how far the lining reaches, in angstroms. Whole residues.
     """
+    if around <= 0:
+        raise ViewerError(
+            f"around={around} matches nothing, so this would draw the ligand "
+            "with no pocket around it and report success."
+        )
     array = _require_structure()
     wanted = resn.strip().upper()
     try:
@@ -1483,7 +1516,13 @@ async def crosslink_view(distance: float = 2.5) -> dict[str, Any]:
     distance: how close two sulfurs must be to count as bonded. 2.5 A is
       generous for a disulfide, whose bond is about 2.05.
     """
-    array = _require_structure()
+    # One conformer, resolved first. A cysteine modelled in two positions has
+    # two SG atoms a fraction of an angstrom apart, well inside any bonding
+    # cutoff, so the raw array reports each such residue as a disulfide with
+    # itself — and a real bridge between two such cysteines as four. Every tool
+    # that reads coordinates resolves a state; this one did not.
+    full = _require_structure()
+    array = full[_conformer_state(full)]
     sulfurs = _evaluate(_parse_selection("resn CYS and name SG"), array)
     indices = np.flatnonzero(sulfurs)
     coords = np.asarray(array.coord)
@@ -1507,7 +1546,14 @@ async def crosslink_view(distance: float = 2.5) -> dict[str, Any]:
     metals = _evaluate(_parse_selection("metals"), array)
     coordinating = (
         _evaluate(
-            _parse_selection(f"byres (not metals within {2 * distance} of metals)"), array
+            # Parenthesised, and the parentheses are the whole thing. `not`
+            # binds looser than `within`, so `not metals within X of metals`
+            # asks for everything that is *not* near a metal — 1260 atoms of
+            # 1260 on myoglobin, which drew the entire structure as
+            # ball-and-stick and called every residue coordinating. Neither
+            # structure the other tests use has a metal, so nothing caught it.
+            _parse_selection(f"byres ((not metals) within {2 * distance} of metals)"),
+            array,
         )
         if metals.any()
         else np.zeros(len(metals), dtype=bool)
@@ -1591,7 +1637,17 @@ async def pharmacophore_view(resn: str) -> dict[str, Any]:
         raise ViewerError(
             f"Cannot type {wanted} without knowing what is bonded to what: {exc}"
         ) from exc
-    assigned, counts = classify(array, indices, bonds)
+    try:
+        assigned, counts = classify(array, indices, bonds)
+    except NoConnectivity as exc:
+        raise ViewerError(
+            f"Cannot type {wanted}: {exc}. The file carries no bonds for it "
+            "and the residue-template dictionary does not know the name — "
+            "which is the case for every UNL and LIG, so a docking pose needs "
+            "its bonds in the file. Typed from element alone this would call "
+            "every oxygen a hydroxyl and say so as confidently as a real "
+            "answer."
+        ) from exc
     if not assigned:
         raise ViewerError(
             f"Nothing in {wanted} typed as a pharmacophore feature — it holds "
@@ -1605,7 +1661,7 @@ async def pharmacophore_view(resn: str) -> dict[str, Any]:
     }
     site = f"pharmacophore_{wanted.lower()}"
     _register(site, indices, f"pharmacophore_view({wanted})")
-    await _call(
+    typed = await _call(
         "define_atom_classes",
         {
             "name": site,
@@ -1615,9 +1671,14 @@ async def pharmacophore_view(resn: str) -> dict[str, Any]:
             },
         },
     )
+    # How many of the typed atoms the viewer could actually find. The theme
+    # registers when *any* key matches, so a partial match paints most of the
+    # ligand the no-feature grey while the counts below still claim every atom
+    # was typed.
+    reached = int(typed.get("matched", 0))
 
-    steps = [
-        await _run(hide, name=_WHOLE_SCENE),
+    _, steps = await _take_the_scene(_WHOLE_SCENE, f"resn {wanted}")
+    steps += [
         await _run(show, representation="ball-and-stick", handle=site, size=0.45),
         await _run(color, color=site, name=site),
         await _run(focus, name=site),
@@ -1627,7 +1688,19 @@ async def pharmacophore_view(resn: str) -> dict[str, Any]:
         "view": "pharmacophore",
         "ligand": wanted,
         "features": counts,
+        "atoms_the_viewer_matched": reached,
+        **(
+            {
+                "partial": (
+                    f"Only {reached} of {len(assigned)} typed atoms were found "
+                    "on screen, so the rest are painted the no-feature grey."
+                )
+            }
+            if reached < len(assigned)
+            else {}
+        ),
         "colours": CLASS_COLOURS,
+        "grey_means": f"no feature here, not unknown ({CLASS_COLOURS[UNCLASSIFIED]})",
         "inferred": (
             "Donor and acceptor come from element and heavy-atom connectivity, "
             "not from hydrogens, which this structure most likely does not "
@@ -1638,20 +1711,23 @@ async def pharmacophore_view(resn: str) -> dict[str, Any]:
     }
 
 
+def _mask_of(array: Any, indices: Any) -> Any:
+    """An index array as a boolean mask over the structure."""
+    mask = np.zeros(array.array_length(), dtype=bool)
+    mask[np.asarray(indices, dtype=int)] = True
+    return mask
+
+
 def _in_residues_of(array: Any, atoms: list[int]) -> Any:
-    """A mask over every atom sharing a residue with one of *atoms*."""
-    keys = {
-        (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
-        for i in atoms
-    }
-    return np.array(
-        [
-            (str(c), int(r), str(ins)) in keys
-            for c, r, ins in zip(
-                array.chain_id, array.res_id, array.ins_code, strict=False
-            )
-        ]
-    )
+    """A mask over every atom sharing a residue with one of *atoms*.
+
+    Through the selection engine's own residue keys rather than a Python loop
+    over three numpy arrays: it is the same question `byres` answers, and a
+    second definition of what makes a residue identity is a second set of
+    answers to it.
+    """
+    keys = _residue_keys(array)
+    return np.isin(keys, keys[np.asarray(atoms, dtype=int)])
 
 
 def _no_such_residue(array: Any, wanted: str) -> str:
@@ -1677,13 +1753,13 @@ def _no_such_residue(array: Any, wanted: str) -> str:
 
 
 def _residue_count(array: Any, mask: Any) -> int:
-    """Residues, not atoms — which is what a caller means by "how many"."""
-    return len(
-        {
-            (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
-            for i in np.flatnonzero(mask)
-        }
-    )
+    """Residues, not atoms — which is what a caller means by "how many".
+
+    Takes a **mask**. Handed an index array it silently counted something else
+    entirely, because `np.flatnonzero` on indices drops atom 0 and reads the
+    rest as positions.
+    """
+    return int(np.unique(_residue_keys(array)[np.asarray(mask, dtype=bool)]).size)
 
 
 @_tool()
@@ -3358,8 +3434,17 @@ async def _preset_default(target: str) -> list[str]:
     # Removed rather than hidden: a hidden component still answers to its
     # handle, so a later `unhide` or a styling call would bring back a picture
     # the caller thought they had put away.
-    for handle in (_SCENE_HANDLE, _LIGAND_HANDLE, _SIDECHAIN_HANDLE):
-        if handle in _handles.names():
+    #
+    # Every handle a view made, not a list of three. The first version named
+    # the scene, the ligand and the sidechains — which was already false when
+    # it was written, because `ghost-heart` is one click away and leaves its
+    # translucent surface wrapped around whatever comes next, and every view
+    # added since registers handles of its own. A view's handles are the ones
+    # whose origin says a view made them, which is a fact the registry already
+    # keeps rather than a list to maintain.
+    for handle in _handles.names():
+        origin = _handles.get(handle).origin
+        if handle == _SCENE_HANDLE or "view" in origin or "preset" in origin:
             with contextlib.suppress(ViewerError):
                 steps.append(await _run(remove, name=handle))
     steps.append(await _run(unhide, name=_WHOLE_SCENE))

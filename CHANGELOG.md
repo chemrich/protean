@@ -7,6 +7,24 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A review found fifteen things wrong with the views below.** The worst:
+  `not metals within X of metals` parses as `not (metals within X of metals)`,
+  so `crosslink_view` on a metalloprotein selected everything *not* near a
+  metal — 1260 atoms of 1260 on myoglobin — drew the whole structure as
+  ball-and-stick and called every residue coordinating. Neither structure in
+  its own tests has a metal, which is why nothing caught it.
+
+  The others, in one line each: `_residue_count` was handed index arrays where
+  it expects masks, so interface contact counts described the first N atoms of
+  the structure; `buried_area_a2` is a key that has never existed, so every
+  interface reply said `null`; disulfide detection paired the two conformers of
+  one cysteine with each other; `pocket` and `pharmacophore` hid the scene by
+  hand and so left `_styleable` pointing at a hidden component; `default` knew
+  three handles when eight views register their own; `define_atom_classes`
+  deleted the theme it was replacing *before* validating; and the
+  pharmacophore's "greasy" and "no feature" colours were two near-identical
+  greys with opposite meanings.
+
 - **`crosslink_view()` picks out what holds a fold together** — cysteine sulfurs
   within bonding distance, plus metals and whatever coordinates them. A
   distance filter over pieces that already existed, as the plan estimated.

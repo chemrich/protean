@@ -2377,9 +2377,26 @@ export function createDispatcher(plugin: any): Handler {
           throw new Error(`Atom classes '${name}' carries no atoms`);
         }
         const themes = plugin.representation.structure.themes;
-        claimName(name, 'atom classes');
 
-        const unclassified = 0x9aa0a6;
+        // Identical to what is already registered? Leave it alone, for the
+        // reason `define_elements` does: re-registering removes the provider
+        // before adding it back, and a representation drawn moments ago still
+        // names it.
+        const signature = JSON.stringify([
+          Object.entries(classes).sort(),
+          Object.entries(colors).sort(),
+        ]);
+        if (paletteSignatures.get(name) === signature && ownFields.has(name)) {
+          return { classes: name, atoms: Object.keys(classes).length, reused: true };
+        }
+
+        // Everything that can refuse, refuses *before* the name is claimed.
+        // `claimName` removes the theme it is replacing, so validating after
+        // it meant a second call whose keys stopped matching — a different
+        // structure loaded, an atom-name mismatch — deleted the working theme
+        // and then threw, leaving a live representation naming one that no
+        // longer exists. `define_field` checks first for exactly this reason.
+        const unclassified = colors.none ?? 0x9aa0a6;
         const structure = rootStructure();
         let matched = 0;
         for (const unit of structure.units) {
@@ -2396,6 +2413,7 @@ export function createDispatcher(plugin: any): Handler {
           );
         }
 
+        claimName(name, 'atom classes');
         themes.colorThemeRegistry.add({
           name,
           label: name,
@@ -2417,6 +2435,7 @@ export function createDispatcher(plugin: any): Handler {
           isApplicable: () => true,
         });
         ownFields.add(name);
+        paletteSignatures.set(name, signature);
         return { classes: name, atoms: Object.keys(classes).length, matched };
       },
     },
