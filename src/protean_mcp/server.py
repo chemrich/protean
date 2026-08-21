@@ -49,6 +49,7 @@ from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
 from .analysis.hatching import apply_finish, ink_fraction
+from .analysis.pharmacophore import CLASS_COLOURS, classify
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.timeline import EASINGS as _EASINGS
@@ -68,7 +69,7 @@ from .handles import summarise as _summarise
 from .handles import to_molscript as _indices_to_molscript
 from .selections import SelectionError
 from .selections import parse as _parse_selection
-from .selections_numpy import _residue_keys
+from .selections_numpy import _residue_keys, bond_pairs
 from .selections_numpy import _widen as _widen_mask
 from .selections_numpy import _within as _within_mask
 from .selections_numpy import conformer_state as _conformer_state
@@ -1402,6 +1403,255 @@ async def mutation_view(mutations: str, chain: str | None = None) -> dict[str, A
         "handle": handle,
         "steps": steps,
     }
+
+
+@_tool()
+async def pocket_view(resn: str, around: float = 5.0) -> dict[str, Any]:
+    """Show the cavity a ligand sits in, as a surface.
+
+    The same lining residues `ligand_view` draws as sticks, drawn as a surface
+    instead — which is what a pocket looks like, and what you want when the
+    question is about shape rather than about which residues touch what.
+
+    **This is not cavity detection.** It shows the pocket around a ligand you
+    name; it cannot find pockets in an apo structure, which is a different and
+    much harder problem needing an algorithm and probably a dependency. The
+    plan for this document called that the hard part and then found that the
+    view everyone actually wants is this one.
+
+    resn: the bound residue whose pocket to show. Refused when absent, naming
+      what is bound.
+    around: how far the lining reaches, in angstroms. Whole residues.
+    """
+    array = _require_structure()
+    wanted = resn.strip().upper()
+    try:
+        found = _evaluate(_parse_selection(f"resn {wanted}"), array)
+    except SelectionError as exc:
+        raise ViewerError(str(exc)) from exc
+    if not found.any():
+        raise ViewerError(_no_such_residue(array, wanted))
+
+    lining = _evaluate(
+        _parse_selection(f"byres (polymer within {around} of resn {wanted})"), array
+    )
+    if not lining.any():
+        raise ViewerError(
+            f"{wanted} is here but nothing lines it within {around} A — it is "
+            "not in a pocket. Raise `around`, or look at it with ligand_view."
+        )
+
+    pocket = f"pocket_{wanted.lower()}"
+    site = f"pocket_{wanted.lower()}_ligand"
+    _register(pocket, np.flatnonzero(lining), f"pocket_view({wanted})")
+    _register(site, np.flatnonzero(found), f"pocket_view({wanted})")
+
+    steps = [
+        await _run(hide, name=_WHOLE_SCENE),
+        await _run(
+            show,
+            representation="molecular-surface",
+            handle=pocket,
+            color="hydrophobicity",
+        ),
+        # Half-transparent, because a pocket you cannot see into is a lump.
+        await _run(opacity, opacity=0.55, name=pocket),
+    ]
+    steps += await _element_coloured(site, 0.4, subject=True)
+    steps.append(await _run(focus, name=site))
+    return {
+        "view": "pocket",
+        "ligand": wanted,
+        "lining_residues": _residue_count(array, lining),
+        "handles": [pocket, site],
+        "steps": steps,
+    }
+
+
+@_tool()
+async def crosslink_view(distance: float = 2.5) -> dict[str, Any]:
+    """Pick out what holds a fold together: disulfides and metal sites.
+
+    Two things, both distance filters over what protean already has rather than
+    new machinery. Cysteine sulfurs within bonding distance of each other are
+    disulfides; metals and whatever they touch are coordination sites.
+
+    Refuses when a structure has neither, rather than drawing a bare cartoon
+    and calling it a crosslink view — the picture would be indistinguishable
+    from one where the search failed.
+
+    distance: how close two sulfurs must be to count as bonded. 2.5 A is
+      generous for a disulfide, whose bond is about 2.05.
+    """
+    array = _require_structure()
+    sulfurs = _evaluate(_parse_selection("resn CYS and name SG"), array)
+    indices = np.flatnonzero(sulfurs)
+    coords = np.asarray(array.coord)
+
+    bridges: list[dict[str, Any]] = []
+    paired: list[int] = []
+    for a_pos, i in enumerate(indices):
+        for j in indices[a_pos + 1 :]:
+            if float(np.linalg.norm(coords[i] - coords[j])) <= distance:
+                paired.extend((int(i), int(j)))
+                bridges.append(
+                    {
+                        "a": f"{array.chain_id[i]} {int(array.res_id[i])}",
+                        "b": f"{array.chain_id[j]} {int(array.res_id[j])}",
+                        "angstroms": round(
+                            float(np.linalg.norm(coords[i] - coords[j])), 2
+                        ),
+                    }
+                )
+
+    metals = _evaluate(_parse_selection("metals"), array)
+    coordinating = (
+        _evaluate(
+            _parse_selection(f"byres (not metals within {2 * distance} of metals)"), array
+        )
+        if metals.any()
+        else np.zeros(len(metals), dtype=bool)
+    )
+
+    if not bridges and not metals.any():
+        raise ViewerError(
+            "No disulfides and no metals here, so there is nothing holding "
+            "this together to draw. A cartoon with nothing picked out would "
+            "look the same as a search that failed."
+        )
+
+    steps = [await _run(preset, name="publication-cartoon")]
+    handles: list[str] = []
+    if bridges:
+        # Whole cysteines, not the sulfurs alone: a bridge drawn as two dots
+        # says where it is and not what it joins.
+        bridge_mask = _evaluate(
+            _parse_selection("byres (resn CYS and name SG)"), array
+        ) & _in_residues_of(array, paired)
+        _register("disulfides", np.flatnonzero(bridge_mask), "crosslink_view()")
+        handles.append("disulfides")
+        steps += await _element_coloured("disulfides", 0.35, subject=True)
+    if metals.any():
+        _register(
+            "metal_sites", np.flatnonzero(metals | coordinating), "crosslink_view()"
+        )
+        handles.append("metal_sites")
+        steps += await _element_coloured("metal_sites", 0.3)
+
+    steps.append(await _run(opacity, opacity=0.25, name=_styleable(_WHOLE_SCENE)))
+    return {
+        "view": "crosslink",
+        "disulfides": bridges,
+        "metal_atoms": int(metals.sum()),
+        "coordinating_residues": _residue_count(array, coordinating),
+        "handles": handles,
+        "steps": steps,
+    }
+
+
+@_tool()
+async def pharmacophore_view(resn: str) -> dict[str, Any]:
+    r"""Colour a ligand's atoms by what each can do: donate, accept, or be greasy.
+
+    A pharmacophore is a claim about what a site *wants*. It is not a list of
+    contacts, which is what this document's plan twice assumed Mol\*'s
+    `interactions` extension could provide — it computes interactions between
+    atoms and cannot type one ligand's atoms at all.
+
+    **The typing is inferred, not measured, and the reply says which rules
+    fired.** Most crystal structures carry no hydrogens, so donor and acceptor
+    cannot be read off the file; they follow from element and heavy-atom
+    connectivity, the same rules a chemist applies by eye and wrong in the same
+    places. An oxygen with one heavy neighbour is a hydroxyl and does both; with
+    two it is an ether and only accepts. A nitrogen with three heavy neighbours
+    has no hydrogen left to give.
+
+    Argue with the counts in the reply rather than trusting the picture: it
+    looks equally confident whichever rule fired.
+
+    Grey means "no feature here", not "unknown" — a carbon next to an oxygen
+    is part of a polar group rather than a greasy patch, so a sugar comes out
+    almost entirely oxygens with grey carbons between them. That is the right
+    answer for a sugar and would be the wrong-looking one for a drug, where
+    the aromatic ring is the point and shows as hydrophobe.
+    """
+    array = _require_structure()
+    wanted = resn.strip().upper()
+    try:
+        found = _evaluate(_parse_selection(f"resn {wanted}"), array)
+    except SelectionError as exc:
+        raise ViewerError(str(exc)) from exc
+    if not found.any():
+        raise ViewerError(_no_such_residue(array, wanted))
+
+    indices = np.flatnonzero(found)
+    try:
+        bonds = bond_pairs(array)
+    except SelectionError as exc:
+        raise ViewerError(
+            f"Cannot type {wanted} without knowing what is bonded to what: {exc}"
+        ) from exc
+    assigned, counts = classify(array, indices, bonds)
+    if not assigned:
+        raise ViewerError(
+            f"Nothing in {wanted} typed as a pharmacophore feature — it holds "
+            "no polar or greasy atoms this can recognise."
+        )
+
+    keyed = {
+        f"{array.chain_id[i]}|{int(array.res_id[i])}|"
+        f"{str(array.ins_code[i]).strip()}|{array.atom_name[i]}": feature
+        for i, feature in assigned.items()
+    }
+    site = f"pharmacophore_{wanted.lower()}"
+    _register(site, indices, f"pharmacophore_view({wanted})")
+    await _call(
+        "define_atom_classes",
+        {
+            "name": site,
+            "classes": keyed,
+            "colors": {
+                feature: int(colour[1:], 16) for feature, colour in CLASS_COLOURS.items()
+            },
+        },
+    )
+
+    steps = [
+        await _run(hide, name=_WHOLE_SCENE),
+        await _run(show, representation="ball-and-stick", handle=site, size=0.45),
+        await _run(color, color=site, name=site),
+        await _run(focus, name=site),
+        await _run(lighting, rig="studio"),
+    ]
+    return {
+        "view": "pharmacophore",
+        "ligand": wanted,
+        "features": counts,
+        "colours": CLASS_COLOURS,
+        "inferred": (
+            "Donor and acceptor come from element and heavy-atom connectivity, "
+            "not from hydrogens, which this structure most likely does not "
+            "carry. Rules of thumb, reported so they can be argued with."
+        ),
+        "handle": site,
+        "steps": steps,
+    }
+
+
+def _in_residues_of(array: Any, atoms: list[int]) -> Any:
+    """A mask over every atom sharing a residue with one of *atoms*."""
+    keys = {
+        (str(array.chain_id[i]), int(array.res_id[i]), str(array.ins_code[i]))
+        for i in atoms
+    }
+    return np.array(
+        [
+            (str(c), int(r), str(ins)) in keys
+            for c, r, ins in zip(
+                array.chain_id, array.res_id, array.ins_code, strict=False
+            )
+        ]
+    )
 
 
 def _no_such_residue(array: Any, wanted: str) -> str:

@@ -2278,3 +2278,57 @@ async def test_default_puts_back_the_picture_the_load_produced():
         assert difference(loaded, back) < difference(loaded, away), (
             "default did not get closer to the picture the load produced"
         )
+
+
+async def test_a_pocket_view_draws_a_surface_around_what_is_bound():
+    """The same lining `ligand_view` draws as sticks, drawn as a surface —
+    which is what a pocket looks like when the question is about shape."""
+    async with (
+        viewer_session("1anf") as session,
+        _as_server(session, load=True, pdb_id="1anf"),
+    ):
+        before = await _shot(session)
+        out = await server_mod.pocket_view("GLC")
+        after = await _shot(session)
+
+        assert out["lining_residues"] > 0
+        assert difference(before, after) > STYLED
+
+
+async def test_a_crosslink_view_refuses_a_structure_with_nothing_holding_it():
+    """1UBQ has no disulfides and no metals. A cartoon with nothing picked out
+    looks the same as a search that failed."""
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        with pytest.raises(ViewerError, match="No disulfides and no metals"):
+            await server_mod.crosslink_view()
+
+
+async def test_a_crosslink_view_finds_the_disulfides_that_are_there():
+    """Lysozyme has four, which is why it is the structure in every textbook
+    chapter about them."""
+    async with (
+        viewer_session("2lyz") as session,
+        _as_server(session, load=True, pdb_id="2lyz"),
+    ):
+        out = await server_mod.crosslink_view()
+
+        assert len(out["disulfides"]) == 4, out["disulfides"]
+        assert all(bridge["angstroms"] < 2.5 for bridge in out["disulfides"])
+
+
+async def test_a_pharmacophore_view_types_a_ligand_and_says_how():
+    """The typing is inferred rather than read — most crystal structures carry
+    no hydrogens — so the reply carries the counts and says which rules fired.
+    """
+    async with (
+        viewer_session("1anf") as session,
+        _as_server(session, load=True, pdb_id="1anf"),
+    ):
+        before = await _shot(session)
+        out = await server_mod.pharmacophore_view("GLC")
+        after = await _shot(session)
+
+        # A sugar is hydroxyls and ring carbons: mostly "both", some acceptor.
+        assert out["features"].get("both", 0) > 0, out["features"]
+        assert "inferred" in out
+        assert difference(before, after) > STYLED

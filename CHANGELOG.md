@@ -7,6 +7,36 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`crosslink_view()` picks out what holds a fold together** — cysteine sulfurs
+  within bonding distance, plus metals and whatever coordinates them. A
+  distance filter over pieces that already existed, as the plan estimated.
+  Refuses a structure with neither: a cartoon with nothing picked out looks the
+  same as a search that failed. Four disulfides on lysozyme, all under 2.5 A.
+
+- **`pocket_view(resn)` shows the cavity a ligand sits in**, as a
+  half-transparent surface over the lining residues with the ligand inside.
+  **Not cavity detection** — it shows the pocket around a ligand you name and
+  cannot find one in an apo structure, which is an algorithm and probably a
+  dependency. The plan called that the hard part, then found the view everyone
+  actually wants is this one.
+
+- **`pharmacophore_view(resn)` types a ligand's atoms by what each can do.** It
+  cost what the plan finally said it would, after two wrong estimates: Mol\*'s
+  `interactions` extension computes interactions *between* atoms and cannot
+  type one ligand's atoms at all. Both halves are new — chemical typing from
+  element and heavy-atom connectivity, and **per-atom categorical colouring**,
+  a third kind of registered theme now that fields are per-residue scalars and
+  palettes are per-element.
+
+  **The typing is inferred, not measured, and the reply says so.** Most crystal
+  structures carry no hydrogens, so an oxygen with one heavy neighbour is
+  treated as a hydroxyl that both donates and accepts, and one with two as an
+  ether that only accepts. Rules of thumb, wrong where a chemist would be wrong
+  — and the picture looks equally confident whichever fired, which is why the
+  counts come back with it. Twelve tests pin the rules against molecules whose
+  answer chemistry already gives.
+
+
 - **`default` is the way back.** Every drawing view hides the scene the load
   built and replaces the one handle they share, so a run of them left no way to
   the picture you started from — watched go wrong, eight clicks in. It restores

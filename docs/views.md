@@ -413,17 +413,29 @@ mutation view that silently highlights the wrong residue because the numbering
 is offset is this project's failure mode wearing a lab coat. MCPymol does not
 check.
 
-**Tier 2 — small analysis from pieces that exist.**
+**Tier 2 — small analysis from pieces that exist. Shipped 2026-08-21.**
 
-`crosslink` is disulfides and metal coordination: cysteine SG pairs inside
-bonding distance, plus metals and what they touch. protean has a `metals`
-selection keyword and `near()`, so this is a distance filter rather than new
-machinery.
+`crosslink_view()` is disulfides and metal coordination: cysteine SG pairs
+inside bonding distance, plus metals and what they touch — a distance filter
+over the `metals` keyword rather than new machinery, as estimated. It refuses a
+structure with neither, because a cartoon with nothing picked out looks the
+same as a search that failed. Four disulfides on lysozyme, all under 2.5 A.
 
-`pocket` belongs here too, **and that is a correction to §5.5 below.**
+`pocket_view(resn)` is the lining as a half-transparent surface with the ligand
+inside it. Tier 2 as §5.5's correction said, and **not** cavity detection,
+which stays unbuilt and unasked for.
 
-**Tier 3 — genuinely open, and nobody has asked.** `pharmacophore`, for the
-reason §6 predicted and this document then got wrong anyway. Detail in §5.4.
+**Tier 3 — `pharmacophore`, shipped 2026-08-21, and it cost what §5.4 said it
+would.** Both halves had to be built, because the estimate that they did was
+the one thing this document got right about it after getting it wrong twice:
+per-atom chemical typing from element and heavy-atom connectivity, and per-atom
+*categorical* colouring — a third kind of registered theme, since fields are
+per-residue scalars and palettes are per-element.
+
+The honest part is the one worth keeping: most crystal structures carry no
+hydrogens, so donor and acceptor are **inferred rather than read**, and the
+reply says which rules fired. A picture of a typing decision looks equally
+confident whichever rule produced it.
 
 Answered: `mutation` verifies, and **refuses** when the file disagrees —
 "position 1 holds MET, not TRP" rather than a confident picture of the wrong
@@ -512,7 +524,7 @@ The hard thing is real cavity detection: finding pockets *without being told
 where to look*, which is an algorithm and probably a dependency (fpocket and
 its kin). That is still genuinely open — and **nobody has asked for it**, which
 is the more useful half of this correction. The version people want is the
-cheap one.
+cheap one, and it shipped 2026-08-21 as `pocket_view(resn)`.
 
 ### 5.6 Dynamics — decided, and the decision is to not build it
 

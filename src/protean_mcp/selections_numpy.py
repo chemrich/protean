@@ -858,6 +858,17 @@ def _compare(node: Compare, array: AtomArray[Any]) -> Mask:
     return np.asarray(values != node.value)
 
 
+def bond_pairs(array: AtomArray[Any]) -> Mask:
+    """Every bond as a pair of atom indices, for callers outside this module.
+
+    The typing a pharmacophore needs is about connectivity, and the derivation
+    — file bonds when present, residue templates otherwise, cross-conformer
+    bonds dropped — is subtle enough that a second copy would be a second set
+    of answers. Public rather than reached for through the underscore.
+    """
+    return _bond_pairs(array)
+
+
 def _bond_pairs(array: AtomArray[Any]) -> Mask:
     """Every bond as a pair of atom indices.
 
