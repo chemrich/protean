@@ -1029,6 +1029,199 @@ def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
     )
 
 
+# The palette an all-atom view uses unless told otherwise.
+#
+# Not CPK. Mol*'s CPK reds and blues fight a secondary-structure cartoon, and
+# the carbons come out chain-coloured, so a sidechain drawn over a ribbon looks
+# like a different molecule. These are quieter and chosen to sit on one:
+# Charlie's brief was a light grey carbon and "a tacky 90s pastel palette",
+# which is a better description of what reads well next to a cartoon than
+# anything more principled would be.
+_ELEMENT_PALETTE: dict[str, str] = {
+    "C": "#d3d3d3",  # light grey — the backbone of every organic molecule
+    "N": "#4ec9c9",  # teal
+    "O": "#c9a0dc",  # mauve
+    "S": "#e97451",  # burnt sienna
+    "P": "#f2c14e",  # butterscotch, for nucleic acids and phosphates
+    "H": "#ececec",
+    "X": "#b0a8b9",  # anything unlisted, so a metal is never invisible
+}
+
+_ELEMENT_THEME = "protean-elements"
+
+# Every symbol a palette may name, plus "X" for the fallback. Taken from the
+# periodic table rather than from what protean has happened to meet, so an
+# unusual metal is a colour someone can set rather than a refusal.
+_KNOWN_ELEMENTS = frozenset(
+    {"X"}
+    | {
+        symbol.upper()
+        for symbol in [
+            "H",
+            "He",
+            "Li",
+            "Be",
+            "B",
+            "C",
+            "N",
+            "O",
+            "F",
+            "Ne",
+            "Na",
+            "Mg",
+            "Al",
+            "Si",
+            "P",
+            "S",
+            "Cl",
+            "Ar",
+            "K",
+            "Ca",
+            "Sc",
+            "Ti",
+            "V",
+            "Cr",
+            "Mn",
+            "Fe",
+            "Co",
+            "Ni",
+            "Cu",
+            "Zn",
+            "Ga",
+            "Ge",
+            "As",
+            "Se",
+            "Br",
+            "Kr",
+            "Rb",
+            "Sr",
+            "Y",
+            "Zr",
+            "Nb",
+            "Mo",
+            "Tc",
+            "Ru",
+            "Rh",
+            "Pd",
+            "Ag",
+            "Cd",
+            "In",
+            "Sn",
+            "Sb",
+            "Te",
+            "I",
+            "Xe",
+            "Cs",
+            "Ba",
+            "La",
+            "Ce",
+            "Pr",
+            "Nd",
+            "Pm",
+            "Sm",
+            "Eu",
+            "Gd",
+            "Tb",
+            "Dy",
+            "Ho",
+            "Er",
+            "Tm",
+            "Yb",
+            "Lu",
+            "Hf",
+            "Ta",
+            "W",
+            "Re",
+            "Os",
+            "Ir",
+            "Pt",
+            "Au",
+            "Hg",
+            "Tl",
+            "Pb",
+            "Bi",
+            "Po",
+            "At",
+            "Rn",
+            "Fr",
+            "Ra",
+            "Ac",
+            "Th",
+            "Pa",
+            "U",
+            "Np",
+            "Pu",
+            "Am",
+            "Cm",
+            "Bk",
+            "Cf",
+            "Es",
+            "Fm",
+            "Md",
+            "No",
+            "Lr",
+        ]
+    }
+)
+
+# The field `superpose` registers, so a caller can paint divergence directly.
+_DEVIATION_FIELD = "deviation"
+
+# The target half of a superposed pair, which is the copy the field describes.
+_SUPERPOSED_TARGET = "superposed_target"
+
+# Below this, in angstroms, two structures have not moved relative to each
+# other and a ramp fitted to the range would be painting rounding error.
+_DEVIATION_FLOOR = 0.05
+
+
+@_tool()
+async def define_elements(
+    name: str = _ELEMENT_THEME, colors: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Register a colour theme that paints each element a colour you choose.
+
+    Mol* cannot do this. Its `element-symbol` theme takes exactly one
+    parameter, `carbonColor`, and every other element comes from a fixed CPK
+    table with no way in — so carbon can be changed and oxygen, nitrogen and
+    sulfur cannot. An all-atom view that has to sit on a cartoon needs all of
+    them.
+
+    Registered like any field: `color(name)` applies it afterwards, and it
+    appears in capabilities() beside Mol*'s own.
+
+    colors: element symbol to hex, e.g. {"C": "#d3d3d3", "O": "#c9a0dc"}.
+      Omitted, protean's own palette is used — light grey carbon with teal
+      nitrogen, mauve oxygen and burnt sienna sulfur, chosen to sit quietly
+      next to a secondary-structure cartoon rather than to match CPK.
+      "X" names the colour for anything not listed, so an unusual metal is
+      never invisible.
+    """
+    # `colors or ...` treated an explicitly empty dict as "use the default",
+    # so a caller who filtered one down to nothing got seven elements they had
+    # not asked for and a success reply naming them.
+    chosen = _ELEMENT_PALETTE if colors is None else colors
+    if not chosen:
+        raise ViewerError(f"Palette {name!r} was given no colours")
+    packed: dict[str, int] = {}
+    for element, value in chosen.items():
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise ViewerError(
+                f"{element}: {value!r} is not a colour. Hex like '#c9a0dc', "
+                "six digits, because a near-miss paints black without saying so."
+            )
+        # A name rather than a symbol registers cleanly and paints the whole
+        # molecule the fallback colour, which is the "succeeds and shows one
+        # flat thing" failure the rest of this file refuses.
+        if element.upper() not in _KNOWN_ELEMENTS:
+            raise ViewerError(
+                f"{element!r} is not an element symbol. Use 'C' rather than "
+                "'Carbon'; 'X' names the colour for everything unlisted."
+            )
+        packed[element] = int(value[1:], 16)
+    return await _call("define_elements", {"name": name, "colors": packed})
+
+
 @_tool()
 async def size(size: str, name: str = "sele") -> dict[str, Any]:
     """Set what decides the *width* of an already-displayed selection.
@@ -2622,23 +2815,56 @@ async def _preset_sidechains(target: str) -> list[str]:
     del target
     array = _require_structure()
     try:
-        mask = _evaluate(_parse_selection("sidechain and not solvent"), array)
+        # The alpha carbon comes along, and it is not a detail. `sidechain` is
+        # "polymer and not backbone", and CA is backbone — so drawing the
+        # selection alone gives sticks that begin at CB with no bond back to
+        # anything, floating beside the ribbon they belong to. Including CA
+        # gives each one the bond that attaches it.
+        # Asked twice, and the two questions are different. Whether there is
+        # anything to draw is about sidechain atoms; what gets drawn includes
+        # the alpha carbons that anchor them. Conflating the two broke the
+        # refusal the moment CA joined the drawing — every polymer has one, so
+        # glycine, whose sidechain is a hydrogen, started reporting success
+        # for a view of nothing but anchors.
+        present = _evaluate(_parse_selection("sidechain and not solvent"), array)
+        # `byres sidechain` is what makes this right for both polymers and
+        # for glycine. Anchoring on "every polymer CA" drew a lone unbonded
+        # ball for every glycine — whose sidechain is a hydrogen, so it
+        # contributes an anchor and nothing to anchor — and left nucleic acids
+        # exactly as they were, bases floating off a sugar that is backbone.
+        # Restricted to residues that actually contribute a sidechain atom,
+        # and taking each polymer's own anchor: CA for protein, C1' for
+        # nucleic.
+        mask = _evaluate(
+            _parse_selection(
+                "(sidechain or (byres sidechain and (name CA or name C1'))) "
+                "and not solvent"
+            ),
+            array,
+        )
     except SelectionError as exc:  # pragma: no cover - the grammar is fixed
         raise ViewerError(str(exc)) from exc
-    indices = np.flatnonzero(mask)
-    if not len(indices):
+    if not present.any():
         raise ViewerError(
-            "Nothing here has a sidechain — a nucleic acid or a bare backbone "
-            "has none to draw."
+            "Nothing here has a sidechain to draw — a bare backbone, or "
+            "nothing but glycine, whose sidechain is a hydrogen."
         )
+    indices = np.flatnonzero(mask)
     _register(_SIDECHAIN_HANDLE, indices, "preset(sidechains)")
+    steps = [await _run(define_elements)]
     return [
+        *steps,
         await _run(
             show,
             representation="ball-and-stick",
             handle=_SIDECHAIN_HANDLE,
-            color="element-symbol",
-        )
+            color=_ELEMENT_THEME,
+            # Mol*'s own default is 0.15, which drew hairlines against a
+            # cartoon and read as noise. Picked by looking at 0.15, 0.22 and
+            # 0.3 side by side: 0.4 was tried first and buried the ribbon
+            # completely, which is the opposite failure and just as useless.
+            size=0.22,
+        ),
     ]
 
 
@@ -2722,6 +2948,23 @@ class _View:
     color: str
     style: Any
 
+    @property
+    def draws_ligands(self) -> bool:
+        """Does this view need what is bound drawn separately?
+
+        Derived rather than declared. It was a hand-kept boolean for one
+        review's length, and in that time it was already wrong:
+        `hydrophobic-surface` selects `polymer` like the other two and nobody
+        set its flag, so a surface of maltose-binding protein still had no
+        maltose in it. A field that restates the field two lines above it will
+        drift again.
+
+        The all-atom views take `not solvent` and have the ligand already;
+        drawing it again would put a second, differently-styled copy inside
+        the first.
+        """
+        return self.selection == "polymer"
+
 
 _VIEWS: dict[str, _View] = {
     # `illustrative` is the styling half of textbook and stays a preset in its
@@ -2767,6 +3010,47 @@ _VIEWS: dict[str, _View] = {
 }
 
 
+_LIGAND_HANDLE = "auto_ligand"
+
+
+async def _draw_the_ligands(target: str) -> list[str]:
+    """Draw whatever is bound, for the views whose selection would drop it.
+
+    `textbook` and `putty` select `polymer`, and a ligand is not polymer — so
+    maltose-binding protein came up with no maltose in it, which is most of the
+    reason anyone loads that structure. Reported by looking at a picture and
+    asking where the sugar was.
+
+    Solvent stays out: a crystal structure's waters are most of its non-polymer
+    atoms and none of its point. Under its own handle so it survives the next
+    view taking the scene, and drawn in the same element palette the sidechains
+    use so the two agree.
+    """
+    if target != _WHOLE_SCENE:
+        return []  # a handle names what to draw; nothing is implied alongside it
+    array = _require_structure()
+    try:
+        mask = _evaluate(_parse_selection("not polymer and not solvent"), array)
+    except SelectionError as exc:  # pragma: no cover - the grammar is fixed
+        raise ViewerError(str(exc)) from exc
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return []
+    _register(_LIGAND_HANDLE, indices, "view(ligand)")
+    return [
+        await _run(define_elements),
+        await _run(
+            show,
+            representation="ball-and-stick",
+            handle=_LIGAND_HANDLE,
+            color=_ELEMENT_THEME,
+            # Thicker than the sidechains: a ligand is the subject when it is
+            # there, and should not be mistaken for one more sidechain.
+            size=0.35,
+        ),
+    ]
+
+
 async def _draw_view(name: str, target: str) -> list[str]:
     """Take the scene, draw the view through it, style it, then frame it."""
     view = _VIEWS[name]
@@ -2776,6 +3060,17 @@ async def _draw_view(name: str, target: str) -> list[str]:
             show, representation=view.representation, handle=handle, color=view.color
         )
     )
+    if view.draws_ligands:
+        steps += await _draw_the_ligands(target)
+    elif _LIGAND_HANDLE in _handles.names():
+        # The scene handle is hidden when a view takes over, and the ligand
+        # has its own — so switching from `textbook` to `spacefill` left the
+        # ball-and-stick maltose inside the new spheres, and to
+        # `hydrophobic-surface` left sticks poking through a surface the
+        # ligand is meant to be inside. Exactly the double-draw the ligand
+        # handle exists to avoid, one view later.
+        with contextlib.suppress(ViewerError):
+            steps.append(await _run(hide, name=_LIGAND_HANDLE))
     steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
@@ -3296,6 +3591,17 @@ async def load_session(path: str) -> dict[str, Any]:
         "load_session",
         {"snapshot": snapshot, "handles": document.get("handles", {})},
     )
+    # A restored snapshot names its colour themes, and protean's own are
+    # registered by the page rather than shipped by Mol* — so a session saved
+    # with sidechains on, reopened in a fresh page, asked for a theme the
+    # registry did not hold. The element palette is put back here. A field
+    # registered by hand before saving is not: its numbers are the caller's
+    # and this file never had them, which the reply says rather than leaving
+    # the grey to be discovered.
+    palette_restored = False
+    with contextlib.suppress(ViewerError):
+        await define_elements()
+        palette_restored = True
     # Both halves, or neither. The viewer now holds the session's molecule; if
     # the analysis kept the one loaded before, every measurement afterwards
     # would describe a different structure from the picture and say nothing
@@ -3310,6 +3616,12 @@ async def load_session(path: str) -> dict[str, Any]:
         "created": document.get("created"),
         **result,
         "analysis": analysis + discarded,
+        "element_palette_restored": palette_restored,
+        "fields_not_restored": (
+            "A session records theme names, not the numbers behind them, so a "
+            "field registered with define_field() before saving is gone. "
+            "Register it again to colour by it."
+        ),
         **agreement,
     }
 
@@ -3415,6 +3727,14 @@ async def superpose(
     RMSD alone hides whether the disagreement is spread out or concentrated in
     one loop.
 
+    With show=True it also registers a **deviation field** and a handle for
+    the target copy, and the reply says how to use them. That is the readable
+    way to look at a pair: two structures in two colours interleave where they
+    agree and look no different where they do not, whereas one copy painted by
+    how far the other moved shows the motion itself. The field covers every
+    residue the two share rather than the ones the fit kept — on a hinge
+    motion those are the residues that did *not* move.
+
     show: load the superposed pair into the viewer as one structure, with the
       mobile coordinates already moved into the target's frame. This replaces
       whatever was loaded, and selections afterwards address both halves.
@@ -3516,6 +3836,62 @@ async def _display_superposition(
     viewer = await _send_structure(combined, f"{target}+{mobile}")
     ours = int(combined.array_length())
     theirs = viewer.get("atom_count")
+
+    # A superposed pair drawn in two colours is the picture everyone reaches
+    # for and it is close to unreadable: where the two agree the backbones
+    # interleave at the same depth and read as a mottle of both colours, and
+    # where they disagree looks the same. What you actually want to see is
+    # *how far* each residue moved, painted onto one copy — so it is registered
+    # here, ready for `color("deviation")`, rather than left as an exercise.
+    deviation_field = None
+    field_error = None
+    registered: dict[str, Any] | None = None
+    # By the time this runs the session has been discarded, the globals
+    # replaced and the pair sent to the viewer. A colouring aid that raises
+    # would therefore fail a superposition that already happened — losing the
+    # rmsd, the transform and the outliers, while the viewer shows the result
+    # of the work being reported as an error. It is an aid; it reports its own
+    # failure and leaves the analysis alone.
+    furthest = max((entry.deviation for entry in result.deviations), default=0.0)
+    if result.deviations and furthest > _DEVIATION_FLOOR:
+        try:
+            registered = await define_field(
+                _DEVIATION_FIELD,
+                [entry.as_dict() for entry in result.deviations],
+                key="deviation",
+                palette="white-red",
+                domain=[0.0, furthest],
+            )
+        except ViewerError as exc:
+            registered = None
+            field_error = str(exc)
+    if result.deviations and furthest <= _DEVIATION_FLOOR:
+        # Stretching a ramp over floating-point noise paints a random red
+        # speckle that reads as a hinge. Two structures that do not differ
+        # should say so.
+        field_error = (
+            f"No deviation field: the two differ by at most {furthest:.3g} A, "
+            "which is nothing to paint."
+        )
+    if registered is not None:
+        kept = np.flatnonzero(np.isin(combined.chain_id, list(taken)))
+        _register(_SUPERPOSED_TARGET, kept, "superpose(target)")
+        deviation_field = {
+            "name": _DEVIATION_FIELD,
+            "residues": registered.get("matched"),
+            "target_handle": _SUPERPOSED_TARGET,
+            "how": (
+                f'hide("auto"), then show(handle="{_SUPERPOSED_TARGET}", '
+                f'representation="cartoon") and color("{_DEVIATION_FIELD}", '
+                f'name="{_SUPERPOSED_TARGET}"). That paints one copy by how far '
+                "the other moved — white where they agree, red at the hinge — "
+                "which is legible where two interleaved colours are not. "
+                "Measured over every residue the two share, not only the ones "
+                "the fit kept: on a hinge motion the fit discards exactly the "
+                "residues that moved."
+            ),
+        }
+
     return {
         "displayed": True,
         "structure": _structure_identifier,
@@ -3525,6 +3901,8 @@ async def _display_superposition(
         "atoms": ours,
         "viewer_atom_count": theirs,
         "agree": theirs is None or int(theirs) == ours,
+        **({"deviation_field": deviation_field} if deviation_field else {}),
+        **({"deviation_field_unavailable": field_error} if field_error else {}),
         "note": (
             "The loaded structure is now the superposed pair, so selections and "
             "analysis address both. The mobile copy is in the target's frame; "

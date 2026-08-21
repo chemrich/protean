@@ -7,6 +7,74 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **A review found fifteen things wrong with the three entries below**, and
+  they are fixed rather than filed. The ones worth naming: `define_elements`
+  checked a name against the colour registry alone, so `"physical"` — a size
+  theme with no colour twin — could be claimed and then **deleted from Mol\***
+  by the cleanup path; `superpose`'s deviations dropped insertion codes, so
+  residue 8 could be painted with 8A's motion; registering the field could
+  fail a superposition that had already happened, discarding the rmsd and the
+  transform with it; the ligand stayed on screen when the next view took over,
+  which is the double-draw its own handle exists to prevent; and two identical
+  structures stretched a colour ramp across floating-point noise and painted a
+  speckle that read as a hinge.
+
+- **A view draws what is bound, not only the polymer.** `textbook` and `putty`
+  select `polymer`, and a ligand is not polymer — so maltose-binding protein
+  came up with no maltose in it, which is most of the reason anyone loads that
+  structure. Non-solvent hetero is drawn alongside, under its own handle and in
+  the same element palette the sidechains use. Solvent stays out: a crystal
+  structure's waters are most of its non-polymer atoms and none of its point.
+
+- **`superpose()` registers a field of how far each residue moved.** A
+  superposed pair drawn in two colours is close to unreadable — where the two
+  agree the backbones interleave at one depth and read as a mottle of both, and
+  where they disagree looks no different. Painting one copy by the distance the
+  other moved says the thing the picture was for.
+
+  **Measured over every residue the two share, not the ones the fit kept**, and
+  the difference is the whole point. `superimpose_homologs` discards outliers
+  to find its transform, and on a hinge motion the residues it discards are
+  exactly the ones that moved: superposing the open and closed states of
+  maltose-binding protein keeps 185 residues of 370, and the 185 are the half
+  that stayed put. A field built from the fit paints the rigid lobe and leaves
+  the hinge blank. Residues are matched by chain, number *and* name — two
+  structures numbered differently would otherwise pair off residues that are
+  not the same residue and report the mismatch as motion.
+
+  A handle for the target copy is registered with it, because the mobile copy
+  carries no value and colouring the whole scene paints half of it the no-data
+  grey.
+
+- **Sidechains are attached to the molecule now.** They floated: `sidechain` is
+  "polymer and not backbone" and the alpha carbon *is* backbone, so every stick
+  began at CB with no bond back to anything — a cloud of fragments beside the
+  ribbon they belong to. The view draws the anchor as well. The selection
+  keyword is untouched, because its definition is right; only what this view
+  draws changed.
+
+  That broke the refusal, and a test caught it before it shipped: every polymer
+  has an alpha carbon, so "does this have sidechains" became always true and
+  glycine — whose sidechain is a hydrogen — would have reported success for a
+  view of nothing but anchors. What exists and what is drawn are now asked
+  separately.
+
+- **An element palette you can choose, because Mol\* has none.** Its
+  `element-symbol` theme takes exactly one parameter, `carbonColor`; oxygen,
+  nitrogen and sulfur come from a fixed CPK table with no way in. So an
+  all-atom view could not be made to agree with the cartoon under it.
+  `define_elements()` registers a theme that reads the element symbol, and the
+  sidechains view uses it: light grey carbon, teal nitrogen, mauve oxygen,
+  burnt sienna sulfur, and a fallback colour so an unusual metal is never
+  invisible. Chosen to sit quietly next to a secondary-structure cartoon rather
+  than to match CPK.
+
+- **And they are thicker.** Mol\*'s default of 0.15 drew hairlines that read as
+  noise. 0.22, picked by rendering three widths and looking; 0.4 was tried
+  first and buried the ribbon completely, which is the opposite failure and
+  just as useless.
+
+
 - **`snapshot(finish="hedcut")` redraws a capture in ink.** Tone becomes line:
   the image is banded by brightness and each band filled with strokes, more of
   them where it is darker, the way an engraving carries shading without any

@@ -174,6 +174,24 @@ declare global {
  * Mol* resolves preset names internally, but a ColorList *value* has to carry
  * real colours, so they are spelled out here.
  */
+/** The atom a theme should read, whatever shape of location it was handed.
+ *
+ * Three arrive and only one is the obvious one. An atom location carries
+ * `unit`/`element`; a *bond* location carries `aUnit`/`aIndex` instead, which
+ * is what ball-and-stick sticks are — read the atom at one end, the way Mol*'s
+ * own themes do, or every stick comes back as "no data". And a coarse unit's
+ * `elements` index spheres rather than atoms, so nothing per-atom can be said
+ * about it: `Unit.Kind.Atomic` is 0, and anything else has no answer to give.
+ */
+export function atomAt(location: any): { unit: any; element: number } | undefined {
+  const unit = location.unit ?? location.aUnit;
+  const element =
+    location.element ??
+    (location.aUnit ? location.aUnit.elements[location.aIndex] : undefined);
+  if (!unit || element === undefined || unit.kind !== 0) return undefined;
+  return { unit, element };
+}
+
 /** Interpolate a palette at `t` in [0, 1], returning Mol*'s packed colour int.
  *
  * Mol* has colour-list machinery of its own, but it is not reachable from the
@@ -753,6 +771,45 @@ export function createDispatcher(plugin: any): Handler {
    */
   const ownFields = new Set<string>();
 
+  /** What each registered palette was built from, so an identical re-register
+   * can be skipped rather than churning the registry under a live component. */
+  const paletteSignatures = new Map<string, string>();
+
+  /** Take a name for one of ours, or refuse it to Mol*.
+   *
+   * Both registries are checked, and checked *before* either is touched. Some
+   * names exist in one and not the other — `physical` is a size theme with no
+   * colour twin — so a guard that consults only the colour registry lets that
+   * name through, and `forgetField` later removes it from **both**, deleting
+   * Mol*'s own size theme from the page for good. Found in review; the field
+   * registrar had this right and the palette registrar, written afterwards,
+   * had a copy of half of it.
+   *
+   * Registering the same name twice throws inside Mol*, and the obvious reason
+   * to do it — correcting a palette or a domain after looking at the result —
+   * would then fail while leaving the wrong version installed. Ours are
+   * replaced.
+   */
+  function claimName(name: string, kind: string) {
+    const themes = plugin.representation?.structure?.themes;
+    for (const [where, registry] of [
+      ['colour', themes?.colorThemeRegistry],
+      ['size', themes?.sizeThemeRegistry],
+    ] as const) {
+      // Asked through `types` rather than `get`, which answers with an empty
+      // provider for a name it does not hold — never falsy, so a check built
+      // on it called every name taken, including ones nobody had registered.
+      if (!registry || !registryNames(registry).includes(name)) continue;
+      if (!ownFields.has(name)) {
+        throw new Error(
+          `'${name}' is one of Mol*'s own ${where} themes and will not be ` +
+            `replaced. Choose another name for the ${kind}.`
+        );
+      }
+    }
+    if (ownFields.has(name)) forgetField(name);
+  }
+
   function forgetField(name: string) {
     const themes = plugin.representation?.structure?.themes;
     for (const registry of [themes?.colorThemeRegistry, themes?.sizeThemeRegistry]) {
@@ -762,6 +819,7 @@ export function createDispatcher(plugin: any): Handler {
       registry.remove(registry.get(name));
     }
     ownFields.delete(name);
+    paletteSignatures.delete(name);
   }
 
   const currentStructure = () => {
@@ -2103,17 +2161,9 @@ export function createDispatcher(plugin: any): Handler {
         const fraction = (v: number) => (span > 0 ? Math.min(1, Math.max(0, (v - low) / span)) : 0.5);
 
         const lookup = (location: any): number | undefined => {
-          // Three shapes arrive here, and only one of them is the obvious one.
-          // An atom location carries `unit`/`element`; a *bond* location
-          // carries `aUnit`/`aIndex` instead, which is what ball-and-stick
-          // sticks are — read the atom at one end, the way Mol*'s own themes
-          // do. And a coarse unit's `elements` index spheres rather than
-          // atoms, so its residue index is meaningless: `Unit.Kind.Atomic` is
-          // 0, and anything else has no per-residue answer to give.
-          const unit = location.unit ?? location.aUnit;
-          const element =
-            location.element ?? (location.aUnit ? location.aUnit.elements[location.aIndex] : undefined);
-          if (!unit || element === undefined || unit.kind !== 0) return undefined;
+          const at = atomAt(location);
+          if (!at) return undefined;
+          const { unit, element } = at;
           const h = unit.model.atomicHierarchy;
           const ri = h.residueAtomSegments.index[element];
           const ci = h.chainAtomSegments.index[element];
@@ -2161,31 +2211,7 @@ export function createDispatcher(plugin: any): Handler {
 
         const themes = plugin.representation.structure.themes;
 
-        // Registering the same name twice throws inside Mol* — and the obvious
-        // reason to do it is to correct a domain after looking at the result,
-        // which would then fail while leaving the wrong one installed. Ours
-        // are replaced instead. A name Mol* owns is refused rather than
-        // replaced, and refused *before* either registry is touched: some
-        // names exist in one registry and not the other (`physical` is a size
-        // theme with no colour twin), so adding first and checking later
-        // leaves half a field behind that nothing can remove.
-        for (const [kind, registry] of [
-          ['colour', themes.colorThemeRegistry],
-          ['size', themes.sizeThemeRegistry],
-        ] as const) {
-          // Asked through `types` rather than `get`, which answers with an
-          // empty provider for a name it does not hold — never falsy, so a
-          // check built on it called every name taken, including the ones
-          // nobody had registered.
-          if (!registryNames(registry).includes(name)) continue;
-          if (!ownFields.has(name)) {
-            throw new Error(
-              `'${name}' is one of Mol*'s own ${kind} themes and will not be ` +
-                'replaced. Choose another name for the field.'
-            );
-          }
-        }
-        if (ownFields.has(name)) forgetField(name);
+        claimName(name, 'field');
 
         themes.colorThemeRegistry.add({
           name,
@@ -2240,6 +2266,74 @@ export function createDispatcher(plugin: any): Handler {
           palette: palette ?? 'blue-white-red',
           sizes: [thin, thick],
         };
+      },
+    },
+
+    /** Register a colour theme that reads the element, from a palette given here.
+     *
+     * Mol* cannot do this. Its `element-symbol` theme has exactly one
+     * parameter — `carbonColor` — and every other element comes from a fixed
+     * CPK table with no way in. So carbons can be recoloured and oxygen,
+     * nitrogen and sulfur cannot, which is not enough to make an all-atom view
+     * agree with the cartoon it sits on.
+     *
+     * Same shape as `define_field`: registered by name, applied through
+     * `color()` afterwards, replaced rather than duplicated on a second call.
+     */
+    define_elements: {
+      async run({ name, colors }: { name: string; colors: Record<string, number> }) {
+        if (!Object.keys(colors).length) {
+          throw new Error(`Element palette '${name}' carries no colours`);
+        }
+        const themes = plugin.representation.structure.themes;
+
+        // Identical to what is already registered? Then leave it alone.
+        // Re-registering removes the provider before adding it back, and a
+        // representation drawn moments earlier still names it — so the
+        // sidechains view, applied after the ligand view, pulled the theme out
+        // from under a live component to put an identical one in its place.
+        // Both views ask for this palette every time they draw, and it is
+        // byte-identical every time.
+        const signature = JSON.stringify(Object.entries(colors).sort());
+        if (paletteSignatures.get(name) === signature && ownFields.has(name)) {
+          return { palette: name, elements: Object.keys(colors).sort(), reused: true };
+        }
+        claimName(name, 'palette');
+
+        // Upper-cased on the way in, because `type_symbol` is upper-cased in
+        // the file and a palette written as {c: ..., o: ...} would otherwise
+        // register cleanly and colour nothing.
+        const table: Record<string, number> = {};
+        for (const [element, value] of Object.entries(colors)) {
+          table[element.toUpperCase()] = value;
+        }
+        const fallback = table.X ?? 0xb0a8b9;
+
+        themes.colorThemeRegistry.add({
+          name,
+          label: name,
+          category: 'Misc',
+          factory: () => ({
+            factory: () => {},
+            granularity: 'group',
+            color: (location: any) => {
+              const at = atomAt(location);
+              if (!at) return fallback;
+              const symbol = at.unit.model.atomicHierarchy.atoms.type_symbol.value(
+                at.element
+              );
+              return table[String(symbol).toUpperCase()] ?? fallback;
+            },
+            props: {},
+            description: `protean element palette '${name}'`,
+          }),
+          getParams: () => ({}),
+          defaultValues: {},
+          isApplicable: () => true,
+        });
+        ownFields.add(name);
+        paletteSignatures.set(name, signature);
+        return { palette: name, elements: Object.keys(table).sort() };
       },
     },
 

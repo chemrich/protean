@@ -21,6 +21,7 @@ from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
+from protean_mcp.analysis.superposition import ResidueDeviation
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
 from protean_mcp.selections_numpy import (
@@ -1073,10 +1074,18 @@ class _FakeFetched:
 
 
 class _FakeResult:
-    """A superposition result carrying a known transform."""
+    """A superposition result carrying a known transform.
 
-    def __init__(self, matrix: Any) -> None:
+    `deviations` is empty rather than absent: these tests are about the
+    transform and the chain bookkeeping, and an empty list is the honest
+    stand-in for "this superposition found nothing to paint" — which the
+    caller has to handle anyway, since a pair with no aligned residues is a
+    real outcome.
+    """
+
+    def __init__(self, matrix: Any, deviations: list[Any] | None = None) -> None:
         self.transform = matrix
+        self.deviations = deviations or []
 
 
 async def _combine(
@@ -1762,6 +1771,7 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "select",
         "hide",
         "reset_view",
+        "define_elements",
     ):
 
         def handle(args, action=action):
@@ -2944,4 +2954,64 @@ async def test_rmsf_residues_carry_the_insertion_code_they_were_grouped_by(
     assert len(entries) == 2
     assert keyed == {"A|100|", "A|100|A"}, (
         "both residues came back under the same key, so one silently wins"
+    )
+
+
+async def test_a_glycine_still_refuses_once_the_anchors_are_drawn(wired_bridge, tmp_path):
+    """Glycine's sidechain is a hydrogen, so there is nothing to draw — and the
+    view now draws alpha carbons as well, which every polymer has.
+
+    Conflating "is there anything to show" with "what do we show" broke this
+    the moment the anchor joined the drawing: the mask stopped being empty and
+    a structure with no sidechains started reporting a view of nothing but
+    anchors. Caught by this test rather than by looking, which is the whole
+    reason it was written.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="has a sidechain"):
+        await preset("sidechains")
+
+
+async def test_a_palette_refuses_an_element_name_that_is_not_a_symbol():
+    """ "Carbon" is well-formed hex away from being right, and would register
+    cleanly and paint the whole molecule the fallback colour — the "succeeds
+    and shows one flat thing" failure the rest of this file refuses."""
+    with pytest.raises(ViewerError, match="not an element symbol"):
+        await server_mod.define_elements(colors={"Carbon": "#d3d3d3"})
+
+
+async def test_an_explicitly_empty_palette_is_not_the_default_one():
+    """`colors or _ELEMENT_PALETTE` handed a caller who had filtered a dict
+    down to nothing seven elements they never asked for, and called it a
+    success."""
+    with pytest.raises(ViewerError, match="no colours"):
+        await server_mod.define_elements(colors={})
+
+
+def test_a_deviation_carries_its_insertion_code():
+    """8 and 8A are different residues. Without the code they collapse onto one
+    key — either tripping define_field's duplicate refusal with an error about
+    rmsf, raised from superpose, or painting 8 with 8A's motion."""
+    plain = ResidueDeviation(chain="A", seq=8, comp="GLY", deviation=1.0)
+    inserted = ResidueDeviation(chain="A", seq=8, comp="SER", deviation=2.0, ins_code="A")
+
+    assert "ins_code" not in plain.as_dict()
+    assert inserted.as_dict()["ins_code"] == "A"
+    keys = {
+        f"{d.as_dict()['chain']}|{d.as_dict()['seq']}|{d.as_dict().get('ins_code', '')}"
+        for d in (plain, inserted)
+    }
+    assert len(keys) == 2, "the two residues share a key, so one overwrites"
+
+
+def test_the_ligand_flag_follows_the_selection_rather_than_a_boolean():
+    """It was a hand-kept flag for one review's length and was already wrong in
+    that time: `hydrophobic-surface` selects `polymer` like the others and
+    nobody set it, so a surface of maltose-binding protein still had no
+    maltose."""
+    drawn = {name: view.draws_ligands for name, view in server_mod._VIEWS.items()}
+
+    assert drawn["textbook"] and drawn["putty"] and drawn["hydrophobic-surface"]
+    assert not drawn["spacefill"] and not drawn["skeleton"], (
+        "an all-atom view already has the ligand; drawing it twice nests copies"
     )

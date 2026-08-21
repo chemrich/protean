@@ -48,6 +48,7 @@ class ResidueDeviation:
     seq: int
     comp: str
     deviation: float
+    ins_code: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class ResidueDeviation:
             "seq": self.seq,
             "comp": self.comp,
             "deviation": round(self.deviation, 3),
+            **({"ins_code": self.ins_code} if self.ins_code else {}),
         }
 
 
@@ -67,6 +69,16 @@ class SuperpositionResult:
     mobile_chains: list[str]
     target_chains: list[str]
     outliers: list[ResidueDeviation]
+
+    deviations: list[ResidueDeviation]
+    """Every aligned residue, not just the worst — and keyed on the *target*.
+
+    The picture this is for is one structure painted by how far the other
+    moved, which needs a value for every residue rather than a top twenty. It
+    carries the target's chain and number because the mobile copy is renamed
+    when the two are combined, so a field keyed on the mobile names would match
+    nothing on screen.
+    """
     mode: str = "sequence"
     #: Which conformer state each side was reduced to, empty when it had no
     #: alternates. Reported for the same reason every other analysis reports
@@ -88,6 +100,77 @@ class SuperpositionResult:
             "target_chains": self.target_chains,
             "outliers": [d.as_dict() for d in self.outliers],
         }
+
+
+def _every_deviation(
+    target: Any, moved: Any, target_fit: Any, offsets: Any
+) -> list[ResidueDeviation]:
+    """How far each residue moved — over the whole correspondence, not the fit.
+
+    The fit is the wrong set to report. `superimpose_homologs` discards
+    outliers to find the transform, and on a hinge motion the residues it
+    discards are exactly the ones that moved: superposing the two states of
+    maltose-binding protein keeps 185 residues of 370, and the 185 are the
+    half that did not move. A field built from them paints the rigid lobe in
+    shades of red and leaves the hinge blank, which is the opposite of the
+    picture someone wanted.
+
+    So the deviations are measured over every residue the two structures share
+    by chain, number *and* name, using the transform the fit produced. The name
+    has to match too: two structures numbered differently would otherwise pair
+    off residues that are not the same residue and report the mismatch as
+    motion.
+
+    Falls back to the fitted set when that correspondence is smaller — which is
+    the honest answer when the numbering does not correspond at all.
+    """
+    # One atom per residue, and the alpha carbon is the one everybody means by
+    # "how far did this residue move". `protein_atoms` keeps every amino-acid
+    # atom, so without this each residue would appear a dozen times — which the
+    # duplicate-key guard in `define_field` catches, loudly, rather than
+    # averaging behind our backs.
+    target_ca = target[target.atom_name == "CA"]
+    moved_ca = moved[moved.atom_name == "CA"]
+
+    by_key: dict[tuple[str, int], Any] = {}
+    for i in range(moved_ca.array_length()):
+        by_key[(str(moved_ca.chain_id[i]), int(moved_ca.res_id[i]))] = i
+
+    full: list[ResidueDeviation] = []
+    for i in range(target_ca.array_length()):
+        key = (str(target_ca.chain_id[i]), int(target_ca.res_id[i]))
+        j = by_key.get(key)
+        if j is None or str(moved_ca.res_name[j]) != str(target_ca.res_name[i]):
+            continue
+        full.append(
+            ResidueDeviation(
+                chain=key[0],
+                seq=key[1],
+                comp=str(target_ca.res_name[i]),
+                deviation=float(np.linalg.norm(target_ca.coord[i] - moved_ca.coord[j])),
+            )
+        )
+
+    # A count is not evidence about which correspondence is right. In
+    # `structural` mode the two proteins may share neither numbering nor most
+    # residue names, and a few dozen chance agreements on chain, number and
+    # name would outnumber a real structural fit — then dominate the domain and
+    # paint the whole molecule red. So the wider set is only preferred when it
+    # also *agrees* with the fit: its residues have to sit about as close as
+    # the fit's own do.
+    if len(full) >= len(offsets) and full:
+        spread = float(np.median([entry.deviation for entry in full]))
+        if spread <= max(float(np.max(offsets)), 1.0):
+            return full
+    return [
+        ResidueDeviation(
+            chain=str(target_fit.chain_id[i]),
+            seq=int(target_fit.res_id[i]),
+            comp=str(target_fit.res_name[i]),
+            deviation=float(offsets[i]),
+        )
+        for i in range(len(offsets))
+    ]
 
 
 def parse_structure(text: str, fmt: str) -> AtomArray[Any]:
@@ -252,6 +335,7 @@ def superpose(
         )
         for i in order
     ]
+    deviations = _every_deviation(target, fitted, target_fit, offsets)
 
     matrix = np.asarray(transform.as_matrix())
     if matrix.ndim > _SINGLE_MATRIX_DIMS:
@@ -265,6 +349,7 @@ def superpose(
         mobile_chains=sorted({str(c) for c in mobile.chain_id}),
         target_chains=sorted({str(c) for c in target.chain_id}),
         outliers=outliers,
+        deviations=deviations,
         mode=mode,
         mobile_conformer=mobile_conformer,
         target_conformer=target_conformer,
