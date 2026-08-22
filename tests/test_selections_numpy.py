@@ -6,12 +6,14 @@ transpiler on real structures is covered by the differential suite.
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 import numpy as np
 import pytest
 from biotite.structure import Atom, AtomArray
 from biotite.structure import array as atom_array
+from biotite.structure.io.pdbx import CIFFile
 
 from protean_mcp import selections_numpy
 from protean_mcp.analysis import secondary_structure
@@ -19,6 +21,7 @@ from protean_mcp.analysis.secondary_structure import _Backbone, _bridges, _conti
 from protean_mcp.selections import SelectionError
 from protean_mcp.selections_numpy import (
     _SS_CLASSES,
+    _has_assembly,
     _residue_keys,
     load_structure,
     residue_labels,
@@ -1261,3 +1264,58 @@ def test_the_cache_does_not_grow_without_bound(ideal_helix):
         moved.coord = moved.coord * (1.0 + scale)
         secondary_structure.assign(moved)
     assert len(secondary_structure._cache) <= secondary_structure._CACHE_ENTRIES
+
+
+class TestAFileWithNoAssembly:
+    """Predicted models declare no biological assembly, and asking for one
+    used to take the analysis half down while the viewer drew the file.
+
+    Reported as backlog 34: every AlphaFold model loaded with "analysis
+    unavailable: File has no 'pdbx_struct_assembly_gen' category", so
+    selections and every analysis tool were gone on exactly the structures
+    `plddt` exists for.
+    """
+
+    def test_the_default_falls_back_instead_of_failing(self):
+        loaded = load_structure(_cif(_TWO_AND_THREE), "mmcif", "biological")
+
+        assert loaded.array.array_length() > 0
+        assert loaded.assembly == "asymmetric"
+        assert loaded.copies == 1
+
+    def test_it_says_which_it_got_rather_than_implying_an_assembly(self):
+        """ "biological" and "asymmetric" coincide here only because there is
+        one structure's worth of file, and a caller cannot see that from the
+        atom count alone."""
+        loaded = load_structure(_cif(_TWO_AND_THREE), "mmcif", "biological")
+
+        assert "no biological assembly" in loaded.note
+
+    def test_asking_for_the_asymmetric_unit_is_unchanged(self):
+        """The fallback must not become a second, differently-shaped path."""
+        fallback = load_structure(_cif(_TWO_AND_THREE), "mmcif", "biological")
+        direct = load_structure(_cif(_TWO_AND_THREE), "mmcif", "asymmetric")
+
+        assert fallback.array.array_length() == direct.array.array_length()
+        # Empty, not None: `note` defaults to "", so `is not None` would be
+        # true of every structure ever loaded and assert nothing.
+        assert direct.note == ""
+
+    def test_the_check_reads_the_category_not_an_error_message(self):
+        """`_has_assembly` is what decides, and it has to be able to say yes.
+
+        A guard that always answered "no" would pass every test above while
+        silently disabling assembly building for every deposited structure in
+        the process — so this pins both answers.
+        """
+        without = CIFFile.read(io.StringIO(_cif(_TWO_AND_THREE)))
+        assert _has_assembly(without) is False
+
+        with_category = _cif(_TWO_AND_THREE) + (
+            "loop_\n"
+            "_pdbx_struct_assembly_gen.assembly_id\n"
+            "_pdbx_struct_assembly_gen.oper_expression\n"
+            "_pdbx_struct_assembly_gen.asym_id_list\n"
+            "1 1 A\n"
+        )
+        assert _has_assembly(CIFFile.read(io.StringIO(with_category))) is True
