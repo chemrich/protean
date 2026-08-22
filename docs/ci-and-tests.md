@@ -107,6 +107,57 @@ returns inert data. And the proposed completeness check, diffing
 `canvas3d.props`, is blind to the screenshot helper's own values, the camera
 pose, the theme registries, and the dispatcher's closure state.
 
+## Lowering capture supersampling on CI — built, measured, not taken
+
+Kept here because it was built and measured rather than argued about, and
+because the measurement is the interesting part.
+
+**The mechanism.** A capture builds its own ImagePass at `sampleLevel: 4` — 16
+samples — via `mol-plugin/util/viewport-screenshot.js`. Mol\*'s `imagePass`
+getter re-applies `cameraHelper`, `transparentBackground`, `postprocessing`,
+`marking` and `illumination` on every access but deliberately leaves
+`multiSample` alone, so a level set once after the pass exists survives every
+later capture in the session. That makes it a purely test-side knob: touch
+`plugin.helpers.viewportScreenshot.imagePass`, then `setProps({multiSample:
+{mode: 'on', sampleLevel: N}})` over CDP from `tests/browser.py`, gated on an
+environment variable. **No production code changes and nothing protean ships is
+affected.**
+
+**What it buys, and it is far less than the per-capture figure suggests:**
+
+```
+per capture   sampleLevel 4  3.86 s      sampleLevel 2  1.01 s    3.8x
+whole file    sampleLevel 4  28:09       sampleLevel 2  22:25     1.25x
+```
+
+That gap is the point. **A 3.8x speedup on captures is a 20% speedup on the
+job**, because captures are a minority of wall time even in the
+capture-heaviest file — the rest is scene building, draws, settling and session
+launches. Anyone reaching for this lever from the per-capture ratio alone will
+overestimate it by about three times, which is the same part-for-whole error
+that produced the first version of this document.
+
+**What it costs: bit-exact capture reproducibility.** Of 160 tests only one
+fails at level 2, and it is the one that cannot cancel out.
+`test_going_back_to_a_frame_reproduces_it_exactly` asserts that revisiting a
+trajectory frame is bit-identical; at level 2 it differs by a single pixel,
+exceeding the comparison tolerance. Measured 3/3 failing at level 2 and 3/3
+passing at level 4 — caused, not flaky.
+
+Every other threshold held, and the reason is worth stating: `DISTINCT`,
+`STYLED` and `RELIT` compare two frames captured *the same way*, so a uniform
+sampling change cancels. Only a claim about exactness cannot.
+
+Keeping CI green at level 2 therefore means skipping that test on CI, which
+leaves the determinism guarantee enforced nowhere — a poor trade for 20%, on a
+tool whose product is a picture.
+
+**The lead worth following instead.** That reproducibility depends on sample
+count at all is suspicious: it suggests a capture reads before something has
+finished settling, and more samples merely hide it. That may be the same defect
+as backlog 40's doubled capture cost. If it is, fixing it would remove this
+lever's only objection — which is a better outcome than spending the guarantee.
+
 ## The rule this document exists to enforce
 
 **Measure the whole thing, on the machine that runs it.**
