@@ -1478,12 +1478,21 @@ other at a tolerance of 8, and the exact-equality tests compare two captures
 taken the same way, so they are indifferent to the level. Dropping to
 `sampleLevel: 2` would make every capture in the suite ~3.8x cheaper.
 
-It is not free, and the cost is the reason it is filed rather than done: it
-shifts about 1% of pixels, and several thresholds in
-`test_render_differential.py` sit at 0.008 to 0.01. Every one of them would
-need re-measuring against the new baseline, which is precisely the
-recalibration item 24 warns about for window size. Worth doing deliberately,
-with the thresholds re-derived rather than nudged.
+**Charlie's decision, 2026-08-22: do not change the sample level.** Recorded
+here so the measurement above is not read as a recommendation and the lever is
+not re-proposed by whoever finds this table next.
+
+The cost is why. It shifts about 1% of pixels, and several thresholds in
+`test_render_differential.py` sit at 0.008 to 0.01 — so every one of them would
+need re-deriving against a new baseline, which is exactly the recalibration
+item 24 warns about for window size, and this project has already shipped one
+threshold calibrated against a contaminated baseline. Buying a faster suite by
+loosening what the suite can see is the wrong trade for a tool whose product is
+a picture.
+
+The measurement stays on file because it explains *where* a capture's time
+goes, which is what makes the Mol\* regression above tractable — not because
+the level should move.
 
 **Measure with repeats, not once.** Runner variance on this job is about 40%:
 the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes as a push
