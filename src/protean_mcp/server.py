@@ -48,6 +48,12 @@ from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
+from .analysis.exposure import (
+    BURIED_BELOW,
+    EXPOSED_ABOVE,
+    ExposureError,
+    residue_exposure,
+)
 from .analysis.hatching import apply_finish, ink_fraction
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
@@ -1007,6 +1013,29 @@ def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
     is ambiguous and says so rather than picking.
     """
     if key is not None:
+        # None is a real answer from an analysis tool — `sasa()` reports a null
+        # `relative` for a ligand, which has no reference area to divide by —
+        # and `float(None)` is a bare TypeError out of the tool rather than
+        # anything a caller can act on.
+        if entry.get(key, "missing") is None:
+            others = sorted(
+                k
+                for k, v in entry.items()
+                if k not in ("chain", "seq", "ins_code", "resn", "copies")
+                and isinstance(v, (int, float))
+                and not isinstance(v, bool)
+            )
+            instead = (
+                f" Filter those entries out, or build the field on one of: "
+                f"{', '.join(others)}."
+                if others
+                else " Filter those entries out."
+            )
+            raise ViewerError(
+                f"Residue {entry.get('chain')}{entry.get('seq')} has no "
+                f"{key!r} value — the analysis left it null, which means it "
+                f"could not be measured rather than that it measured zero." + instead
+            )
         if key not in entry:
             raise ViewerError(
                 f"No {key!r} in entry {sorted(entry)}. Name the field holding "
@@ -2338,6 +2367,116 @@ async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
         "min": round(float(np.min(magnitudes)), 3),
         "most_mobile": ranked[:limit],
         "truncated": len(ranked) > limit,
+    }
+
+
+@_tool()
+async def sasa(
+    selection: str | None = None,
+    probe_radius: float = 1.4,
+    limit: int = 0,
+) -> dict[str, Any]:
+    """How much of each residue the solvent reaches, and how deep the rest sits.
+
+    Three numbers per residue from one Shrake-Rupley pass:
+
+      area_a2   what the rolling probe reaches, in square angstroms
+      relative  that area over the most the residue type could have, so 0 is
+                fully buried and 1 is as open as a free tripeptide
+      depth_a   how far the residue sits from the surface, in angstroms
+
+    **`relative` is the one to draw.** Area alone is misleading across residue
+    types: a tryptophan showing 60 A^2 is buried and a glycine showing 60 A^2
+    is wide open, because they have very different amounts of surface to begin
+    with. Divide by the maximum and the number means the same thing everywhere.
+
+    It can exceed 1. A terminal residue has surface the Gly-X-Gly reference
+    does not — on 1UBQ the C-terminal glycine comes out at 1.42 — and clamping
+    would report the most exposed residue in the structure as merely ordinary.
+
+    `relative` is null for anything with no reference maximum: ligands,
+    nucleotides and non-standard residues. Selenomethionine and the MD
+    protonation states are mapped to the residue they are a form of, so those
+    do carry one.
+
+    **A monoatomic ion has all three null**, because biotite drops ions from
+    the calculation rather than measuring them. Null means "not measured", not
+    "measured zero" — reporting an area of 0 for a fully exposed zinc would
+    paint it as the most buried thing in the structure.
+
+    **`depth_a` is a proxy and this says which one:** distance to the nearest
+    atom the probe reached, averaged over the residue's atoms. It is *not* the
+    distance to a solvent-excluded surface, which needs a surface pass protean
+    does not do. The two agree near the surface and drift apart in a large
+    interior. A residue with any reachable atom of its own is at 0.
+
+    selection: restrict the calculation, e.g. "chain A". Omitted, the whole
+      structure is used. **Burial is a property of the whole molecule**, so
+      selecting one chain of a complex reports that chain as if it were alone
+      — which is the right answer to a different question, and is how an
+      interface looks fully exposed.
+    probe_radius: the solvent radius in angstroms. 1.4 is water and the
+      convention; larger probes read the surface more coarsely.
+    limit: how many residues to list, most exposed first. **0, the default,
+      lists them all**, because the usual next step is handing them to
+      define_field, and a truncated field covers part of the molecule while
+      looking deliberate.
+
+    Feed it straight to define_field:
+
+        define_field("burial", sasa()["residues"], key="relative")
+        color("burial")
+
+    Solvent is removed before measuring. Waters sit on the surface, so leaving
+    them in reports a protein with almost none of its own.
+    """
+    array = _require_structure()
+    if selection is not None:
+        try:
+            mask = _evaluate(_parse_selection(selection), array)
+        except SelectionError as exc:
+            raise ViewerError(str(exc)) from exc
+        if not mask.any():
+            raise ViewerError(f"{selection!r} matches no atoms")
+        array = array[mask]
+    # Not `<= 0`: NaN compares False against everything, so it passed the guard
+    # and reached the Rust kernel, which answered with a PanicException about an
+    # index of 18446744073709551615.
+    if not probe_radius > 0:
+        raise ViewerError(f"probe_radius must be positive, got {probe_radius}")
+
+    try:
+        measured = residue_exposure(array, probe_radius=probe_radius)
+    except ExposureError as exc:
+        raise ViewerError(str(exc)) from exc
+    rows = measured.residues
+    if not rows:
+        raise ViewerError(
+            "Nothing to measure: the selection is entirely solvent, which is "
+            "removed before the probe is rolled."
+        )
+
+    ranked = sorted(rows, key=lambda r: (r["relative"] is None, -(r["relative"] or 0.0)))
+    listed = ranked if limit <= 0 else ranked[:limit]
+    scored = [r["relative"] for r in rows if r["relative"] is not None]
+    return {
+        "residues": listed,
+        "count": len(rows),
+        "truncated": len(listed) < len(rows),
+        "total_area_a2": round(sum(r["area_a2"] for r in rows), 1),
+        "probe_radius": probe_radius,
+        # Which radius set produced these. One ligand the chemical component
+        # dictionary has never seen switches the whole structure to element
+        # radii, and that moves every number — so two structures are only
+        # comparable when this says the same thing for both.
+        "radii": measured.radii,
+        # Residues with no reference maximum, so `relative` is null for them.
+        # `define_field` refuses a null rather than crashing on it, so a field
+        # on that key needs these filtered out first.
+        "unscored": len(rows) - len(scored),
+        "buried": sum(1 for v in scored if v < BURIED_BELOW),
+        "exposed": sum(1 for v in scored if v > EXPOSED_ABOVE),
+        "measured_over": selection or "the whole structure",
     }
 
 
