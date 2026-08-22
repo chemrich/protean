@@ -49,9 +49,61 @@ jobs:
       - name: build
         run: npm run build
 
+  # Does this change touch anything the browser job could possibly be affected
+  # by? Its own step, so the answer is visible in the log rather than inferred
+  # from a job that did or did not appear.
+  #
+  # Hand-rolled rather than a changed-files action, and not for purity: this is
+  # the exact class of action that was compromised in the tj-actions incident,
+  # and a `git diff` is ten seconds with no third party in the trust path.
+  #
+  # It fails loudly if the diff cannot be computed, rather than defaulting to
+  # "nothing changed" — a filter that silently answers "skip" is the same shape
+  # as every other silent success this project keeps finding.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.what.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: what
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "cannot resolve a base to diff against; assuming code changed"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"
+          echo "$changed"
+          if echo "$changed" | grep -qv '\.md$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "markdown only"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   differential:
     name: selection differential (real browser)
     runs-on: ubuntu-latest
+    # Skipped for markdown-only changes. **Safe because the `python` job is the
+    # backstop, not because markdown is inert**: that job runs the whole suite
+    # unfiltered, so `test_packaging.py` — which builds a real wheel and so
+    # reads README.md — and `test_gitignore.py` still run. Filtering anything
+    # beyond `*.md` would need that argument made again, file by file.
+    #
+    # `needs` + `if` rather than a workflow-level `paths` filter, deliberately:
+    # a skipped job still *reports*, and a workflow that never runs never
+    # reports at all. `main` is unprotected today, so nothing blocks either
+    # way — but the day it gains a required check, the second form leaves every
+    # docs PR waiting forever on a status that will never arrive.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
