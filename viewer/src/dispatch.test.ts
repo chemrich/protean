@@ -162,7 +162,11 @@ function fakePlugin() {
     representation: {
       structure: {
         registry: {
-          types: [['cartoon'], ['spacefill']],
+          // `line` is here because protean really does offer representations
+          // with no surface to shade — line, point and label declare no
+          // bumpFrequency — and a fake where every representation can take a
+          // bump cannot exercise the branch that reports one that cannot.
+          types: [['cartoon'], ['line'], ['spacefill']],
           get: (type: string) => ({
             getParams: () =>
               type === 'spacefill'
@@ -203,7 +207,20 @@ function fakePlugin() {
               transform: {
                 ref: `repr-${ref}`,
                 params: {
-                  type: { name: params.type, params: { ...(params.typeParams ?? {}) } },
+                  type: {
+                    name: params.type,
+                    params: {
+                      // Mol* fills every declared parameter with its default,
+                      // so a real params object always *has* the key. The
+                      // material action tests for the key to decide whether a
+                      // representation can take a bump at all, and a fake that
+                      // omitted it made that branch untestable — the frequency
+                      // silently went nowhere and the test read `undefined`.
+                      // `label` is the real case with no surface to perturb.
+                      ...(params.type === 'line' ? {} : { bumpFrequency: 1 }),
+                      ...(params.typeParams ?? {}),
+                    },
+                  },
                 },
               },
             };
@@ -388,7 +405,9 @@ describe('createDispatcher', () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(
       dispatch('show', { name: 's', expression: '(sel.atom.all)', representation: 'cartoonn' })
-    ).rejects.toThrow(/Unknown representation 'cartoonn'\. Available: cartoon, spacefill/);
+    ).rejects.toThrow(
+      /Unknown representation 'cartoonn'\. Available: cartoon, line, spacefill/
+    );
   });
 
   it('rejects an unknown colour theme', async () => {
@@ -419,7 +438,7 @@ describe('createDispatcher', () => {
   it('reports the names it accepts', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(dispatch('capabilities', {})).resolves.toEqual({
-      representations: ['cartoon', 'spacefill'],
+      representations: ['cartoon', 'line', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
       size_themes: ['physical', 'uncertainty', 'uniform'],
       // Named styles are reported for the same reason the registries are: a
@@ -963,6 +982,72 @@ describe('materials', () => {
     await dispatch('material', { name: 'sele', finish: 'matte', roughness: 0.05 });
 
     expect(materialOf(plugin).material).toMatchObject({ roughness: 0.05, metalness: 0 });
+  });
+
+  it('puts bumpiness in the material group and frequency beside it', async () => {
+    // The two halves of a bump live in different places: `bumpiness` is a
+    // member of the material group, `bumpFrequency` is a parameter of the
+    // representation. Setting one without the other draws nothing.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    const reply: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      bumpiness: 0.9,
+      bump_frequency: 6,
+    });
+
+    expect(materialOf(plugin).material.bumpiness).toBe(0.9);
+    expect(materialOf(plugin).bumpFrequency).toBe(6);
+    expect(materialOf(plugin).material).not.toHaveProperty('bumpFrequency');
+    expect(reply.bump_frequency_applied_to).toBe(1);
+  });
+
+  it('reports that a representation with no surface took no frequency', async () => {
+    // `line` declares no bumpFrequency — nor do point and label — so asking
+    // for one is a request that cannot be honoured. The count is how the
+    // caller finds that out instead of seeing a plain success.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'line',
+    });
+    const reply: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      bumpiness: 0.9,
+      bump_frequency: 6,
+    });
+
+    expect(reply.representations).toBe(1);
+    expect(reply.bump_frequency_applied_to).toBe(0);
+  });
+
+  it('leaves a surface smooth unless bumpiness was asked for', async () => {
+    // A finish is a claim about gloss, not about texture, so the control has to
+    // stay off by default — including after a call that changes other things.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'matte', bumpiness: 0.9 });
+    await dispatch('material', { name: 'sele', finish: 'glossy' });
+
+    expect(materialOf(plugin).material.bumpiness).toBe(0);
+  });
+
+  it('refuses a frequency outside the range Mol* accepts', async () => {
+    // Out of range, Mol* clamps and reports success — the exact shape of thing
+    // this project keeps finding, so it is refused here instead.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'matte', bump_frequency: 40 })
+    ).rejects.toThrow(/between 0 and 10/);
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'matte', bumpiness: 4 })
+    ).rejects.toThrow(/between 0 and 1/);
   });
 
   it('sets emissive separately from the material group', async () => {

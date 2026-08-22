@@ -311,12 +311,56 @@ async def finishes() -> dict[str, Any]:
         await session.request("effects", {"bloom": False})
         frames["bloom_off"] = await _shot(session)
         await session.request("effects", {"bloom": True})
+
+        # The bump, taken last and on its own spacefill.
+        #
+        # Not on the cartoon the load preset drew: a ribbon is too little
+        # surface for the effect to clear this file's threshold. Measured on
+        # 1UBQ — the strongest cartoon setting moves 0.0073 of the frame
+        # against a DISTINCT of 0.008, and the same setting on spacefill moves
+        # 0.036. A test written against the cartoon would have failed for a
+        # working control.
+        await session.request(
+            "show",
+            {
+                "name": "bump",
+                "expression": "(sel.atom.all)",
+                "representation": "spacefill",
+            },
+        )
+        await session.request("material", {"name": "bump", "finish": "matte"})
+        frames["smooth"] = await _shot(session)
+        bumped = await session.request(
+            "material",
+            {"name": "bump", "finish": "matte", "bumpiness": 0.9, "bump_frequency": 3},
+        )
+        frames["bumpy"] = await _shot(session)
+        # Half a bump is no bump: a frequency with nothing to scale.
+        await session.request(
+            "material", {"name": "bump", "finish": "matte", "bump_frequency": 3}
+        )
+        frames["frequency_only"] = await _shot(session)
+        # Frequency is the *fineness* of the perturbation, so a high one moves
+        # fewer pixels than a low one rather than more. Kept as three frames
+        # because the ordering is the surprising part and nothing else pins it.
+        for freq in (1, 6):
+            await session.request(
+                "material",
+                {
+                    "name": "bump",
+                    "finish": "matte",
+                    "bumpiness": 0.9,
+                    "bump_frequency": freq,
+                },
+            )
+            frames[f"bump_freq_{freq}"] = await _shot(session)
     return {
         "frames": frames,
         "replies": replies,
         "restored": restored,
         "dull": dull,
         "glow": glow,
+        "bumped": bumped,
     }
 
 
@@ -355,6 +399,54 @@ async def test_returning_to_matte_restores_the_original_surface(finishes):
 async def test_emissive_makes_the_molecule_glow(finishes):
     frames: dict[str, Render] = finishes["frames"]
     assert difference(frames["emissive_off"], frames["emissive_on"]) > DISTINCT
+
+
+async def test_bumpiness_reaches_the_pixels(finishes):
+    """The control was pinned to zero and undocumented until 2026-08-21.
+
+    The reason given was that it "does nothing unless bumpFrequency is above 0,
+    and that defaults to 0". That holds for ball-and-stick and for nothing else
+    anyone draws — spacefill and molecular-surface default to 1, cartoon to 2 —
+    so the control was dead on four of the five representations it would have
+    worked on. Measured here at 0.018 of the frame against a 0.008 threshold.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames["smooth"], frames["bumpy"]) > DISTINCT
+
+
+async def test_a_frequency_with_no_bumpiness_changes_nothing(finishes):
+    """Both halves or neither, and the reply has to be honest about which.
+
+    `bump_frequency` alone has nothing to scale, so the picture is the smooth
+    one. Worth pinning because the reply still reports a non-zero
+    `bump_frequency_applied_to` here — the frequency really did land on the
+    representation — and a caller reading only that number would conclude the
+    surface had changed.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames["smooth"], frames["frequency_only"]) == 0.0
+
+
+async def test_a_finer_bump_moves_fewer_pixels_than_a_coarser_one(finishes):
+    """Frequency is fineness, and the effect of raising it is counter-intuitive.
+
+    A higher frequency makes the perturbation smaller relative to a pixel, so
+    the surface reads *smoother*, not rougher. Measured on 1UBQ spacefill:
+    0.036 of the frame at frequency 1, 0.018 at 3, 0.004 at 6. A caller reaching
+    for "more texture" by raising this gets less, and nothing else in the suite
+    says so.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    smooth = frames["smooth"]
+    coarse = difference(smooth, frames["bump_freq_1"])
+    fine = difference(smooth, frames["bump_freq_6"])
+    assert coarse > fine, f"frequency 1 moved {coarse:.5f}, frequency 6 moved {fine:.5f}"
+
+
+async def test_the_reply_counts_the_representations_that_took_a_frequency(finishes):
+    assert finishes["bumped"]["bump_frequency"] == 3
+    assert finishes["bumped"]["bump_frequency_applied_to"] >= 1
+    assert finishes["bumped"]["bumpiness"] == 0.9
 
 
 async def test_bloom_only_shows_where_something_is_emissive(finishes):

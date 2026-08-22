@@ -2838,6 +2838,8 @@ async def material(
     metalness: float | None = None,
     roughness: float | None = None,
     emissive: float | None = None,
+    bumpiness: float | None = None,
+    bump_frequency: float | None = None,
 ) -> dict[str, Any]:
     """Give a displayed selection a surface finish.
 
@@ -2851,6 +2853,21 @@ async def material(
       chrome     Polished metal, close to a mirror.
 
     metalness / roughness: 0 to 1, overriding the finish where given.
+    bumpiness: 0 to 1. Perturbs the surface normal, which is what makes a
+      surface read as fibrous, powdery or eroded rather than moulded. **It
+      needs `bump_frequency` above zero on the same representation**, and the
+      two live in different places in Mol\\*, so the reply says how many
+      representations actually took the frequency rather than leaving a silent
+      nothing to look like success.
+
+      Defaulted to 0 by every call that does not mention it, including a bare
+      `material(finish=...)`, because a finish is a claim about gloss and not
+      about texture.
+    bump_frequency: 0 to 10, how fine the perturbation is. Low is eroded stone,
+      high is felt or wool. Mol\\*'s own defaults vary by representation —
+      spacefill and molecular-surface 1, cartoon 2, ball-and-stick 0 — so on
+      ball-and-stick this has to be set before `bumpiness` does anything at
+      all.
       Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
       there is some metalness: a true dielectric has a 4% specular term that
       roughness barely moves.
@@ -2871,6 +2888,8 @@ async def material(
         ("metalness", metalness),
         ("roughness", roughness),
         ("emissive", emissive),
+        ("bumpiness", bumpiness),
+        ("bump_frequency", bump_frequency),
     ):
         if value is not None:
             args[key] = value

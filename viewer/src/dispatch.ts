@@ -118,6 +118,10 @@ interface MaterialArgs {
   roughness?: number;
   /** Self-illumination. Bloom's default mode only glows where this is > 0. */
   emissive?: number;
+  /** 0-1. Needs bump_frequency above zero on the representation to show. */
+  bumpiness?: number;
+  /** 0-10. Mol*'s own param, per representation rather than per material. */
+  bump_frequency?: number;
 }
 
 interface ShadingArgs {
@@ -1498,7 +1502,15 @@ export function createDispatcher(plugin: any): Handler {
 
     material: {
       render: true,
-      async run({ name, finish, metalness, roughness, emissive }: MaterialArgs) {
+      async run({
+        name,
+        finish,
+        metalness,
+        roughness,
+        emissive,
+        bumpiness,
+        bump_frequency,
+      }: MaterialArgs) {
         const base = MATERIAL_FINISHES[finish];
         if (!base) {
           throw new Error(
@@ -1510,9 +1522,18 @@ export function createDispatcher(plugin: any): Handler {
           ['metalness', metalness],
           ['roughness', roughness],
         ];
-        // Mol*'s material group also carries bumpiness. It is not exposed —
-        // it does nothing unless bumpFrequency is above 0, and that defaults to
-        // 0 — but the group is sent complete so nothing is left undefined.
+        // Bumpiness perturbs the surface normal, which is what turns a sphere
+        // into something fibrous. Defaulted to 0 rather than taken from the
+        // finish, because a finish is a claim about gloss and not about
+        // texture — so an ordinary material() call still lands a smooth
+        // surface, exactly as it did before this was exposed.
+        //
+        // It used to be pinned at 0 and undocumented, on the grounds that it
+        // "does nothing unless bumpFrequency is above 0, and that defaults to
+        // 0". That holds for ball-and-stick and for nothing else anyone draws:
+        // spacefill and molecular-surface default to 1, cartoon to 2. The
+        // control was dead on four of the five representations it would have
+        // worked on.
         const material: Record<string, number> = { ...base, bumpiness: 0 };
         for (const [key, value] of overrides) {
           if (value === undefined) continue;
@@ -1520,6 +1541,16 @@ export function createDispatcher(plugin: any): Handler {
           material[key] = value;
         }
         if (emissive !== undefined) checkFraction('emissive', emissive);
+        if (bumpiness !== undefined) {
+          checkFraction('bumpiness', bumpiness);
+          material.bumpiness = bumpiness;
+        }
+        if (
+          bump_frequency !== undefined &&
+          (!Number.isFinite(bump_frequency) || bump_frequency < 0 || bump_frequency > 10)
+        ) {
+          throw new Error(`bump_frequency must be between 0 and 10, got ${bump_frequency}`);
+        }
 
         const entry = require(name);
         const target = hierarchyComponents(entry.refs);
@@ -1529,11 +1560,21 @@ export function createDispatcher(plugin: any): Handler {
 
         const update = plugin.state.data.build();
         let changed = 0;
+        let bumped = 0;
         for (const c of target) {
           for (const repr of c.representations ?? []) {
             update.to(repr.cell).update((old: any) => {
               old.type.params.material = { ...material };
               if (emissive !== undefined) old.type.params.emissive = emissive;
+              // Frequency is a parameter of the representation, not of the
+              // material group, and not every representation declares one —
+              // `label` has no surface to perturb. Counted rather than assumed,
+              // so asking for a bump on something that cannot take one is
+              // reported instead of ignored.
+              if (bump_frequency !== undefined && 'bumpFrequency' in old.type.params) {
+                old.type.params.bumpFrequency = bump_frequency;
+                bumped++;
+              }
             });
             changed++;
           }
@@ -1553,6 +1594,15 @@ export function createDispatcher(plugin: any): Handler {
           representations: changed,
           ...material,
           ...(emissive !== undefined ? { emissive } : {}),
+          ...(bump_frequency !== undefined
+            ? {
+                bump_frequency,
+                // A bump needs both halves and they live in different places,
+                // so the reply says how many representations took the frequency
+                // rather than leaving a silent nothing to look like success.
+                bump_frequency_applied_to: bumped,
+              }
+            : {}),
           // Bloom defaults to mode 'emissive', so it draws nothing at all until
           // something has emissive above zero. Saying so here is the difference
           // between "bloom is broken" and "bloom has nothing to glow".
