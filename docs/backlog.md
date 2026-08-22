@@ -1387,6 +1387,50 @@ The reply does say what happened, which is the difference between this and a
 silent failure. It says it in a note a caller has to read, at the end of a line
 about a successful load.
 
+### 40. Mol\* 5.11 doubled the browser job — open
+
+Found on 2026-08-22 while auditing a plan that blamed something else. Read from
+the run history rather than inferred:
+
+```
+a92f86a  pre-upgrade   1140 passed, 28 skipped   23m12s
+ae1df78  "Move to Mol* 5.11, fourteen months on from 4.18"
+                       1139 passed, 28 skipped   48m18s
+```
+
+**One fewer test, 2.08x the time, across one commit.** Same skips, and the
+session count did not change either — so this is not more work, it is the same
+work costing twice as much. The job has drifted further since: 55 to 71 minutes
+on recent runs.
+
+**This is the thing to chase, and two documents missed it.** Item 24 above
+attributes the job's cost to three journal captures, and `docs/ci-and-tests.md`
+attributes it to browser setup. Both were reasoning from parts they had
+measured rather than from the job's own history, and both were written after
+this regression had already landed. Neither noticed that the 33-minute regime
+item 24 describes ended on **2026-08-17**, with *more* tests running.
+
+Chrome launch is Mol\*-version-independent, which bounds the setup term
+directly: a library upgrade could not double a job that process launch
+dominates. At a measured 6.99 s launch across ~84 sessions, launch is about 14%
+of today's job.
+
+**Two candidates, and they want different responses:**
+
+1. A real Mol\* 5 performance regression under software rendering. protean
+   runs CI on SwiftShader, which exercises paths a GPU never does. If so it is
+   worth reporting upstream — there are already two unfiled Mol\* drafts
+   waiting on whose account files them.
+2. A default that changed between 4.18 and 5.11 on our side — multisampling,
+   `illumination`, `hiZ`, DPOIT iterations, or the postprocessing defaults —
+   which protean now inherits without asking for it.
+
+**Measure with repeats, not once.** Runner variance on this job is about 40%:
+the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes as a push
+(`32582697857`) on 2026-08-22. Any change smaller than about 2x is
+unfalsifiable from a single run, which is the other reason `--durations=25` now
+ships in the job.
+
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 
 ### 36. A structure will not load into a hidden tab — open

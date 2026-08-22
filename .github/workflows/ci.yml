@@ -112,4 +112,16 @@ jobs:
         # and the only trace was the skip count moving 31 -> 28 on the run where
         # they started executing again. Runtime is unchanged; this just makes
         # the absence legible.
-        run: uv run pytest tests/ -q -rs
+        # `--durations` because every estimate anyone has made about this job
+        # has been wrong, in both directions and by a lot.
+        #
+        # Backlog 24 attributed a 15 -> 33 min step to three journal captures.
+        # A later plan attributed the job's cost to browser setup and put it at
+        # 18-46 min of it. Both were reasoning from parts. Neither noticed that
+        # the 33 min regime ended on 2026-08-17 with *more* tests running, or
+        # that the real doubling arrived with Mol* 5.11 (backlog 40): 1140
+        # tests in 23m12s became 1139 in 48m18s across one commit.
+        #
+        # A per-test distribution costs nothing, ships in the log, and settles
+        # arguments that have so far been settled by whoever measured last.
+        run: uv run pytest tests/ -q -rs --durations=25

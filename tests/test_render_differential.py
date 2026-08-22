@@ -956,33 +956,114 @@ async def test_a_snapshot_does_not_leave_the_viewer_at_figure_resolution(figure)
     assert difference(figure["before"], figure["after"]) == 0.0
 
 
-@pytest.mark.parametrize(
-    ("fmt", "suffix", "mode"),
-    [("png", ".png", "RGBA"), ("tiff", ".tiff", "RGBA"), ("jpeg", ".jpg", "RGB")],
-)
-async def test_a_real_journal_figure_reaches_disk(tmp_path, fmt, suffix, mode):
-    """Phase 4's exit criterion, end to end and through the real tool.
+#: The encoders, and what each one is expected to produce.
+#:
+#: Only PNG is exercised at journal size. The three cases used to render the
+#: *identical* 4323 px scene three times and differ only in which encoder wrote
+#: it — three browser launches and three of the most expensive captures in the
+#: suite to test what a file extension does. Suffix, colour mode and the DPI
+#: round-trip are the claims here, and none of them is a function of pixel
+#: count: TIFF stores resolution the same way at 1200 px as at 4323.
+#:
+#: The one claim that *is* size-dependent — that the tool can capture at
+#: journal size at all, which is Phase 4's exit criterion — is kept, once.
+_ENCODERS = [("png", ".png", "RGBA"), ("tiff", ".tiff", "RGBA"), ("jpeg", ".jpg", "RGB")]
 
-    A double-column figure at 600 dpi, written by snapshot() itself rather than
-    by the bridge, then reopened and asked what it is. The DPI assertion is the
-    point: Mol* cannot write physical resolution at all, so a figure that is
-    "600 dpi" only in the tool's reply would satisfy every other test here.
+
+@pytest.fixture(scope="module")
+async def journal_figures(tmp_path_factory) -> dict[str, Any]:
+    """Every format written from one session, plus one at full journal size.
+
+    The modest captures come first and the expensive one last, deliberately:
+    at 4323 px a software renderer can run out of room and `snapshot()`
+    refuses, which is the behaviour worth having. Taken first, that skip would
+    take the cheap assertions down with it.
+    """
+    out = tmp_path_factory.mktemp("journal")
+    modest: dict[str, Any] = {}
+    full: dict[str, Any] | None = None
+    skipped = ""
+
+    async with viewer_session(FIXTURE) as session:
+        for fmt, _suffix, _mode in _ENCODERS:
+            # 101.6 mm at 300 dpi is MODEST_PIXELS, the size the rest of this
+            # section already uses.
+            modest[fmt] = await _figure_or_skip(
+                session, str(out / f"modest-{fmt}"), width_mm=101.6, dpi=300, format=fmt
+            )
+        try:
+            full = await _capture_or_none(
+                session, str(out / "figure"), column="double", dpi=600, format="png"
+            )
+        except ViewerError:  # pragma: no cover - the helper handles the known case
+            raise
+        if full is None:
+            skipped = f"this renderer cannot capture at {FIGURE_PIXELS}px"
+
+    return {"modest": modest, "full": full, "skipped": skipped}
+
+
+async def _capture_or_none(session, path: str, **kwargs) -> dict[str, Any] | None:
+    """`_figure_or_skip`, but reporting the shortfall instead of skipping.
+
+    A fixture that skips takes every test using it down. The journal-size
+    capture is allowed to be beyond a software renderer; the encoder claims
+    beside it are not.
+    """
+    previous = server_mod._bridge
+    server_mod._bridge = session.bridge
+    try:
+        result: dict[str, Any] = await server_mod.snapshot(path, **kwargs)
+        return result
+    except ViewerError as exc:
+        if "came back incomplete" in str(exc):
+            return None
+        raise
+    finally:
+        server_mod._bridge = previous
+
+
+@pytest.mark.parametrize(("fmt", "suffix", "mode"), _ENCODERS)
+async def test_each_format_reaches_disk_as_itself(journal_figures, fmt, suffix, mode):
+    """Suffix, colour mode, and the DPI round-trip, per encoder.
+
+    The DPI assertion is the point: Mol* cannot write physical resolution at
+    all, so a figure that is "300 dpi" only in the tool's reply would satisfy
+    every other test here.
 
     Approximate for PNG because it stores pixels per *metre* as an integer, so
-    600 dpi round-trips as 11811 ppm and back to 599.9988.
+    300 dpi round-trips as 11811 ppm and back again.
     """
-    async with viewer_session(FIXTURE) as session:
-        result = await _figure_or_skip(
-            session, str(tmp_path / "figure"), column="double", dpi=600, format=fmt
-        )
-
+    result = journal_figures["modest"][fmt]
     written = Path(result["path"])
+
     assert written.suffix == suffix
-    assert result["pixels"][0] == FIGURE_PIXELS  # 183 mm at 600 dpi
+    assert result["pixels"][0] == MODEST_PIXELS
 
     with PILImage.open(written) as reopened:
         assert reopened.size == tuple(result["pixels"])
         assert reopened.mode == mode
+        assert reopened.info["dpi"][0] == pytest.approx(300, rel=1e-3)
+
+    assert written.stat().st_size == result["bytes"] > 0
+
+
+async def test_a_real_journal_figure_reaches_disk(journal_figures):
+    """Phase 4's exit criterion, end to end and through the real tool.
+
+    A double-column figure at 600 dpi, written by snapshot() itself rather than
+    by the bridge, then reopened and asked what it is. Rendered once, in PNG:
+    what makes this expensive is the 4323 px capture, and which encoder wrote
+    it afterwards is the neighbouring test's business.
+    """
+    if journal_figures["full"] is None:
+        pytest.skip(journal_figures["skipped"])
+    result = journal_figures["full"]
+    written = Path(result["path"])
+
+    assert result["pixels"][0] == FIGURE_PIXELS  # 183 mm at 600 dpi
+    with PILImage.open(written) as reopened:
+        assert reopened.size == tuple(result["pixels"])
         assert reopened.info["dpi"][0] == pytest.approx(600, rel=1e-3)
 
     # The physical width the file actually claims, derived from its own pixels.
