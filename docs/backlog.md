@@ -1425,11 +1425,18 @@ of today's job.
    `illumination`, `hiZ`, DPOIT iterations, or the postprocessing defaults —
    which protean now inherits without asking for it.
 
-**Localised, as far as one afternoon got it: the capture path.** Measured on
-this machine under CI's flags, a steady-state `screenshot` costs **5.5 s**.
-Item 24, written before the upgrade, records "captures of 2-3 s" — so captures
-roughly doubled, which is the job's own factor. `test_render_differential.py`
-alone makes 91 of them.
+**Localised, as far as one afternoon got it: the capture path.**
+`test_render_differential.py` makes 91 captures and is, by CI's own per-line
+timestamps, **about 80% of the whole job**.
+
+**The local timings below are upper bounds and should not be quoted as
+absolutes.** They were taken on a fanless laptop with another agent holding the
+load average near 18, and a steady-state capture measured anywhere between 3.6
+and 5.5 s across the afternoon depending on what else was running. Item 24
+records the same sensitivity from the other side: two leaked Chromes once took
+this suite from 12:46 to 44 minutes. What survives contention is the *shape* —
+the ratios between sample levels below were measured back to back in one
+process — not the absolute seconds.
 
 Two candidates were tested and cleared, which is worth recording so nobody
 re-tests them:
@@ -1494,11 +1501,17 @@ The measurement stays on file because it explains *where* a capture's time
 goes, which is what makes the Mol\* regression above tractable — not because
 the level should move.
 
-**Measure with repeats, not once.** Runner variance on this job is about 40%:
-the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes as a push
-(`32582697857`) on 2026-08-22. Any change smaller than about 2x is
+**Measure with repeats, and measure on CI.** Runner variance on this job is
+about 40%: the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes
+as a push (`32582697857`) on 2026-08-22. Any change smaller than about 2x is
 unfalsifiable from a single run, which is the other reason `--durations=25` now
 ships in the job.
+
+**And do not extrapolate this machine to the runner.** Measured both ways on
+2026-08-22: a browser session costs 5 to 10 s on `ubuntu-latest` against 6.3 to
+27 s here. **CI is the faster of the two per session**, which is the opposite of
+what anyone assumed. A local ratio applied to CI has been wrong in this repo
+twice now, in both directions.
 
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 
