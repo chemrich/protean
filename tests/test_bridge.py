@@ -171,17 +171,33 @@ async def test_a_stopped_bridge_ends_an_inflight_request(bridge, viewer):
 
 
 async def test_port_scan_increments_on_conflict():
+    """The bridge steps past a port in use rather than failing on it.
+
+    Two blockers, and the assertion is "past them" rather than "exactly one
+    past". `base + 1` is not reserved by anything: this file's own
+    `free_port()` asks the OS for a port and closes it again, and the browser
+    job runs the whole suite, where a dozen other servers are taking ports at
+    the same moment. Asserting the exact landing spot asserts a fact about the
+    machine, and it duly failed in CI on 2026-08-22 with
+    `assert 48519 == (48517 + 1)` — the bridge had scanned correctly, and
+    something else was holding the port it was expected to stop at.
+    """
     base = free_port()
-    blocker = socket.socket()
-    blocker.bind(("127.0.0.1", base))
-    blocker.listen(1)
+    blockers = []
     try:
+        for offset in (0, 1):
+            blocker = socket.socket()
+            blocker.bind(("127.0.0.1", base + offset))
+            blocker.listen(1)
+            blockers.append(blocker)
+
         bridge = ViewerBridge(port=base)
         port = await bridge.start()
-        assert port == base + 1
+        assert port > base + 1, "the bridge did not scan past the ports in use"
         await bridge.stop()
     finally:
-        blocker.close()
+        for blocker in blockers:
+            blocker.close()
 
 
 async def test_default_port_constant():

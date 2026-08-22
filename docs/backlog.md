@@ -1447,6 +1447,23 @@ building needs something a synthetic rAF cannot provide. Worth measuring before
 deciding, because "bring the tab forward" is a fine answer if the alternative is
 a pump that lies less often but still lies.
 
+### 39. A port test asserted a fact about the machine — fixed
+
+CI, 2026-08-22, on PR 110: `assert 48519 == (48517 + 1)` in
+`test_port_scan_increments_on_conflict`. The bridge had scanned correctly; the
+test was wrong.
+
+It bound a blocker on `base` and asserted the bridge landed on exactly
+`base + 1` — but nothing reserves `base + 1`. `free_port()` asks the OS for a
+port and closes it again, and this job runs the **whole** suite, where a dozen
+servers are taking ports at the same moment. The assertion was about the
+machine rather than about the bridge.
+
+Now binds two blockers and asserts the bridge got past both, which is the
+behaviour the test is named for. Worth noting that it very likely became more
+likely to fail when the fast tests were folded into this job — more concurrent
+port users, same assumption.
+
 ### 37. One fallback colour, written twice, in two languages — open
 
 `_ELEMENT_PALETTE["X"] = "#b0a8b9"` in `server.py` names the colour an element
