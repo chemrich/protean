@@ -1,147 +1,122 @@
 # Streamlining the browser job
 
-**A plan, 2026-08-22.** Combines backlog item 24 — the browser job doubled in
-duration and nobody bought the time back — with a lever that item did not
-consider: the suite spends nearly all of its time *starting* browsers, and it
-starts eighty-four of them.
+**Rewritten 2026-08-22, the same day it was written.** The first version was
+audited by four adversarial reviews and its central premise turned out to be
+false. That version is in the history; this one keeps what survived and records
+what did not, because the errors are more instructive than the conclusions.
 
-## What the job actually spends its time on
+## What the first version got wrong
 
-Measured on this machine under CI's exact flags (`--headless=new`,
-SwiftShader):
+It said: *"Setup is not part of that job's cost, it is the cost."* It is not.
+Measured on CI rather than extrapolated from a laptop, **browser setup is 12 to
+30% of the job.**
 
-| Phase | Cost |
-|---|---|
-| Chrome launch and connect | **6.99 s** |
-| First `load_structure` | **5.41 s** |
-| Second load, same browser | **0.48 s** |
-| Third load, same browser | **0.52 s** |
-| First `screenshot` | 6.17 s |
+Five specific numbers were wrong, and they were wrong in a family:
 
-**A structure reloaded into a live browser costs about a tenth of a fresh
-session.** That single ratio is the whole opportunity.
-
-And the suite opens a lot of sessions. Counted from the syntax tree rather than
-by grep, so a helper that opens one is not double-counted:
-
-| File | Tests with their own session | Session fixtures |
+| Claim | Reality | How it was found |
 |---|---|---|
-| `test_render_differential.py` | 55 | 13 |
-| `test_volumes_differential.py` | 8 | 0 |
-| `test_molstar_backend_differential.py` | 4 | 0 |
-| `test_altloc_differential.py` | 1 | 1 |
-| `test_symmetry_differential.py` | 0 | 1 |
-| `test_viewer_chrome_differential.py` | 0 | 1 |
-| **Total** | **68** | **16** |
+| 84 browser launches | **104** | Instrumenting `viewer_session` and counting, instead of reading code |
+| 18–46 min of setup | 12–30% of the job | 46 minutes cannot fit in a 31-minute job — the claim failed its own arithmetic |
+| Job takes 31–50 min | **49–79 min** | The 31–50 figure was five days stale when it was written |
+| First capture costs 2–3x the rest | **+8%** | Six fresh sessions, first against second |
+| CI is slower per session than this laptop | **CI is faster** — 5–10 s against 6.3–27 s | Measured both |
 
-Eighty-four launches. At the 13–33 s backlog 24 measured on CI runners, that is
-**18 to 46 minutes of setup** inside a job that takes 31 to 50. Setup is not
-part of the cost; setup is the cost.
+The 84 came from an abstract syntax tree, which cannot see a launch behind
+`@pytest.mark.parametrize`, cannot see a session opened inside a helper, and
+missed an entire file. Two independent static counts undercounted the same way.
+**Runtime launches cannot be counted by reading code.**
 
-## Three levers, in the order they should be pulled
+The rest share one cause: a part was measured, extrapolated to the whole, and
+never checked against the container. That is precisely what this plan accused
+backlog 24 of doing.
 
-### 1. Stop re-testing a tree that was just verified
+## What is actually true
 
-Backlog 24 found it and nothing was done: **41 of 100 runs were post-merge
-pushes to `main`**, re-running the browser job on the result of a PR that had
-just passed. About a quarter of all spend.
+**Mol\* 5.11 doubled the job.** `a92f86a` ran 1140 tests in 23m12s; `ae1df78`,
+the upgrade, ran 1139 in 48m18s. One fewer test, 2.08x the time, same skips,
+same session count. This is a CI-to-CI comparison, immune to the local
+contention that spoiled everything else. Filed as backlog 40, and it is the
+largest unrecovered cost in the suite.
 
-It is not quite free to remove, and the reason is worth stating: a merge commit
-is only the tree the PR tested when `main` has not moved underneath it. Two PRs
-that pass separately can break together, and the push-to-`main` run is what
-catches that.
+**One file is about 80% of the job.** `test_render_differential.py`, by CI's
+own per-line log timestamps. Within it the expensive items are captures, not
+launches.
 
-So the proposal is not to drop the coverage but to move it: keep the fast job
-on every push to `main`, and run the browser job there **on a schedule**
-instead — nightly, plus on demand. A semantic conflict between two merges is
-found within a day rather than within an hour, and no PR waits for it.
+**Reloading a structure into a live browser really is about ten times cheaper
+than a fresh session** — median 10x over six structures, and not a caching
+artifact: a *different* structure loaded after a warm-up costs 0.35 s. The
+range is wide (3.2x to 22x), so it is a median rather than a rule.
 
-### 2. Skip the browser job when only prose changed
+## What was done
 
-Three docs-only pull requests landed on 2026-08-22 and each paid the full
-browser job. A path filter on that job alone would have saved about two and a
-half hours of runner for no loss whatever.
+- **`--durations=25`** on the browser job. Every estimate anyone has made about
+  this job has been wrong, in both directions, and a per-test distribution
+  costs nothing. This is the item that ends the guessing.
+- **The journal figure rendered the same scene three times.** Parametrized over
+  png/tiff/jpeg, each opening its own browser at 4323 px, to establish what a
+  file extension does. Suffix, colour mode and the DPI round-trip are not
+  functions of pixel count, so those run at 1200 px from one session and the
+  journal-size capture runs once. **15m51s to 9m23s**, measured on the same
+  assertions, nothing dropped.
+- **The browser job is skipped for markdown-only changes**, via a `changes`
+  job with a hand-rolled `git diff` that fails toward *running* the job.
 
-It must be a filter on **that job**, not on the workflow: the other two jobs
-should still run, because a docs change can still break a link check or a
-formatting hook. Either a second workflow file with its own `paths`, or a
-`changes` job the browser job depends on.
+## What was measured and rejected
 
-**Do not path-filter it on source paths.** The browser job drives protean's
-*Python* tools against a real viewer — `test_render_differential.py` imports
-`fetch_structure_data` and `load_structure` and calls both — so "Python-only"
-changes are exactly what it tests. The filter is safe for markdown and nothing
-else.
+- **A shared Chrome `--disk-cache-dir`.** 94.96 s with, 93.41 s without.
+  SwiftShader compiles in-process; the disk cache holds GPU program binaries it
+  never produces.
+- **Turning down capture supersampling.** The ImagePass runs at `sampleLevel:
+  4`, and each level down halves capture cost — level 2 is 3.8x cheaper. It is
+  the largest single lever anyone found, and **Charlie's decision on
+  2026-08-22 was not to take it**: it shifts about 1% of pixels while several
+  thresholds sit at 0.008 to 0.01, and buying a faster suite by loosening what
+  the suite can see is the wrong trade for a tool whose product is a picture.
+- **Moving the post-merge run to a nightly.** Dropped. The repo is public so
+  minutes are free, queue delay is 2–4 seconds so it buys no latency, and in
+  **103 post-merge runs the only failure was a network flake**. The nightly
+  would also have been cancelled by the `concurrency` block already in
+  `ci.yml`, on a schedule nobody is notified about.
+- **Sharding.** `ci.yml` already explains why the job runs the whole suite:
+  "a list means files never meet", and backlog item 12 lived on `main` inside
+  exactly that gap.
+- **Warming the image pass per session.** Worth about 0.3 s, not the 3 s it was
+  claimed to be.
 
-### 3. Reuse the browser, reload the structure
+## What is left, honestly
 
-The feedback-loop win, and the one with real design work in it.
+1. **Backlog 40.** A 2x regression beats every remaining optimisation combined.
+   Chrome is ruled out (both runs report 151.0.7922.169) and so is a changed
+   `sampleLevel` default (identical in 4.18 and 5.11), so the per-sample cost
+   itself grew. Bisecting the 19 releases between them would name the one that
+   did it. **Do it on CI, not on a laptop** — see below.
+2. **The `--durations` output**, which lands with the next run of this branch
+   and should be read before anything else is attempted.
+3. **One browser per file, a fresh tab per test.** The re-scoped version of the
+   original lever 3: it captures the launch saving with isolation guaranteed by
+   construction — new plugin, new dispatcher closure, new canvas props — rather
+   than by a reset whose completeness has to be proved. Worth roughly 11
+   minutes of a 60-minute job, which is real and is *not* the headline the
+   first version claimed.
 
-One session per *file* rather than per test, with a reset between tests. At the
-measured rates that turns roughly 84 × 12.4 s of setup into 6 × 12.4 s plus 84
-× 0.5 s — **about two minutes where there are now seventeen**, before CI's
-slower runners are taken into account.
+The original lever 3 — one shared session per file with a `reset` action — is
+not recommended. `pytest-asyncio` binds a module-scoped fixture to a
+module-scoped event loop that is not running during the test body, which is why
+every existing module-scoped fixture opens its session *inside* the fixture and
+returns inert data. And the proposed completeness check, diffing
+`canvas3d.props`, is blind to the screenshot helper's own values, the camera
+pose, the theme registries, and the dispatcher's closure state.
 
-**What stands in the way is that `clear` is not a reset.** It drops components,
-volumes and registered fields and calls `plugin.clear()`. It leaves every
-canvas property exactly where the last test put it: background colour,
-lighting rig, cel step count, and every screen-space effect — outline,
-occlusion, shadow, depth of field, bloom, sharpening. A shared session would
-carry all of that from one test into the next.
+## The rule this document exists to enforce
 
-That is not a hypothetical. This project already has the scar: a test that drew
-a view left `auto_view` in the handle table while the next test's fresh viewer
-knew only `auto`, and it failed in whichever test happened to run after one
-that drew — the shape of thing that gets called flaky. Relaunching the browser
-is the sledgehammer that makes that impossible, and it is why the suite is
-written this way.
+**Measure the whole thing, on the machine that runs it.**
 
-**So the reset has to be provably complete, and it can be.** A fresh viewer's
-`canvas3d.props` is the specification: reset one viewer, launch another, and
-diff the two property trees. Anything the reset forgot shows up as a difference,
-mechanically, with no judgement about which properties matter. The same
-comparison over the state tree covers the components. A reset that passes that
-test is a reset nobody has to reason about.
+Local timings here are worthless for CI: this laptop ran the suite in 56:12
+against a runner's 49:33, and two leaked Chromes once took the same suite from
+12:46 to 44 minutes. Runner variance alone is about 40% — the same tree ran 50
+and 70 minutes on one day — so **any improvement smaller than about 2x is
+unfalsifiable from a single run.**
 
-Two smaller savings ride along:
-
-- **Warm the image pass once per session.** The first `screenshot` costs 6.17 s
-  against 2–3 s for the rest, because Mol\* builds the `ImagePass` lazily —
-  already known, since a capture through a fresh pass is also 2.1% different
-  from every one after it. One warm-up per session, not per test.
-- **Load the structure once where tests share one.** Most of
-  `test_render_differential.py` uses 1UBQ.
-
-**Some tests must keep a virgin browser**, and they should be marked rather
-than migrated: the one asserting the first capture of a session differs from
-later ones, and anything about a hidden tab or the load path itself. The point
-of consolidation is to stop paying for isolation nobody asked for, not to take
-it away from the tests whose subject it is.
-
-## What this plan deliberately does not do
-
-- **Not sharding.** `ci.yml` explains at length why the job runs the whole
-  suite rather than a list of files: "a list means files never meet, so nothing
-  *between* them is tested", and backlog item 12 lived on `main` inside exactly
-  that gap. Sharding is that gap by construction.
-- **Not a smaller window.** Backlog 24 measured it: the aggressive setting
-  removes 0.08 MP per render — a fraction of a second — while moving every
-  pixel-fraction threshold in the suite, several of which are calibrated per
-  renderer and close to their limits.
-- **Not cutting the journal-figure captures.** They are the bulk of what the
-  declutter merge added, and dropping them is a decision about coverage
-  wearing an efficiency costume.
-
-## Order, and what each step risks
-
-1. **Levers 1 and 2** are workflow configuration, touch no test, and can land
-   together. Risk: a semantic conflict between two merges is found the next
-   morning instead of within the hour.
-2. **The `reset` action and its completeness test**, landed on its own, with
-   nothing yet depending on it. Risk: none — it is new surface nothing calls.
-3. **Migrate one file at a time**, largest first, watching for the flake the
-   reset exists to prevent. `test_render_differential.py` is 68 of the 84
-   launches, so it is both the prize and the risk.
-
-The prize is the feedback loop: **31–50 minutes down to something near ten**,
-without giving up a single assertion.
+Three documents have now attributed this job's cost to three different things
+from three partial measurements. The next one should start from
+`--durations=25`.
