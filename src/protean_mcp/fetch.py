@@ -110,10 +110,10 @@ async def fetch_structure_data(
         # The extra request only happens on a cache miss, and it is what keeps
         # this from going stale on the database's release schedule.
         url = await _alphafold_url(accession, transport)
-        data, cached = await _download_cached(url, cache_path, transport)
-        return StructureData(
-            f"AF-{accession}", "mmcif", data, "cache" if cached else "alphafold"
-        )
+        # Always a miss: the cache was checked above, before the API was asked,
+        # so `_download_cached` cannot answer from it here.
+        data, _ = await _download_cached(url, cache_path, transport)
+        return StructureData(f"AF-{accession}", "mmcif", data, "alphafold")
 
     raise FetchError(
         f"Could not resolve '{identifier}': not an existing file, 4-character "

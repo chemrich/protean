@@ -1018,12 +1018,23 @@ def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
         # and `float(None)` is a bare TypeError out of the tool rather than
         # anything a caller can act on.
         if entry.get(key, "missing") is None:
+            others = sorted(
+                k
+                for k, v in entry.items()
+                if k not in ("chain", "seq", "ins_code", "resn", "copies")
+                and isinstance(v, (int, float))
+                and not isinstance(v, bool)
+            )
+            instead = (
+                f" Filter those entries out, or build the field on one of: "
+                f"{', '.join(others)}."
+                if others
+                else " Filter those entries out."
+            )
             raise ViewerError(
                 f"Residue {entry.get('chain')}{entry.get('seq')} has no "
-                f"{key!r} value. `sasa()` leaves `relative` null for ligands, "
-                "ions and non-standard residues, which have no reference area. "
-                "Filter those out, or build the field on 'area_a2' or "
-                "'depth_a', which every residue has."
+                f"{key!r} value — the analysis left it null, which means it "
+                f"could not be measured rather than that it measured zero." + instead
             )
         if key not in entry:
             raise ViewerError(
@@ -2383,8 +2394,15 @@ async def sasa(
     does not — on 1UBQ the C-terminal glycine comes out at 1.42 — and clamping
     would report the most exposed residue in the structure as merely ordinary.
 
-    `relative` is null for anything with no reference maximum: ligands, ions,
-    nucleotides and non-standard residues. Area and depth are still given.
+    `relative` is null for anything with no reference maximum: ligands,
+    nucleotides and non-standard residues. Selenomethionine and the MD
+    protonation states are mapped to the residue they are a form of, so those
+    do carry one.
+
+    **A monoatomic ion has all three null**, because biotite drops ions from
+    the calculation rather than measuring them. Null means "not measured", not
+    "measured zero" — reporting an area of 0 for a fully exposed zinc would
+    paint it as the most buried thing in the structure.
 
     **`depth_a` is a proxy and this says which one:** distance to the nearest
     atom the probe reached, averaged over the residue's atoms. It is *not* the
@@ -2452,8 +2470,9 @@ async def sasa(
         # radii, and that moves every number — so two structures are only
         # comparable when this says the same thing for both.
         "radii": measured.radii,
-        # Residues with no reference maximum, so `relative` is null for them
-        # and a field built on that key will not reach them.
+        # Residues with no reference maximum, so `relative` is null for them.
+        # `define_field` refuses a null rather than crashing on it, so a field
+        # on that key needs these filtered out first.
         "unscored": len(rows) - len(scored),
         "buried": sum(1 for v in scored if v < BURIED_BELOW),
         "exposed": sum(1 for v in scored if v > EXPOSED_ABOVE),

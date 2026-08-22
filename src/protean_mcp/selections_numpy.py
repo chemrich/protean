@@ -132,7 +132,11 @@ def _has_assembly(handle: Any) -> bool:
     """
     try:
         return "pdbx_struct_assembly_gen" in handle.block
-    except Exception:
+    except KeyError:
+        # No block at all. Anything else — a file with several data blocks, for
+        # one — is a different problem, and answering "no assembly" to it puts
+        # "this is normal for a predicted model" on a file that is nothing of
+        # the kind. Let it raise and be reported as the parse failure it is.
         return False
 
 

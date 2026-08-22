@@ -19,6 +19,7 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.exposure import (
     MAX_ASA,
     _nearest_distance,
+    reference_area,
     residue_exposure,
 )
 from protean_mcp.connection import ViewerError
@@ -221,6 +222,118 @@ def test_hydrogens_do_not_push_a_surface_residue_underground():
     withH = {r["seq"]: r["depth_a"] for r in residue_exposure(protonated).residues}
 
     assert withH[2] == plain[2], "a hydrogen changed its residue's depth"
+
+
+def test_hydrogens_stay_out_of_depth_under_the_fallback_radii_too():
+    """The fallback gives hydrogens a radius, which reopens the bug above.
+
+    ProtOr has no radius for a hydrogen, so it drops out of the depth pass on
+    its own. The `Single` fallback measures by element and hands one back — and
+    a single ligand the dictionary has never seen switches the *whole*
+    structure to `Single`. So the same file, plus one unknown ligand, quietly
+    went back to inflating depth for every protonated residue.
+    """
+    core = list(_shell())
+    hydrogen = Atom(
+        [1.0, 1.0, 6.6],
+        chain_id="A",
+        res_id=2,
+        ins_code="",
+        res_name="ALA",
+        atom_name="HB1",
+        element="H",
+        hetero=False,
+    )
+    # An invented ligand forces the fallback for everything.
+    ligand = _residue("A", 900, "LIG", (0.0, 0.0, 40.0))
+
+    without_h = residue_exposure(atom_array([*core, *ligand]))
+    with_h = residue_exposure(atom_array([*core[:10], hydrogen, *core[10:], *ligand]))
+
+    assert without_h.radii == "single", "the ligand did not force the fallback"
+    assert with_h.radii == "single"
+
+    plain = {r["seq"]: r["depth_a"] for r in without_h.residues}
+    protonated = {r["seq"]: r["depth_a"] for r in with_h.residues}
+    assert protonated[2] == plain[2], "a hydrogen changed depth under Single radii"
+
+
+def test_symmetry_copies_fold_into_one_row_per_residue():
+    """A biological assembly repeats a chain, and copies share chain and number.
+
+    `biological` is the *default* load path, and a per-occurrence listing gives
+    two rows naming one residue — which `define_field` refuses by design,
+    because the second would silently replace the first. Measured on 1HHO
+    before this: 584 rows for 292 residues, and the call the tool's docstring
+    recommends raised outright.
+    """
+    one = _shell()
+    doubled = atom_array([*one, *one])
+
+    single = residue_exposure(one).residues
+    folded = residue_exposure(doubled).residues
+
+    keys = [(r["chain"], r["seq"]) for r in folded]
+    assert len(keys) == len(set(keys)), "a residue is listed more than once"
+    assert len(folded) == len(single)
+    assert all(r["copies"] == 2 for r in folded)
+
+
+def test_a_folded_residue_reports_its_exposure_not_the_sum_of_its_copies():
+    """Averaged, not summed: each copy is one residue, not half of a bigger one."""
+    one = _shell()
+    doubled = atom_array([*one, *one])
+
+    single = {r["seq"]: r["area_a2"] for r in residue_exposure(one).residues}
+    folded = {r["seq"]: r["area_a2"] for r in residue_exposure(doubled).residues}
+
+    # Coincident copies occlude each other, so the areas are not identical —
+    # the claim is that folding does not double them.
+    for seq, area in folded.items():
+        assert area <= single[seq] + 0.01, f"residue {seq} grew when copied"
+
+
+def test_an_unmeasured_residue_is_null_rather_than_zero():
+    """biotite drops monoatomic ions, and 0 would read as maximally buried.
+
+    A fully exposed zinc reported `area_a2: 0.0`, which sorts and colours as
+    the most buried thing in the structure. Null says "not measured", which is
+    what happened.
+    """
+    with_ion = atom_array(
+        [
+            *_shell(),
+            Atom(
+                [0.0, 0.0, 40.0],
+                chain_id="A",
+                res_id=500,
+                ins_code="",
+                res_name="ZN",
+                atom_name="ZN",
+                element="ZN",
+                hetero=True,
+            ),
+        ]
+    )
+    ion = next(r for r in residue_exposure(with_ion).residues if r["resn"] == "ZN")
+
+    assert ion["area_a2"] is None
+    assert ion["relative"] is None
+    assert ion["depth_a"] is None
+
+
+def test_selenomethionine_is_measured_like_the_methionine_it_is():
+    """One MSE used to make the documented call fail for the whole structure.
+
+    `define_field` refuses a null, and MSE — which is how a large share of
+    crystal structures were phased — had no reference area, so a single one
+    anywhere left `relative` null and took the call down.
+    """
+    assert reference_area("MSE") == MAX_ASA["MET"]
+    assert reference_area("HIE") == MAX_ASA["HIS"]
+    assert reference_area("CYX") == MAX_ASA["CYS"]
+    # And a genuine unknown still has no answer, which is the point of null.
+    assert reference_area("LIG") is None
 
 
 class TestNearestDistance:
