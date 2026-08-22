@@ -48,7 +48,12 @@ from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
-from .analysis.exposure import BURIED_BELOW, EXPOSED_ABOVE, residue_exposure
+from .analysis.exposure import (
+    BURIED_BELOW,
+    EXPOSED_ABOVE,
+    ExposureError,
+    residue_exposure,
+)
 from .analysis.hatching import apply_finish, ink_fraction
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
@@ -1008,6 +1013,18 @@ def _field_value(entry: dict[str, Any], key: str | None = None) -> float:
     is ambiguous and says so rather than picking.
     """
     if key is not None:
+        # None is a real answer from an analysis tool — `sasa()` reports a null
+        # `relative` for a ligand, which has no reference area to divide by —
+        # and `float(None)` is a bare TypeError out of the tool rather than
+        # anything a caller can act on.
+        if entry.get(key, "missing") is None:
+            raise ViewerError(
+                f"Residue {entry.get('chain')}{entry.get('seq')} has no "
+                f"{key!r} value. `sasa()` leaves `relative` null for ligands, "
+                "ions and non-standard residues, which have no reference area. "
+                "Filter those out, or build the field on 'area_a2' or "
+                "'depth_a', which every residue has."
+            )
         if key not in entry:
             raise ViewerError(
                 f"No {key!r} in entry {sorted(entry)}. Name the field holding "
@@ -2404,10 +2421,17 @@ async def sasa(
         if not mask.any():
             raise ViewerError(f"{selection!r} matches no atoms")
         array = array[mask]
-    if probe_radius <= 0:
+    # Not `<= 0`: NaN compares False against everything, so it passed the guard
+    # and reached the Rust kernel, which answered with a PanicException about an
+    # index of 18446744073709551615.
+    if not probe_radius > 0:
         raise ViewerError(f"probe_radius must be positive, got {probe_radius}")
 
-    rows = residue_exposure(array, probe_radius=probe_radius)
+    try:
+        measured = residue_exposure(array, probe_radius=probe_radius)
+    except ExposureError as exc:
+        raise ViewerError(str(exc)) from exc
+    rows = measured.residues
     if not rows:
         raise ViewerError(
             "Nothing to measure: the selection is entirely solvent, which is "
@@ -2423,6 +2447,11 @@ async def sasa(
         "truncated": len(listed) < len(rows),
         "total_area_a2": round(sum(r["area_a2"] for r in rows), 1),
         "probe_radius": probe_radius,
+        # Which radius set produced these. One ligand the chemical component
+        # dictionary has never seen switches the whole structure to element
+        # radii, and that moves every number — so two structures are only
+        # comparable when this says the same thing for both.
+        "radii": measured.radii,
         # Residues with no reference maximum, so `relative` is null for them
         # and a field built on that key will not reach them.
         "unscored": len(rows) - len(scored),

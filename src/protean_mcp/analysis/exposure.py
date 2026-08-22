@@ -21,12 +21,20 @@ surface. They agree closely near the surface and diverge in a large interior.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from biotite.structure import AtomArray, filter_solvent, sasa
+from biotite.structure import AtomArray, filter_solvent, get_residue_starts, sasa
 
-__all__ = ["BURIED_BELOW", "EXPOSED_ABOVE", "MAX_ASA", "residue_exposure"]
+__all__ = [
+    "BURIED_BELOW",
+    "EXPOSED_ABOVE",
+    "MAX_ASA",
+    "Exposure",
+    "ExposureError",
+    "residue_exposure",
+]
 
 #: Most surface a residue of each type can have, in A^2 — Tien et al. 2013,
 #: the theoretical set, measured on Gly-X-Gly tripeptides.
@@ -78,7 +86,21 @@ BURIED_BELOW = 0.1
 EXPOSED_ABOVE = 0.4
 
 
-def _areas(kept: AtomArray[Any], probe_radius: float) -> tuple[np.ndarray[Any, Any], str]:
+def _clean(
+    raw: np.ndarray[Any, Any], radii: str
+) -> tuple[np.ndarray[Any, Any], str, np.ndarray[Any, Any]]:
+    """Zeroed areas, the radius set, and which atoms had a radius at all.
+
+    The third is the part that has to survive: `nan_to_num` is right for
+    summing an area, and it destroys the only record of which atoms biotite
+    could not measure — which is exactly what the depth pass needs to exclude.
+    """
+    return np.nan_to_num(raw), radii, ~np.isnan(raw)
+
+
+def _areas(
+    kept: AtomArray[Any], probe_radius: float
+) -> tuple[np.ndarray[Any, Any], str, np.ndarray[Any, Any]]:
     """Per-atom reachable area, and which radius set produced it.
 
     biotite's default ProtOr radii are per (residue, atom) pairs looked up in
@@ -96,11 +118,20 @@ def _areas(kept: AtomArray[Any], probe_radius: float) -> tuple[np.ndarray[Any, A
     of a relative number.
     """
     try:
-        areas = sasa(kept, probe_radius=probe_radius)
-        return np.nan_to_num(areas), "protor"
-    except KeyError:
-        areas = sasa(kept, probe_radius=probe_radius, vdw_radii="Single")
-        return np.nan_to_num(areas), "single"
+        return _clean(sasa(kept, probe_radius=probe_radius), "protor")
+    except (KeyError, ValueError) as exc:
+        # KeyError for a residue/atom pair the dictionary does not hold.
+        # ValueError for an atom whose *name* begins with H, which ProtOr
+        # refuses before it looks anything up — and biotite filters hydrogens
+        # by *element*, so an atom named HB1 with a blank element column, or an
+        # organomercury ligand whose atom is named HG, walks straight into it.
+        if "occlusion filter" in str(exc):
+            raise ExposureError(
+                "Nothing here has a van der Waals radius to roll a probe "
+                "against — a selection of only ions or only hydrogens has no "
+                "surface to measure."
+            ) from exc
+        return _clean(sasa(kept, probe_radius=probe_radius, vdw_radii="Single"), "single")
 
 
 def _nearest_distance(
@@ -113,22 +144,49 @@ def _nearest_distance(
     that breaks on somebody else's release schedule with no line of protean
     changing. This project has been bitten by exactly that once already.
 
-    Chunked because the full matrix is len(points) x len(targets): on a large
-    assembly that is billions of entries, and the chunking bounds the memory
-    at 512 rows regardless of how big the structure is. Time still grows with
-    the product, which is the honest cost of not having a tree.
+    Chunked on **both** axes. Chunking rows alone bounds the row count and not
+    the memory — the temporary is chunk x len(targets) x 3, which measured 172
+    MB at 12k targets and would be well over a gigabyte on a 200k-atom
+    assembly. Squared distances throughout, with one square root at the end,
+    because sqrt of the whole matrix is the other half of that allocation.
+
+    Time still grows with the product of the two lengths, which is the honest
+    cost of not having a tree: seconds at 20k points, minutes at 100k.
     """
-    out = np.empty(len(points), dtype=np.float64)
+    best = np.full(len(points), np.inf, dtype=np.float64)
     for start in range(0, len(points), chunk):
         block = points[start : start + chunk]
-        gaps = block[:, None, :] - targets[None, :, :]
-        out[start : start + chunk] = np.sqrt((gaps * gaps).sum(axis=2)).min(axis=1)
-    return out
+        for other in range(0, len(targets), chunk):
+            wedge = targets[other : other + chunk]
+            gaps = block[:, None, :] - wedge[None, :, :]
+            np.minimum(
+                best[start : start + chunk],
+                (gaps * gaps).sum(axis=2).min(axis=1),
+                out=best[start : start + chunk],
+            )
+    return np.sqrt(best)
 
 
-def residue_exposure(
-    array: AtomArray[Any], probe_radius: float = 1.4
-) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class Exposure:
+    """Per-residue rows, and which radius set produced them.
+
+    The radius set is not a detail: one ligand the dictionary has never seen
+    switches the whole structure to element radii, and that moves every number
+    — measured on 1L2Y, adding a two-atom unknown 30 A away moved residue 1
+    from 0.8101 to 0.8472. A caller comparing two structures needs to know
+    they were measured the same way.
+    """
+
+    residues: list[dict[str, Any]]
+    radii: str
+
+
+class ExposureError(ValueError):
+    """Raised when there is no surface to measure at all."""
+
+
+def residue_exposure(array: AtomArray[Any], probe_radius: float = 1.4) -> Exposure:
     """Per-residue area, relative exposure and depth, in residue order.
 
     Solvent is removed first. Waters sit *on* the surface, so leaving them in
@@ -147,47 +205,52 @@ def residue_exposure(
     """
     kept = array[~filter_solvent(array)]
     if kept.array_length() == 0:
-        return []
+        return Exposure(residues=[], radii="none")
 
-    areas, radii = _areas(kept, probe_radius)
-
-    # NaN comes back for atoms with no radius at all. Zero is the right reading
-    # — no radius, no reachable area — and it stops one unknown atom from
-    # poisoning the arithmetic for its whole residue.
+    # `carries_radius` is the atoms biotite could measure at all. Zeroed areas
+    # are right for summing — no radius, no reachable area — and wrong for the
+    # depth pass, which must not treat an unmeasurable atom as buried.
+    areas, radii, carries_radius = _areas(kept, probe_radius)
     reached = areas > _REACHED
     coords = kept.coord
+
+    depths = np.full(len(coords), np.nan)
     if reached.any():
-        depths = _nearest_distance(coords, coords[reached])
-    else:
-        # Nothing is reachable, which happens for a structure sliced out of a
-        # larger assembly it was buried inside. Reported rather than measured
-        # against a surface that is not there.
-        depths = np.full(len(coords), float("nan"))
+        # Measured only over atoms that have a radius. A hydrogen is never
+        # `reached`, so with hydrogens in the query set every residue in a
+        # protonated file carried its own H-to-heavy-atom distance into the
+        # mean: on 1L2Y, ASN1 is 81% exposed and read 0.52 A deep with
+        # hydrogens present against 0.0 with them stripped. That contradicts
+        # the promise one paragraph up, on exactly the NMR and MD structures
+        # the trajectory tools load.
+        measurable = np.flatnonzero(carries_radius)
+        if measurable.size:
+            depths[measurable] = _nearest_distance(coords[measurable], coords[reached])
 
     out: list[dict[str, Any]] = []
-    _ = radii
-    starts = np.flatnonzero(
-        np.r_[
-            True,
-            (kept.res_id[1:] != kept.res_id[:-1])
-            | (kept.chain_id[1:] != kept.chain_id[:-1])
-            | (kept.ins_code[1:] != kept.ins_code[:-1]),
-        ]
-    )
-    for start, stop in zip(starts, np.r_[starts[1:], len(kept)], strict=True):
+    starts: np.ndarray[Any, Any] = get_residue_starts(kept)
+    for start, stop in zip(starts, np.r_[starts[1:], kept.array_length()], strict=True):
         resn = str(kept.res_name[start])
         area = float(areas[start:stop].sum())
         reference = MAX_ASA.get(resn)
-        depth = float(np.mean(depths[start:stop]))
+        span = depths[start:stop]
+        depth = float(np.nanmean(span)) if not np.all(np.isnan(span)) else float("nan")
+        ins = str(kept.ins_code[start]).strip()
         out.append(
             {
                 "chain": str(kept.chain_id[start]),
                 "seq": int(kept.res_id[start]),
-                "ins_code": str(kept.ins_code[start]) or None,
                 "resn": resn,
                 "area_a2": round(area, 2),
                 "relative": None if reference is None else round(area / reference, 4),
                 "depth_a": None if np.isnan(depth) else round(depth, 2),
+                # Carried only when there is one, which is what every other
+                # producer in this repo does. Emitting `None` instead put the
+                # literal string "None" into the residue key `define_field`
+                # builds — `A|76|None` against the viewer's `A|76|` — so the
+                # exact call this tool's docstring recommends matched zero
+                # residues on every structure without insertion codes.
+                **({"ins_code": ins} if ins else {}),
             }
         )
-    return out
+    return Exposure(residues=out, radii=radii)

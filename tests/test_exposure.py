@@ -81,7 +81,7 @@ def buried_core() -> AtomArray[Any]:
 
 def test_the_enclosed_residue_is_buried_and_the_shell_is_not(buried_core):
     """The floor: burial has to track geometry, not residue type."""
-    rows = residue_exposure(buried_core)
+    rows = residue_exposure(buried_core).residues
     core = next(r for r in rows if r["seq"] == 1)
     shell = [r for r in rows if r["seq"] != 1]
 
@@ -96,7 +96,7 @@ def test_the_enclosed_residue_is_the_deepest_one(buried_core):
     from the probe, one from a distance — and a sign error in either would
     still leave both looking like plausible numbers.
     """
-    rows = residue_exposure(buried_core)
+    rows = residue_exposure(buried_core).residues
     core = next(r for r in rows if r["seq"] == 1)
     shell = [r for r in rows if r["seq"] != 1]
 
@@ -113,7 +113,7 @@ def test_relative_is_null_where_there_is_no_reference(buried_core):
     with_ligand = atom_array(
         list(buried_core) + _residue("A", 999, "LIG", (0.0, 0.0, 20.0))
     )
-    rows = residue_exposure(with_ligand)
+    rows = residue_exposure(with_ligand).residues
     ligand = next(r for r in rows if r["resn"] == "LIG")
 
     assert ligand["relative"] is None
@@ -140,14 +140,14 @@ def test_water_is_removed_before_the_probe_is_rolled(buried_core):
         ]
     )
 
-    assert [r["resn"] for r in residue_exposure(drowned)].count("HOH") == 0
-    assert residue_exposure(drowned) == residue_exposure(buried_core)
+    assert [r["resn"] for r in residue_exposure(drowned).residues].count("HOH") == 0
+    assert residue_exposure(drowned).residues == residue_exposure(buried_core).residues
 
 
 def test_nothing_reachable_reports_rather_than_dividing_by_it():
     """A single atom inside nothing still has to answer."""
     lonely = atom_array(_residue("A", 1, "ALA", (0.0, 0.0, 0.0)))
-    rows = residue_exposure(lonely)
+    rows = residue_exposure(lonely).residues
 
     assert len(rows) == 1
     assert rows[0]["depth_a"] == 0.0
@@ -168,17 +168,59 @@ def test_a_bigger_probe_covers_more_ground_and_reaches_into_less():
     """
     core = _shell()
     areas = {
-        probe: sum(r["area_a2"] for r in residue_exposure(core, probe_radius=probe))
+        probe: sum(
+            r["area_a2"] for r in residue_exposure(core, probe_radius=probe).residues
+        )
         for probe in (1.0, 1.4, 2.0, 3.0)
     }
     assert list(areas.values()) == sorted(areas.values())
 
     def core_exposure(probe: float) -> float:
-        rows = residue_exposure(core, probe_radius=probe)
+        rows = residue_exposure(core, probe_radius=probe).residues
         return float(next(r["relative"] for r in rows if r["seq"] == 1))
 
     assert core_exposure(1.0) > core_exposure(1.4)
     assert core_exposure(3.0) == 0.0
+
+
+def test_hydrogens_do_not_push_a_surface_residue_underground():
+    """Depth is measured only over atoms that have a radius.
+
+    A hydrogen is never "reached" — ProtOr gives it no radius at all — but it
+    is still an atom of its residue, so averaging depth over every atom made
+    each hydrogen contribute its own ~1 A distance to the nearest heavy atom.
+    Measured on 1L2Y, where half the 304 atoms are hydrogens: ASN1 is 81%
+    exposed and read 0.52 A deep before this, against 0.0 with the hydrogens
+    stripped. It hit exactly the protonated NMR and MD files the trajectory
+    tools load.
+    """
+    core = _shell()
+    # Inserted *inside* residue 2's run of atoms, not appended. Residues are
+    # contiguous blocks, so a hydrogen tacked onto the end of the array is a
+    # separate residue that merely shares a number — which is what the first
+    # version of this test measured.
+    atoms = list(core)
+    protonated = atom_array(
+        [
+            *atoms[:10],
+            Atom(
+                [1.0, 1.0, 6.6],
+                chain_id="A",
+                res_id=2,
+                ins_code="",
+                res_name="ALA",
+                atom_name="HB1",
+                element="H",
+                hetero=False,
+            ),
+            *atoms[10:],
+        ]
+    )
+
+    plain = {r["seq"]: r["depth_a"] for r in residue_exposure(core).residues}
+    withH = {r["seq"]: r["depth_a"] for r in residue_exposure(protonated).residues}
+
+    assert withH[2] == plain[2], "a hydrogen changed its residue's depth"
 
 
 class TestNearestDistance:
@@ -270,3 +312,50 @@ class TestTheTool:
     async def test_a_negative_probe_is_refused(self, loaded):
         with pytest.raises(ViewerError, match="probe_radius must be positive"):
             await loaded.sasa(probe_radius=0)
+
+
+class TestTheDefineFieldHandoff:
+    """The call the docstring recommends, checked as far as the residue key.
+
+    A review found this broken and the existing test could not see it: it
+    exercised `_field_value` and stopped, while the failure was one line later
+    in the *key* `define_field` builds. `ins_code: None` formatted as the
+    string "None", so the key came out `A|76|None` against the viewer's
+    `A|76|`, and the recommended call matched zero residues on every structure
+    without insertion codes — which is nearly all of them.
+    """
+
+    @pytest.fixture(autouse=True)
+    def loaded(self, monkeypatch):
+        monkeypatch.setattr(server_mod, "_structure", _shell())
+        monkeypatch.setattr(server_mod, "_structure_identifier", "shell")
+        return server_mod
+
+    async def test_entries_carry_no_ins_code_when_there_is_none(self, loaded):
+        out = await loaded.sasa()
+
+        assert all("ins_code" not in r for r in out["residues"])
+
+    async def test_the_key_define_field_builds_is_the_one_the_viewer_uses(self, loaded):
+        """The exact expression from both sides, compared."""
+        entry = (await loaded.sasa())["residues"][0]
+
+        built = f"{entry['chain']}|{int(entry['seq'])}|{entry.get('ins_code', '')}"
+        # dispatch.ts builds `${chain}|${seq}|${ins || ''}` from the viewer's
+        # own residues, so an entry with no insertion code has to end in a bare
+        # separator.
+        assert built.endswith("|")
+        assert "None" not in built
+
+    async def test_an_unscored_residue_is_refused_by_name_not_by_TypeError(self, loaded):
+        """A ligand has a null `relative`, and `float(None)` is not an answer."""
+        with pytest.raises(ViewerError, match="has no 'relative' value"):
+            loaded._field_value({"chain": "A", "seq": 9, "relative": None}, "relative")
+
+    async def test_area_and_depth_are_answerable_for_everything(self, loaded):
+        """Which is what the refusal above tells the caller to fall back to."""
+        out = await loaded.sasa()
+
+        for row in out["residues"]:
+            assert loaded._field_value(row, "area_a2") == row["area_a2"]
+            assert loaded._field_value(row, "depth_a") == row["depth_a"]
