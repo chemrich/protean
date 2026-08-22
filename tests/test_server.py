@@ -1772,6 +1772,12 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "hide",
         "reset_view",
         "define_elements",
+        # Both arrived with the views that register a palette and then apply
+        # it — `painting` and `felt`. Without them this recorder answers "no
+        # handler" partway through a preset, which reads as a broken preset
+        # rather than as a gap in the recorder.
+        "color",
+        "size",
     ):
 
         def handle(args, action=action):
@@ -1836,6 +1842,41 @@ async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
         "material",
     ]
     assert len(out["steps"]) == len(calls)
+
+
+async def test_felt_draws_a_halo_under_its_own_handle(wired_bridge, tmp_path):
+    """The halo is the part of `felt` that can vanish without anyone noticing.
+
+    It is a second spacefill at 1.12x and alpha 0.2, and at that opacity a
+    reader cannot tell from the picture whether it drew at all. So the claim is
+    made here, against the calls and the handle table, rather than in pixels —
+    a differential test for this was written first and could not work, because
+    the browser fixture restores the handle table on teardown and the assertion
+    ran after it.
+
+    Its own handle for the same reason `ghost-heart` uses one: `show()` rebuilds
+    a component under an existing name, so a halo drawn through the wool's
+    handle would replace the wool instead of layering over it.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    task = wired_bridge.serve(40)
+    await preset("felt")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    shown = [args for action, args in calls if action == "show"]
+    halos = [a for a in shown if a.get("name") == server_mod._FELT_HALO]
+    assert halos, f"felt drew no halo; it drew {[a.get('name') for a in shown]}"
+    assert halos[0]["representation"] == "spacefill"
+    assert halos[0]["size"] == 1.12
+    assert halos[0]["opacity"] == 0.2
+    # The wool underneath is a different component, not the same one restyled.
+    assert any(a.get("name") == "auto_view" for a in shown)
+    assert server_mod._FELT_HALO in server_mod._handles.names()
 
 
 async def test_ghost_heart_draws_under_its_own_handle(wired_bridge, tmp_path):

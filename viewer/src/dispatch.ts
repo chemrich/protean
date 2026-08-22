@@ -646,8 +646,55 @@ interface Entry {
   refs: string[];
 }
 
+/**
+ * Per-atom radius jitter, so a sphere model reads as made rather than moulded.
+ *
+ * Hash-based rather than random, and that is not a stylistic preference: a
+ * biological assembly holds symmetry copies of the same atom, and an RNG gives
+ * each copy a different radius. One mate fatter than another looks like a bug
+ * in the structure rather than a texture, and it would change on every reload.
+ * Hashing the element index gives every copy of an atom the same jitter, every
+ * time.
+ */
+function registerJitterSize(plugin: any): void {
+  const themes = plugin.representation?.structure?.themes;
+  if (!themes?.sizeThemeRegistry) return;
+  const physical = themes.sizeThemeRegistry.get?.('physical');
+
+  themes.sizeThemeRegistry.add({
+    name: 'jitter',
+    label: 'jitter',
+    category: 'Misc',
+    factory: (ctx: any, props: any) => {
+      // Built on top of the physical (van der Waals) radii rather than
+      // replacing them: the point is a wobble around the real size, not a
+      // uniform ball. Falling back to a constant would silently redraw every
+      // atom the same size, which looks deliberate.
+      const base = physical?.factory?.(ctx, props);
+      return {
+        factory: () => {},
+        granularity: 'group',
+        size: (location: any) => {
+          const radius = base?.size?.(location) ?? 1.7;
+          const h = Math.imul((location.element ?? 0) + 1, 2654435761) ^ 0x9e37;
+          const t = ((h >>> 0) % 100000) / 100000;
+          // +/-7%. Enough to break the machined look, little enough that the
+          // model is still the van der Waals surface it claims to be.
+          return radius * (0.93 + 0.14 * t);
+        },
+        props: {},
+        description: 'van der Waals radius with a deterministic per-atom wobble',
+      };
+    },
+    getParams: () => ({}),
+    defaultValues: {},
+    isApplicable: () => true,
+  });
+}
+
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
+  registerJitterSize(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();

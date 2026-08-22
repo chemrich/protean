@@ -175,8 +175,26 @@ function fakePlugin() {
           }),
         },
         themes: {
-          colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] },
-          sizeThemeRegistry: { types: [['uniform'], ['physical'], ['uncertainty']] },
+          // `add` and `get` are real methods on the live registries, and the
+          // dispatcher registers a size theme the moment it is created. A fake
+          // carrying only `types` failed every test in this file at once with
+          // "sizeThemeRegistry.add is not a function" — which is a fake that
+          // had drifted from the thing it stands in for, not a broken feature.
+          colorThemeRegistry: {
+            types: [['chain-id'], ['element-symbol']],
+            add: vi.fn(),
+          },
+          sizeThemeRegistry: {
+            types: [['uniform'], ['physical'], ['uncertainty']],
+            registered: [] as any[],
+            add(provider: any) {
+              this.registered.push(provider);
+              this.types.push([provider.name]);
+            },
+            get(name: string) {
+              return this.registered.find((p: any) => p.name === name);
+            },
+          },
         },
       },
     },
@@ -422,7 +440,7 @@ describe('createDispatcher', () => {
   it('rejects an unknown size theme against the live registry', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(dispatch('size', { name: 's', size: 'thickness' })).rejects.toThrow(
-      /Unknown size theme 'thickness'\. Available: physical, uncertainty, uniform/
+      /Unknown size theme 'thickness'\. Available: jitter, physical, uncertainty, uniform/
     );
   });
 
@@ -440,7 +458,8 @@ describe('createDispatcher', () => {
     await expect(dispatch('capabilities', {})).resolves.toEqual({
       representations: ['cartoon', 'line', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
-      size_themes: ['physical', 'uncertainty', 'uniform'],
+      // `jitter` is protean's own, registered when the dispatcher is built.
+      size_themes: ['jitter', 'physical', 'uncertainty', 'uniform'],
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
@@ -928,6 +947,52 @@ describe('path tracing', () => {
     await expect(
       createDispatcher(tracing(fakePlugin()))('path_trace', { bounces: 99 })
     ).rejects.toThrow(/bounces must be a whole number from 1 to 16/);
+  });
+});
+
+describe('the jitter size theme', () => {
+  const jitterOf = (plugin: any) =>
+    plugin.representation.structure.themes.sizeThemeRegistry.get('jitter');
+
+  it('is registered as soon as the dispatcher exists', () => {
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+
+    expect(jitterOf(plugin)).toBeTruthy();
+    expect(
+      plugin.representation.structure.themes.sizeThemeRegistry.types
+        .map((t: any[]) => t[0])
+    ).toContain('jitter');
+  });
+
+  it('gives every copy of an atom the same radius', () => {
+    // The reason it hashes rather than randomises. A biological assembly holds
+    // symmetry copies of one atom, and an RNG makes one mate fatter than
+    // another — which reads as a broken structure, not a texture, and changes
+    // on every reload. Same element index, same wobble, forever.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = jitterOf(plugin).factory({}, {}).size;
+
+    const first = size({ element: 41 });
+    expect(size({ element: 41 })).toBe(first);
+
+    const second: any = withCanvas(fakePlugin());
+    createDispatcher(second);
+    expect(jitterOf(second).factory({}, {}).size({ element: 41 })).toBe(first);
+  });
+
+  it('wobbles around the radius rather than replacing it', () => {
+    // Falling back to a constant would redraw every atom the same size and
+    // look entirely deliberate, so the spread has to stay narrow and centred.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = jitterOf(plugin).factory({}, {}).size;
+
+    const radii = Array.from({ length: 200 }, (_, i) => size({ element: i }));
+    expect(Math.min(...radii)).toBeGreaterThan(1.7 * 0.92);
+    expect(Math.max(...radii)).toBeLessThan(1.7 * 1.08);
+    expect(new Set(radii).size).toBeGreaterThan(150);
   });
 });
 

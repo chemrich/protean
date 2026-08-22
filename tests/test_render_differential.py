@@ -1073,8 +1073,8 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 
 # -- the style presets from docs/views.md §5.1 ---------------------------------
 #
-# Eight views: six borrowed from MCPymol, of which four decide what is drawn
-# rather than only restyling it, plus the two illustration styles of §5.9. Taken
+# Nine views: six borrowed from MCPymol, of which four decide what is drawn
+# rather than only restyling it, the two illustration styles of §5.9, and felt. Taken
 # in one session, in this order, because a browser launch is the expensive part:
 # each frame is compared with the one before it, and then all nine are compared
 # with each other. The second claim is the one worth having — two recipes that
@@ -1090,6 +1090,7 @@ _VIEW_SEQUENCE = [
     "skeleton",
     "painting",
     "richardson",
+    "felt",
 ]
 
 
