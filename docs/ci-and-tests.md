@@ -107,6 +107,74 @@ returns inert data. And the proposed completeness check, diffing
 `canvas3d.props`, is blind to the screenshot helper's own values, the camera
 pose, the theme registries, and the dispatcher's closure state.
 
+## What the journal-figure gate actually cost, measured after landing
+
+The estimate that justified it was ~600 s by subtraction. The measurement,
+from the `--durations` output either side of the change, is **496.7 s**: the
+`journal_figures` fixture cost 641.95 s with the capture and 145.23 s without.
+So one call was **15% of the job**, not the 19% the estimate claimed.
+
+**And the job total barely moved — 53:49 to 51:08.** Not because the saving is
+not real, but because that runner was about 20% slower at everything else:
+`finishes` went 235 s to 288, `styled_effects` 197 to 243, `views` 155 to 175,
+the lighting rigs 115 to 142. The variance ate the gain.
+
+This is the clearest illustration in this document of its own closing rule. The
+saving is attributable *because it was read off a fixture's own cost on both
+sides*, not inferred from two job totals — which is what makes a 15% change
+measurable at all when a single run's noise is larger than the change.
+
+## Lowering capture supersampling on CI — built, measured, not taken
+
+Kept here because it was built and measured rather than argued about, and
+because the measurement is the interesting part.
+
+**The mechanism.** A capture builds its own ImagePass at `sampleLevel: 4` — 16
+samples — via `mol-plugin/util/viewport-screenshot.js`. Mol\*'s `imagePass`
+getter re-applies `cameraHelper`, `transparentBackground`, `postprocessing`,
+`marking` and `illumination` on every access but deliberately leaves
+`multiSample` alone, so a level set once after the pass exists survives every
+later capture in the session. That makes it a purely test-side knob: touch
+`plugin.helpers.viewportScreenshot.imagePass`, then `setProps({multiSample:
+{mode: 'on', sampleLevel: N}})` over CDP from `tests/browser.py`, gated on an
+environment variable. **No production code changes and nothing protean ships is
+affected.**
+
+**What it buys, and it is far less than the per-capture figure suggests:**
+
+```
+per capture   sampleLevel 4  3.86 s      sampleLevel 2  1.01 s    3.8x
+whole file    sampleLevel 4  28:09       sampleLevel 2  22:25     1.25x
+```
+
+That gap is the point. **A 3.8x speedup on captures is a 20% speedup on the
+job**, because captures are a minority of wall time even in the
+capture-heaviest file — the rest is scene building, draws, settling and session
+launches. Anyone reaching for this lever from the per-capture ratio alone will
+overestimate it by about three times, which is the same part-for-whole error
+that produced the first version of this document.
+
+**What it costs: bit-exact capture reproducibility.** Of 160 tests only one
+fails at level 2, and it is the one that cannot cancel out.
+`test_going_back_to_a_frame_reproduces_it_exactly` asserts that revisiting a
+trajectory frame is bit-identical; at level 2 it differs by a single pixel,
+exceeding the comparison tolerance. Measured 3/3 failing at level 2 and 3/3
+passing at level 4 — caused, not flaky.
+
+Every other threshold held, and the reason is worth stating: `DISTINCT`,
+`STYLED` and `RELIT` compare two frames captured *the same way*, so a uniform
+sampling change cancels. Only a claim about exactness cannot.
+
+Keeping CI green at level 2 therefore means skipping that test on CI, which
+leaves the determinism guarantee enforced nowhere — a poor trade for 20%, on a
+tool whose product is a picture.
+
+**The lead worth following instead.** That reproducibility depends on sample
+count at all is suspicious: it suggests a capture reads before something has
+finished settling, and more samples merely hide it. That may be the same defect
+as backlog 40's doubled capture cost. If it is, fixing it would remove this
+lever's only objection — which is a better outcome than spending the guarantee.
+
 ## The rule this document exists to enforce
 
 **Measure the whole thing, on the machine that runs it.**
