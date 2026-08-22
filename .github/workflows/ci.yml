@@ -130,6 +130,12 @@ jobs:
       - run: uv sync --all-extras --dev
       - name: differential tests
         env:
+          # The journal-size capture is ~19% of this job in a single call. It
+          # is Phase 4's exit criterion, so it runs on every push to `main` and
+          # is skipped on pull requests: every commit that lands is covered, no
+          # PR waits ten minutes for it, and a developer's local run is
+          # untouched.
+          PROTEAN_SKIP_JOURNAL_FIGURE: ${{ github.event_name == 'pull_request' && '1' || '' }}
           PROTEAN_DIFFERENTIAL: "1"
           PROTEAN_CHROME: ${{ steps.chrome.outputs.chrome-path }}
           # Headless needs software WebGL; Mol* will not build a representation
