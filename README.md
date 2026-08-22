@@ -37,9 +37,9 @@ publication rendering, trajectories and cryo-EM maps all work end to end. See
 
 - **Selections** — PyMOL syntax for leaf predicates, composed through named
   handles: `select`, `combine`, `near`, `invert`.
-- **Analysis** — interfaces and buried area, superposition with RMSD,
-  conservation from an MMseqs2 alignment, electrostatics (screened Coulomb by
-  default, APBS when available).
+- **Analysis** — interfaces and buried area, solvent accessibility and burial
+  depth, superposition with RMSD, conservation from an MMseqs2 alignment,
+  electrostatics (screened Coulomb by default, APBS when available).
 - **Rendering** — representations, colour themes, lighting rigs, screen-space
   effects, PBR materials, path tracing, and `snapshot()` at a real physical
   size with the DPI written into the file.
@@ -137,7 +137,7 @@ path-trace quality, and whether ffmpeg is installed.
 | Selections | `select`, `combine`, `near`, `invert`, `list_selections`, `remove` |
 | Display | `show`, `hide`, `unhide`, `color`, `opacity`, `label`, `measure` |
 | Camera | `focus`, `orient`, `reset_view`, `spin`, `keyframe`, `list_keyframes` |
-| Analysis | `interface`, `superpose`, `conservation`, `electrostatics` |
+| Analysis | `interface`, `superpose`, `conservation`, `electrostatics`, `sasa` |
 | Scalar colouring | `color_by_potential`, `color_by_conservation`, `color_by_rmsf` |
 | Style | `background`, `lighting`, `effects`, `shading`, `material`, `path_trace`, `preset` |
 | Capture | `screenshot`, `snapshot`, `turntable`, `record_trajectory`, `record_timeline`, `movie` |

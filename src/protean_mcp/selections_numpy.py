@@ -122,6 +122,24 @@ class LoadedStructure:
 MAX_ASSEMBLY_COPIES = 12
 
 
+def _has_assembly(handle: Any) -> bool:
+    """Does this file declare a biological assembly at all?
+
+    Asked of the parsed block rather than by catching the exception `get_assembly`
+    raises, because that exception's message is the only thing distinguishing it
+    from any other parse failure — and matching on a library's prose is a
+    dependency on wording nobody promised to keep.
+    """
+    try:
+        return "pdbx_struct_assembly_gen" in handle.block
+    except KeyError:
+        # No block at all. Anything else — a file with several data blocks, for
+        # one — is a different problem, and answering "no assembly" to it puts
+        # "this is normal for a predicted model" on a file that is nothing of
+        # the kind. Let it raise and be reported as the parse failure it is.
+        return False
+
+
 def assembly_multiplicity(text: str) -> int:
     """How many copies assembly 1 would make, read without building it."""
     try:
@@ -261,6 +279,31 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
             )
             return LoadedStructure(
                 array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+            )
+
+        if not _has_assembly(handle):
+            # A predicted model has no crystallographic assembly to build, and
+            # asking for one took the *analysis* half down while the viewer
+            # drew the file happily: every AlphaFold model loaded with
+            # "analysis unavailable: File has no 'pdbx_struct_assembly_gen'
+            # category". The deposited coordinates are the whole structure for
+            # such a file, so they are the honest answer to "the biological
+            # assembly" rather than a consolation prize — but the reply says
+            # which it got, because "biological" and "asymmetric" mean the same
+            # thing here only because there is one chain's worth of it.
+            array = _normalise_altloc(
+                get_structure(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
+            )
+            return LoadedStructure(
+                array=array,
+                assembly="asymmetric",
+                copies=1,
+                note=(
+                    "this file declares no biological assembly, which is "
+                    "normal for a predicted model; the deposited coordinates "
+                    "were loaded and they are the whole structure"
+                ),
+                altloc_surplus=surplus,
             )
 
         copies = assembly_multiplicity(text)
