@@ -1441,9 +1441,49 @@ re-tests them:
   because a capture builds its own `mode: 'on'` ImagePass rather than using the
   canvas's.
 
-So the next place to look is `getImageDataUri` and the ImagePass itself, not
-rendering in general. If it is an upstream regression, that is the shape of the
-report.
+**A capture is supersampling, almost entirely.** The screenshot helper builds
+its ImagePass with `sampleLevel: colorBufferFloat && textureFloat ? 4 : 2`
+(`mol-plugin/util/viewport-screenshot.js`), and level 4 means 16 samples.
+Measured on 1UBQ at the CI viewport:
+
+```
+sampleLevel 4 (what runs)  3.86 s per capture
+sampleLevel 3              1.94 s   1.99x faster   0.63% of pixels differ
+sampleLevel 2              1.01 s   3.82x          0.98%
+sampleLevel 1              0.60 s   6.41x          1.10%
+sampleLevel 0              0.34 s  11.36x          1.23%
+```
+
+Almost exactly a doubling per level, which is what "take level^2 samples"
+predicts.
+
+**Two attractive explanations were tested and both are wrong**, which is worth
+recording because both are the first thing anyone would reach for:
+
+- **Not a changed default.** `sampleLevel` is `PD.Numeric(2)` in *both* 4.18
+  and 5.11, and the helper's `? 4 : 2` line is byte-identical between them.
+- **Not Chrome.** That ternary is a capability check, so a SwiftShader that
+  gained float-texture support would silently double the level. It did not:
+  both the pre-upgrade and post-upgrade runs report **Google Chrome
+  151.0.7922.169**. `chrome-version: stable` floats, so this was worth ruling
+  out rather than assuming.
+
+So the per-sample cost itself roughly doubled inside Mol\* 5.11. Bisecting the
+releases between 4.18 and 5.11 would name the one that did it; that is the
+remaining work on this item.
+
+**And there is a lever here independent of the regression.** Nothing requires
+captures to be antialiased at 16 samples: the suite compares frames with each
+other at a tolerance of 8, and the exact-equality tests compare two captures
+taken the same way, so they are indifferent to the level. Dropping to
+`sampleLevel: 2` would make every capture in the suite ~3.8x cheaper.
+
+It is not free, and the cost is the reason it is filed rather than done: it
+shifts about 1% of pixels, and several thresholds in
+`test_render_differential.py` sit at 0.008 to 0.01. Every one of them would
+need re-measuring against the new baseline, which is precisely the
+recalibration item 24 warns about for window size. Worth doing deliberately,
+with the thresholds re-derived rather than nudged.
 
 **Measure with repeats, not once.** Runner variance on this job is about 40%:
 the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes as a push
