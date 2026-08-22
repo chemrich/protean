@@ -1334,7 +1334,7 @@ say anything about pLDDT. Together they mean **`fetch_structure(source=
 "alphafold")` does not work at all** — one of the three sources that tool
 documents.
 
-### 33. The AlphaFold URL is pinned to a retired version — open
+### 33. The AlphaFold URL is pinned to a retired version — fixed
 
 `fetch.py` builds `https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_v4.cif`.
 AlphaFold DB is now on **v6** and v4 is gone:
@@ -1362,7 +1362,25 @@ Worth a test that the URL protean builds is one the database serves, which no
 existing test covers: the fetch tests use local files and a mocked upstream, so
 the whole suite passes with the tool completely broken.
 
-### 34. A predicted model fails the analysis parser by default — open
+**Fixed 2026-08-22, and this entry's own diagnosis was wrong in a way that
+matters.** The URL is now asked for — `cifUrl` from the API — rather than
+built, which was the recommendation above. But "P0DTC2 fails on both, so some
+accessions are genuinely absent" is not what is happening. The API answers 200
+for it and points at
+
+    https://alphafold.ebi.ac.uk/files/AF-0000000365840314-model_v1.cif
+
+— an internal numeric id, **no `-F1` fragment**, and version 1 while its
+neighbours are on 6. It is a real 2.1 MB file. **The template was wrong in
+shape, not only in version**, so no amount of bumping would ever have reached
+it, and the absence this entry inferred was a symptom of the bug rather than a
+fact about the database.
+
+The live test the last paragraph asked for exists now, behind
+`PROTEAN_NETWORK=1`. It is the only thing in the suite that can catch this
+class of failure, because everything else mocks the upstream.
+
+### 34. A predicted model fails the analysis parser by default — fixed
 
 An AlphaFold mmCIF loaded from disk:
 
@@ -1386,6 +1404,19 @@ means. Worth settling together.
 The reply does say what happened, which is the difference between this and a
 silent failure. It says it in a note a caller has to read, at the end of a line
 about a successful load.
+
+**Fixed 2026-08-22.** `load_structure` now checks for the
+`pdbx_struct_assembly_gen` category and, when it is absent, loads the deposited
+coordinates and says so — the same shape as the too-many-copies fallback
+directly above it in the same function. Checked by reading the category rather
+than by catching the exception, because that exception's message is the only
+thing separating it from any other parse failure, and matching on a library's
+prose is a dependency on wording nobody promised to keep.
+
+Verified on AF-P69905: 1077 atoms under either assembly, where the default
+previously failed outright. **Backlog 18 is untouched** — this does not settle
+what "the structure" means when the two halves disagree, it stops one specific
+file type from losing its analysis half.
 
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 

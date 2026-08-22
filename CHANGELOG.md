@@ -5,6 +5,52 @@ nothing is released yet, so everything below is unreleased.
 
 ## Unreleased
 
+### Analysis
+
+- **`sasa()`** — what the solvent reaches, per residue, plus how deep the rest
+  sits. Three numbers from one Shrake-Rupley pass: area in A^2, relative
+  exposure (that area over the most the residue type could have), and depth in
+  angstroms. **Relative is the one to draw**: a tryptophan showing 60 A^2 is
+  buried and a glycine showing 60 A^2 is wide open.
+
+  It can exceed 1 — a terminal residue has surface a Gly-X-Gly reference does
+  not, and 1UBQ's C-terminal glycine reads 1.42 — and clamping would report the
+  most exposed residue in the structure as merely ordinary. Depth is a proxy
+  and says which one: distance to the nearest atom the probe reached, not to a
+  solvent-excluded surface.
+
+  Verified on 1UBQ: 4802 A^2 against a literature ~4800, and the most buried
+  residues are ILE3, VAL5 and ILE23 — its actual hydrophobic core.
+
+  Three things that were true and surprising. **A coarser probe reaches more
+  area, not less**, because accessible area is measured at the probe centre;
+  what falls is what it can squeeze into. **biotite's default radii raise
+  rather than default** for a ligand the chemical component dictionary has
+  never seen, and for any atom whose *name* starts with H regardless of its
+  element. And **hydrogens inflated depth for every residue in a protonated
+  file** until depth was restricted to atoms that carry a radius — on the NMR
+  structure 1L2Y, a residue 81% exposed read 0.52 A deep.
+
+### Fetching and parsing
+
+- **AlphaFold URLs are asked for, not built** (backlog 33). The template was
+  pinned to `model_v4`, which the database retired, so every AlphaFold fetch
+  failed with "Not found upstream" — which reads as "no such protein".
+
+  Bumping the version would have been the wrong fix. **The template was wrong
+  in shape**: P0DTC2, the SARS-CoV-2 spike, is served as
+  `AF-0000000365840314-model_v1.cif` — an internal numeric id, no `-F1`
+  fragment, version 1 while its neighbours are on 6. The backlog had concluded
+  such accessions were absent from the database; they were not.
+
+  The whole suite passed with the tool completely broken, because it mocks the
+  upstream. There is an opt-in live test now, behind `PROTEAN_NETWORK=1`.
+
+- **A predicted model keeps its analysis half** (backlog 34). A file that
+  declares no biological assembly used to load in the viewer and lose every
+  selection and analysis tool to "File has no 'pdbx_struct_assembly_gen'
+  category". The deposited coordinates are now loaded with a note saying so.
+
 ### Views
 
 - **`felt` — felted wool, and the first thing out of the soft-matter plan.**
