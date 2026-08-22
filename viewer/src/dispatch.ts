@@ -1697,10 +1697,12 @@ export function createDispatcher(plugin: any): Handler {
           representations: changed,
           ...material,
           ...(emissive !== undefined ? { emissive } : {}),
-          // Reported whenever bumpiness was asked for, not only when a
-          // frequency came with it — the same courtesy `bloom_will_show` pays
-          // for the identical shape of problem one field down.
-          ...(bumpiness !== undefined
+          // Reported whenever *either* half was asked for, because either half
+          // alone is a bump that cannot show: bumpiness with a zero frequency,
+          // or a frequency with the bumpiness this call just defaulted back to
+          // zero. Both are silent, and the caller mentioned a bump either way.
+          // The same courtesy `bloom_will_show` pays one field down.
+          ...(bumpiness !== undefined || bump_frequency !== undefined
             ? { bump_will_show: showing > 0, bump_shows_on: showing }
             : {}),
           ...(bump_frequency !== undefined
