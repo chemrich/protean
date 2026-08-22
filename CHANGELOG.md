@@ -7,6 +7,37 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`felt` — felted wool, and the first thing out of the soft-matter plan.**
+  All-atom spheres in a dyed-wool palette, no speculars, a fibrous surface and
+  a soft halo layer at 1.12x. **Shipped as a style, not as a treatment**: the
+  plan's SM-01 binds surface area to fiber length, `docs/bakeoff.md` built that
+  and could not read it, so the docstring says it carries no data rather than
+  implying a measurement.
+
+  It still argues something. A hard glossy shell asserts that the van der Waals
+  surface is a boundary; it is where a probability fell off to a threshold
+  somebody chose, and a fuzzy edge is the more honest picture of that number.
+
+- **`material(bumpiness=, bump_frequency=)`**, which also fixes a control that
+  was dead. `bumpiness` had been pinned to zero and undocumented on the grounds
+  that it "does nothing unless bumpFrequency is above 0, and that defaults to
+  0". Counted across the registry rather than sampled: eleven representations
+  declare the parameter and **seven default non-zero** — spacefill,
+  molecular-surface, gaussian-surface, orientation and polyhedron at 1, cartoon
+  and putty at 2. Four default to zero and five declare none. Pinning
+  `bumpiness` killed the control everywhere, and on those seven it would have
+  worked with no other change.
+
+  Three things measured rather than assumed: the shader needs *three* non-zero
+  values and not two; **frequency is fineness, so raising it makes a surface
+  read smoother** (0.036 of the frame moves at frequency 1, 0.018 at 3, 0.004
+  at 6); and a cartoon is too little surface to test a bump on at all, which is
+  why the test draws its own spacefill.
+
+- **A `jitter` size theme**, hash-based rather than random, because an RNG gives
+  each symmetry copy of an atom a different radius — which reads as a broken
+  structure rather than as a texture, and changes on every reload.
+
 - **`painting` and `richardson`, the last two entries in the catalogue**
   (docs/views.md §5.9). `painting` is all-atom spheres in a gouache palette
   over a paper ground, lit with a warm key against a cool fill, occluded,

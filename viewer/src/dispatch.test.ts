@@ -162,7 +162,11 @@ function fakePlugin() {
     representation: {
       structure: {
         registry: {
-          types: [['cartoon'], ['spacefill']],
+          // `line` is here because protean really does offer representations
+          // with no surface to shade — line, point and label declare no
+          // bumpFrequency — and a fake where every representation can take a
+          // bump cannot exercise the branch that reports one that cannot.
+          types: [['cartoon'], ['line'], ['spacefill']],
           get: (type: string) => ({
             getParams: () =>
               type === 'spacefill'
@@ -171,8 +175,65 @@ function fakePlugin() {
           }),
         },
         themes: {
-          colorThemeRegistry: { types: [['chain-id'], ['element-symbol']] },
-          sizeThemeRegistry: { types: [['uniform'], ['physical'], ['uncertainty']] },
+          // `add` and `get` are real methods on the live registries, and the
+          // dispatcher registers a size theme the moment it is created. A fake
+          // carrying only `types` failed every test in this file at once with
+          // "sizeThemeRegistry.add is not a function" — which is a fake that
+          // had drifted from the thing it stands in for, not a broken feature.
+          colorThemeRegistry: {
+            types: [['chain-id'], ['element-symbol']],
+            add: vi.fn(),
+          },
+          // Modelled on mol-theme/theme.js rather than sketched, because the
+          // first version of this fake made three jitter tests pass against a
+          // code path the real viewer never takes: its `get` searched only the
+          // themes added at runtime, so the built-in `physical` came back
+          // undefined and jitter fell to a constant-radius fallback that
+          // cannot happen in production.
+          sizeThemeRegistry: {
+            types: [['uniform'], ['physical'], ['uncertainty']],
+            // Real radii, and deliberately not all the same: a jitter theme
+            // that quietly replaced the radius instead of wobbling it would
+            // look identical under a fake where every atom is 1.7.
+            registered: [
+              {
+                name: 'physical',
+                factory: (_ctx: any, props: any) => ({
+                  factory: () => {},
+                  size: (l: any) =>
+                    (props?.scale ?? 1) * ([1.7, 1.55, 1.52, 1.8][l.element % 4] ?? 1.7),
+                }),
+                getParams: () => ({ scale: { defaultValue: 1 } }),
+              },
+            ] as any[],
+            // Throws on a duplicate, exactly as ThemeRegistry.add does. Without
+            // this a second createDispatcher over one plugin looks harmless in
+            // tests and takes the bridge down in production.
+            add(provider: any) {
+              if (this.registered.some((p: any) => p.name === provider.name)) {
+                throw new Error(`${provider.name} already registered.`);
+              }
+              this.registered.push(provider);
+              this.types.push([provider.name]);
+            },
+            // Never undefined: the real registry answers with its empty
+            // provider, so callers cannot lean on a nullish check.
+            get(name: string) {
+              return (
+                this.registered.find((p: any) => p.name === name) ?? { name: '' }
+              );
+            },
+            create(name: string, ctx: any, props: any = {}) {
+              const provider: any = this.get(name);
+              if (!provider.factory) return { size: () => 1 };
+              const defaults = Object.fromEntries(
+                Object.entries(provider.getParams?.(ctx) ?? {}).map(
+                  ([k, v]: [string, any]) => [k, v.defaultValue]
+                )
+              );
+              return provider.factory(ctx, { ...defaults, ...props });
+            },
+          },
         },
       },
     },
@@ -203,7 +264,20 @@ function fakePlugin() {
               transform: {
                 ref: `repr-${ref}`,
                 params: {
-                  type: { name: params.type, params: { ...(params.typeParams ?? {}) } },
+                  type: {
+                    name: params.type,
+                    params: {
+                      // Mol* fills every declared parameter with its default,
+                      // so a real params object always *has* the key. The
+                      // material action tests for the key to decide whether a
+                      // representation can take a bump at all, and a fake that
+                      // omitted it made that branch untestable — the frequency
+                      // silently went nowhere and the test read `undefined`.
+                      // `label` is the real case with no surface to perturb.
+                      ...(params.type === 'line' ? {} : { bumpFrequency: 1 }),
+                      ...(params.typeParams ?? {}),
+                    },
+                  },
                 },
               },
             };
@@ -388,7 +462,9 @@ describe('createDispatcher', () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(
       dispatch('show', { name: 's', expression: '(sel.atom.all)', representation: 'cartoonn' })
-    ).rejects.toThrow(/Unknown representation 'cartoonn'\. Available: cartoon, spacefill/);
+    ).rejects.toThrow(
+      /Unknown representation 'cartoonn'\. Available: cartoon, line, spacefill/
+    );
   });
 
   it('rejects an unknown colour theme', async () => {
@@ -403,7 +479,7 @@ describe('createDispatcher', () => {
   it('rejects an unknown size theme against the live registry', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(dispatch('size', { name: 's', size: 'thickness' })).rejects.toThrow(
-      /Unknown size theme 'thickness'\. Available: physical, uncertainty, uniform/
+      /Unknown size theme 'thickness'\. Available: jitter, physical, uncertainty, uniform/
     );
   });
 
@@ -419,9 +495,10 @@ describe('createDispatcher', () => {
   it('reports the names it accepts', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(dispatch('capabilities', {})).resolves.toEqual({
-      representations: ['cartoon', 'spacefill'],
+      representations: ['cartoon', 'line', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
-      size_themes: ['physical', 'uncertainty', 'uniform'],
+      // `jitter` is protean's own, registered when the dispatcher is built.
+      size_themes: ['jitter', 'physical', 'uncertainty', 'uniform'],
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
@@ -912,6 +989,118 @@ describe('path tracing', () => {
   });
 });
 
+describe('the jitter size theme', () => {
+  const jitterOf = (plugin: any) =>
+    plugin.representation.structure.themes.sizeThemeRegistry.get('jitter');
+  const sizerOf = (plugin: any) => jitterOf(plugin).factory({}, {}).size;
+  const physicalOf = (plugin: any) =>
+    plugin.representation.structure.themes.sizeThemeRegistry
+      .create('physical', {})
+      .size;
+
+  it('is registered as soon as the dispatcher exists', () => {
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+
+    expect(jitterOf(plugin).name).toBe('jitter');
+    expect(
+      plugin.representation.structure.themes.sizeThemeRegistry.types.map(
+        (t: any[]) => t[0]
+      )
+    ).toContain('jitter');
+  });
+
+  it('registers once, so a second dispatcher over one plugin is survivable', () => {
+    // ThemeRegistry.add throws on a duplicate name, and this runs before any
+    // handler is built — so an unguarded second registration takes the whole
+    // bridge down rather than failing something small.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+
+    expect(() => createDispatcher(plugin)).not.toThrow();
+    expect(
+      plugin.representation.structure.themes.sizeThemeRegistry.registered.filter(
+        (p: any) => p.name === 'jitter'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('wobbles around each atom own radius rather than replacing it', () => {
+    // The claim that matters, and the one the first version of this test could
+    // not make: it ran against a fake whose `physical` lookup returned nothing,
+    // so it measured a constant being wobbled — the exact "every atom the same
+    // size" behaviour the theme exists to avoid.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const jitter = sizerOf(plugin);
+    const physical = physicalOf(plugin);
+
+    const radii = new Set<number>();
+    for (let element = 0; element < 200; element++) {
+      const base = physical({ element });
+      const drawn = jitter({ element });
+      radii.add(base);
+      expect(drawn).toBeGreaterThan(base * 0.929);
+      expect(drawn).toBeLessThan(base * 1.071);
+    }
+    // And it really was tracking more than one radius, or the bounds above
+    // would hold for a constant too.
+    expect(radii.size).toBeGreaterThan(1);
+  });
+
+  it('gives every copy of an atom the same radius', () => {
+    // The reason it hashes rather than randomises. A biological assembly holds
+    // symmetry copies of one atom, and an RNG makes one mate fatter than
+    // another — which reads as a broken structure, not a texture, and changes
+    // on every reload. Same element index, same wobble, forever.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const first = sizerOf(plugin)({ element: 41 });
+
+    expect(sizerOf(plugin)({ element: 41 })).toBe(first);
+
+    const second: any = withCanvas(fakePlugin());
+    createDispatcher(second);
+    expect(sizerOf(second)({ element: 41 })).toBe(first);
+  });
+
+  it('scatters neighbours instead of stepping through them', () => {
+    // A bare multiplicative hash is a Weyl lattice: consecutive element indices
+    // walk a short repeating staircase. Atoms adjacent in element index are
+    // adjacent along the backbone, so that staircase would run visibly down the
+    // chain. Deciles are uniform either way, so only the *differences* between
+    // neighbours can see it.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const jitter = sizerOf(plugin);
+
+    // Measured as the *ratio* to each atom's own radius, which isolates the
+    // hash. Differencing the radii directly cannot see this at all: the base
+    // radius varies per element, and that variation swamps the lattice — the
+    // first version of this test passed with the unmixed hash still in place.
+    const physical = physicalOf(plugin);
+    const wobble = (element: number) => jitter({ element }) / physical({ element });
+
+    const steps = new Set<number>();
+    for (let element = 0; element < 2000; element++) {
+      steps.add(Math.round((wobble(element + 1) - wobble(element)) * 1e6));
+    }
+    // The unmixed hash this replaced produced 134 distinct steps here.
+    expect(steps.size).toBeGreaterThan(1500);
+  });
+
+  it('keeps the theme equal to itself, so nothing re-tessellates', () => {
+    // SizeTheme.areEqual compares factory *identity*. A fresh closure per
+    // instantiation makes every theme unequal to the last one, which Mol* turns
+    // into createGeometry — and felt draws two full spacefills under this.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const provider = jitterOf(plugin);
+
+    expect(provider.factory({}, {}).factory).toBe(provider.factory({}, {}).factory);
+  });
+});
+
 describe('materials', () => {
   async function shown(plugin: any) {
     const dispatch = createDispatcher(plugin);
@@ -963,6 +1152,72 @@ describe('materials', () => {
     await dispatch('material', { name: 'sele', finish: 'matte', roughness: 0.05 });
 
     expect(materialOf(plugin).material).toMatchObject({ roughness: 0.05, metalness: 0 });
+  });
+
+  it('puts bumpiness in the material group and frequency beside it', async () => {
+    // The two halves of a bump live in different places: `bumpiness` is a
+    // member of the material group, `bumpFrequency` is a parameter of the
+    // representation. Setting one without the other draws nothing.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    const reply: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      bumpiness: 0.9,
+      bump_frequency: 6,
+    });
+
+    expect(materialOf(plugin).material.bumpiness).toBe(0.9);
+    expect(materialOf(plugin).bumpFrequency).toBe(6);
+    expect(materialOf(plugin).material).not.toHaveProperty('bumpFrequency');
+    expect(reply.bump_frequency_applied_to).toBe(1);
+  });
+
+  it('reports that a representation with no surface took no frequency', async () => {
+    // `line` declares no bumpFrequency — nor do point and label — so asking
+    // for one is a request that cannot be honoured. The count is how the
+    // caller finds that out instead of seeing a plain success.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'line',
+    });
+    const reply: any = await dispatch('material', {
+      name: 'sele',
+      finish: 'matte',
+      bumpiness: 0.9,
+      bump_frequency: 6,
+    });
+
+    expect(reply.representations).toBe(1);
+    expect(reply.bump_frequency_applied_to).toBe(0);
+  });
+
+  it('leaves a surface smooth unless bumpiness was asked for', async () => {
+    // A finish is a claim about gloss, not about texture, so the control has to
+    // stay off by default — including after a call that changes other things.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    await dispatch('material', { name: 'sele', finish: 'matte', bumpiness: 0.9 });
+    await dispatch('material', { name: 'sele', finish: 'glossy' });
+
+    expect(materialOf(plugin).material.bumpiness).toBe(0);
+  });
+
+  it('refuses a frequency outside the range Mol* accepts', async () => {
+    // Out of range, Mol* clamps and reports success — the exact shape of thing
+    // this project keeps finding, so it is refused here instead.
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'matte', bump_frequency: 40 })
+    ).rejects.toThrow(/between 0 and 10/);
+    await expect(
+      dispatch('material', { name: 'sele', finish: 'matte', bumpiness: 4 })
+    ).rejects.toThrow(/between 0 and 1/);
   });
 
   it('sets emissive separately from the material group', async () => {

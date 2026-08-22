@@ -2838,6 +2838,8 @@ async def material(
     metalness: float | None = None,
     roughness: float | None = None,
     emissive: float | None = None,
+    bumpiness: float | None = None,
+    bump_frequency: float | None = None,
 ) -> dict[str, Any]:
     """Give a displayed selection a surface finish.
 
@@ -2854,6 +2856,33 @@ async def material(
       Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
       there is some metalness: a true dielectric has a 4% specular term that
       roughness barely moves.
+    bumpiness: 0 to 1. Perturbs the surface normal, which is what makes a
+      surface read as fibrous, powdery or eroded rather than moulded.
+
+      **It needs a non-zero `bump_frequency` on the same representation to show
+      at all**, and the two live in different places in Mol\\*. Most
+      representations already carry one: of the eleven that declare the
+      parameter, seven default non-zero — spacefill, molecular-surface,
+      gaussian-surface, orientation and polyhedron at 1, cartoon and putty at
+      2 — and four default to zero: **ball-and-stick, backbone, carbohydrate
+      and ellipsoid**. On those four, bumpiness alone changes nothing. The
+      reply says so rather than leaving it to be discovered: `bump_will_show`
+      is false and `bump_shows_on` counts the representations where both halves
+      are in place.
+
+      Defaulted to 0 by every call that does not mention it, including a bare
+      `material(finish=...)`, because a finish is a claim about gloss and not
+      about texture.
+    bump_frequency: 0 to 10, how fine the perturbation is, and **raising it
+      makes a surface read smoother, not rougher** — a higher frequency puts
+      the perturbation below the size of a pixel. Measured on a 1UBQ spacefill:
+      0.036 of the frame moves at 1, 0.018 at 3, 0.004 at 6. Low is eroded
+      stone, middling is felt or wool.
+
+      Five representations declare no frequency at all — label, line, point,
+      plane and gaussian-volume — because they have no surface to perturb.
+      Asking for one there is reported through `bump_frequency_applied_to`
+      rather than ignored.
     emissive: 0 to 1, self-illumination. Note that effects(bloom=True) glows
       only where this is above zero — bloom's default mode is emissive, so on
       an ordinary material it correctly draws nothing at all. The reply says
@@ -2871,6 +2900,8 @@ async def material(
         ("metalness", metalness),
         ("roughness", roughness),
         ("emissive", emissive),
+        ("bumpiness", bumpiness),
+        ("bump_frequency", bump_frequency),
     ):
         if value is not None:
             args[key] = value
@@ -3653,6 +3684,101 @@ async def _richardson_style(_target: str, handle: str) -> list[str]:
     ]
 
 
+# Madder, indigo, weld yellow, walnut and undyed cream — the dyes a wool
+# workshop actually had before aniline. Chosen for the same reason `painting`
+# has its own palette: CPK's hard green carbon against hard red oxygen is the
+# loudest thing in an all-atom picture, and no amount of surface texture reads
+# through it.
+_WOOL_PALETTE = {
+    "C": "#d9cbb3",  # undyed cream, the ground the others sit on
+    "N": "#3f5d7d",  # indigo
+    "O": "#a33b32",  # madder
+    "S": "#c9a227",  # weld yellow
+    "P": "#8a6a4a",  # walnut
+    "H": "#e8e0d2",
+    "X": "#9a9384",
+}
+_WOOL_THEME = "protean-wool"
+
+#: The halo handle. A second, barely-there layer at a larger radius is how a
+#: fibrous silhouette is faked without a shader or a hair system.
+_FELT_HALO = "auto_felt_halo"
+
+
+async def _felt_style(target: str, handle: str) -> list[str]:
+    """Felted wool: no speculars, a fibrous surface, a soft edge.
+
+    **A style, and it carries no data.** Every other all-atom view in this
+    catalogue either shows what is there or colours by something; this one is
+    a look, in the way `painting` is a look, and says so rather than implying a
+    measurement. It was built and rejected as a data-carrying treatment first:
+    binding a per-atom number to the radius jitter is invisible against a
+    surface already textured at the same spatial frequency, which is recorded
+    in docs/bakeoff.md.
+
+    The soft edge is the one part with a claim behind it. A hard shell asserts
+    that the van der Waals surface is a boundary, and it is not — it is where a
+    probability has fallen off to an arbitrary threshold. A fuzzy edge is the
+    more honest picture, which is the same argument `putty` makes about
+    B-factor.
+    """
+    steps = [
+        # Wool over a warm off-white, so the cream carbon has something to sit
+        # against. Pure white makes undyed wool look grey.
+        await _run(background, color="#f2ede4", gradient="off"),
+        await _run(lighting, rig="three-point"),
+        # No outline: a drawn edge is the opposite of a fibrous one. Occlusion
+        # rather than a cast shadow, because shadow on a fuzzy surface reads as
+        # dirt.
+        await _set_effects(occlusion=True),
+        await _run(shading, style="normal", name=handle),
+        await _run(define_elements, name=_WOOL_THEME, colors=_WOOL_PALETTE),
+        await _run(color, color=_WOOL_THEME, name=handle),
+        await _run(size, size="jitter", name=handle),
+        # Frequency 3, measured rather than picked: it is fineness, so raising
+        # it makes the surface read *smoother*, and 6 nearly vanishes at
+        # ordinary viewport sizes. See the material tests.
+        await _run(
+            material, finish="matte", name=handle, bumpiness=0.9, bump_frequency=3
+        ),
+    ]
+    return steps + await _felt_halo(target, handle)
+
+
+async def _felt_halo(_target: str, handle: str) -> list[str]:
+    """The second layer, at 1.12x and barely opaque.
+
+    Its own handle, for the reason `ghost-heart` uses one: `show()` rebuilds a
+    component under an existing name, so drawing the halo through the same
+    handle would replace the wool underneath it rather than layer over it.
+
+    Drawn from the *handle* rather than from a selection string, because the
+    handle is the set that was actually drawn — re-describing it would risk the
+    two layers covering different atoms, which is exactly the disagreement a
+    halo would make invisible.
+    """
+    # Registered here before it is drawn, the way `ghost-heart` registers its
+    # surface: `show(handle=...)` draws a handle this side already knows, and
+    # the halo is a new one over the same atoms.
+    entry = _handles.get(handle)
+    _register(_FELT_HALO, entry.indices, f"preset(felt) halo over {handle}")
+    return [
+        await _run(
+            show,
+            representation="spacefill",
+            handle=_FELT_HALO,
+            size=1.12,
+            opacity=0.2,
+            pickable=False,
+        ),
+        await _run(color, color=_WOOL_THEME, name=_FELT_HALO),
+        await _run(size, size="jitter", name=_FELT_HALO),
+        await _run(
+            material, finish="matte", name=_FELT_HALO, bumpiness=1.0, bump_frequency=3
+        ),
+    ]
+
+
 @dataclass(frozen=True)
 class _View:
     """What separates one drawing view from another, and nothing else."""
@@ -3743,6 +3869,17 @@ _VIEWS: dict[str, _View] = {
         color="element-symbol",
         style=_painting_style,
     ),
+    # A style rather than a treatment: it carries no data, and the docstring
+    # says so. See docs/bakeoff.md for the version that tried to carry some.
+    "felt": _View(
+        selection="not solvent",
+        representation="spacefill",
+        # Replaced a moment later by the wool palette, which has to be
+        # registered before anything can name it. `show()` refuses a theme the
+        # viewer has never heard of, so the draw needs one that already exists.
+        color="element-symbol",
+        style=_felt_style,
+    ),
     "richardson": _View(
         selection="polymer",
         representation="cartoon",
@@ -3809,6 +3946,15 @@ async def _draw_view(name: str, target: str) -> list[str]:
         # handle exists to avoid, one view later.
         with contextlib.suppress(ViewerError):
             steps.append(await _run(hide, name=_LIGAND_HANDLE))
+    # The same leak, one layer out. `felt` draws a halo under a handle of its
+    # own, and nothing here knew about it: switching from `felt` to any other
+    # drawing view left a 1.12x, alpha-0.2 shell of every non-solvent atom
+    # hanging around the new picture. The views are supposed to be exclusive —
+    # they replace their predecessor rather than stack — and a second handle is
+    # exactly how that invariant gets broken quietly.
+    if name != "felt" and _FELT_HALO in _handles.names():
+        with contextlib.suppress(ViewerError):
+            steps.append(await _run(hide, name=_FELT_HALO))
     steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
@@ -3875,6 +4021,12 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            than from line — an homage to Irving Geis.
       richardson           The ribbon diagram: cartoon in one pale tone, cel
                            shaded at two steps, a grey line, white paper.
+      felt                 All-atom spheres as felted wool: dyed-wool palette,
+                           no speculars, a fibrous surface and a soft halo. A
+                           look, not a measurement — it carries no data, and
+                           the soft edge is the honest picture of a van der
+                           Waals surface, which is a probability falling off
+                           rather than a boundary.
 
       Add to what is there:
 
@@ -3968,6 +4120,7 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "spacefill": ("spacefill", _VIEW_DRAWS),
     "skeleton": ("skeleton", _VIEW_DRAWS),
     "painting": ("painting", _VIEW_DRAWS),
+    "felt": ("felt", _VIEW_DRAWS),
     "richardson": ("richardson", _VIEW_DRAWS),
     "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
     "illustrative": ("illustrative", _VIEW_STYLES),

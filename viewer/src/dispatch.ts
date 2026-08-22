@@ -118,6 +118,10 @@ interface MaterialArgs {
   roughness?: number;
   /** Self-illumination. Bloom's default mode only glows where this is > 0. */
   emissive?: number;
+  /** 0-1. Needs bump_frequency above zero on the representation to show. */
+  bumpiness?: number;
+  /** 0-10. Mol*'s own param, per representation rather than per material. */
+  bump_frequency?: number;
 }
 
 interface ShadingArgs {
@@ -642,8 +646,91 @@ interface Entry {
   refs: string[];
 }
 
+/**
+ * A deterministic wobble for one atom, given its van der Waals radius.
+ *
+ * Hash-based rather than random, and that is not a stylistic preference: a
+ * biological assembly holds symmetry copies of the same atom, and an RNG gives
+ * each copy a different radius. One mate fatter than another looks like a bug
+ * in the structure rather than a texture, and it would change on every reload.
+ * Hashing the element index gives every copy of an atom the same jitter, every
+ * time.
+ *
+ * The finalizer is the part that earns its place. A bare multiplicative hash —
+ * `imul(i, K)` and take the low bits — is a Weyl lattice, so consecutive
+ * element indices produce radii that step through a short repeating staircase.
+ * Atoms adjacent in element index are adjacent along the backbone, so that
+ * staircase runs visibly down the chain: measured over 2000 atoms, successive
+ * differences took 134 distinct values. The avalanche steps below take it to
+ * 2000. Deciles stay uniform either way, which is why a distribution check
+ * cannot see the difference and looking at a helix can.
+ */
+function jitterRadius(element: number, radius: number): number {
+  let h = Math.imul(element + 1, 0x9e3779b1);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  // +/-7%. Enough to break the machined look, little enough that the model is
+  // still the van der Waals surface it claims to be.
+  return radius * (0.93 + 0.14 * ((h >>> 0) / 4294967296));
+}
+
+/** Themes protean registers itself, which are not Mol*'s and are not fields. */
+const BUILT_IN_THEMES = new Set(['jitter']);
+
+/** Registers `jitter` as an ordinary size theme, once per plugin. */
+function registerJitterSize(plugin: any): void {
+  const registry = plugin.representation?.structure?.themes?.sizeThemeRegistry;
+  if (!registry?.add) return;
+  // `ThemeRegistry.add` throws `'jitter already registered.'` on a duplicate
+  // name (mol-theme/theme.js), and this runs as the second statement of
+  // `createDispatcher` — so a second dispatcher over one plugin, which a
+  // reconnect can produce, would take the bridge down before a single handler
+  // existed. `get` returns the registry's empty provider rather than undefined
+  // when a name is absent, so comparing the name is the check that works.
+  if (registry.get?.('jitter')?.name === 'jitter') return;
+
+  // One factory object, referenced as its own `factory`, because
+  // `SizeTheme.areEqual` compares factory *identity*
+  // (mol-theme/size.js) and a fresh closure per instantiation makes every
+  // theme unequal to itself. Mol* turns that into `updateSize` and
+  // `createGeometry`, so felt — which draws two full spacefills under this
+  // theme — would re-tessellate every sphere on each later restyle.
+  const factory = (ctx: any, props: any) => {
+    // Built on the physical (van der Waals) radii rather than replacing them:
+    // the point is a wobble around the real size, not a uniform ball.
+    // `create` is the API that merges the provider's own parameter defaults;
+    // calling `provider.factory(ctx, props)` by hand passes *this* theme's
+    // props to that one, which works only for as long as every parameter
+    // physical declares happens to be guarded.
+    //
+    // Instantiated once here rather than inside `size`, which runs per atom.
+    const base = registry.create('physical', ctx);
+    return {
+      factory,
+      granularity: 'group',
+      size: (location: any) => jitterRadius(location.element ?? 0, base.size(location)),
+      props,
+      description: 'van der Waals radius with a deterministic per-atom wobble',
+    };
+  };
+
+  registry.add({
+    name: 'jitter',
+    label: 'jitter',
+    category: 'Misc',
+    factory,
+    getParams: () => ({}),
+    defaultValues: {},
+    isApplicable: () => true,
+  });
+}
+
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
+  registerJitterSize(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
@@ -813,9 +900,14 @@ export function createDispatcher(plugin: any): Handler {
       // on it called every name taken, including ones nobody had registered.
       if (!registry || !registryNames(registry).includes(name)) continue;
       if (!ownFields.has(name)) {
+        // `jitter` is protean's own and is registered at startup rather than
+        // through this path, so it is not in `ownFields` and would otherwise be
+        // refused with Mol*'s name on it — sending the caller looking through a
+        // theme list it is not in.
+        const whose = BUILT_IN_THEMES.has(name) ? "protean's own" : "Mol*'s own";
         throw new Error(
-          `'${name}' is one of Mol*'s own ${where} themes and will not be ` +
-            `replaced. Choose another name for the ${kind}.`
+          `'${name}' is ${whose} ${where} theme and will not be replaced. ` +
+            `Choose another name for the ${kind}.`
         );
       }
     }
@@ -1498,7 +1590,15 @@ export function createDispatcher(plugin: any): Handler {
 
     material: {
       render: true,
-      async run({ name, finish, metalness, roughness, emissive }: MaterialArgs) {
+      async run({
+        name,
+        finish,
+        metalness,
+        roughness,
+        emissive,
+        bumpiness,
+        bump_frequency,
+      }: MaterialArgs) {
         const base = MATERIAL_FINISHES[finish];
         if (!base) {
           throw new Error(
@@ -1510,9 +1610,22 @@ export function createDispatcher(plugin: any): Handler {
           ['metalness', metalness],
           ['roughness', roughness],
         ];
-        // Mol*'s material group also carries bumpiness. It is not exposed —
-        // it does nothing unless bumpFrequency is above 0, and that defaults to
-        // 0 — but the group is sent complete so nothing is left undefined.
+        // Bumpiness perturbs the surface normal, which is what turns a sphere
+        // into something fibrous. Defaulted to 0 rather than taken from the
+        // finish, because a finish is a claim about gloss and not about
+        // texture — so an ordinary material() call still lands a smooth
+        // surface, exactly as it did before this was exposed.
+        //
+        // It used to be pinned at 0 and undocumented, on the grounds that it
+        // "does nothing unless bumpFrequency is above 0, and that defaults to
+        // 0". Counted across the whole registry rather than sampled: eleven
+        // representations declare bumpFrequency, and **seven of them default
+        // non-zero** — spacefill, molecular-surface, gaussian-surface,
+        // orientation and polyhedron at 1, cartoon and putty at 2. Four default
+        // to zero (ball-and-stick, backbone, carbohydrate, ellipsoid) and five
+        // declare none at all (label, line, point, plane, gaussian-volume).
+        // Pinning bumpiness killed the control everywhere; on those seven it
+        // would have worked with no other change.
         const material: Record<string, number> = { ...base, bumpiness: 0 };
         for (const [key, value] of overrides) {
           if (value === undefined) continue;
@@ -1520,6 +1633,16 @@ export function createDispatcher(plugin: any): Handler {
           material[key] = value;
         }
         if (emissive !== undefined) checkFraction('emissive', emissive);
+        if (bumpiness !== undefined) {
+          checkFraction('bumpiness', bumpiness);
+          material.bumpiness = bumpiness;
+        }
+        if (
+          bump_frequency !== undefined &&
+          (!Number.isFinite(bump_frequency) || bump_frequency < 0 || bump_frequency > 10)
+        ) {
+          throw new Error(`bump_frequency must be between 0 and 10, got ${bump_frequency}`);
+        }
 
         const entry = require(name);
         const target = hierarchyComponents(entry.refs);
@@ -1529,11 +1652,32 @@ export function createDispatcher(plugin: any): Handler {
 
         const update = plugin.state.data.build();
         let changed = 0;
+        let bumped = 0;
+        let showing = 0;
         for (const c of target) {
           for (const repr of c.representations ?? []) {
             update.to(repr.cell).update((old: any) => {
               old.type.params.material = { ...material };
               if (emissive !== undefined) old.type.params.emissive = emissive;
+              // Frequency is a parameter of the representation, not of the
+              // material group, and not every representation declares one —
+              // `label` has no surface to perturb. Counted rather than assumed,
+              // so asking for a bump on something that cannot take one is
+              // reported instead of ignored.
+              if (bump_frequency !== undefined && 'bumpFrequency' in old.type.params) {
+                old.type.params.bumpFrequency = bump_frequency;
+                bumped++;
+              }
+              // Whether the bump can show at all, on this representation, after
+              // both halves have been written. The shader gate is
+              // `uBumpFrequency > 0 && uBumpAmplitude > 0 && bumpiness > 0`, and
+              // four representations — ball-and-stick, backbone, carbohydrate,
+              // ellipsoid — carry a zero frequency by default. Asking for
+              // bumpiness on one of those without a frequency is the direction
+              // that fails silently, and it was the direction with no report.
+              if (material.bumpiness > 0 && (old.type.params.bumpFrequency ?? 0) > 0) {
+                showing++;
+              }
             });
             changed++;
           }
@@ -1553,6 +1697,23 @@ export function createDispatcher(plugin: any): Handler {
           representations: changed,
           ...material,
           ...(emissive !== undefined ? { emissive } : {}),
+          // Reported whenever *either* half was asked for, because either half
+          // alone is a bump that cannot show: bumpiness with a zero frequency,
+          // or a frequency with the bumpiness this call just defaulted back to
+          // zero. Both are silent, and the caller mentioned a bump either way.
+          // The same courtesy `bloom_will_show` pays one field down.
+          ...(bumpiness !== undefined || bump_frequency !== undefined
+            ? { bump_will_show: showing > 0, bump_shows_on: showing }
+            : {}),
+          ...(bump_frequency !== undefined
+            ? {
+                bump_frequency,
+                // A bump needs both halves and they live in different places,
+                // so the reply says how many representations took the frequency
+                // rather than leaving a silent nothing to look like success.
+                bump_frequency_applied_to: bumped,
+              }
+            : {}),
           // Bloom defaults to mode 'emissive', so it draws nothing at all until
           // something has emissive above zero. Saying so here is the difference
           // between "bloom is broken" and "bloom has nothing to glow".

@@ -793,6 +793,65 @@ have to be stated where a caller meets them:
   that the picture and the analysis describe the same thing, so the reply has
   to say the finish was applied after capture rather than leave it implied.
 
+### 5.10 `felt` — felted wool, 2026-08-21
+
+The first treatment out of `docs/soft-matter-plan.md` to land in protean, and
+it lands **as a style rather than as a treatment**, which is the whole point of
+the entry.
+
+The plan's SM-01 specifies felted wool with a data channel: surface area drives
+fiber length. `docs/bakeoff.md` built that and could not read it. A per-atom
+number bound to radius jitter is invisible against a surface already textured
+at the same spatial frequency, and the plan's own P3 says a treatment that
+cannot carry data is decoration. Charlie's call was to ship it anyway, as a
+look — so the docstring says it carries no data instead of implying a
+measurement, the way `painting` does.
+
+**It is not only decoration, though, and the reason is worth keeping.** A hard
+glossy shell asserts that the van der Waals surface is a boundary. It is not:
+it is where a probability has fallen off to a threshold somebody chose. A fuzzy
+edge is the more honest picture of the same number — the argument `putty`
+already makes about B-factor, applied to the surface itself.
+
+**What it needed that protean did not have.** One control and one theme:
+
+- **`material(bumpiness=, bump_frequency=)`.** `bumpiness` had been pinned to
+  zero and undocumented since the material tool was written, on the stated
+  grounds that it does nothing unless `bumpFrequency` is above zero "and that
+  defaults to 0". Counted across the whole registry rather than sampled:
+  **eleven representations declare the parameter and seven default non-zero** —
+  spacefill, molecular-surface, gaussian-surface, orientation and polyhedron at
+  1, cartoon and putty at 2. Four default to zero (ball-and-stick, backbone,
+  carbohydrate, ellipsoid) and five declare none at all. Pinning `bumpiness`
+  killed the control everywhere; on those seven it would have worked untouched.
+
+  A first pass at this sentence said "dead on four of the five representations
+  it would have worked on", from a sample of five. A review caught it, counted
+  nine, and missed two more. The registry is the thing to count.
+- **A `jitter` size theme**, hash-based rather than random. An RNG gives each
+  symmetry copy of an atom a different radius, which reads as a broken
+  structure rather than a texture and changes on every reload.
+
+**Three things measured while building it**, none of which were guessable:
+
+- **Frequency is fineness, so raising it makes a surface look smoother.** On
+  1UBQ spacefill: 0.036 of the frame moves at frequency 1, 0.018 at 3, 0.004 at
+  6. A caller reaching for "more texture" by turning it up gets less. `felt`
+  uses 3.
+- **A cartoon is too little surface to test a bump on.** The strongest cartoon
+  setting moves 0.0073 of the frame against the suite's 0.008 threshold; the
+  same setting on spacefill moves 0.036. A test written against the load
+  preset's cartoon would have failed for a working control.
+- **`ring` lighting was the wrong first guess.** It was chosen because it suits
+  a surface whose curvature would vanish into one hard highlight — but felt has
+  no speculars to begin with, so all it did was flatten the form. `three-point`,
+  picked by looking at both.
+
+**The halo is the part that can vanish unnoticed.** A second spacefill at
+1.12x and alpha 0.2, under its own handle for the reason `ghost-heart` uses
+one. At that opacity nobody can tell from the picture whether it drew, so the
+test asserts the handle exists rather than pretending to measure it.
+
 ---
 
 ## 6. What this plan will get wrong

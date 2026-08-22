@@ -311,12 +311,64 @@ async def finishes() -> dict[str, Any]:
         await session.request("effects", {"bloom": False})
         frames["bloom_off"] = await _shot(session)
         await session.request("effects", {"bloom": True})
+
+        # The bump, taken last and on its own spacefill.
+        #
+        # Not on the cartoon the load preset drew: a ribbon is too little
+        # surface for the effect to clear this file's threshold. Measured on
+        # 1UBQ — the strongest cartoon setting moves 0.0073 of the frame
+        # against a DISTINCT of 0.008, and the same setting on spacefill moves
+        # 0.036. A test written against the cartoon would have failed for a
+        # working control.
+        # Put the scene back to neutral first. The emissive frames above leave
+        # `auto` self-illuminating at 0.8 with bloom back on, and bloom is a
+        # blur: the finest bump here measures 0.004 of the frame, which is well
+        # inside what a glow pass can add or wash out.
+        await session.request(
+            "material", {"name": "auto", "finish": "matte", "emissive": 0.0}
+        )
+        await session.request(
+            "show",
+            {
+                "name": "bump",
+                "expression": "(sel.atom.all)",
+                "representation": "spacefill",
+            },
+        )
+        await session.request("material", {"name": "bump", "finish": "matte"})
+        frames["smooth"] = await _shot(session)
+        bumped = await session.request(
+            "material",
+            {"name": "bump", "finish": "matte", "bumpiness": 0.9, "bump_frequency": 3},
+        )
+        frames["bumpy"] = await _shot(session)
+        # Half a bump is no bump: a frequency with nothing to scale.
+        frequency_only = await session.request(
+            "material", {"name": "bump", "finish": "matte", "bump_frequency": 3}
+        )
+        frames["frequency_only"] = await _shot(session)
+        # Frequency is the *fineness* of the perturbation, so a high one moves
+        # fewer pixels than a low one rather than more. Kept as three frames
+        # because the ordering is the surprising part and nothing else pins it.
+        for freq in (1, 6):
+            await session.request(
+                "material",
+                {
+                    "name": "bump",
+                    "finish": "matte",
+                    "bumpiness": 0.9,
+                    "bump_frequency": freq,
+                },
+            )
+            frames[f"bump_freq_{freq}"] = await _shot(session)
     return {
         "frames": frames,
         "replies": replies,
         "restored": restored,
         "dull": dull,
         "glow": glow,
+        "bumped": bumped,
+        "frequency_only": frequency_only,
     }
 
 
@@ -355,6 +407,66 @@ async def test_returning_to_matte_restores_the_original_surface(finishes):
 async def test_emissive_makes_the_molecule_glow(finishes):
     frames: dict[str, Render] = finishes["frames"]
     assert difference(frames["emissive_off"], frames["emissive_on"]) > DISTINCT
+
+
+async def test_bumpiness_reaches_the_pixels(finishes):
+    """The control was pinned to zero and undocumented until 2026-08-21.
+
+    The reason given was that it "does nothing unless bumpFrequency is above 0,
+    and that defaults to 0". Of the eleven representations that declare the
+    parameter, seven default non-zero — spacefill, molecular-surface,
+    gaussian-surface, orientation and polyhedron at 1, cartoon and putty at 2 —
+    so pinning bumpiness killed a control that seven of them would have shown
+    untouched. Measured here at 0.018 of the frame against a 0.008 threshold.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames["smooth"], frames["bumpy"]) > DISTINCT
+
+
+async def test_a_frequency_with_no_bumpiness_changes_nothing(finishes):
+    """Both halves or neither, and the reply has to be honest about which.
+
+    `bump_frequency` alone has nothing to scale, so the picture is the smooth
+    one. Worth pinning because the reply still reports a non-zero
+    `bump_frequency_applied_to` here — the frequency really did land on the
+    representation — and a caller reading only that number would conclude the
+    surface had changed.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    assert difference(frames["smooth"], frames["frequency_only"]) == 0.0
+    # The half of the claim the docstring makes and this test used not to check:
+    # the frequency really did land, and a caller reading only that number would
+    # conclude the surface had changed.
+    reply = finishes["frequency_only"]
+    assert reply["bump_frequency_applied_to"] >= 1
+    assert reply["bump_will_show"] is False
+
+
+async def test_a_finer_bump_moves_fewer_pixels_than_a_coarser_one(finishes):
+    """Frequency is fineness, and the effect of raising it is counter-intuitive.
+
+    A higher frequency makes the perturbation smaller relative to a pixel, so
+    the surface reads *smoother*, not rougher. Measured on 1UBQ spacefill:
+    0.036 of the frame at frequency 1, 0.018 at 3, 0.004 at 6. A caller reaching
+    for "more texture" by raising this gets less, and nothing else in the suite
+    says so.
+    """
+    frames: dict[str, Render] = finishes["frames"]
+    smooth = frames["smooth"]
+    coarse = difference(smooth, frames["bump_freq_1"])
+    fine = difference(smooth, frames["bump_freq_6"])
+    assert coarse > fine, f"frequency 1 moved {coarse:.5f}, frequency 6 moved {fine:.5f}"
+
+
+async def test_the_reply_counts_the_representations_that_took_a_frequency(finishes):
+    # Exactly one: `bump` is one component holding one representation. A
+    # regression that walked the whole hierarchy instead of the named target
+    # would spray the frequency onto the load preset's cartoon as well, report
+    # 2, and sail past a `>= 1`.
+    assert finishes["bumped"]["bump_frequency_applied_to"] == 1
+    assert finishes["bumped"]["bump_frequency"] == 3
+    assert finishes["bumped"]["bumpiness"] == 0.9
+    assert finishes["bumped"]["bump_will_show"] is True
 
 
 async def test_bloom_only_shows_where_something_is_emissive(finishes):
@@ -981,13 +1093,14 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 
 # -- the style presets from docs/views.md §5.1 ---------------------------------
 #
-# Eight views: six borrowed from MCPymol, of which four decide what is drawn
-# rather than only restyling it, plus the two illustration styles of §5.9. Taken
+# Nine views: six borrowed from MCPymol, of which four decide what is drawn
+# rather than only restyling it, the two illustration styles of §5.9, and felt. Taken
 # in one session, in this order, because a browser launch is the expensive part:
-# each frame is compared with the one before it, and then all nine are compared
-# with each other. The second claim is the one worth having — two recipes that
-# composed to the same picture would both pass "it changed something" and still
-# be one view wearing two names.
+# each frame is compared with the one before it, and then all ten frames — the
+# plain load plus the nine views — are compared with each other. The second
+# claim is the one worth having: two recipes that composed to the same picture
+# would both pass "it changed something" and still be one view wearing two
+# names.
 
 _VIEW_SEQUENCE = [
     "textbook",
@@ -998,6 +1111,7 @@ _VIEW_SEQUENCE = [
     "skeleton",
     "painting",
     "richardson",
+    "felt",
 ]
 
 

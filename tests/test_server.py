@@ -1772,6 +1772,12 @@ def _record(viewer, calls: list[tuple[str, dict[str, Any]]]) -> None:
         "hide",
         "reset_view",
         "define_elements",
+        # Both arrived with the views that register a palette and then apply
+        # it — `painting` and `felt`. Without them this recorder answers "no
+        # handler" partway through a preset, which reads as a broken preset
+        # rather than as a gap in the recorder.
+        "color",
+        "size",
     ):
 
         def handle(args, action=action):
@@ -1836,6 +1842,101 @@ async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
         "material",
     ]
     assert len(out["steps"]) == len(calls)
+
+
+async def test_felt_draws_a_halo_under_its_own_handle(wired_bridge, tmp_path):
+    """The halo is the part of `felt` that can vanish without anyone noticing.
+
+    It is a second spacefill at 1.12x and alpha 0.2, and at that opacity a
+    reader cannot tell from the picture whether it drew at all. So the claim is
+    made here, against the calls and the handle table, rather than in pixels —
+    a differential test for this was written first and could not work, because
+    the browser fixture restores the handle table on teardown and the assertion
+    ran after it.
+
+    Its own handle for the same reason `ghost-heart` uses one: `show()` rebuilds
+    a component under an existing name, so a halo drawn through the wool's
+    handle would replace the wool instead of layering over it.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    task = wired_bridge.serve(40)
+    await preset("felt")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    shown = [args for action, args in calls if action == "show"]
+    halos = [a for a in shown if a.get("name") == server_mod._FELT_HALO]
+    assert halos, f"felt drew no halo; it drew {[a.get('name') for a in shown]}"
+    assert halos[0]["representation"] == "spacefill"
+    assert halos[0]["size"] == 1.12
+    assert halos[0]["opacity"] == 0.2
+    # The wool underneath is a different component, not the same one restyled.
+    assert any(a.get("name") == "auto_view" for a in shown)
+    assert server_mod._FELT_HALO in server_mod._handles.names()
+
+
+async def test_switching_away_from_felt_takes_its_halo_down(wired_bridge, tmp_path):
+    """The drawing views are exclusive, and a second handle is how that breaks.
+
+    `felt` draws a halo under `auto_felt_halo`, which no other view knows about:
+    `_take_the_scene` hides `auto` and rebuilds `auto_view`, so switching to any
+    other drawing view left a 1.12x, alpha-0.2 shell of every non-solvent atom
+    hanging around the new picture. `_draw_view` already hid the ligand handle
+    for exactly this reason and had never been told about this one.
+
+    The differential suite could not have caught it: `felt` is applied *last* in
+    `_VIEW_SEQUENCE`, so nothing is ever drawn after it there.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    task = wired_bridge.serve(120)
+    await preset("felt")
+    assert server_mod._FELT_HALO in server_mod._handles.names()
+    calls.clear()
+    await preset("spacefill")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    hidden = [args["name"] for action, args in calls if action == "hide"]
+    assert server_mod._FELT_HALO in hidden, (
+        f"switching to spacefill left the felt halo drawn; it hid {hidden}"
+    )
+
+
+async def test_felt_reapplied_keeps_its_own_halo(wired_bridge, tmp_path):
+    """And the view must not put away the layer it is about to draw.
+
+    The obvious way to write the fix above is to hide the halo whenever a view
+    is drawn, which would make `felt` twice in a row end with no halo — a
+    switcher that is not idempotent, and invisible at alpha 0.2.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    task = wired_bridge.serve(160)
+    await preset("felt")
+    calls.clear()
+    await preset("felt")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert server_mod._FELT_HALO not in [
+        args["name"] for action, args in calls if action == "hide"
+    ]
+    # `name`, not `handle`: the tool resolves a handle to atom indices and the
+    # viewer call carries the component name.
+    assert server_mod._FELT_HALO in [
+        args.get("name") for action, args in calls if action == "show"
+    ]
 
 
 async def test_ghost_heart_draws_under_its_own_handle(wired_bridge, tmp_path):
