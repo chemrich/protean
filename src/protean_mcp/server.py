@@ -48,6 +48,7 @@ from .analysis.encode import CONTAINERS as MOVIE_CONTAINERS
 from .analysis.encode import EncodeError
 from .analysis.encode import encode as _encode_movie
 from .analysis.encode import ffmpeg_binary as _ffmpeg_binary
+from .analysis.exposure import BURIED_BELOW, EXPOSED_ABOVE, residue_exposure
 from .analysis.hatching import apply_finish, ink_fraction
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
@@ -2338,6 +2339,96 @@ async def rmsf(per: str = "residue", limit: int = 50) -> dict[str, Any]:
         "min": round(float(np.min(magnitudes)), 3),
         "most_mobile": ranked[:limit],
         "truncated": len(ranked) > limit,
+    }
+
+
+@_tool()
+async def sasa(
+    selection: str | None = None,
+    probe_radius: float = 1.4,
+    limit: int = 0,
+) -> dict[str, Any]:
+    """How much of each residue the solvent reaches, and how deep the rest sits.
+
+    Three numbers per residue from one Shrake-Rupley pass:
+
+      area_a2   what the rolling probe reaches, in square angstroms
+      relative  that area over the most the residue type could have, so 0 is
+                fully buried and 1 is as open as a free tripeptide
+      depth_a   how far the residue sits from the surface, in angstroms
+
+    **`relative` is the one to draw.** Area alone is misleading across residue
+    types: a tryptophan showing 60 A^2 is buried and a glycine showing 60 A^2
+    is wide open, because they have very different amounts of surface to begin
+    with. Divide by the maximum and the number means the same thing everywhere.
+
+    It can exceed 1. A terminal residue has surface the Gly-X-Gly reference
+    does not — on 1UBQ the C-terminal glycine comes out at 1.42 — and clamping
+    would report the most exposed residue in the structure as merely ordinary.
+
+    `relative` is null for anything with no reference maximum: ligands, ions,
+    nucleotides and non-standard residues. Area and depth are still given.
+
+    **`depth_a` is a proxy and this says which one:** distance to the nearest
+    atom the probe reached, averaged over the residue's atoms. It is *not* the
+    distance to a solvent-excluded surface, which needs a surface pass protean
+    does not do. The two agree near the surface and drift apart in a large
+    interior. A residue with any reachable atom of its own is at 0.
+
+    selection: restrict the calculation, e.g. "chain A". Omitted, the whole
+      structure is used. **Burial is a property of the whole molecule**, so
+      selecting one chain of a complex reports that chain as if it were alone
+      — which is the right answer to a different question, and is how an
+      interface looks fully exposed.
+    probe_radius: the solvent radius in angstroms. 1.4 is water and the
+      convention; larger probes read the surface more coarsely.
+    limit: how many residues to list, most exposed first. **0, the default,
+      lists them all**, because the usual next step is handing them to
+      define_field, and a truncated field covers part of the molecule while
+      looking deliberate.
+
+    Feed it straight to define_field:
+
+        define_field("burial", sasa()["residues"], key="relative")
+        color("burial")
+
+    Solvent is removed before measuring. Waters sit on the surface, so leaving
+    them in reports a protein with almost none of its own.
+    """
+    array = _require_structure()
+    if selection is not None:
+        try:
+            mask = _evaluate(_parse_selection(selection), array)
+        except SelectionError as exc:
+            raise ViewerError(str(exc)) from exc
+        if not mask.any():
+            raise ViewerError(f"{selection!r} matches no atoms")
+        array = array[mask]
+    if probe_radius <= 0:
+        raise ViewerError(f"probe_radius must be positive, got {probe_radius}")
+
+    rows = residue_exposure(array, probe_radius=probe_radius)
+    if not rows:
+        raise ViewerError(
+            "Nothing to measure: the selection is entirely solvent, which is "
+            "removed before the probe is rolled."
+        )
+
+    ranked = sorted(rows, key=lambda r: (r["relative"] is None, -(r["relative"] or 0.0)))
+    listed = ranked if limit <= 0 else ranked[:limit]
+    scored = [r["relative"] for r in rows if r["relative"] is not None]
+    return {
+        "residues": listed,
+        "count": len(rows),
+        "truncated": len(listed) < len(rows),
+        "total_area_a2": round(sum(r["area_a2"] for r in rows), 1),
+        "probe_radius": probe_radius,
+        # Residues with no reference maximum, so `relative` is null for them
+        # and a field built on that key will not reach them.
+        "unscored": len(rows) - len(scored),
+        "buried": sum(1 for v in scored if v < BURIED_BELOW),
+        "exposed": sum(1 for v in scored if v > EXPOSED_ABOVE),
+        "measured_over": selection or "the whole structure",
     }
 
 
