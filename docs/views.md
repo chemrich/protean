@@ -818,9 +818,16 @@ already makes about B-factor, applied to the surface itself.
 - **`material(bumpiness=, bump_frequency=)`.** `bumpiness` had been pinned to
   zero and undocumented since the material tool was written, on the stated
   grounds that it does nothing unless `bumpFrequency` is above zero "and that
-  defaults to 0". That is true of ball-and-stick and of nothing else anyone
-  draws — spacefill and molecular-surface default to 1, cartoon to 2 — so the
-  control was dead on four of the five representations it would have worked on.
+  defaults to 0". Counted across the whole registry rather than sampled:
+  **eleven representations declare the parameter and seven default non-zero** —
+  spacefill, molecular-surface, gaussian-surface, orientation and polyhedron at
+  1, cartoon and putty at 2. Four default to zero (ball-and-stick, backbone,
+  carbohydrate, ellipsoid) and five declare none at all. Pinning `bumpiness`
+  killed the control everywhere; on those seven it would have worked untouched.
+
+  A first pass at this sentence said "dead on four of the five representations
+  it would have worked on", from a sample of five. A review caught it, counted
+  nine, and missed two more. The registry is the thing to count.
 - **A `jitter` size theme**, hash-based rather than random. An RNG gives each
   symmetry copy of an atom a different radius, which reads as a broken
   structure rather than a texture and changes on every reload.

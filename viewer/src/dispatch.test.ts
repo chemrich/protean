@@ -184,15 +184,54 @@ function fakePlugin() {
             types: [['chain-id'], ['element-symbol']],
             add: vi.fn(),
           },
+          // Modelled on mol-theme/theme.js rather than sketched, because the
+          // first version of this fake made three jitter tests pass against a
+          // code path the real viewer never takes: its `get` searched only the
+          // themes added at runtime, so the built-in `physical` came back
+          // undefined and jitter fell to a constant-radius fallback that
+          // cannot happen in production.
           sizeThemeRegistry: {
             types: [['uniform'], ['physical'], ['uncertainty']],
-            registered: [] as any[],
+            // Real radii, and deliberately not all the same: a jitter theme
+            // that quietly replaced the radius instead of wobbling it would
+            // look identical under a fake where every atom is 1.7.
+            registered: [
+              {
+                name: 'physical',
+                factory: (_ctx: any, props: any) => ({
+                  factory: () => {},
+                  size: (l: any) =>
+                    (props?.scale ?? 1) * ([1.7, 1.55, 1.52, 1.8][l.element % 4] ?? 1.7),
+                }),
+                getParams: () => ({ scale: { defaultValue: 1 } }),
+              },
+            ] as any[],
+            // Throws on a duplicate, exactly as ThemeRegistry.add does. Without
+            // this a second createDispatcher over one plugin looks harmless in
+            // tests and takes the bridge down in production.
             add(provider: any) {
+              if (this.registered.some((p: any) => p.name === provider.name)) {
+                throw new Error(`${provider.name} already registered.`);
+              }
               this.registered.push(provider);
               this.types.push([provider.name]);
             },
+            // Never undefined: the real registry answers with its empty
+            // provider, so callers cannot lean on a nullish check.
             get(name: string) {
-              return this.registered.find((p: any) => p.name === name);
+              return (
+                this.registered.find((p: any) => p.name === name) ?? { name: '' }
+              );
+            },
+            create(name: string, ctx: any, props: any = {}) {
+              const provider: any = this.get(name);
+              if (!provider.factory) return { size: () => 1 };
+              const defaults = Object.fromEntries(
+                Object.entries(provider.getParams?.(ctx) ?? {}).map(
+                  ([k, v]: [string, any]) => [k, v.defaultValue]
+                )
+              );
+              return provider.factory(ctx, { ...defaults, ...props });
             },
           },
         },
@@ -953,16 +992,60 @@ describe('path tracing', () => {
 describe('the jitter size theme', () => {
   const jitterOf = (plugin: any) =>
     plugin.representation.structure.themes.sizeThemeRegistry.get('jitter');
+  const sizerOf = (plugin: any) => jitterOf(plugin).factory({}, {}).size;
+  const physicalOf = (plugin: any) =>
+    plugin.representation.structure.themes.sizeThemeRegistry
+      .create('physical', {})
+      .size;
 
   it('is registered as soon as the dispatcher exists', () => {
     const plugin: any = withCanvas(fakePlugin());
     createDispatcher(plugin);
 
-    expect(jitterOf(plugin)).toBeTruthy();
+    expect(jitterOf(plugin).name).toBe('jitter');
     expect(
-      plugin.representation.structure.themes.sizeThemeRegistry.types
-        .map((t: any[]) => t[0])
+      plugin.representation.structure.themes.sizeThemeRegistry.types.map(
+        (t: any[]) => t[0]
+      )
     ).toContain('jitter');
+  });
+
+  it('registers once, so a second dispatcher over one plugin is survivable', () => {
+    // ThemeRegistry.add throws on a duplicate name, and this runs before any
+    // handler is built — so an unguarded second registration takes the whole
+    // bridge down rather than failing something small.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+
+    expect(() => createDispatcher(plugin)).not.toThrow();
+    expect(
+      plugin.representation.structure.themes.sizeThemeRegistry.registered.filter(
+        (p: any) => p.name === 'jitter'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('wobbles around each atom own radius rather than replacing it', () => {
+    // The claim that matters, and the one the first version of this test could
+    // not make: it ran against a fake whose `physical` lookup returned nothing,
+    // so it measured a constant being wobbled — the exact "every atom the same
+    // size" behaviour the theme exists to avoid.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const jitter = sizerOf(plugin);
+    const physical = physicalOf(plugin);
+
+    const radii = new Set<number>();
+    for (let element = 0; element < 200; element++) {
+      const base = physical({ element });
+      const drawn = jitter({ element });
+      radii.add(base);
+      expect(drawn).toBeGreaterThan(base * 0.929);
+      expect(drawn).toBeLessThan(base * 1.071);
+    }
+    // And it really was tracking more than one radius, or the bounds above
+    // would hold for a constant too.
+    expect(radii.size).toBeGreaterThan(1);
   });
 
   it('gives every copy of an atom the same radius', () => {
@@ -972,27 +1055,49 @@ describe('the jitter size theme', () => {
     // on every reload. Same element index, same wobble, forever.
     const plugin: any = withCanvas(fakePlugin());
     createDispatcher(plugin);
-    const size = jitterOf(plugin).factory({}, {}).size;
+    const first = sizerOf(plugin)({ element: 41 });
 
-    const first = size({ element: 41 });
-    expect(size({ element: 41 })).toBe(first);
+    expect(sizerOf(plugin)({ element: 41 })).toBe(first);
 
     const second: any = withCanvas(fakePlugin());
     createDispatcher(second);
-    expect(jitterOf(second).factory({}, {}).size({ element: 41 })).toBe(first);
+    expect(sizerOf(second)({ element: 41 })).toBe(first);
   });
 
-  it('wobbles around the radius rather than replacing it', () => {
-    // Falling back to a constant would redraw every atom the same size and
-    // look entirely deliberate, so the spread has to stay narrow and centred.
+  it('scatters neighbours instead of stepping through them', () => {
+    // A bare multiplicative hash is a Weyl lattice: consecutive element indices
+    // walk a short repeating staircase. Atoms adjacent in element index are
+    // adjacent along the backbone, so that staircase would run visibly down the
+    // chain. Deciles are uniform either way, so only the *differences* between
+    // neighbours can see it.
     const plugin: any = withCanvas(fakePlugin());
     createDispatcher(plugin);
-    const size = jitterOf(plugin).factory({}, {}).size;
+    const jitter = sizerOf(plugin);
 
-    const radii = Array.from({ length: 200 }, (_, i) => size({ element: i }));
-    expect(Math.min(...radii)).toBeGreaterThan(1.7 * 0.92);
-    expect(Math.max(...radii)).toBeLessThan(1.7 * 1.08);
-    expect(new Set(radii).size).toBeGreaterThan(150);
+    // Measured as the *ratio* to each atom's own radius, which isolates the
+    // hash. Differencing the radii directly cannot see this at all: the base
+    // radius varies per element, and that variation swamps the lattice — the
+    // first version of this test passed with the unmixed hash still in place.
+    const physical = physicalOf(plugin);
+    const wobble = (element: number) => jitter({ element }) / physical({ element });
+
+    const steps = new Set<number>();
+    for (let element = 0; element < 2000; element++) {
+      steps.add(Math.round((wobble(element + 1) - wobble(element)) * 1e6));
+    }
+    // The unmixed hash this replaced produced 134 distinct steps here.
+    expect(steps.size).toBeGreaterThan(1500);
+  });
+
+  it('keeps the theme equal to itself, so nothing re-tessellates', () => {
+    // SizeTheme.areEqual compares factory *identity*. A fresh closure per
+    // instantiation makes every theme unequal to the last one, which Mol* turns
+    // into createGeometry — and felt draws two full spacefills under this.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const provider = jitterOf(plugin);
+
+    expect(provider.factory({}, {}).factory).toBe(provider.factory({}, {}).factory);
   });
 });
 

@@ -21,9 +21,12 @@ nothing is released yet, so everything below is unreleased.
 - **`material(bumpiness=, bump_frequency=)`**, which also fixes a control that
   was dead. `bumpiness` had been pinned to zero and undocumented on the grounds
   that it "does nothing unless bumpFrequency is above 0, and that defaults to
-  0" — true of ball-and-stick and of nothing else anyone draws, since spacefill
-  and molecular-surface default to 1 and cartoon to 2. It was disabled on four
-  of the five representations where it would have worked.
+  0". Counted across the registry rather than sampled: eleven representations
+  declare the parameter and **seven default non-zero** — spacefill,
+  molecular-surface, gaussian-surface, orientation and polyhedron at 1, cartoon
+  and putty at 2. Four default to zero and five declare none. Pinning
+  `bumpiness` killed the control everywhere, and on those seven it would have
+  worked with no other change.
 
   Three things measured rather than assumed: the shader needs *three* non-zero
   values and not two; **frequency is fineness, so raising it makes a surface

@@ -647,7 +647,7 @@ interface Entry {
 }
 
 /**
- * Per-atom radius jitter, so a sphere model reads as made rather than moulded.
+ * A deterministic wobble for one atom, given its van der Waals radius.
  *
  * Hash-based rather than random, and that is not a stylistic preference: a
  * biological assembly holds symmetry copies of the same atom, and an RNG gives
@@ -655,37 +655,73 @@ interface Entry {
  * in the structure rather than a texture, and it would change on every reload.
  * Hashing the element index gives every copy of an atom the same jitter, every
  * time.
+ *
+ * The finalizer is the part that earns its place. A bare multiplicative hash —
+ * `imul(i, K)` and take the low bits — is a Weyl lattice, so consecutive
+ * element indices produce radii that step through a short repeating staircase.
+ * Atoms adjacent in element index are adjacent along the backbone, so that
+ * staircase runs visibly down the chain: measured over 2000 atoms, successive
+ * differences took 134 distinct values. The avalanche steps below take it to
+ * 2000. Deciles stay uniform either way, which is why a distribution check
+ * cannot see the difference and looking at a helix can.
  */
-function registerJitterSize(plugin: any): void {
-  const themes = plugin.representation?.structure?.themes;
-  if (!themes?.sizeThemeRegistry) return;
-  const physical = themes.sizeThemeRegistry.get?.('physical');
+function jitterRadius(element: number, radius: number): number {
+  let h = Math.imul(element + 1, 0x9e3779b1);
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  // +/-7%. Enough to break the machined look, little enough that the model is
+  // still the van der Waals surface it claims to be.
+  return radius * (0.93 + 0.14 * ((h >>> 0) / 4294967296));
+}
 
-  themes.sizeThemeRegistry.add({
+/** Themes protean registers itself, which are not Mol*'s and are not fields. */
+const BUILT_IN_THEMES = new Set(['jitter']);
+
+/** Registers `jitter` as an ordinary size theme, once per plugin. */
+function registerJitterSize(plugin: any): void {
+  const registry = plugin.representation?.structure?.themes?.sizeThemeRegistry;
+  if (!registry?.add) return;
+  // `ThemeRegistry.add` throws `'jitter already registered.'` on a duplicate
+  // name (mol-theme/theme.js), and this runs as the second statement of
+  // `createDispatcher` — so a second dispatcher over one plugin, which a
+  // reconnect can produce, would take the bridge down before a single handler
+  // existed. `get` returns the registry's empty provider rather than undefined
+  // when a name is absent, so comparing the name is the check that works.
+  if (registry.get?.('jitter')?.name === 'jitter') return;
+
+  // One factory object, referenced as its own `factory`, because
+  // `SizeTheme.areEqual` compares factory *identity*
+  // (mol-theme/size.js) and a fresh closure per instantiation makes every
+  // theme unequal to itself. Mol* turns that into `updateSize` and
+  // `createGeometry`, so felt — which draws two full spacefills under this
+  // theme — would re-tessellate every sphere on each later restyle.
+  const factory = (ctx: any, props: any) => {
+    // Built on the physical (van der Waals) radii rather than replacing them:
+    // the point is a wobble around the real size, not a uniform ball.
+    // `create` is the API that merges the provider's own parameter defaults;
+    // calling `provider.factory(ctx, props)` by hand passes *this* theme's
+    // props to that one, which works only for as long as every parameter
+    // physical declares happens to be guarded.
+    //
+    // Instantiated once here rather than inside `size`, which runs per atom.
+    const base = registry.create('physical', ctx);
+    return {
+      factory,
+      granularity: 'group',
+      size: (location: any) => jitterRadius(location.element ?? 0, base.size(location)),
+      props,
+      description: 'van der Waals radius with a deterministic per-atom wobble',
+    };
+  };
+
+  registry.add({
     name: 'jitter',
     label: 'jitter',
     category: 'Misc',
-    factory: (ctx: any, props: any) => {
-      // Built on top of the physical (van der Waals) radii rather than
-      // replacing them: the point is a wobble around the real size, not a
-      // uniform ball. Falling back to a constant would silently redraw every
-      // atom the same size, which looks deliberate.
-      const base = physical?.factory?.(ctx, props);
-      return {
-        factory: () => {},
-        granularity: 'group',
-        size: (location: any) => {
-          const radius = base?.size?.(location) ?? 1.7;
-          const h = Math.imul((location.element ?? 0) + 1, 2654435761) ^ 0x9e37;
-          const t = ((h >>> 0) % 100000) / 100000;
-          // +/-7%. Enough to break the machined look, little enough that the
-          // model is still the van der Waals surface it claims to be.
-          return radius * (0.93 + 0.14 * t);
-        },
-        props: {},
-        description: 'van der Waals radius with a deterministic per-atom wobble',
-      };
-    },
+    factory,
     getParams: () => ({}),
     defaultValues: {},
     isApplicable: () => true,
@@ -864,9 +900,14 @@ export function createDispatcher(plugin: any): Handler {
       // on it called every name taken, including ones nobody had registered.
       if (!registry || !registryNames(registry).includes(name)) continue;
       if (!ownFields.has(name)) {
+        // `jitter` is protean's own and is registered at startup rather than
+        // through this path, so it is not in `ownFields` and would otherwise be
+        // refused with Mol*'s name on it — sending the caller looking through a
+        // theme list it is not in.
+        const whose = BUILT_IN_THEMES.has(name) ? "protean's own" : "Mol*'s own";
         throw new Error(
-          `'${name}' is one of Mol*'s own ${where} themes and will not be ` +
-            `replaced. Choose another name for the ${kind}.`
+          `'${name}' is ${whose} ${where} theme and will not be replaced. ` +
+            `Choose another name for the ${kind}.`
         );
       }
     }
@@ -1577,10 +1618,14 @@ export function createDispatcher(plugin: any): Handler {
         //
         // It used to be pinned at 0 and undocumented, on the grounds that it
         // "does nothing unless bumpFrequency is above 0, and that defaults to
-        // 0". That holds for ball-and-stick and for nothing else anyone draws:
-        // spacefill and molecular-surface default to 1, cartoon to 2. The
-        // control was dead on four of the five representations it would have
-        // worked on.
+        // 0". Counted across the whole registry rather than sampled: eleven
+        // representations declare bumpFrequency, and **seven of them default
+        // non-zero** — spacefill, molecular-surface, gaussian-surface,
+        // orientation and polyhedron at 1, cartoon and putty at 2. Four default
+        // to zero (ball-and-stick, backbone, carbohydrate, ellipsoid) and five
+        // declare none at all (label, line, point, plane, gaussian-volume).
+        // Pinning bumpiness killed the control everywhere; on those seven it
+        // would have worked with no other change.
         const material: Record<string, number> = { ...base, bumpiness: 0 };
         for (const [key, value] of overrides) {
           if (value === undefined) continue;
@@ -1608,6 +1653,7 @@ export function createDispatcher(plugin: any): Handler {
         const update = plugin.state.data.build();
         let changed = 0;
         let bumped = 0;
+        let showing = 0;
         for (const c of target) {
           for (const repr of c.representations ?? []) {
             update.to(repr.cell).update((old: any) => {
@@ -1621,6 +1667,16 @@ export function createDispatcher(plugin: any): Handler {
               if (bump_frequency !== undefined && 'bumpFrequency' in old.type.params) {
                 old.type.params.bumpFrequency = bump_frequency;
                 bumped++;
+              }
+              // Whether the bump can show at all, on this representation, after
+              // both halves have been written. The shader gate is
+              // `uBumpFrequency > 0 && uBumpAmplitude > 0 && bumpiness > 0`, and
+              // four representations — ball-and-stick, backbone, carbohydrate,
+              // ellipsoid — carry a zero frequency by default. Asking for
+              // bumpiness on one of those without a frequency is the direction
+              // that fails silently, and it was the direction with no report.
+              if (material.bumpiness > 0 && (old.type.params.bumpFrequency ?? 0) > 0) {
+                showing++;
               }
             });
             changed++;
@@ -1641,6 +1697,12 @@ export function createDispatcher(plugin: any): Handler {
           representations: changed,
           ...material,
           ...(emissive !== undefined ? { emissive } : {}),
+          // Reported whenever bumpiness was asked for, not only when a
+          // frequency came with it — the same courtesy `bloom_will_show` pays
+          // for the identical shape of problem one field down.
+          ...(bumpiness !== undefined
+            ? { bump_will_show: showing > 0, bump_shows_on: showing }
+            : {}),
           ...(bump_frequency !== undefined
             ? {
                 bump_frequency,

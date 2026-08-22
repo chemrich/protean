@@ -320,6 +320,13 @@ async def finishes() -> dict[str, Any]:
         # against a DISTINCT of 0.008, and the same setting on spacefill moves
         # 0.036. A test written against the cartoon would have failed for a
         # working control.
+        # Put the scene back to neutral first. The emissive frames above leave
+        # `auto` self-illuminating at 0.8 with bloom back on, and bloom is a
+        # blur: the finest bump here measures 0.004 of the frame, which is well
+        # inside what a glow pass can add or wash out.
+        await session.request(
+            "material", {"name": "auto", "finish": "matte", "emissive": 0.0}
+        )
         await session.request(
             "show",
             {
@@ -336,7 +343,7 @@ async def finishes() -> dict[str, Any]:
         )
         frames["bumpy"] = await _shot(session)
         # Half a bump is no bump: a frequency with nothing to scale.
-        await session.request(
+        frequency_only = await session.request(
             "material", {"name": "bump", "finish": "matte", "bump_frequency": 3}
         )
         frames["frequency_only"] = await _shot(session)
@@ -361,6 +368,7 @@ async def finishes() -> dict[str, Any]:
         "dull": dull,
         "glow": glow,
         "bumped": bumped,
+        "frequency_only": frequency_only,
     }
 
 
@@ -405,10 +413,11 @@ async def test_bumpiness_reaches_the_pixels(finishes):
     """The control was pinned to zero and undocumented until 2026-08-21.
 
     The reason given was that it "does nothing unless bumpFrequency is above 0,
-    and that defaults to 0". That holds for ball-and-stick and for nothing else
-    anyone draws — spacefill and molecular-surface default to 1, cartoon to 2 —
-    so the control was dead on four of the five representations it would have
-    worked on. Measured here at 0.018 of the frame against a 0.008 threshold.
+    and that defaults to 0". Of the eleven representations that declare the
+    parameter, seven default non-zero — spacefill, molecular-surface,
+    gaussian-surface, orientation and polyhedron at 1, cartoon and putty at 2 —
+    so pinning bumpiness killed a control that seven of them would have shown
+    untouched. Measured here at 0.018 of the frame against a 0.008 threshold.
     """
     frames: dict[str, Render] = finishes["frames"]
     assert difference(frames["smooth"], frames["bumpy"]) > DISTINCT
@@ -425,6 +434,12 @@ async def test_a_frequency_with_no_bumpiness_changes_nothing(finishes):
     """
     frames: dict[str, Render] = finishes["frames"]
     assert difference(frames["smooth"], frames["frequency_only"]) == 0.0
+    # The half of the claim the docstring makes and this test used not to check:
+    # the frequency really did land, and a caller reading only that number would
+    # conclude the surface had changed.
+    reply = finishes["frequency_only"]
+    assert reply["bump_frequency_applied_to"] >= 1
+    assert reply["bump_will_show"] is False
 
 
 async def test_a_finer_bump_moves_fewer_pixels_than_a_coarser_one(finishes):
@@ -444,9 +459,14 @@ async def test_a_finer_bump_moves_fewer_pixels_than_a_coarser_one(finishes):
 
 
 async def test_the_reply_counts_the_representations_that_took_a_frequency(finishes):
+    # Exactly one: `bump` is one component holding one representation. A
+    # regression that walked the whole hierarchy instead of the named target
+    # would spray the frequency onto the load preset's cartoon as well, report
+    # 2, and sail past a `>= 1`.
+    assert finishes["bumped"]["bump_frequency_applied_to"] == 1
     assert finishes["bumped"]["bump_frequency"] == 3
-    assert finishes["bumped"]["bump_frequency_applied_to"] >= 1
     assert finishes["bumped"]["bumpiness"] == 0.9
+    assert finishes["bumped"]["bump_will_show"] is True
 
 
 async def test_bloom_only_shows_where_something_is_emissive(finishes):
@@ -1076,10 +1096,11 @@ async def test_illustrative_draws_the_outline_it_promises(presets):
 # Nine views: six borrowed from MCPymol, of which four decide what is drawn
 # rather than only restyling it, the two illustration styles of §5.9, and felt. Taken
 # in one session, in this order, because a browser launch is the expensive part:
-# each frame is compared with the one before it, and then all nine are compared
-# with each other. The second claim is the one worth having — two recipes that
-# composed to the same picture would both pass "it changed something" and still
-# be one view wearing two names.
+# each frame is compared with the one before it, and then all ten frames — the
+# plain load plus the nine views — are compared with each other. The second
+# claim is the one worth having: two recipes that composed to the same picture
+# would both pass "it changed something" and still be one view wearing two
+# names.
 
 _VIEW_SEQUENCE = [
     "textbook",

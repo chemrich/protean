@@ -2853,24 +2853,36 @@ async def material(
       chrome     Polished metal, close to a mirror.
 
     metalness / roughness: 0 to 1, overriding the finish where given.
+      Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
+      there is some metalness: a true dielectric has a 4% specular term that
+      roughness barely moves.
     bumpiness: 0 to 1. Perturbs the surface normal, which is what makes a
-      surface read as fibrous, powdery or eroded rather than moulded. **It
-      needs `bump_frequency` above zero on the same representation**, and the
-      two live in different places in Mol\\*, so the reply says how many
-      representations actually took the frequency rather than leaving a silent
-      nothing to look like success.
+      surface read as fibrous, powdery or eroded rather than moulded.
+
+      **It needs a non-zero `bump_frequency` on the same representation to show
+      at all**, and the two live in different places in Mol\\*. Most
+      representations already carry one: of the eleven that declare the
+      parameter, seven default non-zero — spacefill, molecular-surface,
+      gaussian-surface, orientation and polyhedron at 1, cartoon and putty at
+      2 — and four default to zero: **ball-and-stick, backbone, carbohydrate
+      and ellipsoid**. On those four, bumpiness alone changes nothing. The
+      reply says so rather than leaving it to be discovered: `bump_will_show`
+      is false and `bump_shows_on` counts the representations where both halves
+      are in place.
 
       Defaulted to 0 by every call that does not mention it, including a bare
       `material(finish=...)`, because a finish is a claim about gloss and not
       about texture.
-    bump_frequency: 0 to 10, how fine the perturbation is. Low is eroded stone,
-      high is felt or wool. Mol\\*'s own defaults vary by representation —
-      spacefill and molecular-surface 1, cartoon 2, ball-and-stick 0 — so on
-      ball-and-stick this has to be set before `bumpiness` does anything at
-      all.
-      Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
-      there is some metalness: a true dielectric has a 4% specular term that
-      roughness barely moves.
+    bump_frequency: 0 to 10, how fine the perturbation is, and **raising it
+      makes a surface read smoother, not rougher** — a higher frequency puts
+      the perturbation below the size of a pixel. Measured on a 1UBQ spacefill:
+      0.036 of the frame moves at 1, 0.018 at 3, 0.004 at 6. Low is eroded
+      stone, middling is felt or wool.
+
+      Five representations declare no frequency at all — label, line, point,
+      plane and gaussian-volume — because they have no surface to perturb.
+      Asking for one there is reported through `bump_frequency_applied_to`
+      rather than ignored.
     emissive: 0 to 1, self-illumination. Note that effects(bloom=True) glows
       only where this is above zero — bloom's default mode is emissive, so on
       an ordinary material it correctly draws nothing at all. The reply says
@@ -3934,6 +3946,15 @@ async def _draw_view(name: str, target: str) -> list[str]:
         # handle exists to avoid, one view later.
         with contextlib.suppress(ViewerError):
             steps.append(await _run(hide, name=_LIGAND_HANDLE))
+    # The same leak, one layer out. `felt` draws a halo under a handle of its
+    # own, and nothing here knew about it: switching from `felt` to any other
+    # drawing view left a 1.12x, alpha-0.2 shell of every non-solvent atom
+    # hanging around the new picture. The views are supposed to be exclusive —
+    # they replace their predecessor rather than stack — and a second handle is
+    # exactly how that invariant gets broken quietly.
+    if name != "felt" and _FELT_HALO in _handles.names():
+        with contextlib.suppress(ViewerError):
+            steps.append(await _run(hide, name=_FELT_HALO))
     steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
