@@ -1425,6 +1425,26 @@ of today's job.
    `illumination`, `hiZ`, DPOIT iterations, or the postprocessing defaults —
    which protean now inherits without asking for it.
 
+**Localised, as far as one afternoon got it: the capture path.** Measured on
+this machine under CI's flags, a steady-state `screenshot` costs **5.5 s**.
+Item 24, written before the upgrade, records "captures of 2-3 s" — so captures
+roughly doubled, which is the job's own factor. `test_render_differential.py`
+alone makes 91 of them.
+
+Two candidates were tested and cleared, which is worth recording so nobody
+re-tests them:
+
+- **Not the new Mol\* 5 features.** `illumination` and `hiZ` both default to
+  `false` (`mol-canvas3d/passes/illumination.js`, `hi-z.js`).
+- **Not temporal multisampling.** `multiSample.mode` defaults to `temporal`,
+  but turning it off changes capture cost not at all — 5.49 s against 5.53 s —
+  because a capture builds its own `mode: 'on'` ImagePass rather than using the
+  canvas's.
+
+So the next place to look is `getImageDataUri` and the ImagePass itself, not
+rendering in general. If it is an upstream regression, that is the shape of the
+report.
+
 **Measure with repeats, not once.** Runner variance on this job is about 40%:
 the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes as a push
 (`32582697857`) on 2026-08-22. Any change smaller than about 2x is
