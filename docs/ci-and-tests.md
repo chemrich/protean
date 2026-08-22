@@ -107,6 +107,23 @@ returns inert data. And the proposed completeness check, diffing
 `canvas3d.props`, is blind to the screenshot helper's own values, the camera
 pose, the theme registries, and the dispatcher's closure state.
 
+## What the journal-figure gate actually cost, measured after landing
+
+The estimate that justified it was ~600 s by subtraction. The measurement,
+from the `--durations` output either side of the change, is **496.7 s**: the
+`journal_figures` fixture cost 641.95 s with the capture and 145.23 s without.
+So one call was **15% of the job**, not the 19% the estimate claimed.
+
+**And the job total barely moved — 53:49 to 51:08.** Not because the saving is
+not real, but because that runner was about 20% slower at everything else:
+`finishes` went 235 s to 288, `styled_effects` 197 to 243, `views` 155 to 175,
+the lighting rigs 115 to 142. The variance ate the gain.
+
+This is the clearest illustration in this document of its own closing rule. The
+saving is attributable *because it was read off a fixture's own cost on both
+sides*, not inferred from two job totals — which is what makes a 15% change
+measurable at all when a single run's noise is larger than the change.
+
 ## Lowering capture supersampling on CI — built, measured, not taken
 
 Kept here because it was built and measured rather than argued about, and
