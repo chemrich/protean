@@ -1418,6 +1418,131 @@ previously failed outright. **Backlog 18 is untouched** — this does not settle
 what "the structure" means when the two halves disagree, it stops one specific
 file type from losing its analysis half.
 
+### 40. Mol\* 5.11 doubled the browser job — open
+
+Found on 2026-08-22 while auditing a plan that blamed something else. Read from
+the run history rather than inferred:
+
+```
+a92f86a  pre-upgrade   1140 passed, 28 skipped   23m12s
+ae1df78  "Move to Mol* 5.11, fourteen months on from 4.18"
+                       1139 passed, 28 skipped   48m18s
+```
+
+**One fewer test, 2.08x the time, across one commit.** Same skips, and the
+session count did not change either — so this is not more work, it is the same
+work costing twice as much. The job has drifted further since: 55 to 71 minutes
+on recent runs.
+
+**This is the thing to chase, and two documents missed it.** Item 24 above
+attributes the job's cost to three journal captures, and `docs/ci-and-tests.md`
+attributes it to browser setup. Both were reasoning from parts they had
+measured rather than from the job's own history, and both were written after
+this regression had already landed. Neither noticed that the 33-minute regime
+item 24 describes ended on **2026-08-17**, with *more* tests running.
+
+Chrome launch is Mol\*-version-independent, which bounds the setup term
+directly: a library upgrade could not double a job that process launch
+dominates. At a measured 6.99 s launch across ~84 sessions, launch is about 14%
+of today's job.
+
+**Two candidates, and they want different responses:**
+
+1. A real Mol\* 5 performance regression under software rendering. protean
+   runs CI on SwiftShader, which exercises paths a GPU never does. If so it is
+   worth reporting upstream — there are already two unfiled Mol\* drafts
+   waiting on whose account files them.
+2. A default that changed between 4.18 and 5.11 on our side — multisampling,
+   `illumination`, `hiZ`, DPOIT iterations, or the postprocessing defaults —
+   which protean now inherits without asking for it.
+
+**Localised, as far as one afternoon got it: the capture path.**
+`test_render_differential.py` makes 91 captures and is, by CI's own per-line
+timestamps, **about 80% of the whole job**.
+
+**The local timings below are upper bounds and should not be quoted as
+absolutes.** They were taken on a fanless laptop with another agent holding the
+load average near 18, and a steady-state capture measured anywhere between 3.6
+and 5.5 s across the afternoon depending on what else was running. Item 24
+records the same sensitivity from the other side: two leaked Chromes once took
+this suite from 12:46 to 44 minutes. What survives contention is the *shape* —
+the ratios between sample levels below were measured back to back in one
+process — not the absolute seconds.
+
+Two candidates were tested and cleared, which is worth recording so nobody
+re-tests them:
+
+- **Not the new Mol\* 5 features.** `illumination` and `hiZ` both default to
+  `false` (`mol-canvas3d/passes/illumination.js`, `hi-z.js`).
+- **Not temporal multisampling.** `multiSample.mode` defaults to `temporal`,
+  but turning it off changes capture cost not at all — 5.49 s against 5.53 s —
+  because a capture builds its own `mode: 'on'` ImagePass rather than using the
+  canvas's.
+
+**A capture is supersampling, almost entirely.** The screenshot helper builds
+its ImagePass with `sampleLevel: colorBufferFloat && textureFloat ? 4 : 2`
+(`mol-plugin/util/viewport-screenshot.js`), and level 4 means 16 samples.
+Measured on 1UBQ at the CI viewport:
+
+```
+sampleLevel 4 (what runs)  3.86 s per capture
+sampleLevel 3              1.94 s   1.99x faster   0.63% of pixels differ
+sampleLevel 2              1.01 s   3.82x          0.98%
+sampleLevel 1              0.60 s   6.41x          1.10%
+sampleLevel 0              0.34 s  11.36x          1.23%
+```
+
+Almost exactly a doubling per level, which is what "take level^2 samples"
+predicts.
+
+**Two attractive explanations were tested and both are wrong**, which is worth
+recording because both are the first thing anyone would reach for:
+
+- **Not a changed default.** `sampleLevel` is `PD.Numeric(2)` in *both* 4.18
+  and 5.11, and the helper's `? 4 : 2` line is byte-identical between them.
+- **Not Chrome.** That ternary is a capability check, so a SwiftShader that
+  gained float-texture support would silently double the level. It did not:
+  both the pre-upgrade and post-upgrade runs report **Google Chrome
+  151.0.7922.169**. `chrome-version: stable` floats, so this was worth ruling
+  out rather than assuming.
+
+So the per-sample cost itself roughly doubled inside Mol\* 5.11. Bisecting the
+releases between 4.18 and 5.11 would name the one that did it; that is the
+remaining work on this item.
+
+**And there is a lever here independent of the regression.** Nothing requires
+captures to be antialiased at 16 samples: the suite compares frames with each
+other at a tolerance of 8, and the exact-equality tests compare two captures
+taken the same way, so they are indifferent to the level. Dropping to
+`sampleLevel: 2` would make every capture in the suite ~3.8x cheaper.
+
+**Charlie's decision, 2026-08-22: do not change the sample level.** Recorded
+here so the measurement above is not read as a recommendation and the lever is
+not re-proposed by whoever finds this table next.
+
+The cost is why. It shifts about 1% of pixels, and several thresholds in
+`test_render_differential.py` sit at 0.008 to 0.01 — so every one of them would
+need re-deriving against a new baseline, which is exactly the recalibration
+item 24 warns about for window size, and this project has already shipped one
+threshold calibrated against a contaminated baseline. Buying a faster suite by
+loosening what the suite can see is the wrong trade for a tool whose product is
+a picture.
+
+The measurement stays on file because it explains *where* a capture's time
+goes, which is what makes the Mol\* regression above tractable — not because
+the level should move.
+
+**Measure with repeats, and measure on CI.** Runner variance on this job is
+about 40%: the same tree ran 50 minutes as a PR (`32580091290`) and 70 minutes
+as a push (`32582697857`) on 2026-08-22. Any change smaller than about 2x is
+unfalsifiable from a single run, which is the other reason `--durations=25` now
+ships in the job.
+
+**And do not extrapolate this machine to the runner.** Measured both ways on
+2026-08-22: a browser session costs 5 to 10 s on `ubuntu-latest` against 6.3 to
+27 s here. **CI is the faster of the two per session**, which is the opposite of
+what anyone assumed. A local ratio applied to CI has been wrong in this repo
+twice now, in both directions.
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 
 ### 36. A structure will not load into a hidden tab — open
