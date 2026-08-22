@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -991,14 +992,23 @@ async def journal_figures(tmp_path_factory) -> dict[str, Any]:
             modest[fmt] = await _figure_or_skip(
                 session, str(out / f"modest-{fmt}"), width_mm=101.6, dpi=300, format=fmt
             )
-        try:
+        if os.environ.get("PROTEAN_SKIP_JOURNAL_FIGURE"):
+            # Measured on CI, 2026-08-22: this fixture cost 642 s, of which the
+            # 4323 px capture is roughly 600 — about **19% of the entire
+            # browser job for one capture**. 4323x3242 at 16 samples is ~224
+            # million samples through a software rasteriser.
+            #
+            # It is Phase 4's exit criterion and it is not being dropped: CI
+            # runs it on every push to `main` and skips it on pull requests, so
+            # every commit that lands is still covered and no PR waits ten
+            # minutes for it. Unset here, so a developer's run is unchanged.
+            skipped = "PROTEAN_SKIP_JOURNAL_FIGURE is set (CI runs this on main)"
+        else:
             full = await _capture_or_none(
                 session, str(out / "figure"), column="double", dpi=600, format="png"
             )
-        except ViewerError:  # pragma: no cover - the helper handles the known case
-            raise
-        if full is None:
-            skipped = f"this renderer cannot capture at {FIGURE_PIXELS}px"
+            if full is None:
+                skipped = f"this renderer cannot capture at {FIGURE_PIXELS}px"
 
     return {"modest": modest, "full": full, "skipped": skipped}
 
