@@ -8,6 +8,19 @@ and what they cost, *before* anyone commits to the 28–41 weeks the plan
 estimates. One structure throughout: **1MBN, sperm whale myoglobin, 1260
 atoms.**
 
+> **Correction, 2026-08-22 — every channel finding below is void.**
+> 1MBN's B-factor column is `0.00` on all 1,216 `ATOM` records: one distinct
+> value. All three treatments bound B-factor, so all three bindings were
+> constant. Felt's jitter amplitude reduces to `0.04 + min(1, 0/60) * 0.14`,
+> a constant; radiolaria's `bRange` returns `[0, 1]` when `hi > lo` is false,
+> so porosity was constant too. **No channel varied in any of these pictures.**
+> What the treatments look like, what they cost, and the four bugs below all
+> stand — none of them depend on the data. What does not stand is every claim
+> about whether a channel could be *read*, including this document's central
+> one. The bake-off needs re-running on a structure with real B-factors —
+> 1UBQ's p10→p90 is 5→28. Found by the adversarial review in
+> `docs/soft-matter-review.md`.
+
 The three routes protean can reach, one treatment each:
 
 | Route | Treatment | Where it runs |
@@ -23,7 +36,10 @@ roughness to 1, driving `bumpiness` to 0.9 with a high bump frequency, and
 laying a second spacefill layer at 1.12× and alpha 0.2 produces a convincingly
 fibrous surface in the dyed-wool palette. It is the cheapest treatment in the
 catalogue and it needs no new engine at all. But **the binding is not visible**.
-B-factor scales the per-atom radius jitter, and against a surface that is
+*(Correct conclusion, void evidence: the jitter was constant here, so this
+picture never contained a channel to miss. The reasoning below is a prediction
+that has not been tested.)* B-factor scales the per-atom radius jitter, and
+against a surface that is
 already fuzzy at the same spatial frequency, a few percent of radius is
 invisible. The plan's P3 says a treatment that cannot carry data is decoration;
 by that rule felt as built here *is* decoration, and fixing it means finding a
@@ -35,14 +51,16 @@ halftone is real: two spot inks at 15° and 75°, dot area following tone, paper
 showing through, multiply blending so overlaps make a third colour. But a
 capture-time finish **sees pixels and nothing else** — it cannot read a
 B-factor. So the render has to carry B-factor as *tone* first, and the screen
-then converts tone to dot area. The channel does survive, and the picture does
-say what the plan wants it to say. What it costs is that the binding lives in
+then converts tone to dot area. **Whether the channel survives is untested** —
+1MBN's B-factors were flat, so the tone this screen converted was shading and
+nothing else. What the two-stage route costs is that the binding lives in
 two places at once, and a caller who recolours the scene silently breaks it.
 **This is a property of the whole Python-at-capture route**, not of duotone:
 every SS-treatment reached that way inherits it.
 
 **Radiolaria is the real thing.** A geodesic strut lattice per atom, porosity
-from a per-atom scalar, picking intact. You can see into the molecule in a way
+from a per-atom scalar (constant in this run — see the correction above),
+picking intact. You can see into the molecule in a way
 the control simply does not allow — the plan's P1 claim is *true*, and it is
 the most convincing picture of the three. Two caveats from actually looking:
 the interior reads as a busy haze rather than as legible structure, because
@@ -74,12 +92,17 @@ at review". But instancing can only vary what instancing carries — scale and
 rotation — and **porosity is neither**. A per-atom porosity binding and a
 single instanced template cannot both hold.
 
-There is a way out the plan half-names. Mol\*'s `Cylinders` primitive is a
-GPU-instanced impostor, not mesh geometry: a lattice built from it stores
-endpoints and a radius per strut instead of ~12 vertices per strut, and strut
-radius *is* per-instance, so per-atom porosity survives. §4.1 already says to
-prefer `Cylinders` where a treatment allows and then assigns `Mesh` to
-Radiolaria. **Untested here** — it is the first thing to try if this proceeds.
+There is a way out the plan half-names, but it is much smaller than stated
+here originally. Mol\*'s `Cylinders` primitive is a quad impostor, **not**
+GPU-instanced: `add()` pushes six vertices per strut with start, end and scale
+duplicated across all six (`cylinders-builder.js:26-33`). Per strut that is
+360 bytes against mesh geometry's 408 — **a 12% saving, not an order of
+magnitude.** It does not change the O(atoms × struts) growth and it moves the
+1.5 GB ceiling from ~122k atoms to ~139k. What it does buy is real: strut
+radius *is* per-cylinder (`aScale`, read at `cylinders.vert.js:57`), so
+per-atom porosity survives, and struts stay round at any radius. §4.1 already
+says to prefer `Cylinders` where a treatment allows and then assigns `Mesh` to
+Radiolaria. **Untested here** — still worth trying, but not as a budget fix.
 
 ## Four things that went wrong, and what they say
 
@@ -121,7 +144,8 @@ Every one reported success first.
 
 - Radiolaria delivers what the plan claims for it and is the only one of the
   three whose picture is better than the control at showing you something.
-  Its cost problem has a named, plausible fix that has not been tried.
+  Its cost problem has a named fix that has not been tried and that, on the
+corrected numbers, buys 12% rather than an order of magnitude.
 - Felt is charming and carries nothing. Under the plan's own P3 it should be
   cut or respecified.
 - Duotone is a good picture with a fragile binding, and the fragility belongs
@@ -131,8 +155,10 @@ Every one reported success first.
 
 **What this says about the 36.** The plan's own tiering held up: the cheap
 tiers are cheap and the expensive tier is expensive. What did not hold up is
-the assumption that a treatment binding a channel makes it legible. Two of
-three bound a channel and one of those bindings could actually be read. That
-ratio, not the engine cost, is the thing to fix before scaling to 36 — and it
-is cheap to fix, because it only requires looking at each picture and asking
-what you can actually tell from it.
+the assumption that a treatment binding a channel makes it legible — but this
+run produced **no evidence either way**, because the structure it ran on had no
+channel to bind. Three treatments declared a binding; zero of them varied.
+That, not the engine cost, is the thing to fix before scaling to 36, and the
+fix is mechanical: render twice, once with the channel and once with its values
+shuffled between atoms, and diff. If the two frames match, the binding carries
+nothing. See `docs/soft-matter-review.md`.

@@ -389,6 +389,12 @@ assembly. Backlog 33 and 34. **Do those first or leave `plddt` alone** — a vie
 of a structure nobody can load is a view nobody can use, and building it would
 report progress that is not there.
 
+**Stale as of 2026-08-21: backlog 33 and 34 are fixed.** Predicted models load,
+so the blocker above is gone — and with it the protection it was accidentally
+providing. pLDDT and B-factor are the same column with opposite polarity, so
+`size("uncertainty")` on a predicted model now draws the most confident regions
+fattest. Backlog 41, and `docs/soft-matter-review.md`.
+
 **Every one of these refuses when its target is not there, and says what is.**
 Charlie's call, 2026-08-18: the improvement below is not `mutation`'s alone.
 

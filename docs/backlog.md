@@ -1622,3 +1622,31 @@ first and was refused.
 Recorded because the shape recurs: the moment to fold duplication is when the
 third caller appears, and the cost of waiting is that the third caller is
 usually the one that gets it wrong.
+
+### 41. pLDDT and B-factor are one column with opposite polarity — open
+
+`size("uncertainty")` and `color("uncertainty")` on an AlphaFold model render
+backwards, silently.
+
+Both quantities ride `B_iso_or_equiv`. In a crystal structure a high value
+means the atom is *less* certain; in a predicted model a high pLDDT means the
+residue is *more* confident. Mol\*'s `uncertainty` theme assumes the
+crystallographic reading over a fixed `[0, 100]` domain (`server.py:310`), so
+on a predicted model it makes the most trustworthy regions the fattest and
+ramps their colour the wrong way — and the picture looks entirely plausible.
+
+`docs/views.md:386-390` decided to leave `plddt` alone until a predicted model
+could be loaded at all, which was backlog 33 and 34. **Those were fixed on
+2026-08-21, so the note is now stale and the hazard is reachable.** `plddt`
+appears nowhere in `src/protean_mcp/`; there is no guard.
+
+The fix has two halves and the second is the one that matters. A `plddt` view
+that refuses an experimental structure is the easy half. The hard half is that
+`uncertainty` itself is now ambiguous: it needs to know which kind of file it
+is looking at, and to say so, rather than picking a polarity and hoping. The
+provenance is available — a predicted model carries `ma_qa_metric` — so the
+honest behaviour is to read it and refuse when it disagrees with what the
+caller asked for.
+
+Found by the adversarial review of the soft-matter plan, 2026-08-22. See
+`docs/soft-matter-review.md`.

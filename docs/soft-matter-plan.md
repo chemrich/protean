@@ -4,6 +4,16 @@
 
 Status: draft v1 · Target engines: Mol\* (primary), PyMOL (secondary), Blender/Molecular Nodes (hero renders)
 
+> **Reviewed 2026-08-22 — read `docs/soft-matter-review.md` before building from
+> this document.** Six adversarial reviews found the catalogue is about 6–12
+> viable treatments rather than 36, that §5's schedule is under by ~1.9× against
+> the plan's own effort tags, that §7's memory budget rejects four treatments
+> including the flagship, and that P3 and P5 both need rewriting. The
+> prototyping round in `docs/bakeoff.md` was also retracted: it ran on a
+> structure whose B-factor column is constant, so none of its channel findings
+> hold. Individual corrections are marked inline where they are small; the rest
+> are in the review.
+
 ---
 
 ## 0. Summary
@@ -412,7 +422,8 @@ Speculars killed, ambient raised, fibrous silhouette, dyed-wool palette. The sof
 **Binding:** `DC-SASA` → fiber length. **Principles:** P3, P5.
 **Engine:** Mol\* + PyMOL (`ray_texture 2`). **Effort:** S. **Risk:** low.
 
-#### SM-02 · Claymation
+#### SM-02 · Clay
+*Renamed from "Claymation" on 2026-08-22 — that is a registered trademark, which §1 rule 3 forbids. "Stop motion" was not used because `TM-01` already has it.*
 Thumbprint displacement, waxy subsurface sheen, slightly squashed spheres. **The material is the easy half — the charm is temporal** (see `TM-01`).
 **Geometry:** sphere + low-frequency displacement + anisotropic scale. **Material:** mid roughness, faint SSS approximation.
 **Binding:** `DC-BFAC` → thumbprint depth. **Principles:** P3, P4.
