@@ -44,6 +44,8 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   "every treatment must show data" rule needed in order to mean anything.
 
 - **`scaffold`** — `SD-08` from the catalogue, and the first real treatment.
+- **`boil`** — `TM-01`. The first temporal treatment, and the first thing here
+  that no other molecular viewer has done at all.
 
 ## The one treatment that is built
 
@@ -68,9 +70,49 @@ residues, so the same amount is covered and only the placement changes. That
 one measures 0.1129 against a 0.008 threshold, and a cover that counts instead
 of reading fails it at `0.0`.
 
+## The temporal one
+
+`boil()` redraws the molecule every few frames with the atoms nudged a little
+further, and holds each pose for two frames — animation's "on twos". The
+molecule looks *made* rather than computed.
+
+The plan called this the highest charm-per-line-of-code item in all 36, and it
+is the clearest case of the brief Charlie set on 2026-08-23: **look better in
+ways PyMOL's and Mol\*'s authors would not have discovered.** Both treat the
+still frame as the unit and reserve motion for the camera. Nothing in molecular
+graphics moves the drawing itself.
+
+It carries a channel and the channel is apt: **how far an atom wanders follows
+how sure the data is about it.** A disordered loop swings and an ordered core
+holds; on a predicted model the guessed regions swing and the confident ones
+hold. That reuses #116's polarity machinery to know which way to read the
+column, and it is bound at region scale, which is why it is visible where
+`felt`'s per-atom jitter was not.
+
+Measured: poses hold **bit-identically**, poses differ by 0.033–0.040, and a
+boil at an amplitude too small to see reads 0.000154 — so the reload each pose
+carries contributes about a two-hundredth of the effect. Its shuffle arm
+measures 0.0286, and a wobble that ignores the column fails it at 0.0004.
+
+Two things it does not do. The **scene** is not restored, because each pose
+reloads the structure and that rebuilds the viewer's components — the same
+property `color_by_rmsf` has, reported in the reply. And the coordinates *are*
+restored, because a drawing style may not quietly edit the structure.
+
 ## What to do next
 
-### 1. Decide whether a second treatment is worth building
+### 1. The print finishes
+
+Charlie's direction on 2026-08-23 is visual impact over analytical capability,
+and the cheapest striking work left is capture-time image treatments in Pillow:
+duotone, cyanotype, risograph. protean already ships cross-hatch and hedcut by
+that route, and duotone was built once in the bake-off and set aside. No engine
+work, days each.
+
+Two unexposed Mol\* knobs ride along cheaply and unlock the painterly looks:
+**fog** and an **orthographic camera lock**.
+
+### 2. Decide whether a third treatment is worth building
 
 `scaffold` is evidence that the cheap tier really is cheap. It needed no new
 engine work, because protean's selection language already does numeric
@@ -81,7 +123,7 @@ Whether anything else in the catalogue earns the same effort is Charlie's call,
 not a technical one. The review's answer was: `SP-01` maybe, the rest probably
 not.
 
-### 2. How `SD-08` was estimated — kept because the estimate held
+### 3. How `SD-08` was estimated — kept because the estimate held
 
 A predicted model is confident in some regions and guessing in others. `SD-08`
 draws the confident parts as finished structure and covers the guessed parts,
@@ -112,7 +154,7 @@ Caveat to state in its docstring: it has two levels, not a smooth range, and it
 means nothing on an experimental structure — so it should refuse there, the way
 `plddt` now does.
 
-### 3. Then decide about `SP-01` Radiolaria
+### 4. Then decide about `SP-01` Radiolaria
 
 The other strong idea: draw each atom as an open lattice cage so you can see
 into the molecule instead of at its outer shell. The review agreed it delivers
@@ -126,7 +168,7 @@ expensive and neither is decided:
 - It runs out of graphics memory on large molecules. The escape route named in
   the bake-off turned out to save 12%, not the order of magnitude claimed.
 
-### 4. Standing rule for any treatment
+### 5. Standing rule for any treatment
 
 Before a treatment can claim it shows data, it needs a **shuffle test arm**
 in `tests/test_shuffle_differential.py`. If scrambling the numbers does not

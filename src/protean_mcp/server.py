@@ -3162,6 +3162,204 @@ async def turntable(
     }
 
 
+#: How far an atom may wander at full amplitude, as a fraction of the caller's
+#: `amplitude` in angstroms. The floor is not zero: a pose where half the
+#: molecule is pinned exactly reads as a rendering fault rather than as a
+#: drawing, because nothing in a hand-drawn frame is ever perfectly still.
+_BOIL_FLOOR = 0.25
+
+#: Past this the wander is no longer a drawing style: a C-C bond is 1.54 A, so
+#: an atom free to move this far can cross one.
+_BOIL_LIMIT = 1.0
+
+#: Frames per pose. Two is what hand-drawn animation calls "on twos" — the
+#: rate at which a held drawing reads as deliberate rather than as a dropped
+#: frame. One is a shimmer, four is a stutter.
+_BOIL_HOLD = 2
+
+
+def _boil_wobble(array: Any, amplitude: float) -> tuple[Any, str]:
+    """Per-atom wobble, largest where the data is least sure of itself.
+
+    The channel, and it is nearly free: the column is already loaded and
+    `_b_factor_column` already knows which way to read it. A crystal
+    structure's disordered loops wander and its ordered core holds still; a
+    predicted model's low-confidence regions wander and its confident ones hold
+    still. Both say the same thing, which is the only thing a wobble can
+    honestly say — *this part of the picture is less certain than that part*.
+
+    Bound at region scale rather than per atom, which is why it is visible at
+    all. `docs/bakeoff.md` is the record of the other kind: a per-atom number
+    driving a texture that already varies per atom is invisible before a human
+    eye is involved. A backbone that swings is not a texture.
+
+    Returns the per-atom amplitudes and a line saying what was bound, because a
+    flat column makes this decoration and the caller has to be told rather than
+    handed a wobble that means nothing.
+    """
+    values = np.asarray(array.b_factor, dtype=float)
+    lo, hi = float(values.min()), float(values.max())
+    if hi <= lo:
+        return (
+            np.full(len(values), amplitude, dtype=float),
+            "# every atom carries the same value in the B-factor column, so the "
+            "wobble is uniform and carries nothing. The boil is decoration here.",
+        )
+
+    fraction = (values - lo) / (hi - lo)
+    column = _b_factor_column
+    if column is not None and column.confidence is not None:
+        # High pLDDT is *more* certain, so it must wobble *less*. The same
+        # inversion backlog 41 exists for, in a third channel.
+        fraction = 1.0 - fraction
+        reads = f"{column.confidence} (low confidence wanders)"
+    elif column is not None and column.overwritten_by is not None:
+        reads = f"{column.overwritten_by}, which was written into that column"
+    else:
+        reads = "the B-factor (disorder wanders)"
+    return (
+        amplitude * (_BOIL_FLOOR + (1.0 - _BOIL_FLOOR) * fraction),
+        f"# wobble amplitude follows {reads}, over {lo:.4g} to {hi:.4g}.",
+    )
+
+
+@_tool()
+async def boil(
+    directory: str,
+    frames: int = 24,
+    amplitude: float = 0.45,
+    hold: int = _BOIL_HOLD,
+    width: int = 1200,
+    seed: int = 0,
+    transparent: bool | None = None,
+) -> dict[str, Any]:
+    """Redraw the molecule every few frames, slightly differently — a stop-motion boil.
+
+    Hand-drawn animation is never twice the same drawing: the line breathes
+    frame to frame, and that boil is most of what makes it read as *made*
+    rather than computed. Molecular graphics has never used it. Every viewer
+    treats the still frame as the unit and reserves motion for the camera, so a
+    molecule is either perfectly rigid or playing a trajectory it was given.
+
+    This moves the atoms themselves, a little, in a new random direction every
+    pose, and holds each pose for `hold` frames. Nothing about the structure
+    changes — the wander is a fraction of an angstrom, far below any bond
+    length — and that is the point: it is a drawing style, not a simulation.
+
+    **It carries a channel, and the channel is the honest one.** How far an
+    atom wanders follows how sure the data is about it — a disordered loop
+    swings and an ordered core holds, a predicted model's guessed regions swing
+    and its confident ones hold. See `_boil_wobble`. On a structure whose
+    column is flat, the reply says so rather than implying a measurement.
+
+    The wander is **seeded**, so the same call gives the same sequence twice.
+    An unseeded boil is a different movie on every run, which makes a
+    regression impossible and a re-render a gamble.
+
+    The coordinates are put back afterwards. The **scene is not**, and cannot
+    be: each pose reloads the structure, which rebuilds the viewer's
+    components, so anything drawn outside a registered handle is gone when this
+    returns. `color_by_rmsf` has the same property for the same reason. The
+    reply says so; redraw the view you had.
+
+    directory: where frames are written, as frame_0000.png upward.
+    frames: total captures. With `hold` at 2 this is half as many poses.
+    amplitude: how far an atom may wander, in angstroms, at the least certain
+      end of the column. 0.45 is about a quarter of a carbon radius — visible
+      as a breathing outline, well below anything that changes chemistry.
+    hold: frames per pose. Two is animation's "on twos".
+    seed: the sequence's seed. The same seed redraws the same movie.
+
+    Writes the frames; movie() encodes them.
+    """
+    if frames < _MIN_TURNTABLE_FRAMES:
+        raise ViewerError(f"A boil needs at least 2 frames, got {frames}")
+    if frames > _MAX_TURNTABLE_FRAMES:
+        raise ViewerError(
+            f"{frames} frames is beyond the {_MAX_TURNTABLE_FRAMES} this writes "
+            "in one call. Capture a shorter boil, or run it twice."
+        )
+    if hold < 1:
+        raise ViewerError(f"A pose must be held for at least one frame, got {hold}")
+    if not math.isfinite(amplitude) or amplitude <= 0:
+        raise ViewerError(
+            f"amplitude must be greater than 0, got {amplitude:g}. A boil of "
+            "zero is the still picture, which is what not calling this gives you."
+        )
+    if amplitude > _BOIL_LIMIT:
+        raise ViewerError(
+            f"An amplitude of {amplitude:g} A is past {_BOIL_LIMIT:g}, where "
+            "atoms wander far enough to break the bonds they are drawn with. "
+            "The boil is a drawing style, not a simulation."
+        )
+
+    _require_viewer()
+    original = _require_structure()
+    wobble, note = _boil_wobble(original, amplitude)
+    base = np.asarray(original.coord, dtype=float)
+    rng = np.random.default_rng(seed)
+    # Every pose drawn up front, so the sequence is a property of the seed
+    # rather than of when each frame happened to be captured.
+    poses = [
+        base + rng.normal(scale=1.0, size=base.shape) * wobble[:, None]
+        for _ in range((frames + hold - 1) // hold)
+    ]
+
+    def draw(index: int) -> Any:
+        async def place() -> None:
+            drawn = original.copy()
+            drawn.coord = poses[index // hold].astype(np.float32)
+            await _send_structure(drawn, "boil")
+            # The components do not survive a reload even though the handles
+            # do, exactly as `color_by_rmsf` records — so every pose has to
+            # redraw what was on screen or the frames after the first are empty.
+            for handle in _handles.names():
+                await _display(handle, _handles.get(handle).indices)
+
+        return place
+
+    restored = 0
+    try:
+        result = await _capture_sequence(
+            directory, width, transparent, [draw(i) for i in range(frames)]
+        )
+    finally:
+        # The coordinates go back. A boil that left the molecule wherever the
+        # last pose put it would be a style that silently edits the structure,
+        # and every measurement taken afterwards would be off by a wobble.
+        #
+        # The *scene* does not come back with them, and cannot: a reload
+        # rebuilds the viewer's components, so anything drawn outside a
+        # registered handle — a `preset()`'s own scene, most of the time — is
+        # gone. Measured at 0.02 of the frame on a publication-cartoon. This is
+        # the same property `color_by_rmsf` has and reports, and the reply says
+        # so rather than leaving a caller to notice their view changed.
+        with contextlib.suppress(ViewerError):
+            await _send_structure(original, _structure_identifier or "structure")
+            for handle in _handles.names():
+                await _display(handle, _handles.get(handle).indices)
+                restored += 1
+
+    return {
+        **result,
+        "poses": len(poses),
+        "hold": hold,
+        "amplitude": amplitude,
+        "seed": seed,
+        "reloaded": True,
+        "coordinates_restored": True,
+        "handles_redrawn": restored,
+        "steps": [
+            note,
+            "# the structure was reloaded once per pose, so the viewer's scene "
+            "was rebuilt from its handles. Redraw the view you had if you want "
+            "it back.",
+        ],
+        "first": str(Path(result["directory"]) / "frame_0000.png"),
+        "last": str(Path(result["directory"]) / f"frame_{frames - 1:04d}.png"),
+    }
+
+
 @_tool()
 async def path_trace(
     enabled: bool = True,

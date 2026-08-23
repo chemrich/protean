@@ -25,11 +25,13 @@ file honest: a channel that genuinely cannot be permuted must read 0.0, which
 is what demonstrates the other three arms are not passing by construction. It
 does not cover everything — see its own docstring for what it cannot see.
 
-Three mechanisms, not one. Four arms register a field and read it back through
+Four mechanisms, not one. Four arms register a field and read it back through
 `color()` or `size()`; the fifth is `color_by_rmsf`, which registers nothing and
-writes into the **B-factor column** instead, and the sixth is `scaffold`, whose
+writes into the **B-factor column** instead, the sixth is `scaffold`, whose
 channel becomes an *absence* — it decides what is covered rather than what
-colour something takes — the same column whose flatness
+colour something takes — and the seventh is `boil`, whose channel never reaches
+the renderer at all: it scales how far each atom is moved before the frame is
+drawn — the same column whose flatness
 caused the retraction above. Adding it was the point of the extension: a file
 that tested only `define_field` was testing everything except the path that
 actually went wrong.
@@ -49,6 +51,7 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+import pathlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -62,7 +65,7 @@ from protean_mcp.selections import parse as parse_selection
 from protean_mcp.selections_numpy import evaluate, load_structure
 
 from .browser import BROWSER_MARKS, viewer_session
-from .pixels import Render, coverage, difference
+from .pixels import Render, coverage, decode, difference
 from .shuffle import (
     Entry,
     checked_shuffle,
@@ -90,6 +93,10 @@ from .shuffle import (
 #   scaffold, cover placement   0.1129   14x   — the widest, and the only arm
 #                                              where the channel becomes an
 #                                              absence rather than a colour
+#   boil, wobble amplitude      0.0286   3.6x  — same seed in both arms, so the
+#                                              direction each atom is pushed is
+#                                              identical and only the distance
+#                                              differs
 #   the identity control        0.0000   exactly, as it must be
 #
 # The size arm looks thin only against the whole frame. A putty tube covers
@@ -457,4 +464,60 @@ async def test_scaffold_covers_the_residues_whose_numbers_are_low():
     assert measured > STYLED, (
         f"scaffold covered the same pixels with the low numbers on different "
         f"residues: {measured:.6f}. The cover is counting, not reading."
+    )
+
+
+async def test_the_boil_wobbles_the_atoms_the_data_is_unsure_of(tmp_path):
+    """`boil` moves the least certain atoms furthest — which ones, not how many.
+
+    The cleanest arm in this file, because the seed removes the only other
+    variable. Both boils run at the same seed, so the random *direction* each
+    atom is pushed is identical between them and the only thing that differs is
+    how far each one may go. Any difference in the picture is the channel and
+    nothing else.
+
+    Without this, `boil` could scale every atom by the column's mean — a wobble
+    that responds to the numbers being present rather than to what they say —
+    and every other check on it would still pass: the poses would hold, the
+    poses would differ, and the note would still name the B-factor.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    polymer = evaluate(parse_selection("polymer"), deposited)
+    ids = [int(r) for r in np.unique(deposited.res_id[polymer])]
+    per_residue = [float(v) for v in np.linspace(2.0, 47.0, len(ids))]
+    permuted = dict(zip(ids, checked_shuffle_values(per_residue), strict=True))
+
+    def column(by_residue: dict[int, float]) -> Any:
+        out = np.zeros(deposited.array_length(), dtype=float)
+        for residue, value in by_residue.items():
+            out[deposited.res_id == residue] = value
+        return out
+
+    arms = {
+        "true": column(dict(zip(ids, per_residue, strict=True))),
+        "shuffled": column(permuted),
+    }
+
+    frames: dict[str, Render] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        for name, values in arms.items():
+            array = deposited.copy()
+            array.b_factor = values
+            await server_mod._send_structure(array, FIXTURE)
+            server_mod._structure = array
+            await server_mod.preset("publication-cartoon")
+            result = await server_mod.boil(
+                str(tmp_path / name), frames=2, width=400, seed=7
+            )
+            written = sorted(pathlib.Path(result["directory"]).glob("frame_*.png"))
+            frames[name] = decode(written[0].read_bytes())
+
+    _both_on_screen(frames["true"], frames["shuffled"], DRAWN)
+    measured = difference(frames["true"], frames["shuffled"])
+    assert measured > STYLED, (
+        f"the same seed wobbled the same atoms the same distance with the "
+        f"numbers on different residues: {measured:.6f}. The amplitude is not "
+        "reading the column."
     )

@@ -1927,6 +1927,107 @@ async def turned(tmp_path_factory) -> dict[str, Any]:
     return {"result": result, "before": before, "after": after}
 
 
+@pytest.fixture(scope="module")
+async def boiled(tmp_path_factory) -> dict[str, Any]:
+    """One short boil at full amplitude, and one at an amplitude too small to see.
+
+    The tiny arm is the control and it is what makes the other numbers mean
+    anything. Every pose reloads the structure, so a reload that repainted even
+    slightly differently would show up as pose-to-pose change and read exactly
+    like a working boil. At 0.001 A no wobble can be visible, so whatever that
+    arm measures is the reload's own noise and the real boil has to clear it.
+    """
+    out = tmp_path_factory.mktemp("boil")
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("publication-cartoon")
+        before = await _shot(session)
+        loud = await server_mod.boil(str(out / "loud"), frames=6, width=400)
+        quiet = await server_mod.boil(
+            str(out / "quiet"), frames=4, width=400, amplitude=0.001
+        )
+        after = await _shot(session)
+    return {"loud": loud, "quiet": quiet, "before": before, "after": after}
+
+
+def _frames(result: dict[str, Any]) -> list[Render]:
+    return [
+        decode(frame.read_bytes())
+        for frame in sorted(Path(result["directory"]).glob("frame_*.png"))
+    ]
+
+
+async def test_a_boil_holds_each_pose_for_its_whole_hold(boiled):
+    """On twos: two captures of one drawing, then a new drawing.
+
+    Held frames must be **bit-identical**, not merely close. The pose is one
+    upload drawn twice, so anything at all between them would be the renderer
+    disagreeing with itself, and this file asserts exact equality in fourteen
+    other places for the same reason.
+    """
+    renders = _frames(boiled["loud"])
+    assert len(renders) == 6
+    assert boiled["loud"]["poses"] == 3
+    for first in range(0, len(renders), 2):
+        held = difference(renders[first], renders[first + 1])
+        assert held == 0.0, (
+            f"frames {first} and {first + 1} are one pose held twice and differ "
+            f"by {held:.6f}"
+        )
+
+
+async def test_a_boil_redraws_between_poses(boiled):
+    """And the redraw is the wobble, not the reload that carries it.
+
+    Measured on the development machine: 0.0332 and 0.0397 between poses at the
+    default amplitude, against 0.000154 for the whole quiet sequence — so the
+    reload contributes about a two-hundredth of what is being claimed here.
+    Stated as a ratio against the control rather than against those numbers,
+    because a slower machine caught mid-tween moves both.
+    """
+    loud = _frames(boiled["loud"])
+    quiet = _frames(boiled["quiet"])
+
+    moved = [difference(loud[i - 1], loud[i]) for i in (2, 4)]
+    reload_noise = max(difference(quiet[i - 1], quiet[i]) for i in range(1, len(quiet)))
+
+    assert min(moved) > STYLED, (
+        f"the poses are the same picture: {moved}. Nothing is boiling."
+    )
+    assert min(moved) > reload_noise * 10, (
+        f"pose changes {moved} are not clear of the reload's own noise "
+        f"({reload_noise:.6f}), so this is measuring the upload rather than the "
+        "wobble"
+    )
+    for index, render in enumerate(loud):
+        assert coverage(render) > DRAWN, f"frame {index} lost the molecule"
+
+
+async def test_a_boil_puts_the_coordinates_back(boiled):
+    """A drawing style may not quietly edit the structure.
+
+    Every pose uploads moved atoms, so the last one would otherwise be left on
+    screen and in the analysis copy — and every distance measured afterwards
+    would be off by a wobble. The scene is a different matter and is not
+    claimed: a reload rebuilds the viewer's components, so a preset's own scene
+    does not survive, which the reply says outright.
+    """
+    assert boiled["loud"]["coordinates_restored"] is True
+    assert boiled["loud"]["reloaded"] is True
+    assert any("reloaded" in step for step in boiled["loud"]["steps"])
+
+
+async def test_a_boil_says_what_its_wobble_follows(boiled):
+    """The channel, reported rather than implied.
+
+    1UBQ's B-factors span 2 to 46.9, so the wobble carries something; on a flat
+    column it would carry nothing and the note says *that* instead. A treatment
+    that claimed a channel either way would be the bake-off again.
+    """
+    note = boiled["loud"]["steps"][0]
+    assert "B-factor" in note and "disorder wanders" in note, note
+    assert "carries nothing" not in note, note
+
+
 async def test_a_turntable_writes_every_frame(turned):
     frames = sorted(Path(turned["result"]["directory"]).glob("frame_*.png"))
     assert len(frames) == 6
