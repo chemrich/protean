@@ -1663,10 +1663,10 @@ came out of the adversarial review of the fix rather than out of building it,
 which is the point of running one.
 
 **`preset("putty")` is a third path and neither guard reaches it.** It
-hardwires `color="uncertainty"` and takes its *width* from Mol\*'s default for
-the putty representation, which is the same column read the same way — so on a
-predicted model it was backwards in both channels with no `color()` or `size()`
-call at all. It now draws `plddt` and the reply names both views. Swapped
+hardwires `color="uncertainty"`, so on a predicted model it was backwards with
+no `color()` call at all — and backwards in its *width* too, for the separate
+reason four paragraphs down. It now draws `plddt` and the reply names both
+views. Swapped
 rather than refused, so the viewer's menu entry keeps working; the reverse
 direction is a refusal, because a crystal structure has no confidence score to
 swap to.
