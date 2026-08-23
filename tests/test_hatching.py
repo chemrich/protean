@@ -65,8 +65,18 @@ def test_darker_tone_earns_more_ink(finish):
     # passthrough cannot do is separate the tones — it yields two levels where
     # a real finish yields one per band plus the paper. Measured: cross-hatch
     # 5, hedcut 7, passthrough 2.
-    assert len(set(coverage)) == FINISHES[finish].bands + 1, (
-        f"{finish} declares {FINISHES[finish].bands} bands but produced "
+    #
+    # A floor rather than an equality, and the difference matters. Both
+    # finishes shipping today quantise, so they produce exactly their declared
+    # count and an equality held. A finish whose marks grade continuously
+    # rather than in steps produces far more — a contour survey prototyped
+    # alongside this measures 233 over the same sweep — and an equality would
+    # refuse it for being finer than a step wedge. The claim under test is
+    # "tone becomes density", and the floor is what that claim actually says;
+    # the equality was the banded family's implementation detail wearing the
+    # claim's clothes.
+    assert len(set(coverage)) >= FINISHES[finish].bands + 1, (
+        f"{finish} declares {FINISHES[finish].bands} bands but produced only "
         f"{len(set(coverage))} distinguishable ink levels"
     )
 
