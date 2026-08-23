@@ -54,7 +54,7 @@ from .analysis.exposure import (
     ExposureError,
     residue_exposure,
 )
-from .analysis.hatching import apply_finish, ink_fraction
+from .analysis.hatching import apply_finish, ink_fraction, validate_finish
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
     UNCLASSIFIED,
@@ -467,6 +467,18 @@ async def _call(action: str, args: dict[str, Any] | None = None) -> dict[str, An
             f"Viewer returned {type(result).__name__} for {action!r}, expected an object"
         )
     return result
+
+
+def _snapshot_path(path: str, chosen: str) -> Path:
+    """Where a snapshot lands, resolved once.
+
+    Its own function because `snapshot()` needs the answer twice — before the
+    render to refuse a bad destination cheaply, and after it to write — and two
+    copies of the suffix rule would be two chances to disagree about which file
+    was checked and which was written.
+    """
+    out = Path(path).expanduser()
+    return out if out.suffix else out.with_suffix(_SNAPSHOT_FORMATS[chosen])
 
 
 def _writable(out: Path, writes: tuple[str, ...], *, overwrite: bool) -> Path:
@@ -2374,6 +2386,28 @@ async def snapshot(
         )
     width, millimetres = _snapshot_pixels(column, width_mm, dpi)
 
+    # Checked before the capture, not after it. A finish is applied to the
+    # finished PNG, so a mistyped name used to be caught only once a
+    # figure-resolution render had already been paid for — up to a hundred
+    # seconds of work thrown away over a spelling.
+    if finish is not None:
+        try:
+            validate_finish(finish)
+        except ValueError as exc:
+            raise ViewerError(str(exc)) from exc
+
+    # And the same for where the file is going. `_writable` refuses a path that
+    # holds something other than a figure, and it used to run *after* the
+    # capture — so pointing a snapshot at a directory, or at notes.txt, cost
+    # the same hundred seconds of rendering as a mistyped finish did before it
+    # said so. Checked again below, at the write, because this one can go stale
+    # while the render runs and the check at the write is the authoritative one.
+    _writable(
+        _snapshot_path(path, chosen),
+        tuple(_SNAPSHOT_FORMATS.values()),
+        overwrite=overwrite,
+    )
+
     # Refused here rather than in the viewer: the capture is fine, it is the
     # file we would be asked to write that cannot hold an alpha channel.
     if chosen == "jpeg" and transparent:
@@ -2396,10 +2430,11 @@ async def snapshot(
         raise ViewerError(f"Unexpected snapshot encoding: {header}")
     png = base64.b64decode(payload)
 
-    out = Path(path).expanduser()
-    if not out.suffix:
-        out = out.with_suffix(_SNAPSHOT_FORMATS[chosen])
-    out = _writable(out, tuple(_SNAPSHOT_FORMATS.values()), overwrite=overwrite)
+    out = _writable(
+        _snapshot_path(path, chosen),
+        tuple(_SNAPSHOT_FORMATS.values()),
+        overwrite=overwrite,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
 
     image = _open_snapshot(png)
@@ -2413,11 +2448,16 @@ async def snapshot(
         )
     inked: float | None = None
     if finish is not None:
+        # Checked above too, before the render was paid for. Repeated here
+        # rather than trusted, because `FINISHES` is a plain dict and the
+        # capture in between is an await — so "it was valid a moment ago" is
+        # an invariant nobody at this line can see. A raw exception escaping a
+        # tool reads to a caller as protean breaking, not as a bad argument.
         try:
             image = apply_finish(image, finish)
-        except KeyError as exc:
-            raise ViewerError(str(exc).strip("\"'")) from exc
-        inked = ink_fraction(image)
+            inked = ink_fraction(image, finish)
+        except ValueError as exc:
+            raise ViewerError(str(exc)) from exc
 
     saved_dpi = float(dpi)
     save: dict[str, Any] = {"dpi": (dpi, dpi)}

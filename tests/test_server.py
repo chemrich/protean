@@ -22,6 +22,7 @@ from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
+from protean_mcp.analysis.hatching import FINISHES
 from protean_mcp.analysis.superposition import ResidueDeviation
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
@@ -1704,6 +1705,100 @@ async def test_jpeg_and_transparency_are_refused_together():
 async def test_unknown_format_is_refused():
     with pytest.raises(ViewerError, match="Unknown format 'bmp'"):
         await snapshot("/tmp/x", column="single", format="bmp")
+
+
+async def test_a_bad_output_path_is_refused_before_the_render(wired_bridge, tmp_path):
+    """The same rule as the finish name, for the other free thing.
+
+    `_writable` refuses a path holding something that is not a figure, and it
+    ran after the capture — so pointing a 600 dpi double-column snapshot at
+    notes.txt paid for the whole render before being told no.
+
+    Served, so that a regression answers the request and is caught by what it
+    wrote rather than by waiting out the 300 s capture budget.
+    """
+    occupied = tmp_path / "notes.txt"
+    occupied.write_text("not a figure")
+    sent: dict[str, Any] = {}
+
+    async with _serving(wired_bridge, snapshot=_snapshot_handler(sent, 1051, 800)):
+        with pytest.raises(ViewerError, match="already exists and is not"):
+            await snapshot(str(occupied), column="single")
+
+    assert sent == {}, "the viewer rendered before the destination was checked"
+
+
+async def test_the_destination_is_still_checked_at_the_write(wired_bridge, tmp_path):
+    """The early check can go stale, and checking early must not mean checking
+    only early — or the speed-up would quietly have made the guard weaker.
+
+    A render takes up to a hundred seconds and a file can appear inside that
+    window, so this makes one appear: the viewer writes to the destination
+    before it answers. The first version of this test re-captured over a figure
+    the tool had already written, which is *allowed* either way — it passed
+    with the check at the write deleted, and the mutation is what said so.
+    """
+    target = tmp_path / "notes.txt"
+    sent: dict[str, Any] = {}
+    capture = _snapshot_handler(sent, 1051, 800)
+
+    def occupy_then_answer(args):
+        # Arrives while the caller is awaiting the capture, which is exactly
+        # the window the early check cannot see.
+        target.write_text("something that is not a figure")
+        return capture(args)
+
+    async with _serving(wired_bridge, snapshot=occupy_then_answer):
+        with pytest.raises(ViewerError, match="already exists and is not"):
+            await snapshot(str(target), column="single")
+
+    assert sent != {}, "the render never happened, so nothing went stale"
+    assert target.read_text() == "something that is not a figure", (
+        "the file was overwritten by a figure"
+    )
+
+
+def test_every_finish_is_named_where_a_caller_can_find_it():
+    """`snapshot`'s docstring is the only place a finish is discoverable.
+
+    `capabilities()` does not report them, so a finish absent from the
+    docstring exists for anyone reading the source and for nobody calling the
+    tool. Making the suite fail is the whole mechanism: it forces adding one to
+    be a thing a person wrote a sentence about.
+
+    Here rather than beside the finish tests, because it is an assertion about
+    this tool's contract and nothing about image processing — and that module
+    had to import FastMCP to make it, so any import-time failure in the server
+    took the pure-Pillow suite down with it.
+    """
+    documented = snapshot.__doc__ or ""
+
+    missing = [name for name in sorted(FINISHES) if f'"{name}"' not in documented]
+    assert not missing, f"finishes a caller cannot discover: {missing}"
+
+
+async def test_an_unknown_finish_is_refused_before_the_render(wired_bridge, tmp_path):
+    """A finish is applied to the finished PNG, so the name was checked only
+    after a figure-resolution capture had already been paid for — up to a
+    hundred seconds of rendering thrown away over a spelling.
+
+    Asserting the refusal on its own would pass with the check back in its old
+    place, because the message is identical either way. What pins the ordering
+    is that the viewer was never asked to draw anything at all.
+    """
+    sent: dict[str, Any] = {}
+
+    # Served, not merely registered. Registering a handler and never running
+    # the loop leaves `sent` empty whatever the code does, so the assertion
+    # below would hold for the bug as well as the fix — and with nobody
+    # answering, a regression waits out the whole 300 s capture budget before
+    # failing on the wrong message. Under `_serving` the mutation answers at
+    # once and is caught by what it wrote.
+    async with _serving(wired_bridge, snapshot=_snapshot_handler(sent, 1051, 800)):
+        with pytest.raises(ViewerError, match="Unknown finish 'woodblock'"):
+            await snapshot(str(tmp_path / "fig"), column="single", finish="woodblock")
+
+    assert sent == {}, "the viewer rendered before the finish name was checked"
 
 
 @pytest.mark.parametrize(
