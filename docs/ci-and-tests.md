@@ -258,11 +258,11 @@ taken after a *changed* theme has settled is stable — which is what the three
 positive arms rely on — and there is no control at all on the size registry.
 The settling suspicion two sections up is the reason that gap is worth naming.
 
-**Proved able to fail**, twice, which for a test of this shape is the only
-verification that counts.
+**Proved able to fail**, three times, which for a test of this shape is the
+only verification that counts.
 
 - With the permutation replaced by the identity and the guard disabled, all
-  three positive arms failed at exactly `0.0 > 0.008`; the control still
+  four positive arms failed at exactly `0.0 > 0.008`; the control still
   passed.
 - With the second arm made to render nothing, the colour arm failed at
   `0.0 > 0.02` on the blank-frame check. Without that check it would have
@@ -271,14 +271,42 @@ verification that counts.
   success with the sign flipped — the test satisfied *by* the render breaking
   — and it is why both frames are checked for a molecule, not just the first.
 
-Three things it deliberately does not do. `conservation()` is not
-shuffle-tested — it reaches MMseqs2/ColabFold over the network, and a CI test
-that depends on someone else's server is a flake with extra steps. The
-`rmsf()` **tool** is not either: it needs a loaded trajectory, a second
-structure and a second load, for values that reach the screen through the same
-`define_field` path the ramp arm already covers — this says nothing about
-`color_by_rmsf`, which is a different mechanism and is named above as untested.
-`felt` is not shuffle-tested because it has no data channel to shuffle.
+### The second mechanism, added 2026-08-23
+
+`color_by_rmsf` registers no field. It writes its numbers into the **B-factor
+column** and draws them with Mol\*'s `uncertainty` theme — the same column
+whose flatness caused the retraction this whole file exists because of. So a
+shuffle suite that covered only `define_field` was testing everything except
+the path that actually went wrong.
+
+`test_the_rmsf_ramp_lands_on_the_atoms_that_moved` closes it. A hinge
+trajectory pins half the molecule and swings the other half, `color_by_rmsf`
+draws it, then `_rmsf`'s answer is permuted and the **real tool** draws it
+again — so what is under test is the shipped path, not a reimplementation.
+Measured **0.030080, 3.8x the threshold**: the widest margin of any arm, which
+makes sense, because scattering a two-block channel across the whole molecule
+moves more pixels than reordering a smooth ramp.
+
+What it catches that the existing tests cannot:
+`test_the_rmsf_ramp_depends_on_the_motion_it_measures` compares a rigid run
+against a hinge, which catches a *constant* in the column. It cannot catch a
+correct distribution landing on the **wrong atoms** — and that is the bug
+protean has shipped twice: `ins_code: None` building `A|76|None` against the
+viewer's `A|76|`, and a biological assembly's symmetry copies giving 584 rows
+for 292 residues. Both put real numbers on wrong atoms; both render a plausible
+picture.
+
+Cost: one further browser launch and two captures.
+
+### What it still does not do
+
+`conservation()` is not shuffle-tested — it reaches MMseqs2/ColabFold over the
+network, and a CI test that depends on someone else's server is a flake with
+extra steps. `color_by_potential` is not either: it needs a runnable APBS,
+which CI does not have. The `rmsf()` **tool** is not, separately, because its
+values reach the screen through the same `define_field` path the ramp arm
+already covers. `felt` is not shuffle-tested because it has no data channel to
+shuffle.
 
 ## The rule this document exists to enforce
 
