@@ -678,7 +678,7 @@ function jitterRadius(element: number, radius: number): number {
 }
 
 /** Themes protean registers itself, which are not Mol*'s and are not fields. */
-const BUILT_IN_THEMES = new Set(['jitter']);
+const BUILT_IN_THEMES = new Set(['jitter', 'plddt']);
 
 /** Registers `jitter` as an ordinary size theme, once per plugin. */
 function registerJitterSize(plugin: any): void {
@@ -728,9 +728,127 @@ function registerJitterSize(plugin: any): void {
   });
 }
 
+/** pLDDT's full scale. The AlphaFold column is 0-100, and so are the bands
+ *  Mol*'s own `plddt-confidence` colour theme cuts it at. */
+const PLDDT_FULL = 100;
+
+/** `uncertainty`'s own numbers, so the two tubes come out the same thickness.
+ *  From mol-theme/size/uncertainty.js: `baseSize + bfactorFactor * value`. */
+const PLDDT_BASE_SIZE = 0.2;
+const PLDDT_FACTOR = 0.1;
+
+/**
+ * Registers `plddt` as a colour theme and a size theme, once per plugin.
+ *
+ * Two halves of one name, because pLDDT is a quantity and protean's other
+ * quantities — every `define_field` — are both a colour and a width.
+ *
+ * The **colour** half is an alias. Mol* already ships `plddt-confidence`, the
+ * official AlphaFold banding with its legend, and it is in this bundle's
+ * registry (checked live, not assumed). Reimplementing it would be a second
+ * copy of a palette that has one correct answer. The alias exists so protean's
+ * name for the quantity is one word and is the same word in both channels.
+ *
+ * The **size** half is new: this bundle has exactly two size themes over the
+ * B-factor column, `uncertainty` and `uniform`, and neither of them is this.
+ * It is `uncertainty`'s formula with the polarity turned around, so that the
+ * *least* confident regions come out fattest. That direction is a deliberate
+ * decision and not an oversight: fat means "do not trust this" everywhere else
+ * in protean, and a `plddt` that inverted it would rebuild the exact trap this
+ * whole change exists to remove, under a friendlier name.
+ *
+ * The values are read from `B_iso_or_equiv`, which is where a predicted model
+ * writes its per-residue pLDDT and is the same fallback Mol*'s colour theme
+ * uses when no Model Archive property is attached — so the two halves are
+ * reading one column and cannot disagree with each other. `plddt` is refused
+ * on an experimental structure in `server.py`, where the file's provenance is
+ * known; nothing here can tell one column from the other.
+ */
+function registerPlddtThemes(plugin: any): void {
+  const themes = plugin.representation?.structure?.themes;
+  const colors = themes?.colorThemeRegistry;
+  const sizes = themes?.sizeThemeRegistry;
+  if (!colors?.add || !sizes?.add) return;
+
+  // The same duplicate-registration guard `registerJitterSize` documents: a
+  // second dispatcher over one plugin, which a reconnect produces, must not
+  // throw before a single handler exists. `get` answers with an empty provider
+  // for an unknown name, so the name is what has to be compared.
+  if (colors.get?.('plddt')?.name !== 'plddt') {
+    const base = colors.get?.('plddt-confidence');
+    // Absent from an older bundle rather than assumed present. Skipping the
+    // colour half leaves `color('plddt')` refused by name, which is a legible
+    // failure; forwarding to a provider that is not there would paint grey.
+    if (base?.name === 'plddt-confidence') {
+      // One factory object referenced as its own `factory`, for the reason
+      // `registerJitterSize` spells out: the theme's identity is its factory's
+      // identity, and a fresh closure per instantiation makes every theme
+      // unequal to itself and re-tessellates the geometry on every restyle.
+      const factory = (ctx: any, props: any) => ({
+        ...base.factory(ctx, props),
+        factory,
+        props,
+      });
+      colors.add({
+        ...base,
+        name: 'plddt',
+        label: 'plddt',
+        factory,
+        // `getParams`, `defaultValues`, `isApplicable` and — the load-bearing
+        // one — `ensureCustomProperties` all come through the spread above.
+        // That last is what attaches the Model Archive quality property before
+        // the theme runs; an alias that dropped it would colour by the
+        // B-factor fallback alone and quietly stop being the same theme.
+      });
+    }
+  }
+
+  if (sizes.get?.('plddt')?.name === 'plddt') return;
+  const factory = (ctx: any, props: any) => {
+    const size = (unit: any, element: any) => {
+      if (!unit?.model?.atomicConformation?.B_iso_or_equiv) return PLDDT_BASE_SIZE;
+      const plddt = unit.model.atomicConformation.B_iso_or_equiv.value(element);
+      // A file with no B-factor column reads NaN, and NaN survives every
+      // arithmetic below to arrive as a radius — where Mol* builds geometry
+      // from it and the representation vanishes with no error anywhere.
+      if (!Number.isFinite(plddt)) return PLDDT_BASE_SIZE;
+      // Clamped, not scaled. A value outside 0-100 is a file whose column is
+      // not what it claimed, and stretching the ramp to fit it would hide that
+      // by drawing a plausible tube anyway.
+      const confident = Math.min(Math.max(plddt, 0), PLDDT_FULL);
+      return PLDDT_BASE_SIZE + PLDDT_FACTOR * (PLDDT_FULL - confident);
+    };
+    return {
+      factory,
+      granularity: 'group',
+      size: (location: any) =>
+        location.aUnit
+          ? // A bond location, which carries its two ends rather than an
+            // element. `uncertainty` takes the first end's value; so does this,
+            // for the same reason — a bond has one width.
+            size(location.aUnit, location.aUnit.elements[location.aIndex])
+          : size(location.unit, location.element),
+      props,
+      description:
+        "Assigns a size reflecting a predicted model's per-residue pLDDT, " +
+        'with the least confident residues drawn thickest.',
+    };
+  };
+  sizes.add({
+    name: 'plddt',
+    label: 'plddt',
+    category: 'Misc',
+    factory,
+    getParams: () => ({}),
+    defaultValues: {},
+    isApplicable: () => true,
+  });
+}
+
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
   registerJitterSize(plugin);
+  registerPlddtThemes(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();

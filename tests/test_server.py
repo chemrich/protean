@@ -3116,3 +3116,330 @@ def test_the_ligand_flag_follows_the_selection_rather_than_a_boolean():
     assert not drawn["spacefill"] and not drawn["skeleton"], (
         "an all-atom view already has the ligand; drawing it twice nests copies"
     )
+
+
+# -- pLDDT and the B-factor are one column with opposite polarity ---------------
+#
+# Backlog 41. `color` and `size` had no tests at all before this section,
+# because until now they were pure pass-throughs to the viewer — and the viewer
+# checks theme *names*, which is exactly the check that cannot catch this.
+
+
+_QA_CIF = """\
+data_predicted
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.auth_comp_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM 1 N N . GLY A 1 1 ? 0.000 0.000 0.000 1.00 45.10 1 A GLY N 1
+ATOM 2 C CA . GLY A 1 1 ? 1.460 0.000 0.000 1.00 45.10 1 A GLY CA 1
+ATOM 3 C C . GLY A 1 1 ? 2.000 1.420 0.000 1.00 45.10 1 A GLY C 1
+ATOM 4 O O . GLY A 1 1 ? 1.250 2.390 0.000 1.00 45.10 1 A GLY O 1
+ATOM 5 N N . GLY A 1 2 ? 3.330 1.500 0.000 1.00 96.70 2 A GLY N 1
+ATOM 6 C CA . GLY A 1 2 ? 4.000 2.780 0.000 1.00 96.70 2 A GLY CA 1
+ATOM 7 C C . GLY A 1 2 ? 5.500 2.650 0.000 1.00 96.70 2 A GLY C 1
+ATOM 8 O O . GLY A 1 2 ? 6.100 1.580 0.000 1.00 96.70 2 A GLY O 1
+#
+loop_
+_ma_qa_metric.id
+_ma_qa_metric.mode
+_ma_qa_metric.name
+_ma_qa_metric.software_group_id
+_ma_qa_metric.type
+1 global pLDDT 1 pLDDT
+2 local pLDDT 1 pLDDT
+"""
+
+
+def _predicted_cif(path: Path) -> Path:
+    """The tiny protein again, but declaring itself a predicted model.
+
+    Two residues at 45.10 and 96.70 rather than one flat value, because the
+    thing under test is a ramp and a fixture with no spread in it would agree
+    with any polarity at all.
+    """
+    path.write_text(_QA_CIF)
+    return path
+
+
+def _column(monkeypatch, confidence: str | None, mixed: bool = False) -> None:
+    """Say what the loaded structure's B-factor column holds, without loading."""
+    monkeypatch.setattr(
+        server_mod,
+        "_b_factor_column",
+        server_mod._BFactorColumn(confidence=confidence, mixed=mixed),
+    )
+
+
+async def test_a_predicted_model_is_recorded_when_it_is_loaded(wired_bridge, tmp_path):
+    """Detection has to happen at load, because it cannot happen later.
+
+    The raw mmCIF text is not retained anywhere, so by the time `color()` is
+    called there is nothing left to read `ma_qa_metric` out of. Without this the
+    guard below has no state to consult and every refusal silently stops firing.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+
+    assert server_mod._b_factor_column == server_mod._BFactorColumn(confidence="pLDDT")
+
+
+async def test_an_experimental_load_forgets_the_previous_files_confidence(
+    wired_bridge, tmp_path
+):
+    """A stale flag refuses `uncertainty` on the crystal structure that
+    replaced the predicted model, which is the same bug pointing the other
+    way."""
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+
+    assert server_mod._b_factor_column == server_mod._BFactorColumn(confidence=None)
+
+
+async def test_uncertainty_is_refused_on_a_predicted_model(monkeypatch):
+    """The bug this whole section exists for.
+
+    Mol*'s `uncertainty` theme reads `B_iso_or_equiv` the crystallographic way:
+    high means less certain. A predicted model puts pLDDT in that column, where
+    high means *more* confident — so the theme draws the most trustworthy
+    regions fattest and warmest and the picture looks entirely plausible.
+    """
+    _column(monkeypatch, "pLDDT")
+
+    for call in (server_mod.color("uncertainty"), server_mod.size("uncertainty")):
+        with pytest.raises(ViewerError, match="predicted model"):
+            await call
+
+
+async def test_the_refusal_states_the_polarity_and_names_the_call_to_make(monkeypatch):
+    """A refusal that only says no leaves the caller guessing.
+
+    protean's convention is: what was asked, what is actually there, and the
+    next call to make. All three have to survive an edit to the message.
+    """
+    _column(monkeypatch, "pLDDT")
+
+    with pytest.raises(ViewerError) as raised:
+        await server_mod.size("uncertainty")
+
+    message = str(raised.value)
+    assert "pLDDT" in message
+    assert "HIGH pLDDT means MORE confident" in message
+    assert "'plddt'" in message
+
+
+async def test_plddt_is_refused_on_an_experimental_structure(monkeypatch):
+    """The converse, and the reason `docs/views.md` called this a correctness
+    fix rather than a nicety: colouring a crystal structure with the AlphaFold
+    palette *works*, mapping B-factors of 2-80 onto a 0-100 confidence scale,
+    and someone then reads "low confidence" off a well-ordered loop."""
+    _column(monkeypatch, None)
+
+    for call in (server_mod.color("plddt"), server_mod.size("plddt")):
+        with pytest.raises(ViewerError, match="experimental"):
+            await call
+
+
+async def test_molstars_own_name_for_the_theme_is_guarded_too(monkeypatch):
+    """`plddt-confidence` is in Mol*'s registry and reachable by name, so a
+    guard that knew only protean's spelling would be one word away from the
+    picture it exists to prevent."""
+    _column(monkeypatch, None)
+
+    with pytest.raises(ViewerError, match="experimental"):
+        await server_mod.color("plddt-confidence")
+
+
+async def test_show_is_the_other_door_to_the_same_theme(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """`show(color=...)` sets a theme without `color()` ever being called.
+
+    Guarding only `color()` and `size()` would leave the whole hazard reachable
+    through the tool that draws in the first place.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    _column(monkeypatch, "pLDDT")
+
+    with pytest.raises(ViewerError, match="predicted model"):
+        await show(selection="polymer", color="uncertainty")
+
+
+async def test_a_superposed_pair_of_two_kinds_refuses_both_readings(monkeypatch):
+    """`superpose` concatenates two B-factor columns into one.
+
+    An AlphaFold model fitted onto its crystal structure — the obvious reason
+    to call it — leaves a column that is pLDDT for one chain and a B-factor for
+    the other. No single ramp is right for both, so serving either would draw
+    half the atoms backwards.
+    """
+    _column(monkeypatch, "pLDDT", mixed=True)
+
+    for theme in ("uncertainty", "plddt"):
+        with pytest.raises(ViewerError, match="superposed"):
+            await server_mod.size(theme)
+
+
+async def test_plddt_is_refused_when_nothing_has_been_parsed(monkeypatch):
+    """ "I cannot tell" is an answer, and it is the honest one.
+
+    A load whose analysis failed leaves the viewer drawing a molecule protean
+    never read. `plddt` is new enough to have no callers to break, so it
+    refuses; `uncertainty` is the incumbent and must not start refusing files
+    over a question that was never asked before — the next test pins that.
+    """
+    monkeypatch.setattr(server_mod, "_b_factor_column", None)
+
+    with pytest.raises(ViewerError, match="no parsed structure"):
+        await server_mod.color("plddt")
+
+
+async def test_uncertainty_still_passes_when_nothing_has_been_parsed(
+    wired_bridge, monkeypatch
+):
+    """The asymmetry above, asserted rather than assumed."""
+    monkeypatch.setattr(server_mod, "_b_factor_column", None)
+    wired_bridge.handlers["size"] = lambda args: {
+        "name": args["name"],
+        "size": args["size"],
+    }
+    task = wired_bridge.serve(1)
+    result = await server_mod.size("uncertainty")
+    await task
+
+    assert result["size"] == "uncertainty"
+
+
+async def test_the_matching_theme_still_reaches_the_viewer(wired_bridge, monkeypatch):
+    """A guard that refused both directions would be indistinguishable from one
+    that worked, on every test above."""
+    _column(monkeypatch, "pLDDT")
+    wired_bridge.handlers["size"] = lambda args: {
+        "name": args["name"],
+        "size": args["size"],
+    }
+    wired_bridge.handlers["color"] = lambda args: {
+        "name": args["name"],
+        "color": args["color"],
+    }
+    task = wired_bridge.serve(2)
+    sized = await server_mod.size("plddt")
+    coloured = await server_mod.color("plddt")
+    await task
+
+    assert sized["size"] == "plddt"
+    assert coloured["color"] == "plddt"
+
+
+async def test_putty_draws_plddt_on_a_predicted_model_and_says_which(
+    wired_bridge, tmp_path
+):
+    """The third affected path, and the one no `color()` guard can reach.
+
+    `putty` hardwires `color="uncertainty"` and takes its width from Mol*'s
+    default for that representation — the same column read the same way — so on
+    a predicted model it is backwards in both channels at once without either
+    tool having been called. Swapped rather than refused, so the menu entry
+    still works, but never quietly: the reply names both views.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+    wired_bridge.handlers["size"] = lambda args: {
+        "name": args["name"],
+        "size": args["size"],
+    }
+    wired_bridge.handlers["color"] = lambda args: {
+        "name": args["name"],
+        "color": args["color"],
+    }
+    task = wired_bridge.serve(40)
+    out = await preset("putty")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert out["preset"] == "plddt"
+    assert out["asked_for"] == "putty"
+    assert any("drew 'plddt'" in step for step in out["steps"])
+    themes = [args.get("color") for action, args in calls if action == "show"]
+    assert "uncertainty" not in themes, "the backwards ramp still went out"
+    assert "plddt" in themes
+
+
+async def test_the_plddt_view_sets_its_own_width_rather_than_inheriting_one(
+    wired_bridge, tmp_path
+):
+    """A putty's default size theme is `uncertainty`.
+
+    Colouring by confidence and leaving the width to Mol* would point the two
+    channels in opposite directions — the fattest part of the tube would be the
+    part you can trust most — which is half of the original bug, kept.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    sized: list[str] = []
+    _record(wired_bridge, [])
+
+    def on_size(args):
+        sized.append(args["size"])
+        return {"name": args["name"], "size": args["size"]}
+
+    wired_bridge.handlers["size"] = on_size
+    wired_bridge.handlers["color"] = lambda args: {
+        "name": args["name"],
+        "color": args["color"],
+    }
+    task = wired_bridge.serve(40)
+    await preset("plddt")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert sized == ["plddt"]
+
+
+async def test_the_plddt_view_is_refused_on_an_experimental_structure(
+    wired_bridge, tmp_path
+):
+    """There is nothing to swap it to: a crystal structure has no confidence
+    score, so this refuses rather than drawing `putty` under another name.
+
+    Refused up front rather than by the guard inside the `show()` it would
+    reach, which fires after the scene has already been taken over and leaves a
+    half-drawn picture behind the error.
+    """
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    _record(wired_bridge, calls)
+
+    with pytest.raises(ViewerError, match="experimental"):
+        await preset("plddt")
+
+    assert not calls, "the scene was taken over before the refusal"
+
+
+def test_the_page_can_ask_for_both_tubes():
+    """`plddt` has to be in the menu as well as in the tool surface.
+
+    A click cannot know which kind of file is loaded, and `_PAGE_VIEWS` is the
+    only list the page is given — a view missing from it is unreachable from
+    the viewer no matter what `_VIEWS` says.
+    """
+    assert server_mod._PAGE_VIEWS["plddt"] == ("plddt", server_mod._VIEW_DRAWS)
+    assert "plddt" in server_mod._PRESETS

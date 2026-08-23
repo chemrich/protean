@@ -361,7 +361,7 @@ shape and three are recipes over machinery that already exists.
 
 | view | what it needs |
 |---|---|
-| `plddt` | a colour theme — but **blocked**, see below |
+| `plddt` | **shipped**: `preset("plddt")`, and `color`/`size` by that name |
 | `interface` | **shipped**: `interface_view(a, b)` |
 | `ligand` | **shipped**: `ligand_view(resn)` |
 | `mutation` | **shipped**: `mutation_view("A123G,V45L")`, and it verifies |
@@ -389,18 +389,60 @@ assembly. Backlog 33 and 34. **Do those first or leave `plddt` alone** — a vie
 of a structure nobody can load is a view nobody can use, and building it would
 report progress that is not there.
 
-**Stale as of 2026-08-21: backlog 33 and 34 are fixed.** Predicted models load,
-so the blocker above is gone — and with it the protection it was accidentally
-providing. pLDDT and B-factor are the same column with opposite polarity, so
-`size("uncertainty")` on a predicted model now draws the most confident regions
-fattest. Backlog 41, and `docs/soft-matter-review.md`.
+**Shipped 2026-08-22, and it turned out to be a bug fix rather than a feature.**
+Backlog 33 and 34 removed the blocker above on 2026-08-21 — and with it the
+protection it had been accidentally providing. pLDDT and the B-factor are the
+same column with opposite polarity, so `size("uncertainty")` on a predicted
+model drew the most trustworthy regions fattest, silently, with a picture that
+looked entirely plausible. Backlog 41, and `docs/soft-matter-review.md`.
+
+What is there now:
+
+- **The file says which it is, and it is read at load.** A predicted model
+  carries `ma_qa_metric`, and a *local* metric whose name contains "pLDDT" is
+  what counts — a ModelArchive model scored by QMEAN carries that category too
+  and is not on the same scale. Read in `selections_numpy.confidence_metric`,
+  where the parsed `CIFFile` is already in hand, because it cannot be read
+  anywhere else: the raw text is not retained, so a later `color()` has nothing
+  left to ask. Not built on `_entry.id` or `_struct.title` — the AlphaFold file
+  has no `_struct` category at all — and not on `StructureData.source`, which
+  reports `"cache"` for a cached AlphaFold model.
+- **Both directions refuse.** `uncertainty` on a predicted model, and `plddt`
+  on an experimental one, from `color()`, `size()` and `show(color=...)`. Each
+  refusal states the polarity and names the call to make instead.
+- **`putty` on a predicted model draws `plddt`** and the reply says so. It is
+  the third affected path and the only one neither guard can reach: `putty`
+  hardwires `color="uncertainty"` and takes its width from Mol\*'s default for
+  that representation, so it is backwards in both channels without either tool
+  having been called. Swapped rather than refused, because the menu entry has
+  to keep working and `plddt` is what the caller wanted; the reverse is a
+  refusal, because a crystal structure has no confidence score to swap to.
+- **`size("plddt")` makes the *least* confident regions fattest.** Deliberate:
+  fat means "do not trust this" everywhere else in protean, and inverting it
+  here would rebuild the same trap under a friendlier name. The colour half
+  aliases Mol\*'s `plddt-confidence`, which is the official AlphaFold banding
+  and its legend; the size half is new, because the bundle ships no pLDDT size
+  theme at all.
+
+Two known gaps, recorded rather than papered over. An AlphaFold model in **PDB**
+format carries pLDDT in the B-factor column with no marker biotite reads, so it
+is undetectable and will not be refused. And a pLDDT declared over a `[0, 1]`
+domain, which ModelArchive permits and AlphaFold DB does not use, is detected
+but is on the wrong scale for the `[0, 100]` ramps both halves use — it draws
+everything at one end, which is visibly wrong rather than plausibly backwards.
+
+The wiggles path in `backends/molstar.py` does **not** need this guard. It
+overwrites the B-factor column with the caller's own scalar mapped onto
+`[0, 100]` and sends a display copy, so by the time `uncertainty` sees that
+column there is no pLDDT in it. Its `B_FACTOR_FULL` stays a deliberate second
+definition for the reason its comment already gives.
 
 **Every one of these refuses when its target is not there, and says what is.**
 Charlie's call, 2026-08-18: the improvement below is not `mutation`'s alone.
 
 | view | what it refuses |
 |---|---|
-| `plddt` | an experimental structure — see why this one is a correctness fix, below |
+| `plddt` | **shipped**: an experimental structure, and `uncertainty` refuses a predicted one — see why this one is a correctness fix, below |
 | `ligand`, `pocket` | a residue name the structure does not contain, naming the ligands it does |
 | `interface` | two chains that do not touch, rather than drawing an empty highlight |
 | `crosslink` | a structure with no disulfides and no metals, rather than a bare cartoon |
@@ -411,7 +453,9 @@ B-factor column, so colouring a crystal structure with the AlphaFold palette
 *works*: it maps B-factors of 2-80 onto a 0-100 confidence scale and produces a
 confident-looking picture that means nothing, from which someone reads "low
 confidence" off a well-ordered loop. It has to detect that the model is not
-predicted and refuse.
+predicted and refuse. It does, in both directions, as of 2026-08-22 — and the
+half that turned out to matter more was the one this paragraph did not name:
+`uncertainty` on a *predicted* model was already shipping and already wrong.
 
 `mutation` is the one worth doing better than the original. It should **verify
 the stated residue is what the file says it is** and refuse when it is not: a

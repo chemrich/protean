@@ -109,6 +109,39 @@ _bridge: ViewerBridge | None = None
 _structure: Any = None
 _structure_error: str | None = None
 _structure_identifier: str | None = None
+
+
+@dataclass(frozen=True)
+class _BFactorColumn:
+    """What the loaded structure's ``B_iso_or_equiv`` column actually holds.
+
+    One column, two quantities, opposite polarity. A crystal structure writes a
+    B-factor there and a high value means the atom is *less* certain; a
+    predicted model writes pLDDT there and a high value means the residue is
+    *more* confident. Every theme that ramps over that column has to pick one
+    reading, and picking the wrong one draws a picture that looks entirely
+    plausible and is backwards.
+
+    Read at load, because that is the only moment it can be read: the raw file
+    text is not retained, so a later ``color()`` has nothing left to ask.
+
+    ``mixed`` is the superposition case, where the pair on screen is one
+    predicted model and one experimental structure sharing a single column. No
+    reading of it is right for both halves, so both themes are refused rather
+    than one of them being served to half the atoms.
+    """
+
+    #: The confidence metric's name -- "pLDDT" -- or None for a B-factor.
+    confidence: str | None = None
+    mixed: bool = False
+
+
+#: What is in the B-factor column, or ``None`` when nothing has been parsed and
+#: the question has no answer yet. The three states are distinct on purpose:
+#: "unknown" refuses `plddt`, which is new and can afford to be strict, and
+#: allows `uncertainty`, which is the incumbent and must not start refusing
+#: files whose analysis merely failed to parse.
+_b_factor_column: _BFactorColumn | None = None
 _handles = HandleRegistry()
 # Named camera positions, in the order they were set: a timeline runs through
 # them as written rather than in some sorted order.
@@ -568,11 +601,16 @@ async def fetch_structure(
     # should still display. Only analysis degrades, and it says so rather than
     # silently matching nothing.
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
+    global _b_factor_column  # noqa: PLW0603 - session state
     discarded = _discard_session_state()
     loaded = None
     try:
         loaded = _load_structure(structure.data, structure.format, assembly)
         _structure, _structure_error = loaded.array, None
+        # Only from a successful parse. A file the analysis could not read
+        # leaves this None -- "unknown" -- rather than claiming it is
+        # experimental, which is a claim nothing checked.
+        _b_factor_column = _BFactorColumn(confidence=loaded.confidence)
     except SelectionError as exc:
         _structure, _structure_error = None, str(exc)
     _structure_identifier = identifier
@@ -629,7 +667,12 @@ def _discard_session_state() -> str:
     smaller version of the same bug: a caller who had a trajectory loaded
     should be told it is gone rather than discover it from a later refusal.
     """
-    global _trajectory  # noqa: PLW0603 - session state
+    global _trajectory, _b_factor_column  # noqa: PLW0603 - session state
+    # What was in the outgoing structure's B-factor column says nothing about
+    # the incoming one, and leaving a stale "predicted" behind would refuse
+    # `uncertainty` on the crystal structure that replaced it. Back to unknown;
+    # every caller sets it again from what it actually parsed.
+    _b_factor_column = None
     discarded: list[str] = []
     if _trajectory is not None:
         discarded.append("the trajectory")
@@ -869,6 +912,11 @@ async def show(
     """
     if (selection is None) == (handle is None):
         raise ViewerError("Pass exactly one of selection or handle")
+    # The same check `color()` makes, because this is the other door to the
+    # same theme: `show(color="uncertainty")` on a predicted model draws the
+    # backwards picture without `color()` ever being called.
+    if color:
+        _check_polarity(color, "colour")
     array = _require_structure()
     if handle is not None:
         try:
@@ -904,13 +952,95 @@ async def show(
     return {"name": label, "representation": representation, **_summarise(array, indices)}
 
 
+#: Theme names that read the B-factor column as pLDDT. `plddt` is protean's,
+#: registered by the page as a colour and a size; `plddt-confidence` is Mol*'s
+#: own and is reachable by name, so guarding only ours would leave the hazard
+#: one spelling away.
+_PLDDT_THEMES = frozenset({"plddt", "plddt-confidence"})
+
+#: The theme that reads the same column as a crystallographic B-factor.
+_UNCERTAINTY_THEME = "uncertainty"
+
+#: The word for what these two do, shared so the two refusals cannot drift.
+_POLARITY = (
+    "pLDDT and the B-factor are the same mmCIF column, `B_iso_or_equiv`, with "
+    "opposite polarity: a HIGH pLDDT means MORE confident, a HIGH B-factor "
+    "means LESS certain."
+)
+
+
+def _check_polarity(theme: str, channel: str) -> None:
+    """Refuse a theme whose reading of the B-factor column this file contradicts.
+
+    Both themes ramp over ``B_iso_or_equiv`` and neither can tell what is in it,
+    so drawing the wrong one succeeds: the most trustworthy regions of a
+    predicted model come out fattest and warmest, and the picture looks fine.
+    That is the failure this guard exists for, and it is why the check lives
+    here rather than in the viewer -- the viewer validates theme *names* and has
+    no idea where the file came from.
+
+    ``channel`` is "colour" or "width", so the message names the thing the
+    caller was actually setting.
+    """
+    wanted_confidence = theme in _PLDDT_THEMES
+    if not wanted_confidence and theme != _UNCERTAINTY_THEME:
+        return
+    column = _b_factor_column
+    if column is None:
+        # Nothing parsed: a load whose analysis failed, or a session carrying no
+        # structure. `uncertainty` passes through as it always has; `plddt` does
+        # not, because saying "I cannot tell" is the only honest answer and this
+        # name is new enough to have no callers to break.
+        if wanted_confidence:
+            raise ViewerError(
+                f"{theme!r} reads the B-factor column as pLDDT, and protean has "
+                "no parsed structure to check that against — so it cannot tell "
+                f"whether this file is a predicted model. {_POLARITY} Load the "
+                "structure with fetch_structure() so the check has something to "
+                f"read, or ask for {_UNCERTAINTY_THEME!r} if you know the column "
+                "holds a crystallographic B-factor."
+            )
+        return
+    if column.mixed:
+        raise ViewerError(
+            f"This scene is a predicted model superposed on an experimental "
+            f"structure, so its B-factor column holds pLDDT for some atoms and "
+            f"a crystallographic B-factor for the rest. {_POLARITY} No single "
+            f"ramp is right for both halves, so {theme!r} is refused for "
+            f"{channel} rather than drawn backwards over one of them. Colour "
+            "the two chains separately, or superpose with show=False and load "
+            "the one you want to read."
+        )
+    if column.confidence is not None and not wanted_confidence:
+        raise ViewerError(
+            f"This is a predicted model: its `B_iso_or_equiv` column holds "
+            f"{column.confidence}, not a B-factor. {_POLARITY} Drawing it as "
+            f"{_UNCERTAINTY_THEME!r} would give the most reliable regions the "
+            f"heaviest {channel}. Use 'plddt' instead."
+        )
+    if column.confidence is None and wanted_confidence:
+        raise ViewerError(
+            f"{theme!r} reads the B-factor column as a confidence score, and "
+            f"this structure is experimental: its `B_iso_or_equiv` column holds "
+            f"a crystallographic B-factor. {_POLARITY} A B-factor of 2-80 "
+            f"mapped onto a 0-100 confidence scale draws a confident-looking "
+            f"picture that means nothing. Use {_UNCERTAINTY_THEME!r} instead."
+        )
+
+
 @_tool()
 async def color(color: str, name: str = "sele") -> dict[str, Any]:
     """Recolour an existing named selection.
 
     color: a Mol* colour theme or a literal hex value like "#3366cc".
     name: the handle passed to a previous select() or show().
+
+    `uncertainty` and `plddt` are the same column read two ways and are checked
+    against what was actually loaded: asking for one on a file that carries the
+    other is refused, because it would draw a plausible picture with its ramp
+    reversed.
     """
+    _check_polarity(color, "colour")
     return await _call("color", {"name": name, "color": color})
 
 
@@ -1849,10 +1979,16 @@ async def size(size: str, name: str = "sele") -> dict[str, Any]:
 
     size: a Mol* size theme — capabilities() reports the live list. The useful
       ones are `uncertainty` (B-factor, or whatever has been written into that
-      column), `physical` (van der Waals radius, the usual choice for
-      spacefill), and `uniform` (one width everywhere, which is how you flatten
-      a putty back into a plain tube).
+      column), `plddt` (the same column read as a predicted model's confidence,
+      so the *least* confident regions come out fattest), `physical` (van der
+      Waals radius, the usual choice for spacefill), and `uniform` (one width
+      everywhere, which is how you flatten a putty back into a plain tube).
     name: the handle passed to a previous show().
+
+    `uncertainty` and `plddt` are checked against what was actually loaded.
+    Asking for one on a file carrying the other is refused rather than served:
+    on a predicted model `uncertainty` makes the most trustworthy regions the
+    fattest, and nothing about the resulting picture looks wrong.
 
     Every representation has a width, including the ones where that is not
     obvious: a cartoon's ribbon thickens under `physical` as much as a putty's
@@ -1860,6 +1996,7 @@ async def size(size: str, name: str = "sele") -> dict[str, Any]:
     for the theme already in force reads as the no-op it is rather than as a
     change that failed to appear.
     """
+    _check_polarity(size, "width")
     return await _call("size", {"name": name, "size": size})
 
 
@@ -2278,6 +2415,11 @@ async def load_trajectory(
     # describe the same molecule the viewer is showing.
     _structure, _structure_error = stack[0], None
     _structure_identifier = str(Path(path).expanduser())
+    # `_b_factor_column` is deliberately left alone. Every frame is a copy of
+    # the template with new coordinates -- `analysis/trajectory.py:_as_stack`
+    # -- so the B-factor column is still the loaded structure's, pLDDT and all.
+    # A trajectory file carries coordinates and nothing else, so there is no
+    # second opinion here to overwrite it with.
     _trajectory = stack
     _handles.clear()
 
@@ -3748,6 +3890,21 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
     ]
 
 
+async def _plddt_style(target: str, handle: str) -> list[str]:
+    """Publication styling, and the width said out loud rather than inherited.
+
+    This is the one view that cannot leave its width to Mol\\*. A putty's
+    default size theme is `uncertainty`, which reads the B-factor column the
+    crystallographic way — so a tube coloured by confidence and sized by the
+    default would have its two channels pointing in opposite directions, and
+    the fattest part of it would be the part you can trust most.
+    """
+    return [
+        *await _preset_publication_cartoon(target),
+        await _run(size, size="plddt", name=handle),
+    ]
+
+
 # Gouache rather than CPK. Geis mixed his own colours and the plastic-sphere
 # palette did not exist yet; more to the point, hard green carbon against hard
 # red oxygen is the single loudest thing in an all-atom picture, and it is what
@@ -3961,6 +4118,17 @@ _VIEWS: dict[str, _View] = {
         color="uncertainty",
         style=lambda target, handle: _preset_publication_cartoon(target),
     ),
+    # The same tube over the other reading of the same column. It is a separate
+    # view rather than a flag on `putty` because it refuses the other kind of
+    # file: `putty` on a predicted model is wrong in both channels at once, and
+    # `plddt` on a crystal structure paints a confidence legend over numbers
+    # that are not confidences.
+    "plddt": _View(
+        selection="polymer",
+        representation="putty",
+        color="plddt",
+        style=_plddt_style,
+    ),
     "hydrophobic-surface": _View(
         selection="polymer",
         representation="molecular-surface",
@@ -4149,7 +4317,13 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       textbook             Cartoon by secondary structure, flat and outlined —
                            illustrative's styling with the drawing done too.
       putty                A tube whose width *and* colour follow B-factor, so
-                           a disordered loop reads as a fat warm bulge.
+                           a disordered loop reads as a fat warm bulge. On a
+                           predicted model this draws `plddt` instead, and the
+                           reply says so — see below.
+      plddt                The same tube over a predicted model's confidence:
+                           fat and orange is where the model is guessing.
+                           Refused on an experimental structure, which has no
+                           confidence score to draw.
       hydrophobic-surface  A molecular surface coloured by hydrophobicity, ring
                            lit so the curvature survives.
       spacefill            Every non-solvent atom as a CPK sphere, lit so the
@@ -4195,14 +4369,63 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       top of the restored scene, which is the pair of coincident
       representations the shared handle exists to avoid.
     """
-    recipe = _PRESETS.get(name)
-    if recipe is None:
+    if name not in _PRESETS:
         raise ViewerError(
             f"Unknown preset {name!r}. Available: {', '.join(sorted(_PRESETS))}"
         )
     _require_viewer()
-    steps = await recipe(handle or _WHOLE_SCENE)
-    return {"preset": name, "applied_to": handle or _WHOLE_SCENE, "steps": steps}
+    drawn, note = _polarity_view(name)
+    steps = await _PRESETS[drawn](handle or _WHOLE_SCENE)
+    return {
+        "preset": drawn,
+        "applied_to": handle or _WHOLE_SCENE,
+        "steps": ([note, *steps] if note else steps),
+        **({"asked_for": name} if drawn != name else {}),
+    }
+
+
+def _polarity_view(name: str) -> tuple[str, str]:
+    """Draw `putty` as `plddt` when the loaded file is a predicted model.
+
+    The third affected path, and the one no `color()` or `size()` guard can
+    reach. `putty` hardwires `color="uncertainty"` and takes its *width* from
+    Mol\\*'s default for that representation, which is the same column read the
+    same way — so on a predicted model it comes out backwards in both channels
+    at once, without either of those tools having been called.
+
+    Swapped rather than refused, and only in this direction. Refusing would
+    make the viewer's `putty` menu entry a dead button on every AlphaFold
+    model, and what the caller wanted — a tube whose fat warm parts are the
+    parts to distrust — is exactly what `plddt` draws over the other reading.
+    What is not acceptable is doing it quietly, so the reply names the view
+    that ran, the one that was asked for, and why they differ.
+
+    The other direction is a **refusal**, because there is nothing to swap to:
+    a crystal structure has no confidence score, and drawing `plddt` over its
+    B-factors would put an AlphaFold legend on numbers that are not
+    confidences. Refused here, up front, rather than by the guard inside the
+    `show()` this view would reach — that one fires after the scene has already
+    been taken over, leaving a half-drawn picture behind an error.
+
+    Returns the view to draw and a line for the step list, empty when nothing
+    was swapped.
+    """
+    if name not in ("putty", "plddt") or _b_factor_column is None:
+        return name, ""
+    if _b_factor_column.mixed:
+        _check_polarity("plddt" if name == "plddt" else _UNCERTAINTY_THEME, "width")
+    if _b_factor_column.confidence is None:
+        if name == "plddt":
+            _check_polarity("plddt", "width")
+        return name, ""
+    if name == "plddt":
+        return name, ""
+    return "plddt", (
+        f"# asked for 'putty', drew 'plddt': this is a predicted model, so its "
+        f"B-factor column holds {_b_factor_column.confidence} rather than a "
+        "B-factor, and putty's ramp would have made the most reliable regions "
+        "the fattest and warmest."
+    )
 
 
 # -- what a click can ask for --------------------------------------------------
@@ -4255,6 +4478,11 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "default": ("default", _VIEW_DRAWS),
     "textbook": ("textbook", _VIEW_DRAWS),
     "putty": ("putty", _VIEW_DRAWS),
+    # Listed alongside `putty` rather than instead of it. A click cannot know
+    # which kind of file is loaded, so both entries exist and `preset()` sends
+    # `putty` to `plddt` when the structure is predicted — the entry the person
+    # clicked is the one that reads right for the file they have.
+    "plddt": ("plddt", _VIEW_DRAWS),
     "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
     "spacefill": ("spacefill", _VIEW_DRAWS),
     "skeleton": ("skeleton", _VIEW_DRAWS),
@@ -4692,7 +4920,7 @@ def _restore_analysis(snapshot: Any, viewer_atoms: Any) -> tuple[str, dict[str, 
     with the viewer is the failure this whole change exists to remove, and
     keeping it with a caveat attached would be that failure with a note on it.
     """
-    global _structure, _structure_error  # noqa: PLW0603 - session state
+    global _structure, _structure_error, _b_factor_column  # noqa: PLW0603 - session state
     embedded = _embedded_structure(snapshot)
     if embedded is None:
         return (
@@ -4717,6 +4945,11 @@ def _restore_analysis(snapshot: Any, viewer_atoms: Any) -> tuple[str, dict[str, 
         readings[assembly] = atoms
         if not isinstance(viewer_atoms, int) or atoms == viewer_atoms:
             _structure, _structure_error = loaded.array, None
+            # The session embeds the file's own text, so the polarity of its
+            # B-factor column is readable here exactly as it was at the
+            # original load -- no network, and no chance of disagreeing with
+            # what the viewer is drawing.
+            _b_factor_column = _BFactorColumn(confidence=loaded.confidence)
             return (
                 f"restored from the session's own copy ({atoms} atoms, "
                 f"{assembly} assembly)",
@@ -4844,12 +5077,10 @@ async def _display_superposition(
     # remains is the argument that outlasts the workaround: a superposition is
     # a statement about one conformation of each side, and the transform was
     # fitted over exactly these atoms.
-    moved, _ = _resolve_conformers(
-        _load_structure(mobile_data.data, mobile_data.format, "asymmetric").array
-    )
-    fixed, _ = _resolve_conformers(
-        _load_structure(target_data.data, target_data.format, "asymmetric").array
-    )
+    mobile_loaded = _load_structure(mobile_data.data, mobile_data.format, "asymmetric")
+    target_loaded = _load_structure(target_data.data, target_data.format, "asymmetric")
+    moved, _ = _resolve_conformers(mobile_loaded.array)
+    fixed, _ = _resolve_conformers(target_loaded.array)
 
     matrix = np.asarray(result.transform, dtype=float)
     if matrix.shape != (_TRANSFORM_SIZE, _TRANSFORM_SIZE):
@@ -4873,12 +5104,23 @@ async def _display_superposition(
     _renumber_for_viewer(combined)
 
     global _structure, _structure_error, _structure_identifier  # noqa: PLW0603 - session state
+    global _b_factor_column  # noqa: PLW0603 - session state
     # Superposing replaces the loaded structure with the pair, so it ends the
     # previous session exactly as a fetch does -- the trajectory's frames are
     # not this molecule, and a saved camera was framed on something else.
     discarded = _discard_session_state()
     _structure, _structure_error = combined, None
     _structure_identifier = f"{target}+{mobile}"
+    # `fixed + moved` concatenates two B-factor columns into one, and the two
+    # halves need not mean the same thing: an AlphaFold model superposed on its
+    # crystal structure -- the obvious reason to call this at all -- produces a
+    # column that is pLDDT for one chain and a B-factor for the other. When
+    # they agree the answer is theirs; when they do not, `mixed` refuses both
+    # readings rather than serving one of them to half the atoms.
+    _b_factor_column = _BFactorColumn(
+        confidence=target_loaded.confidence,
+        mixed=(target_loaded.confidence is None) != (mobile_loaded.confidence is None),
+    )
 
     viewer = await _send_structure(combined, f"{target}+{mobile}")
     ours = int(combined.array_length())
