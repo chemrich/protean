@@ -1,0 +1,284 @@
+"""Does a data binding actually carry its data? Render it twice and find out.
+
+`docs/bakeoff.md` once concluded that binding a channel does not make it
+legible, from three treatments rendered on a structure whose B-factor column is
+`0.00` on all 1,216 atoms. Every channel was constant, every picture rendered,
+every picture looked right, and the conclusion had to be retracted. **A binding
+test on a flat column is vacuous and looks exactly like a passing one.**
+
+The shuffle test is the mechanical guard. Render once with the true channel and
+once with the same numbers **permuted across residues** — same multiset, same
+residue keys, same palette, same explicit domain — and diff the two frames.
+Identical frames mean the binding is not reading the data.
+
+Two halves, and the second is the one that would have caught the bake-off:
+
+1. The diff, here. Renders are bit-deterministic once the ImagePass exists —
+   `test_render_differential.py` asserts `difference(...) == 0.0` outright in
+   14 places — so a dead binding reads exactly **0.0**, not noise.
+2. **The degenerate-input guard**, in `shuffle.py` and exercised by
+   `test_shuffle.py` in the fast job, because a refusal nobody watches fire is
+   one that can be deleted without turning anything red.
+
+`test_a_shuffle_that_moves_nothing_reads_zero` is the control that keeps this
+file honest: a channel that genuinely cannot be permuted must read 0.0, which
+is what demonstrates the other three arms are not passing by construction. It
+does not cover everything — see its own docstring for what it cannot see.
+
+Proved able to fail, twice, which for a test of this shape is the only
+verification that counts. With the permutation replaced by the identity and the
+guard disabled, all three positive arms failed at exactly `0.0 > 0.008` and the
+control still passed. With the second arm made to render nothing, the colour
+arm failed at `0.0 > 0.02` on `_both_on_screen` — which it would otherwise have
+**passed**, because an empty second frame makes `difference` report the whole
+molecule.
+
+Requires a real browser and is opt-in:
+
+    PROTEAN_DIFFERENTIAL=1 uv run pytest tests/test_shuffle_differential.py
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import protean_mcp.server as server_mod
+
+from .browser import BROWSER_MARKS, viewer_session
+from .pixels import Render, coverage, difference
+from .shuffle import Entry, checked_shuffle, distinct, moved, numbers, shuffled
+
+# Reused rather than restated. STYLED is the measured floor for "this style
+# change moved the picture" and DRAWN for "something is on screen"; a shuffle
+# that changes the picture less than a lighting rig does is not a finding worth
+# a threshold of its own. Nothing named `test_*` is imported, which would make
+# pytest collect that module's tests a second time under this one.
+#
+# What each arm actually measures, at STYLED = 0.008, in a 722x311 viewport
+# where a cartoon of 1UBQ's polymer covers 0.033 of the frame:
+#
+#   colour, ramp on a cartoon   0.0281   3.5x the threshold
+#   size, ramp on a putty       0.0105   1.3x  — the thinnest margin here
+#   colour, burial on a cartoon 0.0264   3.3x
+#   the identity control        0.0000   exactly, as it must be
+#
+# The size arm looks thin only against the whole frame. A putty tube covers
+# 0.014 of this viewport to a cartoon's 0.033, so 0.0105 is **73% of the
+# tube's own pixels** — against 86% for the colour ramp and 80% for burial.
+# These four numbers are local; the viewport CI renders into is a different
+# one, and the only measurement of these arms there is whether the job is green.
+from .test_render_differential import DRAWN, FIXTURE, STYLED, _as_server, _shot
+
+pytestmark = BROWSER_MARKS
+
+# 1UBQ is one chain, 76 residues; a ramp along it is the same channel
+# `test_a_registered_field_paints_and_sizes_what_it_matches` uses, and the
+# domain is passed explicitly to both arms so the auto-fit is not a variable.
+# (It would fit identically anyway — a permutation preserves min and max — but
+# an assumption that holds today is not the same as one the test states.)
+RAMP = [{"chain": "A", "seq": n, "value": float(n)} for n in range(1, 77)]
+RAMP_DOMAIN = [1.0, 76.0]
+
+#: Thin things need a lower floor than a whole molecule does. A polymer putty
+#: covers 0.0143 of the frame where the cartoon covers 0.033, which is why
+#: `test_render_differential.py`'s own putty test uses this number too.
+TUBE = 0.01
+
+Apply = Callable[..., Awaitable[dict[str, Any]]]
+
+
+async def _scene(representation: str) -> None:
+    """One representation of the polymer, painted a flat white.
+
+    White and nothing else, so a difference between two arms is the field
+    moving rather than a preset, a rig or a second component.
+    """
+    await server_mod.hide(server_mod._WHOLE_SCENE)
+    await server_mod.select("polymer", name="fold")
+    await server_mod.show(representation=representation, handle="fold", color="#ffffff")
+
+
+async def _arm(
+    session: Any, field: str, values: list[Entry], apply: Apply, **kwargs: Any
+) -> Render:
+    """Register a field, apply it through `apply`, and capture.
+
+    `apply` is `color` or `size` — the two registries `define_field` writes
+    into (`dispatch.ts:2388` and `:2409`), and the two ways a field becomes a
+    picture.
+
+    Each arm registers under its *own* name rather than re-registering one.
+    Re-registering would be closer to "same everything", but `color()` would
+    then be handed parameters identical to the ones already applied, and a Mol*
+    state update that changes no parameter is entitled to skip the rebuild —
+    which would hand this file a 0.0 that means "nothing repainted" while
+    reading as "the binding is dead". A name is not drawn; the risk of trusting
+    a no-op update is real.
+    """
+    await server_mod.define_field(field, values, **kwargs)
+    await apply(field, name="fold")
+    return await _shot(session)
+
+
+def _both_on_screen(true: Render, permuted: Render, floor: float) -> None:
+    """Neither frame is empty.
+
+    Checking only the first is this project's canonical silent success with the
+    sign flipped. If the shuffled arm renders nothing — a theme that throws
+    during colour evaluation, a lost context, a component rebuild that fails —
+    then `difference` reports the whole molecule, sails past STYLED, and the
+    arm announces that the binding is reading its data on the strength of a
+    blank frame.
+    """
+    assert coverage(true) > floor, "the true arm is not on screen"
+    assert coverage(permuted) > floor, "the shuffled arm is not on screen"
+
+
+async def test_a_colour_field_repaints_when_its_values_are_shuffled():
+    """The headline claim: `color(field)` on a cartoon is reading the numbers.
+
+    Without this, a colour theme that ignored its lookup and ramped over
+    residue index — or over nothing at all — would draw a perfectly plausible
+    blue-to-red ribbon and pass every test in the suite. Colour is
+    residue-averaged on a cartoon, so a permutation is very visible.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        permuted_values = checked_shuffle(RAMP, "value")
+        await _scene("cartoon")
+
+        true = await _arm(
+            session, "ramp", RAMP, server_mod.color, key="value", domain=RAMP_DOMAIN
+        )
+        permuted = await _arm(
+            session,
+            "ramp_shuffled",
+            permuted_values,
+            server_mod.color,
+            key="value",
+            domain=RAMP_DOMAIN,
+        )
+
+        _both_on_screen(true, permuted, DRAWN)
+        assert difference(true, permuted) > STYLED, (
+            "shuffling the values across residues changed nothing on screen, "
+            "so the colour theme is not reading the field"
+        )
+
+
+async def test_a_size_field_redraws_the_tube_when_its_values_are_shuffled():
+    """The more interesting arm, and the one a monotonicity check cannot do.
+
+    A width binding is a one-line monotone function of the channel, so
+    "is the visual parameter monotone in the data" verifies a lambda and passes
+    by construction whether or not the lambda is ever handed a real number.
+    Permuting the channel is the check that cannot be satisfied that way.
+
+    Colour is pinned to white so only the width moves: a difference here is the
+    silhouette changing, not the palette.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        permuted_values = checked_shuffle(RAMP, "value")
+        await _scene("putty")
+
+        widths = {"key": "value", "domain": RAMP_DOMAIN, "sizes": [0.2, 1.5]}
+        true = await _arm(session, "ramp", RAMP, server_mod.size, **widths)
+        permuted = await _arm(
+            session, "ramp_shuffled", permuted_values, server_mod.size, **widths
+        )
+
+        _both_on_screen(true, permuted, TUBE)
+        assert difference(true, permuted) > STYLED, (
+            "shuffling the values across residues left the tube the same shape, "
+            "so the size theme is not reading the field"
+        )
+
+
+async def test_burial_from_sasa_survives_its_own_shuffle():
+    """The calibration case, on a real measured channel rather than a ramp.
+
+    `define_field("burial", sasa()["residues"], key="relative")` is the call
+    `sasa()`'s own docstring recommends, so it is the one worth proving carries
+    data. Burial is spatially autocorrelated with the silhouette — the surface
+    is exposed and the core is not — so permuting it scatters colour that was
+    organised, and the difference should be large.
+
+    Null `relative` rows are filtered first: it is null for ligands and
+    non-standard residues, and both `_field_value` and `checked_shuffle` refuse
+    a null rather than guessing at it. The rows are already `_fold_copies`-
+    folded, so no duplicate residue key can reach `define_field`.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        measured = await server_mod.sasa()
+        rows = [row for row in measured["residues"] if row["relative"] is not None]
+        assert len(rows) > 50, f"only {len(rows)} scored residues to shuffle"
+
+        permuted_values = checked_shuffle(rows, "relative")
+        # Fitted from the true arm and passed to both, so the two frames differ
+        # in nothing but which residue holds which number.
+        scores = numbers(rows, "relative")
+        burial = {"key": "relative", "domain": [min(scores), max(scores)]}
+
+        await _scene("cartoon")
+        true = await _arm(session, "burial", rows, server_mod.color, **burial)
+        permuted = await _arm(
+            session, "burial_shuffled", permuted_values, server_mod.color, **burial
+        )
+
+        _both_on_screen(true, permuted, DRAWN)
+        assert difference(true, permuted) > STYLED, (
+            "burial and a permutation of burial paint the same picture"
+        )
+
+
+async def test_a_shuffle_that_moves_nothing_reads_zero():
+    """The control, and the cheapest guard against a shuffle test that always
+    passes. It tests the harness, not a binding.
+
+    Chain identity on 1UBQ is a channel with one value, because 1UBQ has one
+    chain. There is no permutation of it but the identity, so both arms draw
+    the same field and the difference must be exactly 0.0. If it is not, then
+    something other than the field is moving between the two captures and every
+    positive result in this file is suspect.
+
+    It is also the shape of the bake-off's failure, held still: a flat channel
+    renders successfully, looks fine, and carries nothing. `checked_shuffle`
+    refuses it, which is why this test permutes by hand.
+
+    What it does **not** cover, stated so nobody reads more into the 0.0 than
+    is there: both arms carry identical numbers, so this shows that two
+    identically-valued fields under different names render identically. It does
+    not show that a capture taken after a *changed* theme has settled — the
+    case the three positive arms rely on — is stable, and there is no control
+    at all on the size registry. `docs/ci-and-tests.md` records a live
+    suspicion that a capture can read before something has finished settling,
+    so that gap is real rather than theoretical.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        chains = sorted({str(c) for c in server_mod._structure.chain_id.tolist()})
+        assert chains == ["A"], f"1UBQ is meant to be the single-chain control: {chains}"
+        values = [
+            {"chain": "A", "seq": n, "value": float(chains.index("A"))}
+            for n in range(1, 77)
+        ]
+        permuted_values = shuffled(values, "value")
+
+        assert distinct(values, "value") == 1, "the control channel is not constant"
+        assert moved(values, permuted_values, "value") == 0.0, (
+            "a constant channel permuted to something other than itself"
+        )
+
+        await _scene("cartoon")
+        # A domain of [min, max] would be [0, 0], which `define_field` refuses
+        # for having no width. Both arms get the same explicit one.
+        flat = {"key": "value", "domain": [0.0, 1.0]}
+        true = await _arm(session, "chains", values, server_mod.color, **flat)
+        permuted = await _arm(
+            session, "chains_shuffled", permuted_values, server_mod.color, **flat
+        )
+
+        _both_on_screen(true, permuted, DRAWN)
+        assert difference(true, permuted) == 0.0, (
+            "an identity permutation moved the picture, so this harness is "
+            "measuring something other than the field"
+        )

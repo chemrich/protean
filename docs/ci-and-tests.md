@@ -175,6 +175,111 @@ finished settling, and more samples merely hide it. That may be the same defect
 as backlog 40's doubled capture cost. If it is, fixing it would remove this
 lever's only objection — which is a better outcome than spending the guarantee.
 
+## The shuffle test, and what it adds to the job
+
+`tests/test_shuffle_differential.py` with `tests/shuffle.py` and
+`tests/test_shuffle.py`, added 2026-08-22. Together they answer one question
+about a data-driven treatment: **does the binding carry its data?**
+Render once with the true channel, once with the same numbers permuted across
+residues, and diff. Identical frames mean the binding reads nothing.
+
+It exists because `docs/bakeoff.md` drew a confident conclusion from three
+treatments rendered on a structure whose B-factor column is `0.00` on all 1,216
+atoms. Every channel was constant, every picture rendered, every picture looked
+right, and the conclusion had to be retracted. **A binding test on a flat
+column is vacuous and looks exactly like a passing one**, which is why there is
+a degenerate-input guard as well as a diff: `checked_shuffle` refuses a channel
+that takes one value, before anything is rendered. That guard, not the diff, is
+what would have caught the bake-off.
+
+The guard lives in `tests/shuffle.py` and is exercised by
+`tests/test_shuffle.py` in the **fast** job, deliberately. Left inside the
+browser file it would only ever meet channels already known to be good, so it
+could be inverted or deleted with everything
+staying green — a refusal nobody watches fire is one nothing protects. Same
+split, and the same reason, as `pixels.py` beside `test_pixels.py`.
+
+**Cost: 8 captures and 4 browser launches.** At this document's own measured
+rates — 3.86 s a capture, 5–10 s a session on CI — that is 31 s plus 20–40 s,
+so **50–70 s, or 1.7 to 2.4% of a 49-minute job**. Not "a fraction of a
+percent": the captures alone are 1.05% of that floor, and the four launches
+are the larger half of the rest. The four arms each open their own
+session and could share one, which is item 3 below; they do not today.
+
+The denominator usually quoted for this job, 91 captures, is a static count of
+`_shot(` in one file and is **not** a measurement — the same method this
+document was rewritten to condemn. The absolute seconds above are the honest
+figure; the percentage uses the job floor, which was measured.
+
+No workflow edit was needed: the `differential` job runs `pytest tests/` whole,
+so a new `test_*_differential.py` with `pytestmark = BROWSER_MARKS` is picked
+up on its own.
+
+What the four arms measure, in a 722x311 local viewport, against the existing
+`STYLED = 0.008`:
+
+| Arm | Difference | Margin |
+|---|---|---|
+| `define_field` → `color`, ramp on a cartoon | 0.0281 | 3.5x |
+| `define_field` → `size`, ramp on a putty | 0.0105 | 1.3x |
+| `sasa()` → `define_field` → `color`, burial | 0.0264 | 3.3x |
+| identity control: chain id on single-chain 1UBQ | 0.0000 | must be 0 |
+
+**Every binding tested here passes; three shipped ones are not tested.** The
+four arms cover one mechanism — `define_field`'s colour and size registries
+(`dispatch.ts:2298`). `color_by_rmsf` (`server.py:2484`) does not use it: it
+overwrites the B-factor column and draws with Mol\*'s `uncertainty` theme,
+which is the *same* mechanism whose flatness caused the retraction above and is
+therefore the most obvious next arm. `color_by_potential` is a third path
+again. Read the table as "these four bindings", not as "everything protean
+draws from data".
+
+The size arm's 1.3x is the thinnest margin, and it looks thin only against the
+whole frame: a putty tube covers 0.014 of that viewport where a cartoon covers
+0.033, so 0.0105 is 73% of the tube's own pixels. **These four numbers were not
+measured on CI.** CI passes no `--window-size`, so its viewport is a third one
+again, and the only evidence about the size arm's margin there is that the job
+is green — which it is, first time, at 46m35s for the whole browser job. That
+is a pass, not a measurement: if that arm ever fails on CI, measure the
+viewport before touching the threshold.
+
+**The control is the load-bearing part.** 1UBQ has one chain, so a chain-id
+channel has no permutation but the identity, and the arm must read exactly 0.0.
+Without it a shuffle test that always passes is indistinguishable from one that
+works. It reads 0.0 because renders here are bit-deterministic once the
+ImagePass exists — the property 14 assertions in
+`test_render_differential.py` already depend on — so a dead binding reads a
+clean zero rather than noise.
+
+What the control does **not** cover is worth stating, because its 0.0 invites
+being read as more: both its arms carry identical numbers, so it shows that two
+identically-valued fields render identically. It does not show that a capture
+taken after a *changed* theme has settled is stable — which is what the three
+positive arms rely on — and there is no control at all on the size registry.
+The settling suspicion two sections up is the reason that gap is worth naming.
+
+**Proved able to fail**, twice, which for a test of this shape is the only
+verification that counts.
+
+- With the permutation replaced by the identity and the guard disabled, all
+  three positive arms failed at exactly `0.0 > 0.008`; the control still
+  passed.
+- With the second arm made to render nothing, the colour arm failed at
+  `0.0 > 0.02` on the blank-frame check. Without that check it would have
+  **passed**: an empty second frame makes `difference` report the whole
+  molecule, which sails past `STYLED`. That is this project's canonical silent
+  success with the sign flipped — the test satisfied *by* the render breaking
+  — and it is why both frames are checked for a molecule, not just the first.
+
+Three things it deliberately does not do. `conservation()` is not
+shuffle-tested — it reaches MMseqs2/ColabFold over the network, and a CI test
+that depends on someone else's server is a flake with extra steps. The
+`rmsf()` **tool** is not either: it needs a loaded trajectory, a second
+structure and a second load, for values that reach the screen through the same
+`define_field` path the ramp arm already covers — this says nothing about
+`color_by_rmsf`, which is a different mechanism and is named above as untested.
+`felt` is not shuffle-tested because it has no data channel to shuffle.
+
 ## The rule this document exists to enforce
 
 **Measure the whole thing, on the machine that runs it.**
