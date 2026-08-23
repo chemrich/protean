@@ -362,6 +362,7 @@ shape and three are recipes over machinery that already exists.
 | view | what it needs |
 |---|---|
 | `plddt` | **shipped**: `preset("plddt")`, and `color`/`size` by that name |
+| `scaffold` | **shipped**: `preset("scaffold")` — the same fact drawn by omission |
 | `interface` | **shipped**: `interface_view(a, b)` |
 | `ligand` | **shipped**: `ligand_view(resn)` |
 | `mutation` | **shipped**: `mutation_view("A123G,V45L")`, and it verifies |
@@ -459,6 +460,7 @@ Charlie's call, 2026-08-18: the improvement below is not `mutation`'s alone.
 | view | what it refuses |
 |---|---|
 | `plddt` | **shipped**: an experimental structure, and `uncertainty` refuses a predicted one — see why this one is a correctness fix, below |
+| `scaffold` | **shipped**: an experimental structure, which has no part a model was guessing at. Names `putty` instead |
 | `ligand`, `pocket` | a residue name the structure does not contain, naming the ligands it does |
 | `interface` | two chains that do not touch, rather than drawing an empty highlight |
 | `crosslink` | a structure with no disulfides and no metals, rather than a bare cartoon |

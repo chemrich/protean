@@ -4079,6 +4079,17 @@ _WOOL_THEME = "protean-wool"
 #: fibrous silhouette is faked without a shader or a hair system.
 _FELT_HALO = "auto_felt_halo"
 
+#: The tarp's own handle, for the reason `felt`'s halo has one: `show()`
+#: rebuilds a component under an existing name, so drawing the cover through
+#: the view's handle would replace the cartoon rather than lie over it.
+_SCAFFOLD_TARP = "auto_scaffold_tarp"
+
+#: Below this, the model is guessing. AlphaFold's own banding rather than a
+#: number chosen here: above 90 very high, 70-90 confident, 50-70 low, below 50
+#: very low. 70 is where their own documentation stops calling a region
+#: reliable, so it is the boundary a reader is most likely to already know.
+_CONFIDENT = 70.0
+
 
 async def _felt_style(target: str, handle: str) -> list[str]:
     """Felted wool: no speculars, a fibrous surface, a soft edge.
@@ -4154,6 +4165,120 @@ async def _felt_halo(_target: str, handle: str) -> list[str]:
     ]
 
 
+async def _scaffold_style(target: str, handle: str) -> list[str]:
+    """The confident parts built; the parts the model is guessing at, wrapped.
+
+    A predicted model is not uniformly trustworthy, and the usual ways of
+    saying so — a colour ramp, a legend — ask the reader to look up what a
+    shade means and then remember it while they look at something else. This
+    says it by **refusing to draw detail the data does not support**: the
+    regions above pLDDT `_CONFIDENT` are drawn as finished cartoon, and the
+    regions below it are covered, the way scaffolding and sheeting cover the
+    unfinished part of a building. There is nothing to decode. The parts you
+    cannot see are the parts nobody should be reading.
+
+    Two levels, not a ramp, and that is deliberate — the claim is "trust this,
+    do not trust that", which is the shape of the underlying evidence.
+
+    A model confident everywhere draws no cover at all, and that is the correct
+    picture rather than a failure: it says the whole prediction is reliable.
+    The step list reports the count either way, because a view whose whole
+    subject is absence has to distinguish "nothing to cover" from "the cover
+    did not draw" — which a picture alone cannot.
+
+    Refused on an experimental structure by `_polarity_view`, before the
+    scene is taken over. A crystal structure's B-factors are not confidences,
+    so there is no such thing as the part of it a model was guessing at.
+    """
+    array = _require_structure()
+    try:
+        polymer = _evaluate(_parse_selection("polymer"), array)
+        low = _evaluate(_parse_selection(f"b < {_CONFIDENT:g}"), array)
+    except SelectionError as exc:
+        # Converted, because a bare `SelectionError` is a `ValueError` and
+        # reaches the caller as a crash rather than an explanation. It fires
+        # here after the scene has been taken over, so the message has to carry
+        # the whole story: a structure with no B-factor column at all lands
+        # here, and "no such field" is the useful half of that.
+        raise ViewerError(
+            f"'scaffold' needs a confidence column to decide what to cover: {exc}"
+        ) from exc
+
+    # Intersected with what was actually drawn, not taken from the whole
+    # structure. `preset("scaffold", handle=...)` draws that handle and nothing
+    # else, so a cover computed over every polymer atom would drape opaque grey
+    # across chains the caller never named. `_felt_halo` records the same rule
+    # from the other side: take the atoms from the handle, because the handle is
+    # the set that was really drawn.
+    drawn = np.zeros(array.array_length(), dtype=bool)
+    drawn[_handles.get(handle).indices] = True
+    covered_mask = polymer & low & drawn
+    indices = np.flatnonzero(covered_mask)
+
+    steps = [
+        # Cool neutral ground: the tarp is grey, and a warm ground would make
+        # it read as a material choice rather than as a cover.
+        await _run(background, color="#eceef0", gradient="off"),
+        await _run(lighting, rig="three-point"),
+        # Occlusion so the cover reads as sitting *over* the fold rather than
+        # beside it. No outline — a drawn edge would give the covered region a
+        # crisp boundary, which is the opposite of what it is claiming.
+        await _set_effects(occlusion=True),
+        # No `color()` here. `_draw_view` has already applied this view's
+        # `color`, and re-sending it would cost a round trip and put a
+        # misleading step in every reply. `felt` and `painting` re-colour
+        # because they register a palette that could not be named at `show()`
+        # time; there is nothing to override here.
+    ]
+
+    if not len(indices):
+        # A previous run's cover has to go, and `_draw_view`'s cleanup will not
+        # take it: that loop deliberately skips the handle the running view
+        # owns, so `scaffold` after `scaffold` would leave the old opaque grey
+        # on screen under a reply saying the model is confident everywhere.
+        if _SCAFFOLD_TARP in _handles.names():
+            with contextlib.suppress(ViewerError):
+                steps.append(await _run(hide, name=_SCAFFOLD_TARP))
+        return [
+            *steps,
+            f"# nothing is below pLDDT {_CONFIDENT:g}, so there is no cover to "
+            "draw: this model is confident everywhere, and the bare cartoon is "
+            "the honest picture of that.",
+        ]
+
+    # `_residue_count` rather than a local pair-of-columns count: it keys on
+    # `_residue_keys`, which carries the insertion code and the symmetry copy.
+    # Without those, an antibody's 52/52A/52B collapse to one residue and a
+    # biological assembly's copies collapse into each other.
+    #
+    # The denominator is the polymer that was **drawn**, not the whole array.
+    # Counting the array put 1UBQ's 58 waters in the total, so a fully covered
+    # molecule reported "76 of 134" — and that count is the only thing telling
+    # a caller "nothing to cover" from "the cover failed to draw".
+    covered = _residue_count(array, covered_mask)
+    total = _residue_count(array, polymer & drawn)
+    _register(
+        _SCAFFOLD_TARP, indices, f"preset(scaffold) cover below pLDDT {_CONFIDENT:g}"
+    )
+    return [
+        *steps,
+        # Opaque and featureless on purpose. A transparent cover would let the
+        # backbone show through, which would put the unreliable detail back on
+        # screen wearing a hint that it is unreliable — the thing this view
+        # exists not to do.
+        await _run(
+            show,
+            representation="gaussian-surface",
+            handle=_SCAFFOLD_TARP,
+            color="#8a8f94",
+            pickable=False,
+        ),
+        await _run(material, finish="matte", name=_SCAFFOLD_TARP),
+        f"# {covered} of {total} residues are below pLDDT {_CONFIDENT:g} and are "
+        "covered rather than drawn.",
+    ]
+
+
 @dataclass(frozen=True)
 class _View:
     """What separates one drawing view from another, and nothing else."""
@@ -4214,6 +4339,22 @@ _VIEWS: dict[str, _View] = {
         representation="putty",
         color="plddt",
         style=lambda target, handle: _preset_publication_cartoon(target),
+    ),
+    # The other way of drawing the same fact, and the opposite technique.
+    # `plddt` ramps confidence onto a tube, so every region is drawn and the
+    # reader decodes a colour. `scaffold` draws the reliable regions and covers
+    # the rest, so there is nothing to decode and nothing unreliable on screen.
+    #
+    # The whole polymer is the selection, not the confident part of it. Picking
+    # the confident part here would make a poorly-predicted model refuse
+    # outright — `_take_the_scene` rejects a selection that matches nothing —
+    # when the honest answer for such a model is a picture that is almost
+    # entirely covered.
+    "scaffold": _View(
+        selection="polymer",
+        representation="cartoon",
+        color="secondary-structure",
+        style=_scaffold_style,
     ),
     "hydrophobic-surface": _View(
         selection="polymer",
@@ -4319,6 +4460,12 @@ async def _draw_the_ligands(target: str) -> list[str]:
     return await _element_coloured(_LIGAND_HANDLE, 0.35, subject=True)
 
 
+#: Views that draw a second component under a handle of their own, and the
+#: handle each one owns. `_draw_view` hides every entry a view does not own, so
+#: a layer cannot survive into the next view's picture.
+_VIEW_EXTRA_HANDLES = {"felt": _FELT_HALO, "scaffold": _SCAFFOLD_TARP}
+
+
 async def _draw_view(name: str, target: str) -> list[str]:
     """Take the scene, draw the view through it, style it, then frame it."""
     view = _VIEWS[name]
@@ -4345,9 +4492,16 @@ async def _draw_view(name: str, target: str) -> list[str]:
     # hanging around the new picture. The views are supposed to be exclusive —
     # they replace their predecessor rather than stack — and a second handle is
     # exactly how that invariant gets broken quietly.
-    if name != "felt" and _FELT_HALO in _handles.names():
-        with contextlib.suppress(ViewerError):
-            steps.append(await _run(hide, name=_FELT_HALO))
+    #
+    # Driven off `_VIEW_EXTRA_HANDLES` rather than by naming `felt` here. It was
+    # a hardwired `if name != "felt"` until `scaffold` arrived with a cover of
+    # its own, and a second special case is how the third one gets forgotten —
+    # silently, and only visible as someone else's picture with a stray layer
+    # in it.
+    for owner, extra in _VIEW_EXTRA_HANDLES.items():
+        if name != owner and extra in _handles.names():
+            with contextlib.suppress(ViewerError):
+                steps.append(await _run(hide, name=extra))
     steps += await view.style(target, handle)
     return steps + await _frame_the_scene(target)
 
@@ -4410,6 +4564,11 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            fat and orange is where the model is guessing.
                            Refused on an experimental structure, which has no
                            confidence score to draw.
+      scaffold             The same fact, drawn by leaving things out: the
+                           confident parts of a predicted model as cartoon, the
+                           parts below pLDDT 70 covered over rather than drawn.
+                           Nothing to decode, and nothing unreliable on screen.
+                           Refused on an experimental structure.
       hydrophobic-surface  A molecular surface coloured by hydrophobicity, ring
                            lit so the curvature survives.
       spacefill            Every non-solvent atom as a CPK sphere, lit so the
@@ -4496,9 +4655,18 @@ def _polarity_view(name: str) -> tuple[str, str]:
     Returns the view to draw and a line for the step list, empty when nothing
     was swapped.
     """
-    if name not in ("putty", "plddt") or _b_factor_column is None:
+    if name not in ("putty", "plddt", "scaffold") or _b_factor_column is None:
         return name, ""
     if _b_factor_column.mixed:
+        if name == "scaffold":
+            raise ViewerError(
+                "'scaffold' covers the regions a predicted model is unsure "
+                "about, and what is loaded is a mix: some of it carries a "
+                "confidence score and some a crystallographic B-factor. There "
+                "is no threshold that means the same thing in both, so a cover "
+                "drawn over the pair would be a claim about neither. Load one "
+                "of them on its own."
+            )
         # Both channels, because a putty is coloured *and* sized by this column
         # — which is what made it the third affected path in the first place.
         _check_polarity(
@@ -4507,8 +4675,38 @@ def _polarity_view(name: str) -> tuple[str, str]:
     if _b_factor_column.confidence is None:
         if name == "plddt":
             _check_polarity("plddt", "width")
+        if name == "scaffold":
+            if _b_factor_column.overwritten_by is not None:
+                # Not an experimental structure at all: `color_by_rmsf` and
+                # `color_by_conservation` stretch their own numbers into this
+                # column and leave `confidence` empty. Saying "this structure is
+                # experimental, every atom was observed" here was false on a
+                # predicted model, and pointing at `putty` was pointing at a
+                # tube over somebody else's quantity.
+                raise ViewerError(
+                    f"'scaffold' covers the regions a predicted model is unsure "
+                    f"about, and the copy on screen no longer holds a "
+                    f"confidence score: {_b_factor_column.overwritten_by} was "
+                    f"written into that column, stretched to [0, 100], so it "
+                    f"could be drawn at all. Load the structure again to get "
+                    f"its own column back."
+                )
+            # Its own message rather than `_check_polarity`'s. That one is
+            # written about a *theme* and names it, so delegating here refused a
+            # `scaffold` request with a paragraph about `plddt` — accurate about
+            # the column and confusing about what the caller had asked for.
+            raise ViewerError(
+                f"'scaffold' covers the regions a predicted model is unsure "
+                f"about, and this structure is experimental: its "
+                f"`B_iso_or_equiv` column holds a crystallographic B-factor "
+                f"rather than a confidence score. Drawing it anyway would cover "
+                f"whatever happened to be poorly ordered and present that as a "
+                f"statement about a prediction. {_POLARITY} There is nothing to "
+                f"cover here — every atom was observed. Use 'putty' to see "
+                f"which parts are least well ordered."
+            )
         return name, ""
-    if name == "plddt":
+    if name in ("plddt", "scaffold"):
         return name, ""
     return "plddt", (
         f"# asked for 'putty', drew 'plddt': this is a predicted model, so its "
@@ -4573,6 +4771,7 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     # `putty` to `plddt` when the structure is predicted — the entry the person
     # clicked is the one that reads right for the file they have.
     "plddt": ("plddt", _VIEW_DRAWS),
+    "scaffold": ("scaffold", _VIEW_DRAWS),
     "hydrophobic-surface": ("hydrophobic-surface", _VIEW_DRAWS),
     "spacefill": ("spacefill", _VIEW_DRAWS),
     "skeleton": ("skeleton", _VIEW_DRAWS),

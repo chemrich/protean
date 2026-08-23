@@ -4,19 +4,18 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-23**, at `main` after #116.
+Last updated **2026-08-23**, at `main` after #118.
 
 ---
 
 ## In one paragraph
 
 The plan proposed 36 new ways of drawing molecules. A review cut that to
-roughly 6–12 worth building, and **none of them have been built.** What has
-shipped is groundwork: a fix for a colouring bug the review found, and a test
-that can tell whether a treatment's data binding is real. One treatment,
-`felt`, shipped earlier as a plain style with no data attached. The next
-decision is whether to build a first real treatment, and the review's
-best candidate is now unblocked.
+roughly 6–12 worth building, and **one of them is now built** — `scaffold`,
+the review's highest-rated idea. Before that came the groundwork: a fix for a
+colouring bug the review found, and a test that can tell whether a treatment's
+data binding is real. One earlier treatment, `felt`, is a plain style with no
+data attached. The next decision is which treatment, if any, comes second.
 
 ## What has been decided
 
@@ -44,11 +43,45 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   the colouring was never reading the data. This is what the plan's own
   "every treatment must show data" rule needed in order to mean anything.
 
-Nothing from the 36-treatment catalogue is built.
+- **`scaffold`** — `SD-08` from the catalogue, and the first real treatment.
+
+## The one treatment that is built
+
+`preset("scaffold")` draws a predicted model's confident regions as cartoon and
+**covers** everything below pLDDT 70 with an opaque grey surface, the way
+sheeting covers the unfinished part of a building. No legend, no colour to
+decode: the parts you cannot see are the parts nobody should be reading.
+
+It refuses on an experimental structure — whose B-factors describe disorder,
+not confidence — and names `putty` instead.
+
+A model that is confident everywhere draws no cover at all, which is the
+correct picture rather than a failure. The reply reports the count either way,
+because "nothing to cover" and "the cover failed to draw" are the same picture
+and only the reply can tell them apart.
+
+Proved to be reading the data, twice over. Three arms — nothing below the
+line, half below, all below — must produce increasingly different pictures, so
+a cover that drapes the molecule whenever *anything* is low fails. And it has
+the **shuffle arm** this file requires: the same numbers moved onto different
+residues, so the same amount is covered and only the placement changes. That
+one measures 0.1129 against a 0.008 threshold, and a cover that counts instead
+of reading fails it at `0.0`.
 
 ## What to do next
 
-### 1. Build `SD-08` Scaffolding — the review's best idea, now unblocked
+### 1. Decide whether a second treatment is worth building
+
+`scaffold` is evidence that the cheap tier really is cheap. It needed no new
+engine work, because protean's selection language already does numeric
+thresholds and `b < 70` on a predicted model *is* "the parts the model is
+unsure about".
+
+Whether anything else in the catalogue earns the same effort is Charlie's call,
+not a technical one. The review's answer was: `SP-01` maybe, the rest probably
+not.
+
+### 2. How `SD-08` was estimated — kept because the estimate held
 
 A predicted model is confident in some regions and guessing in others. `SD-08`
 draws the confident parts as finished structure and covers the guessed parts,
@@ -58,7 +91,7 @@ glance which parts to trust, with no legend and no colour key.
 The review called it the strongest idea in the catalogue because it **refuses
 to show detail the data does not support**, rather than decorating it.
 
-It was blocked on two things, and both are now done:
+It was blocked on two things, both fixed this week:
 
 - Predicted models could not be loaded. Fixed (backlog 33 and 34).
 - Confidence could not be read correctly. Fixed (#116).
@@ -73,13 +106,13 @@ unsure about". So the treatment is:
 3. Draw the rest the normal way.
 4. Add it as a view, the way `felt` and `richardson` were added.
 
-Estimated at days, not weeks. **This is the recommended next piece of work.**
+Estimated at days, not weeks. **Estimated at days. It took one.**
 
 Caveat to state in its docstring: it has two levels, not a smooth range, and it
 means nothing on an experimental structure — so it should refuse there, the way
 `plddt` now does.
 
-### 2. Then decide about `SP-01` Radiolaria
+### 3. Then decide about `SP-01` Radiolaria
 
 The other strong idea: draw each atom as an open lattice cage so you can see
 into the molecule instead of at its outer shell. The review agreed it delivers
@@ -93,7 +126,7 @@ expensive and neither is decided:
 - It runs out of graphics memory on large molecules. The escape route named in
   the bake-off turned out to save 12%, not the order of magnitude claimed.
 
-### 3. Standing rule for any treatment
+### 4. Standing rule for any treatment
 
 Before a treatment can claim it shows data, it needs a **shuffle test arm**
 in `tests/test_shuffle_differential.py`. If scrambling the numbers does not
