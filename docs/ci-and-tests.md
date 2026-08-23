@@ -175,6 +175,69 @@ finished settling, and more samples merely hide it. That may be the same defect
 as backlog 40's doubled capture cost. If it is, fixing it would remove this
 lever's only objection — which is a better outcome than spending the guarantee.
 
+## The shuffle test, and what it adds to the job
+
+`tests/test_shuffle_differential.py`, added 2026-08-22. It answers one
+question about any data-driven treatment: **does the binding carry its data?**
+Render once with the true channel, once with the same numbers permuted across
+residues, and diff. Identical frames mean the binding reads nothing.
+
+It exists because `docs/bakeoff.md` drew a confident conclusion from three
+treatments rendered on a structure whose B-factor column is `0.00` on all 1,216
+atoms. Every channel was constant, every picture rendered, every picture looked
+right, and the conclusion had to be retracted. **A binding test on a flat
+column is vacuous and looks exactly like a passing one**, which is why the file
+carries a degenerate-input guard as well as the diff: `_checked_shuffle`
+refuses a channel that takes one value, before anything is rendered. That
+guard, not the diff, is what would have caught the bake-off.
+
+**Cost: 8 captures**, two per binding, on a job that already takes 91 of them.
+At the measured 3.86 s each that is about 31 s of capture plus four scene
+builds — a fraction of a percent of a 49–79 minute job. It is stated here
+because silent growth in this file's capture count was the subject of four
+recent PRs.
+
+No workflow edit was needed: the `differential` job runs `pytest tests/` whole,
+so a new `test_*_differential.py` with `pytestmark = BROWSER_MARKS` is picked
+up on its own.
+
+What the four arms measure, in a 722x311 local viewport, against the existing
+`STYLED = 0.008`:
+
+| Arm | Difference | Margin |
+|---|---|---|
+| `define_field` → `color`, ramp on a cartoon | 0.0281 | 3.5x |
+| `define_field` → `size`, ramp on a putty | 0.0105 | 1.3x |
+| `sasa()` → `define_field` → `color`, burial | 0.0264 | 3.3x |
+| identity control: chain id on single-chain 1UBQ | 0.0000 | must be 0 |
+
+Every shipped binding passes. The size arm's 1.3x is the thinnest margin and
+looks thin only against the whole frame: a putty tube covers 0.014 of that
+viewport where a cartoon covers 0.033, so 0.0105 is 73% of the tube's own
+pixels. The figures are also conservative — CI renders into a taller viewport
+where the molecule fills more of the frame.
+
+**The control is the load-bearing part.** 1UBQ has one chain, so a chain-id
+channel has no permutation but the identity, and the arm must read exactly 0.0.
+Without it a shuffle test that always passes is indistinguishable from one that
+works. It reads 0.0 because renders here are bit-deterministic once the
+ImagePass exists — the same property three assertions in
+`test_render_differential.py` already depend on — so a dead binding reads a
+clean zero rather than noise.
+
+**Proved able to fail**, which for a test of this shape is the only
+verification that counts: with the shuffle replaced by the identity and the
+identity guard disabled, all three positive arms failed at exactly
+`0.0 > 0.008` and the control still passed.
+
+Three things it deliberately does not do. `conservation()` is not
+shuffle-tested — it reaches MMseqs2/ColabFold over the network, and a CI test
+that depends on someone else's server is a flake with extra steps. `rmsf()` is
+not either: it needs a loaded trajectory, which is a second structure and a
+second load for a binding that goes through the same `define_field` path the
+ramp arm already covers. `felt` is not shuffle-tested because it has no data
+channel to shuffle.
+
 ## The rule this document exists to enforce
 
 **Measure the whole thing, on the machine that runs it.**
