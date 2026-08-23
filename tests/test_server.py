@@ -1707,6 +1707,57 @@ async def test_unknown_format_is_refused():
         await snapshot("/tmp/x", column="single", format="bmp")
 
 
+async def test_a_bad_output_path_is_refused_before_the_render(wired_bridge, tmp_path):
+    """The same rule as the finish name, for the other free thing.
+
+    `_writable` refuses a path holding something that is not a figure, and it
+    ran after the capture — so pointing a 600 dpi double-column snapshot at
+    notes.txt paid for the whole render before being told no.
+
+    Served, so that a regression answers the request and is caught by what it
+    wrote rather than by waiting out the 300 s capture budget.
+    """
+    occupied = tmp_path / "notes.txt"
+    occupied.write_text("not a figure")
+    sent: dict[str, Any] = {}
+
+    async with _serving(wired_bridge, snapshot=_snapshot_handler(sent, 1051, 800)):
+        with pytest.raises(ViewerError, match="already exists and is not"):
+            await snapshot(str(occupied), column="single")
+
+    assert sent == {}, "the viewer rendered before the destination was checked"
+
+
+async def test_the_destination_is_still_checked_at_the_write(wired_bridge, tmp_path):
+    """The early check can go stale, and checking early must not mean checking
+    only early — or the speed-up would quietly have made the guard weaker.
+
+    A render takes up to a hundred seconds and a file can appear inside that
+    window, so this makes one appear: the viewer writes to the destination
+    before it answers. The first version of this test re-captured over a figure
+    the tool had already written, which is *allowed* either way — it passed
+    with the check at the write deleted, and the mutation is what said so.
+    """
+    target = tmp_path / "notes.txt"
+    sent: dict[str, Any] = {}
+    capture = _snapshot_handler(sent, 1051, 800)
+
+    def occupy_then_answer(args):
+        # Arrives while the caller is awaiting the capture, which is exactly
+        # the window the early check cannot see.
+        target.write_text("something that is not a figure")
+        return capture(args)
+
+    async with _serving(wired_bridge, snapshot=occupy_then_answer):
+        with pytest.raises(ViewerError, match="already exists and is not"):
+            await snapshot(str(target), column="single")
+
+    assert sent != {}, "the render never happened, so nothing went stale"
+    assert target.read_text() == "something that is not a figure", (
+        "the file was overwritten by a figure"
+    )
+
+
 def test_every_finish_is_named_where_a_caller_can_find_it():
     """`snapshot`'s docstring is the only place a finish is discoverable.
 

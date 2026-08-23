@@ -109,6 +109,16 @@ nothing is released yet, so everything below is unreleased.
   reproduced the paper-threshold bug from scratch: "the constant and the guard
   belong to the route, not to any one finish".
 
+- **The output path is checked before the render too.** Same defect as the
+  finish name, one argument along: `_writable` refuses a destination holding
+  something that is not a figure, and it ran after the capture — so pointing a
+  600 dpi double-column snapshot at `notes.txt` paid for the whole render
+  before being told no. It is still checked at the write as well, because a
+  render takes up to a hundred seconds and a file can appear inside that
+  window; checking early must not mean checking only early. The test for that
+  **passed with the late check deleted** until it was rewritten to make the
+  file appear *during* the render — a mutation found it, not review.
+
 - **The paper cutoff is 0.96, and two documents said 0.94.** It has been 0.96
   since the finish shipped and 0.94 was never in the code, so both were
   describing a number that never existed.
