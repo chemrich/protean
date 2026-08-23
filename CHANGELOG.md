@@ -53,6 +53,39 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`snapshot(finish="cyanotype")` — a blueprint, and the third finish.** White
+  on Prussian blue, and the first one that is not an engraving: it **contours**
+  the shading rather than hatching it. The render's lighting is read as
+  elevation, so every atom comes out as a set of nested rings and the frame
+  reads as a survey sheet.
+
+  **A drawing style carrying no data, and it says so** the way `felt` does. No
+  shuffle arm, because it makes no claim one could test.
+
+  Picked from a four-way bake-off — drafting rules, contours, photographic
+  grain, halation — judged on the rendered pictures rather than on the
+  descriptions. **An opaque background decided it**: all four look competent
+  over a transparent capture, and on an ordinary grey field two dissolved into
+  a texture of their own making.
+
+  It needed three things a hatch did not. The element colour has to be divided
+  out, or the rings count per element rather than per atom and the sheet reads
+  as noise. The levels are spaced for a sphere rather than evenly in
+  brightness, or they crowd into a rind at the rim and leave the summit bare.
+  And it needs grain, because a contour is an edge and a flat tone has none —
+  a pure contour finish reads zero ink at every step of the ramp.
+
+  `FINISHES` now holds two families rather than one style: `_Engraving` bands
+  the frame and fills each band with strokes, `_Survey` contours it. Both
+  declare their paper, their ink, and how many tones they separate; the mark
+  making moved onto the style, so `apply_finish` builds one description of the
+  frame and lets the finish draw.
+
+  One knob was prototyped and **dropped rather than shipped**: a floor under
+  the heavy contour's width. It fires only below about 700 px, protean captures
+  at 1051 and up, and at the size where it does fire the difference could not
+  be seen in a 3x comparison.
+
 - **The finish route grew a base, before there is a third finish.** No new
   look. `snapshot(finish=)` hosts cross-hatch and hedcut, both of which print
   black on white, and three separate pieces of the route had that coincidence

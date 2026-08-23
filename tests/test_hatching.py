@@ -16,6 +16,7 @@ from PIL import Image
 
 from protean_mcp.analysis.hatching import (
     FINISHES,
+    _Survey,
     apply_finish,
     ink_fraction,
     ink_mask,
@@ -180,6 +181,133 @@ def test_no_two_finishes_draw_the_same_picture(left, right):
     )
 
 
+def _dome(size: int = 240, ground: int = 70) -> Image.Image:
+    """A lit sphere on an opaque ground: a spacefill atom, in miniature.
+
+    Opaque on purpose. Every finish looks competent over the transparent
+    capture the bake-off used, because the background is not there to compete.
+    Put the same subject on a grey field and the picture has to separate the
+    two by its marks alone — which is the case that decided which finish
+    shipped, and the one no test covered.
+    """
+    y, x = np.ogrid[0:size, 0:size]
+    centre = size / 2
+    radius = size * 0.36
+    r = np.hypot(x - centre, y - centre) / radius
+    inside = r <= 1.0
+    # Lambert shading from a light up and to the left, which is where the
+    # viewer's default light sits.
+    z = np.sqrt(np.clip(1.0 - r**2, 0.0, 1.0))
+    lit = np.clip(
+        (-0.5 * (x - centre) / radius - 0.5 * (y - centre) / radius + z), 0, None
+    )
+    shade = np.clip(0.15 + 0.85 * lit / max(lit.max(), 1e-6), 0.0, 1.0)
+    field = np.full((size, size), float(ground))
+    field[inside] = (shade * 235.0)[inside]
+    rgb = np.repeat(field[:, :, None], 3, axis=2).astype(np.uint8)
+    out = np.dstack([rgb, np.full((size, size, 1), 255, dtype=np.uint8)])
+    return Image.fromarray(out, "RGBA")
+
+
+@pytest.mark.parametrize("finish", FINISH_NAMES)
+def test_a_finish_keeps_its_subject_off_an_opaque_ground(finish):
+    """A finish must ink the subject and the ground differently.
+
+    Every finish shipped here has been looked at over a *transparent* capture,
+    where the background is not there to compete. On an opaque field it has to
+    hold the two apart by its marks alone, and this asserts the weakest form of
+    that: the two densities differ at all.
+
+    **It is weaker than the property that decided the cyanotype bake-off, and
+    deliberately kept anyway.** Two of the four candidates dissolved on an
+    opaque ground — the field earned a dense texture of its own and the
+    molecule sank into it as a faint tracery. Measured against this fixture,
+    the worst of those still separates at 0.117, so it would pass. What was
+    lost there was *structure* inside a competing texture, which is a
+    perceptual property and not one a density difference can stand in for. The
+    honest guard against it is looking at the picture; this catches only the
+    grosser failure of a finish that does not respond to its subject at all.
+    """
+    size = 240
+    engraved = apply_finish(_dome(size), finish)
+    marks = ink_mask(engraved, finish)
+
+    y, x = np.ogrid[0:size, 0:size]
+    subject = np.hypot(x - size / 2, y - size / 2) <= size * 0.36
+    on_subject = float(marks[subject].mean())
+    on_ground = float(marks[~subject].mean())
+
+    assert abs(on_subject - on_ground) > 0.05, (
+        f"{finish} inked the subject at {on_subject:.3f} and the ground at "
+        f"{on_ground:.3f} — the two are not separable"
+    )
+
+
+def _longest_run(mask: np.ndarray) -> int:
+    """The longest unbroken horizontal run of ink, over every row."""
+    best = 0
+    for row in mask:
+        if not row.any():
+            continue
+        edges = np.diff(np.r_[0, row.view(np.int8), 0])
+        starts = np.flatnonzero(edges == 1)
+        if starts.size:
+            best = max(best, int((np.flatnonzero(edges == -1) - starts).max()))
+    return best
+
+
+def test_the_survey_draws_lines_and_not_only_dots():
+    """A contour is a curve; grain is a scatter of dots. This asserts the
+    difference, because nothing else in the suite does.
+
+    Found by mutation: deleting the contours outright and leaving `cyanotype`
+    as pure grain **passed the entire suite**. The tone response, the two
+    colours, the level count, the opaque-ground separation — none of them can
+    see the marks the finish is named for. That is the shape this project has
+    been bitten by before: the defining feature, untested.
+
+    Measured on a lit dome, longest ink run as a fraction of the frame — the
+    finish as it ships against the same finish with its contours removed:
+
+        240 px  0.071 vs 0.046      480 px  0.060 vs 0.027
+        360 px  0.069 vs 0.028      700 px  0.056 vs 0.029
+
+    A proxy, and worth naming as one: it asserts that lines exist, not that
+    they follow the elevation correctly. Whether the rings land on the atoms is
+    a question for the eye, and the answer to it is in `docs/views.md`.
+    """
+    size = 360
+    marks = ink_mask(apply_finish(_dome(size), "cyanotype"), "cyanotype")
+
+    assert _longest_run(marks) / size > 0.045, (
+        "the survey drew no runs longer than its grain — the contours are gone"
+    )
+
+
+def test_the_survey_inks_exactly_the_tone_it_was_asked_for():
+    """The grain's coverage is the tone, not approximately the tone.
+
+    That exactness is bought by rank-equalising the lattice: once the threshold
+    field is uniform, `field < c` covers a fraction `c` by construction, for
+    every c at once. Drop the equalisation for a plain normalisation and the
+    finish still darkens monotonically and still passes every other test here —
+    measured, it does — so this is the only guard on it.
+    """
+    style = FINISHES["cyanotype"]
+    # `FINISHES` is typed by the base style, which knows nothing about grain.
+    # Asserted rather than cast, so the test says what it needs of the finish.
+    assert isinstance(style, _Survey)
+    curve = style.tone_curve
+
+    for tone in (200, 160, 120, 80, 40):
+        inked = ink_fraction(apply_finish(_flat(tone), "cyanotype"), "cyanotype")
+        wanted = (1.0 - tone / 255.0) ** curve
+
+        assert inked == pytest.approx(wanted, abs=0.004), (
+            f"tone {tone} inked {inked} where its tone curve asks for {wanted:.4f}"
+        )
+
+
 def test_a_finish_prints_in_the_colours_it_declared(monkeypatch):
     """Both finishes that ship print black on white, which is exactly the
     coincidence that hid the old bug.
@@ -222,7 +350,7 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
     caller has to strip the quotes back off and a name containing one arrives
     mangled — measured, a finish named `a'b` reached the model with a literal
     backslash in it."""
-    with pytest.raises(ValueError, match="cross-hatch, hedcut"):
+    with pytest.raises(ValueError, match="cross-hatch, cyanotype, hedcut"):
         call(_flat(128), "woodblock")
 
 

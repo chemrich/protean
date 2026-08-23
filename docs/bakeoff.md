@@ -46,7 +46,7 @@ by that rule felt as built here *is* decoration, and fixing it means finding a
 channel the eye can separate from the texture — fiber *length* rather than
 radius, which needs real geometry and stops being a G2 treatment.
 
-**Duotone works, and its channel only survives because two stages agree.** The
+**Duotone makes a good picture, and its channel was never tested.** The
 halftone is real: two spot inks at 15° and 75°, dot area following tone, paper
 showing through, multiply blending so overlaps make a third colour. But a
 capture-time finish **sees pixels and nothing else** — it cannot read a
@@ -148,10 +148,16 @@ Every one reported success first.
 corrected numbers, buys 12% rather than an order of magnitude.
 - Felt is charming and carries nothing. Under the plan's own P3 it should be
   cut or respecified.
-- Duotone is a good picture with a fragile binding, and the fragility belongs
-  to its whole route. Worth having as a *finish* alongside cross-hatch and
-  hedcut — which is a small job protean could do today — and not worth
-  counting as one of eight screen-space treatments with data channels.
+- Duotone is a good picture whose binding was never demonstrated — 1MBN's
+  B-factors were flat — and whose route makes any binding fragile regardless.
+  Not worth counting as one of eight screen-space treatments with data
+  channels.
+
+  **Superseded 2026-08-23.** Duotone was dropped as a finish of its own: the
+  picture is a fine dot screen that erases the sphere shading and does not read
+  as a molecule, which is visible in `crop-duotone.png` above. Its halftone
+  screen is kept for the plate print. The finish this route shipped instead is
+  `cyanotype`, chosen from a four-way bake-off of its own.
 
 **What this says about the 36.** The plan's own tiering held up: the cheap
 tiers are cheap and the expensive tier is expensive. What did not hold up is

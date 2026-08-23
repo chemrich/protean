@@ -4,7 +4,7 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-23**, at `main` after #120.
+Last updated **2026-08-23**, at `main` after #121.
 
 ---
 
@@ -45,6 +45,11 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   each number belongs to, redraw, and compare. If the picture does not change,
   the colouring was never reading the data. This is what the plan's own
   "every treatment must show data" rule needed in order to mean anything.
+
+- **`cyanotype`** — the third finish and the first that is not an engraving.
+  A drawing style with no data channel, said outright in its docstring, the way
+  `felt` is. No shuffle arm, because it claims nothing a shuffle arm could
+  test.
 
 - **The finish route's base** — no new look, and the groundwork for the print
   finishes. A finish declares its own paper and ink; the ink fraction is
@@ -125,7 +130,12 @@ The order, settled 2026-08-23:
    ink fraction — the one number a caller who cannot see the file gets — asked
    whether the red channel was zero, which would have reported a coloured
    finish as a blank page or a solid one at random.
-2. **Cyanotype**, as declared decoration.
+2. **Cyanotype** — *shipped*, as declared decoration. A blueprint: white on
+   Prussian blue, contouring the shading rather than hatching it, so every atom
+   comes out as nested rings and the frame reads as a survey sheet. Picked from
+   a four-way bake-off judged on the pictures; an **opaque background** decided
+   it, because two of the four dissolved into a texture of their own making
+   once the ground was not paper-white.
 3. **The plate print** — spot inks, one halftone screen per plate at its own
    angle, each offset a fraction of a frame so the misregistration shows. This
    is the one that carries a data channel, and it binds **which plate a region
