@@ -1658,7 +1658,9 @@ the raw text is not kept, so nothing later can go back and ask. It is checked
 against the name in `color()`, `size()` and `show(color=)`, and both directions
 refuse with the polarity spelled out.
 
-Three things this turned up that the item above did not say.
+Five things this turned up that the item above did not say — and the last two
+came out of the adversarial review of the fix rather than out of building it,
+which is the point of running one.
 
 **`preset("putty")` is a third path and neither guard reaches it.** It
 hardwires `color="uncertainty"` and takes its *width* from Mol\*'s default for
@@ -1686,6 +1688,26 @@ around so the **least** confident regions come out fattest. Checked against the
 live registry over CDP rather than assumed, which is also how the absence of
 the size theme was established.
 
+**A putty's width is a fourth path and nothing names the theme at all.** Mol\*
+declares `defaultSizeTheme: {name: 'uncertainty'}` on that representation, so
+`show(representation="putty")` reads the column with neither the caller,
+`color()` nor `size()` having mentioned it. Every test written for the first
+three passed while this shipped. `show()` now swaps that width for `plddt` on a
+predicted model, for every caller, and says so in its reply; the `plddt` view
+leans on that rather than keeping a second copy of the rule.
+
+**A column a `color_by_*` tool overwrote is not a polarity question any more.**
+`color_by_rmsf` and `color_by_conservation` carry a scalar to the screen by
+writing it into that column, stretched into `[0, 100]`, and ramping
+`uncertainty` over it — so the copy on screen then holds neither quantity. The
+first version of this fix kept describing the *analysis* array and got both
+answers wrong at once on a predicted model: it refused `uncertainty`, which is
+the theme those tools had just used and the only way back to the ramp they
+drew, and permitted `plddt`, which paints AlphaFold banding and its legend over
+entropy.
+
 The `B_FACTOR_FULL` duplicate in `backends/molstar.py` was examined and left
 alone: that path overwrites the column with the caller's own scalar before
-anything ramps over it, so there is no pLDDT left in it to misread.
+anything ramps over it, so there is no pLDDT left in it to misread. Which is
+the same fact as the paragraph above, arriving through a different door — and
+noticing that only in review is worth recording on its own.

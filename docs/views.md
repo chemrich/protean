@@ -411,12 +411,28 @@ What is there now:
   on an experimental one, from `color()`, `size()` and `show(color=...)`. Each
   refusal states the polarity and names the call to make instead.
 - **`putty` on a predicted model draws `plddt`** and the reply says so. It is
-  the third affected path and the only one neither guard can reach: `putty`
-  hardwires `color="uncertainty"` and takes its width from Mol\*'s default for
-  that representation, so it is backwards in both channels without either tool
+  the third affected path and the only one either *colour* guard can reach:
+  `putty` hardwires `color="uncertainty"`, so it is backwards without `color()`
   having been called. Swapped rather than refused, because the menu entry has
   to keep working and `plddt` is what the caller wanted; the reverse is a
   refusal, because a crystal structure has no confidence score to swap to.
+- **A putty's *width* is a fourth path, and nothing names the theme at all.**
+  Mol\* declares `defaultSizeTheme: {name: 'uncertainty'}` on that
+  representation, so `show(representation="putty")` reads the B-factor column
+  with neither the caller nor `size()` having mentioned it — the original bug
+  arriving through the primary drawing tool. `show()` swaps that width for
+  `plddt` on a predicted model and says so in its reply, for every caller; the
+  `plddt` view leans on that rather than carrying a second copy of the rule.
+  Found in review, and not by any of the tests written for the first three.
+- **A column a `color_by_*` tool overwrote is a different question.**
+  `color_by_rmsf` and `color_by_conservation` carry a scalar to the screen by
+  writing it into that column, stretched into `[0, 100]`, and ramping
+  `uncertainty` over it — so afterwards the copy on screen holds neither a
+  B-factor nor pLDDT. The guard tracks that: `uncertainty` stays allowed, which
+  is the only way back to the ramp those tools just drew, and `plddt` is
+  refused, because it would paint an AlphaFold legend over entropy. Also found
+  in review; the first version got both of those backwards on a predicted
+  model.
 - **`size("plddt")` makes the *least* confident regions fattest.** Deliberate:
   fat means "do not trust this" everywhere else in protean, and inverting it
   here would rebuild the same trap under a friendlier name. The colour half

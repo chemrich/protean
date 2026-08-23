@@ -9,6 +9,7 @@ import gzip
 import io
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -3443,3 +3444,157 @@ def test_the_page_can_ask_for_both_tubes():
     """
     assert server_mod._PAGE_VIEWS["plddt"] == ("plddt", server_mod._VIEW_DRAWS)
     assert "plddt" in server_mod._PRESETS
+
+
+def _remember(
+    calls: list[str], action: str, reply: dict[str, Any]
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A handler that answers *reply* and records that it was asked.
+
+    Which handler ran is the whole claim in the width tests below — a putty on
+    a predicted model has to take a second call and a cartoon has to not — so
+    the order of the actions is what they assert, not the replies.
+    """
+
+    def handler(_args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(action)
+        return reply
+
+    return handler
+
+
+async def test_a_putty_gets_the_right_width_without_anyone_naming_a_theme(
+    wired_bridge, tmp_path
+):
+    """The fourth affected path, found in review.
+
+    Mol\\*'s putty declares `defaultSizeTheme: {name: 'uncertainty'}`, so
+    `show(representation="putty")` reads the B-factor column with nobody having
+    mentioned a size theme — not the caller, not `color()`, not `size()`. On a
+    predicted model that is the original bug arriving through the primary
+    drawing tool, and none of the guards above can see it.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    sized: list[dict[str, Any]] = []
+
+    def on_size(args: dict[str, Any]) -> dict[str, Any]:
+        sized.append(args)
+        return {"name": args["name"], "size": args["size"]}
+
+    wired_bridge.handlers["show"] = lambda args: {"ok": True}
+    wired_bridge.handlers["size"] = on_size
+    task = wired_bridge.serve(2)
+    result = await show(selection="polymer", name="fold", representation="putty")
+    await task
+
+    assert sized == [{"name": "fold", "size": "plddt"}]
+    # Never quietly. The reply says the width was not the one Mol* would have
+    # chosen, because nothing else on screen would tell the caller that.
+    assert result["size_theme"] == "plddt"
+    assert "predicted model" in result["size_theme_note"]
+
+
+async def test_a_cartoon_is_left_alone_by_that_swap(wired_bridge, tmp_path):
+    """A guard that fired on every representation would be sending a size call
+    per show, and overriding widths nothing was reading the column for."""
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    calls: list[str] = []
+    wired_bridge.handlers["show"] = _remember(calls, "show", {"ok": True})
+    wired_bridge.handlers["size"] = _remember(calls, "size", {})
+    task = wired_bridge.serve(1)
+    result = await show(selection="polymer", name="fold", representation="cartoon")
+    await task
+
+    assert calls == ["show"]
+    assert "size_theme" not in result
+
+
+async def test_an_experimental_putty_keeps_the_width_it_always_had(
+    wired_bridge, tmp_path
+):
+    """`uncertainty` is right on a crystal structure and this must not touch it:
+    a swap that fired on every putty would be a second bug in the shape of the
+    first."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    calls: list[str] = []
+    wired_bridge.handlers["show"] = _remember(calls, "show", {"ok": True})
+    wired_bridge.handlers["size"] = _remember(calls, "size", {})
+    task = wired_bridge.serve(1)
+    await show(selection="polymer", name="fold", representation="putty")
+    await task
+
+    assert calls == ["show"]
+
+
+async def test_a_putty_over_a_half_and_half_column_is_refused(monkeypatch):
+    """There is no width that is right for both halves of a superposed pair, so
+    the representation whose width nobody chose refuses rather than picking."""
+    _column(monkeypatch, "pLDDT", mixed=True)
+
+    with pytest.raises(ViewerError, match="superposed"):
+        await show(selection="polymer", name="fold", representation="putty")
+
+
+async def test_writing_a_scalar_into_the_column_ends_the_polarity_question(
+    wired_bridge, tmp_path
+):
+    """`color_by_rmsf` and `color_by_conservation` put their own numbers in the
+    B-factor column of the *viewer's* copy and ramp `uncertainty` over them.
+
+    Found in review. Without this the guard keeps describing the analysis
+    array and gets both answers wrong at once on a predicted model:
+    `uncertainty` refused — the very theme that tool just used, and the only
+    way back to the ramp it drew — and `plddt` allowed, painting AlphaFold
+    banding and its legend over entropy.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    server_mod._column_overwritten_by("RMSF")
+
+    wired_bridge.handlers["color"] = lambda args: {"name": args["name"]}
+    task = wired_bridge.serve(1)
+    await server_mod.color("uncertainty")
+    await task
+
+    with pytest.raises(ViewerError, match="RMSF was written into it"):
+        await server_mod.color("plddt")
+
+
+async def test_a_putty_over_an_overwritten_column_keeps_mol_stars_width(
+    wired_bridge, tmp_path
+):
+    """`uncertainty` is exactly the right width for a scalar that was stretched
+    into [0, 100] precisely so that theme could ramp over it."""
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    server_mod._column_overwritten_by("RMSF")
+    calls: list[str] = []
+    wired_bridge.handlers["show"] = _remember(calls, "show", {"ok": True})
+    wired_bridge.handlers["size"] = _remember(calls, "size", {})
+    task = wired_bridge.serve(1)
+    await show(selection="polymer", name="fold", representation="putty")
+    await task
+
+    assert calls == ["show"]
+
+
+async def test_a_click_is_reported_to_the_model_as_the_view_that_ran(
+    wired_bridge, tmp_path
+):
+    """The user-action log is the only thing the model ever sees of a click.
+
+    `preset()` names the swap in its reply, but that reply goes back to the
+    page — so logging the button rather than the view would leave this one
+    channel telling the model "applied the putty view" when a plddt tube is on
+    screen. Found in review.
+    """
+    await _load(wired_bridge, _predicted_cif(tmp_path / "af.cif"))
+    _record(wired_bridge, [])
+    wired_bridge.handlers["size"] = lambda args: {"name": args["name"]}
+    wired_bridge.handlers["color"] = lambda args: {"name": args["name"]}
+    task = wired_bridge.serve(40)
+    await server_mod._invoke_from_page("putty")
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert server_mod._user_actions[-1].startswith("applied the plddt view")
+    assert "clicked putty" in server_mod._user_actions[-1]

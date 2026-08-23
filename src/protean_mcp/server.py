@@ -129,11 +129,20 @@ class _BFactorColumn:
     predicted model and one experimental structure sharing a single column. No
     reading of it is right for both halves, so both themes are refused rather
     than one of them being served to half the atoms.
+
+    ``overwritten_by`` names the quantity a `color_by_*` tool wrote *over* the
+    column in the viewer's copy. Those tools carry a scalar to the screen by
+    putting it there and ramping `uncertainty` over it, so afterwards the
+    column on screen holds neither a B-factor nor pLDDT — it holds RMSF, or
+    entropy, already stretched into `[0, 100]`. This is about the viewer's
+    copy, and it is the viewer's copy every theme reads; the analysis array
+    keeps the file's own values throughout.
     """
 
     #: The confidence metric's name -- "pLDDT" -- or None for a B-factor.
     confidence: str | None = None
     mixed: bool = False
+    overwritten_by: str | None = None
 
 
 #: What is in the B-factor column, or ``None`` when nothing has been parsed and
@@ -917,6 +926,7 @@ async def show(
     # backwards picture without `color()` ever being called.
     if color:
         _check_polarity(color, "colour")
+    width = _width_for(representation)
     array = _require_structure()
     if handle is not None:
         try:
@@ -949,7 +959,14 @@ async def show(
     if pickable is not None:
         args["pickable"] = pickable
     await _call("show", args)
-    return {"name": label, "representation": representation, **_summarise(array, indices)}
+    if width:
+        await _call("size", {"name": label, "size": width})
+    return {
+        "name": label,
+        "representation": representation,
+        **({"size_theme": width, "size_theme_note": _WIDTH_SWAPPED} if width else {}),
+        **_summarise(array, indices),
+    }
 
 
 #: Theme names that read the B-factor column as pLDDT. `plddt` is protean's,
@@ -967,6 +984,64 @@ _POLARITY = (
     "opposite polarity: a HIGH pLDDT means MORE confident, a HIGH B-factor "
     "means LESS certain."
 )
+
+
+def _column_overwritten_by(quantity: str) -> None:
+    """Record that the viewer's B-factor column now holds something else.
+
+    `color_by_rmsf` and `color_by_conservation` carry a scalar to the screen by
+    writing it into that column, stretched into the `[0, 100]` the
+    `uncertainty` theme ramps over, and re-sending the structure. From then on
+    the copy the viewer holds — the copy every theme reads — carries neither a
+    B-factor nor pLDDT.
+
+    Without this the guard describes the *analysis* array instead, and gets
+    both answers wrong at once on a predicted model: `uncertainty` refused,
+    which is the very theme those tools just used and the only way back to the
+    ramp they drew, and `plddt` allowed, which paints AlphaFold banding and its
+    legend over entropy. Found in review.
+    """
+    global _b_factor_column  # noqa: PLW0603 - session state
+    _b_factor_column = _BFactorColumn(overwritten_by=quantity)
+
+
+#: Representations Mol\* gives a width from `uncertainty` unless told
+#: otherwise. `putty` is the only one in the bundle
+#: (`mol-repr/structure/representation/putty.js`: `defaultSizeTheme:
+#: {name: 'uncertainty'}`), and it is why `preset("putty")` was backwards in
+#: *two* channels rather than one: nothing had to ask for that theme by name.
+_B_FACTOR_SIZED = frozenset({"putty"})
+
+_WIDTH_SWAPPED = (
+    "A putty takes its width from Mol*'s `uncertainty` theme unless told "
+    "otherwise, and this is a predicted model, so the width was set to `plddt` "
+    "instead — the least confident regions are the fattest. size() changes it."
+)
+
+
+def _width_for(representation: str) -> str | None:
+    """The size theme this representation needs and would not have asked for.
+
+    A putty's width is a theme like any other, but nothing names it: Mol\\*
+    supplies `uncertainty` as the representation's default, so
+    `show(representation="putty")` reads the B-factor column without the caller
+    or `size()` ever mentioning it. On a predicted model that is the original
+    bug arriving through the primary drawing tool, and neither the `color`
+    guard above nor `size()`'s can see it.
+
+    Swapped rather than refused, matching what `preset("putty")` does with the
+    same problem, and reported in the reply for the same reason. A scene whose
+    column is *half* pLDDT has no width that is right for both halves, so that
+    one refuses here rather than drawing.
+    """
+    if representation not in _B_FACTOR_SIZED:
+        return None
+    column = _b_factor_column
+    if column is None or column.overwritten_by is not None:
+        return None
+    if column.mixed:
+        _check_polarity(_UNCERTAINTY_THEME, "width")
+    return "plddt" if column.confidence is not None else None
 
 
 def _check_polarity(theme: str, channel: str) -> None:
@@ -987,18 +1062,36 @@ def _check_polarity(theme: str, channel: str) -> None:
         return
     column = _b_factor_column
     if column is None:
-        # Nothing parsed: a load whose analysis failed, or a session carrying no
-        # structure. `uncertainty` passes through as it always has; `plddt` does
-        # not, because saying "I cannot tell" is the only honest answer and this
+        # Nothing parsed. Usually nothing loaded at all -- but also a
+        # `fetch_structure` whose analysis half failed while the viewer drew
+        # the file happily, which is a documented degrade path and *not* a
+        # missing call. `uncertainty` passes through as it always has; `plddt`
+        # does not, because "I cannot tell" is the only honest answer and this
         # name is new enough to have no callers to break.
         if wanted_confidence:
             raise ViewerError(
                 f"{theme!r} reads the B-factor column as pLDDT, and protean has "
                 "no parsed structure to check that against — so it cannot tell "
-                f"whether this file is a predicted model. {_POLARITY} Load the "
-                "structure with fetch_structure() so the check has something to "
-                f"read, or ask for {_UNCERTAINTY_THEME!r} if you know the column "
-                "holds a crystallographic B-factor."
+                f"whether this file is a predicted model. {_POLARITY} Either "
+                "nothing is loaded, or the load's analysis half failed and said "
+                f"so in its reply. Ask for {_UNCERTAINTY_THEME!r} if you know "
+                "the column holds a crystallographic B-factor."
+            )
+        return
+    if column.overwritten_by is not None:
+        # Not a polarity question any more. `color_by_rmsf` and
+        # `color_by_conservation` put their own numbers in this column and
+        # ramp `uncertainty` over them, so that theme is exactly right and
+        # `plddt` is exactly wrong -- it would paint an AlphaFold legend over
+        # entropy. Refusing `uncertainty` here would also block restoring the
+        # ramp the tool had just drawn.
+        if wanted_confidence:
+            raise ViewerError(
+                f"{theme!r} reads the B-factor column as pLDDT, and the copy on "
+                f"screen no longer holds one: {column.overwritten_by} was "
+                "written into it, stretched to [0, 100], so it could be drawn "
+                f"at all. {_UNCERTAINTY_THEME!r} is the theme that quantity is "
+                "ramped by. Load the structure again to get its own column back."
             )
         return
     if column.mixed:
@@ -2668,6 +2761,7 @@ async def color_by_rmsf(
     display.b_factor = np.asarray(scaled, dtype=float)
 
     await _send_structure(display, "rmsf")
+    _column_overwritten_by("RMSF")
     if hide_others:
         with contextlib.suppress(ViewerError):
             await _call("hide", {"name": "auto"})
@@ -3890,21 +3984,6 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
     ]
 
 
-async def _plddt_style(target: str, handle: str) -> list[str]:
-    """Publication styling, and the width said out loud rather than inherited.
-
-    This is the one view that cannot leave its width to Mol\\*. A putty's
-    default size theme is `uncertainty`, which reads the B-factor column the
-    crystallographic way — so a tube coloured by confidence and sized by the
-    default would have its two channels pointing in opposite directions, and
-    the fattest part of it would be the part you can trust most.
-    """
-    return [
-        *await _preset_publication_cartoon(target),
-        await _run(size, size="plddt", name=handle),
-    ]
-
-
 # Gouache rather than CPK. Geis mixed his own colours and the plastic-sphere
 # palette did not exist yet; more to the point, hard green carbon against hard
 # red oxygen is the single loudest thing in an all-atom picture, and it is what
@@ -4123,11 +4202,18 @@ _VIEWS: dict[str, _View] = {
     # file: `putty` on a predicted model is wrong in both channels at once, and
     # `plddt` on a crystal structure paints a confidence legend over numbers
     # that are not confidences.
+    #
+    # The width is not set here and does not need to be. A putty's default size
+    # theme is `uncertainty`, which reads the same column the crystallographic
+    # way — so this view would otherwise have its two channels pointing in
+    # opposite directions. `show()` swaps that width for `plddt` on a predicted
+    # model, for every caller and not only this one; a second copy of the rule
+    # here is the kind of duplicate that drifts.
     "plddt": _View(
         selection="polymer",
         representation="putty",
         color="plddt",
-        style=_plddt_style,
+        style=lambda target, handle: _preset_publication_cartoon(target),
     ),
     "hydrophobic-surface": _View(
         selection="polymer",
@@ -4413,7 +4499,11 @@ def _polarity_view(name: str) -> tuple[str, str]:
     if name not in ("putty", "plddt") or _b_factor_column is None:
         return name, ""
     if _b_factor_column.mixed:
-        _check_polarity("plddt" if name == "plddt" else _UNCERTAINTY_THEME, "width")
+        # Both channels, because a putty is coloured *and* sized by this column
+        # — which is what made it the third affected path in the first place.
+        _check_polarity(
+            "plddt" if name == "plddt" else _UNCERTAINTY_THEME, "colour and width"
+        )
     if _b_factor_column.confidence is None:
         if name == "plddt":
             _check_polarity("plddt", "width")
@@ -4531,10 +4621,23 @@ async def _invoke_from_page(view: str) -> str:
     # into a reply that goes back to the page, where the model never sees it.
     token = _replying_to_model.set(True)
     try:
-        await preset(preset_name)
+        applied = await preset(preset_name)
     finally:
         _replying_to_model.reset(token)
-    _user_actions.append(f"applied the {view} view")
+    # What ran, not what was clicked. `preset()` sends `putty` to `plddt` on a
+    # predicted model and says so in its reply — but that reply goes to the
+    # page, and this line is the only thing the *model* ever sees of a click.
+    # Reporting the button here would make the swap silent in the one channel
+    # where silence matters.
+    drawn = applied.get("preset", view)
+    _user_actions.append(
+        f"applied the {drawn} view"
+        + (
+            f" (clicked {view}, which this file needs read the other way)"
+            if drawn != view
+            else ""
+        )
+    )
     return view
 
 
@@ -5769,6 +5872,7 @@ async def _conservation_gradient(
 
     scored = sum(1 for label in labels if label in lookup)
     result = await _send_structure(display, f"conservation:{chain}")
+    _column_overwritten_by("sequence entropy")
     if hide_others:
         with contextlib.suppress(ViewerError):
             await _call("hide", {"name": "auto"})
