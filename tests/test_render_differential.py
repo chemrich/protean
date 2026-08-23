@@ -33,7 +33,8 @@ import protean_mcp.server as server_mod
 from protean_mcp.analysis.encode import ffmpeg_binary
 from protean_mcp.connection import ViewerError
 from protean_mcp.fetch import fetch_structure_data
-from protean_mcp.selections_numpy import load_structure
+from protean_mcp.selections import parse as parse_selection
+from protean_mcp.selections_numpy import evaluate, load_structure
 
 from .browser import BROWSER_MARKS, PATHTRACE_MARKS, viewer_session
 from .pixels import (
@@ -1625,6 +1626,125 @@ async def test_plddt_colour_reaches_the_pixels():
     assert measured > STYLED, (
         f"'plddt' painted nothing over a confidence ramp spanning {PLDDT_LOW:g} "
         f"to {PLDDT_HIGH:g}: {measured:.6f} against a threshold of {STYLED}"
+    )
+
+
+def _confidence_below(array: Any, fraction: float) -> Any:
+    """A confidence column where `fraction` of the polymer sits below the line.
+
+    Built by choosing the residues rather than by ramping, because the ramp
+    helper spans `res_id` over the **whole** array — and 1UBQ's waters run to
+    134, so a ramp over 1-134 puts every polymer residue (1-76) below 70 and a
+    test built on it compares "cover nothing" against "cover everything". That
+    passed, and it could not have told either of those from a cover that
+    ignores the numbers and drapes the whole molecule whenever anything is low.
+    """
+    values = np.full(array.array_length(), 95.0)
+    polymer = evaluate(parse_selection("polymer"), array)
+    ids = np.unique(array.res_id[polymer])
+    doomed = set(ids[: round(len(ids) * fraction)].tolist())
+    picked = polymer & np.array([int(r) in doomed for r in array.res_id])
+    values[picked] = 40.0
+    return values
+
+
+async def test_scaffold_covers_more_when_more_is_guessed_at():
+    """The cover tracks how much is below the line, not merely that something is.
+
+    Three arms over the same coordinates: nothing below the threshold, half the
+    chain below it, all of it below it. A cover that reads the column puts the
+    three pictures in that order, increasingly far from the bare cartoon. A
+    cover that drapes the molecule whenever *anything* is low — or that draws a
+    fixed shell — collapses the last two together.
+
+    Ordering rather than absolute numbers, and that is what makes the reload a
+    non-issue: all three arms send a structure and redraw, so a camera that
+    moved or a cost the reload itself carries lands on every pair equally and
+    cannot produce a monotone sequence.
+
+    The step list is checked too, because "nothing to cover" and "the cover
+    failed to draw" are the same picture and only the reply separates them.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    arms = {
+        "none": _confidence_below(deposited, 0.0),
+        "half": _confidence_below(deposited, 0.5),
+        "all": _confidence_below(deposited, 1.0),
+    }
+
+    # Stated against the data before any picture is compared. The middle arm is
+    # the one that matters and the one the first version of this test did not
+    # actually have: if it is 0 or 1 the sequence below is two points, not
+    # three, and the claim collapses.
+    polymer = evaluate(parse_selection("polymer"), deposited)
+    fractions = {
+        name: float((values[polymer] < server_mod._CONFIDENT).mean())
+        for name, values in arms.items()
+    }
+    assert fractions["none"] == 0.0, f"the 'none' arm has something below: {fractions}"
+    assert fractions["all"] == 1.0, f"the 'all' arm has something above: {fractions}"
+    assert 0.3 < fractions["half"] < 0.7, (
+        f"the middle arm is not a partial cover, so this is a two-point test "
+        f"wearing three names: {fractions}"
+    )
+
+    frames: dict[str, Render] = {}
+    said: dict[str, str] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        for name, values in arms.items():
+            array = deposited.copy()
+            array.b_factor = values
+            await server_mod._send_structure(array, FIXTURE)
+            server_mod._structure = array
+            # Set directly: these are 1UBQ carrying a confidence column, which
+            # no file on disk is. The detection that fills this in has its own
+            # tests in test_server.py; what is under test here is the view.
+            server_mod._b_factor_column = server_mod._BFactorColumn(confidence="pLDDT")
+            result = await server_mod.preset("scaffold")
+            said[name] = " ".join(result["steps"])
+            frames[name] = await _shot(session)
+
+    for name, frame in frames.items():
+        assert coverage(frame) > DRAWN, f"the {name!r} arm is not on screen"
+
+    half = difference(frames["none"], frames["half"])
+    full = difference(frames["none"], frames["all"])
+    shape = ", ".join(
+        f"{n} coverage {coverage(f):.4f}" for n, f in sorted(frames.items())
+    )
+
+    assert half > STYLED, (
+        f"covering half the chain changed nothing against covering none: "
+        f"{half:.6f}. The cover is not reading the column. {shape}"
+    )
+    assert full > half, (
+        f"covering the whole chain ({full:.6f}) is no further from the bare "
+        f"cartoon than covering half of it ({half:.6f}), so the cover is not "
+        f"tracking how much is below the line. {shape}"
+    )
+    assert "no cover to draw" in said["none"], said["none"]
+    assert "covered rather than drawn" in said["half"], said["half"]
+
+
+async def test_scaffold_is_refused_on_a_structure_with_no_confidence():
+    """A crystal structure has no part the model was guessing at.
+
+    Its B-factors describe disorder, not confidence, so "below 70" would select
+    whatever happened to be poorly ordered and cover it — producing a picture
+    that reads as a statement about a prediction and is not one. Refused before
+    the scene is taken over, so an error does not leave a half-drawn viewer.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        before = await _shot(session)
+        with pytest.raises(ViewerError, match="nothing to cover here"):
+            await server_mod.preset("scaffold")
+        after = await _shot(session)
+
+    assert difference(before, after) == 0.0, (
+        "the refusal changed the picture, so it fired after the scene was taken "
+        "over rather than before"
     )
 
 

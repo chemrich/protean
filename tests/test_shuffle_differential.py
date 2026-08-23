@@ -25,9 +25,11 @@ file honest: a channel that genuinely cannot be permuted must read 0.0, which
 is what demonstrates the other three arms are not passing by construction. It
 does not cover everything — see its own docstring for what it cannot see.
 
-Two mechanisms, not one. Four arms register a field and read it back through
+Three mechanisms, not one. Four arms register a field and read it back through
 `color()` or `size()`; the fifth is `color_by_rmsf`, which registers nothing and
-writes into the **B-factor column** instead — the same column whose flatness
+writes into the **B-factor column** instead, and the sixth is `scaffold`, whose
+channel becomes an *absence* — it decides what is covered rather than what
+colour something takes — the same column whose flatness
 caused the retraction above. Adding it was the point of the extension: a file
 that tested only `define_field` was testing everything except the path that
 actually went wrong.
@@ -55,6 +57,9 @@ from biotite.structure.io.xtc import XTCFile
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.trajectory import rmsf as measured_rmsf
+from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections import parse as parse_selection
+from protean_mcp.selections_numpy import evaluate, load_structure
 
 from .browser import BROWSER_MARKS, viewer_session
 from .pixels import Render, coverage, difference
@@ -80,8 +85,11 @@ from .shuffle import (
 #   colour, ramp on a cartoon   0.0281   3.5x the threshold
 #   size, ramp on a putty       0.0105   1.3x  — the thinnest margin here
 #   colour, burial on a cartoon 0.0264   3.3x
-#   rmsf, via the B-factor col  0.0301   3.8x  — the widest, and the only arm
-#                                              that skips define_field entirely
+#   rmsf, via the B-factor col  0.0301   3.8x  — the only arm that skips
+#                                              define_field entirely
+#   scaffold, cover placement   0.1129   14x   — the widest, and the only arm
+#                                              where the channel becomes an
+#                                              absence rather than a colour
 #   the identity control        0.0000   exactly, as it must be
 #
 # The size arm looks thin only against the whole frame. A putty tube covers
@@ -376,4 +384,77 @@ async def test_the_rmsf_ramp_lands_on_the_atoms_that_moved(tmp_path, monkeypatch
         f"different atoms: {measured:.6f} against a threshold of {STYLED}. The "
         "B-factor column reached the viewer either way, so what this says is "
         "that the ramp is not reading which atom it is on."
+    )
+
+
+# -- the treatment that draws by leaving things out ---------------------------
+
+
+async def test_scaffold_covers_the_residues_whose_numbers_are_low():
+    """`scaffold` covers *which* residues are unconfident, not merely how many.
+
+    The other arms here shuffle a channel that becomes a colour or a width. This
+    one shuffles a channel that becomes an **absence**: `scaffold` hides the
+    regions below pLDDT 70, so the question a permutation asks is whether the
+    holes are in the right places.
+
+    Both arms have exactly the same number of residues below the line, so the
+    same amount of the molecule is covered and the same count is reported. Only
+    the identity of the covered residues differs. A cover keyed on the count,
+    or on a fixed region, or on anything other than the per-residue number,
+    draws these two identically.
+
+    This is the arm `docs/soft-matter-status.md` requires before a treatment may
+    claim it shows data, and it is stricter than the three-arm test in
+    `test_render_differential.py`: that one varies how much is below the line,
+    which a cover reading only "how many" would still pass.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    polymer = evaluate(parse_selection("polymer"), deposited)
+    ids = [int(r) for r in np.unique(deposited.res_id[polymer])]
+
+    # A ramp along the chain, every residue a different number. Two values would
+    # be enough to decide what gets covered, but a two-valued channel cannot be
+    # permuted by more than half — `checked_shuffle_values` refuses it at the
+    # `MOVED` floor, correctly, because at that point the two arms are too close
+    # to separate. Distinct numbers make the permutation a real relocation while
+    # leaving the *threshold* as the only thing that decides the cover.
+    per_residue = [float(v) for v in np.linspace(30.0, 99.0, len(ids))]
+    true_values = np.full(deposited.array_length(), 95.0)
+    for residue, value in zip(ids, per_residue, strict=True):
+        true_values[polymer & (deposited.res_id == residue)] = value
+
+    # Permuted per residue, not per atom: the treatment thresholds a residue's
+    # confidence, so scattering atoms within a residue would leave every residue
+    # holding the same mixture and change nothing about what gets covered.
+    permuted_by_residue = dict(zip(ids, checked_shuffle_values(per_residue), strict=True))
+    shuffled_values = true_values.copy()
+    for residue, value in permuted_by_residue.items():
+        shuffled_values[polymer & (deposited.res_id == residue)] = value
+
+    below = sum(1 for v in per_residue if v < server_mod._CONFIDENT)
+    after = sum(1 for v in permuted_by_residue.values() if v < server_mod._CONFIDENT)
+    assert below == after, (
+        "the permutation changed how much is covered, so a difference between "
+        "the two arms would not be about *which* residues were covered"
+    )
+
+    frames: dict[str, Render] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        for name, values in (("true", true_values), ("shuffled", shuffled_values)):
+            array = deposited.copy()
+            array.b_factor = values
+            await server_mod._send_structure(array, FIXTURE)
+            server_mod._structure = array
+            server_mod._b_factor_column = server_mod._BFactorColumn(confidence="pLDDT")
+            await server_mod.preset("scaffold")
+            frames[name] = await _shot(session)
+
+    _both_on_screen(frames["true"], frames["shuffled"], DRAWN)
+    measured = difference(frames["true"], frames["shuffled"])
+    assert measured > STYLED, (
+        f"scaffold covered the same pixels with the low numbers on different "
+        f"residues: {measured:.6f}. The cover is counting, not reading."
     )
