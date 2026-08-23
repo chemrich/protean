@@ -15,7 +15,9 @@ carrying "chain", "seq", optionally "ins_code", and the number.
 
 from __future__ import annotations
 
+import math
 import random
+from collections.abc import Sequence
 from typing import Any
 
 import protean_mcp.server as server_mod
@@ -71,6 +73,58 @@ def shuffled(values: list[Entry], key: str, seed: int = SEED) -> list[Entry]:
     order = list(range(len(original)))
     random.Random(seed).shuffle(order)
     return [{**entry, key: original[i]} for entry, i in zip(values, order, strict=True)]
+
+
+def shuffled_values(values: Sequence[float], seed: int = SEED) -> list[float]:
+    """The same numbers in a different order, for a channel that is a bare array.
+
+    `color_by_rmsf` and `color_by_conservation` do not go through
+    `define_field`: they write their numbers straight into the B-factor column
+    and draw them with Mol*'s `uncertainty` theme. There are no residue keys
+    to hold still, so the position in the array *is* the key and only the order
+    moves.
+    """
+    order = list(range(len(values)))
+    random.Random(seed).shuffle(order)
+    return [float(values[i]) for i in order]
+
+
+def checked_shuffle_values(values: Sequence[float], seed: int = SEED) -> list[float]:
+    """`checked_shuffle`'s refusals, for an array-shaped channel.
+
+    Same three failures, for the same reasons — a channel that cannot be
+    measured, a channel that is constant, and a permutation that barely moves.
+    Kept beside the entry-shaped version rather than generalised into it: the
+    two disagree about what a missing value looks like (a `None` a
+    `ViewerError` is raised on, against a `NaN` that would propagate silently
+    into the ramp), and collapsing them would hide that difference behind a
+    branch.
+    """
+    numbers = [float(v) for v in values]
+
+    nans = [v for v in numbers if math.isnan(v)]
+    assert not nans, (
+        f"{len(nans)} of {len(numbers)} values are NaN, which means the "
+        "analysis could not measure them rather than that they measured zero. "
+        "A NaN would ramp to an arbitrary colour without saying so."
+    )
+    assert len(set(numbers)) > 1, (
+        "the channel takes one value on every atom, so shuffling it changes "
+        "nothing and the test would pass without testing anything — which is "
+        "exactly how the bake-off's B-factor conclusion happened"
+    )
+
+    out = shuffled_values(numbers, seed)
+    assert sorted(out) == sorted(numbers), (
+        "the shuffle changed the numbers, not just where they sit"
+    )
+
+    fraction = sum(1 for a, b in zip(numbers, out, strict=True) if a != b) / len(numbers)
+    assert fraction > MOVED, (
+        f"the permutation moved {fraction:.3f} of the channel, at or below the "
+        f"{MOVED} floor — too close to the identity for the two arms to differ"
+    )
+    return out
 
 
 def distinct(values: list[Entry], key: str) -> int:

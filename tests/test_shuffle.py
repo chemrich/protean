@@ -19,6 +19,7 @@ from .shuffle import (
     MOVED,
     SEED,
     checked_shuffle,
+    checked_shuffle_values,
     distinct,
     moved,
     numbers,
@@ -113,3 +114,47 @@ def test_a_permutation_that_barely_moves_is_refused():
     assert moved(RAMP, swapped, "value") == pytest.approx(2 / 76)
     assert moved(RAMP, swapped, "value") < MOVED
     assert moved(RAMP, [dict(e) for e in RAMP], "value") == 0.0
+
+
+# -- the array-shaped channel, for the paths that skip define_field -----------
+
+
+def test_an_array_shuffle_keeps_every_number_and_moves_almost_all_of_them():
+    """The same contract as the entry-shaped version, on a bare sequence."""
+    values = [float(n) for n in range(1, 77)]
+    out = checked_shuffle_values(values)
+
+    assert sorted(out) == sorted(values), "the multiset changed"
+    assert out != values, "nothing moved"
+    fraction = sum(1 for a, b in zip(values, out, strict=True) if a != b) / len(values)
+    assert fraction > MOVED
+
+
+def test_an_array_shuffle_is_the_same_every_run():
+    """Seeded, for the reason the entry-shaped one is: an arm that permutes
+    differently on every run fails on some runs and not others, and a flaky
+    binding test teaches people to rerun rather than to look."""
+    values = [float(n) for n in range(1, 40)]
+    assert checked_shuffle_values(values) == checked_shuffle_values(values)
+
+
+def test_a_flat_array_is_refused_before_anything_is_drawn():
+    """The bake-off's error, in the shape `color_by_rmsf` would meet it.
+
+    A trajectory whose atoms all fluctuate identically writes one value into
+    every B-factor, and permuting that is a no-op. Without this the arm would
+    compare a picture with itself and report a working binding.
+    """
+    with pytest.raises(AssertionError, match="one value on every atom"):
+        checked_shuffle_values([7.0] * 40)
+
+
+def test_a_nan_in_the_array_is_refused_rather_than_ramped():
+    """A NaN is "could not measure", not "measured zero".
+
+    It has no defined place on a ramp, so it would take an arbitrary colour and
+    say nothing about having done so — the silent-success shape this file
+    exists to refuse.
+    """
+    with pytest.raises(AssertionError, match="NaN"):
+        checked_shuffle_values([1.0, 2.0, float("nan"), 4.0] * 10)

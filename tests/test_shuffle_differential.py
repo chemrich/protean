@@ -25,9 +25,16 @@ file honest: a channel that genuinely cannot be permuted must read 0.0, which
 is what demonstrates the other three arms are not passing by construction. It
 does not cover everything — see its own docstring for what it cannot see.
 
-Proved able to fail, twice, which for a test of this shape is the only
+Two mechanisms, not one. Four arms register a field and read it back through
+`color()` or `size()`; the fifth is `color_by_rmsf`, which registers nothing and
+writes into the **B-factor column** instead — the same column whose flatness
+caused the retraction above. Adding it was the point of the extension: a file
+that tested only `define_field` was testing everything except the path that
+actually went wrong.
+
+Proved able to fail, three times, which for a test of this shape is the only
 verification that counts. With the permutation replaced by the identity and the
-guard disabled, all three positive arms failed at exactly `0.0 > 0.008` and the
+guard disabled, all four positive arms failed at exactly `0.0 > 0.008` and the
 control still passed. With the second arm made to render nothing, the colour
 arm failed at `0.0 > 0.02` on `_both_on_screen` — which it would otherwise have
 **passed**, because an empty second frame makes `difference` report the whole
@@ -43,11 +50,23 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import numpy as np
+from biotite.structure.io.xtc import XTCFile
+
 import protean_mcp.server as server_mod
+from protean_mcp.analysis.trajectory import rmsf as measured_rmsf
 
 from .browser import BROWSER_MARKS, viewer_session
 from .pixels import Render, coverage, difference
-from .shuffle import Entry, checked_shuffle, distinct, moved, numbers, shuffled
+from .shuffle import (
+    Entry,
+    checked_shuffle,
+    checked_shuffle_values,
+    distinct,
+    moved,
+    numbers,
+    shuffled,
+)
 
 # Reused rather than restated. STYLED is the measured floor for "this style
 # change moved the picture" and DRAWN for "something is on screen"; a shuffle
@@ -61,6 +80,8 @@ from .shuffle import Entry, checked_shuffle, distinct, moved, numbers, shuffled
 #   colour, ramp on a cartoon   0.0281   3.5x the threshold
 #   size, ramp on a putty       0.0105   1.3x  — the thinnest margin here
 #   colour, burial on a cartoon 0.0264   3.3x
+#   rmsf, via the B-factor col  0.0301   3.8x  — the widest, and the only arm
+#                                              that skips define_field entirely
 #   the identity control        0.0000   exactly, as it must be
 #
 # The size arm looks thin only against the whole frame. A putty tube covers
@@ -282,3 +303,77 @@ async def test_a_shuffle_that_moves_nothing_reads_zero():
             "an identity permutation moved the picture, so this harness is "
             "measuring something other than the field"
         )
+
+
+# -- the path that does not go through define_field ---------------------------
+
+
+async def test_the_rmsf_ramp_lands_on_the_atoms_that_moved(tmp_path, monkeypatch):
+    """`color_by_rmsf` reads *which* atom moved, not just how much anything did.
+
+    This is the arm the other four cannot reach. `color_by_rmsf` does not
+    register a field: it writes its numbers into the **B-factor column** and
+    draws them with Mol*'s `uncertainty` theme (`server.py`, and the reply says
+    `reloaded`). That column is the exact mechanism whose flatness caused the
+    bake-off retraction, so leaving it unshuffled left this file testing
+    everything except the thing that went wrong.
+
+    `test_the_rmsf_ramp_depends_on_the_motion_it_measures` in
+    `test_render_differential.py` already compares a rigid run against a hinge.
+    That catches a *constant* written into the column. It cannot catch a
+    correct distribution landing on the wrong atoms, because both runs there
+    have different distributions — and a mis-keyed handoff is precisely the
+    bug protean has already shipped twice: `ins_code: None` building `A|76|None`
+    against the viewer's `A|76|`, and a biological assembly's symmetry copies
+    giving 584 rows for 292 residues. Both put real numbers on wrong atoms and
+    both render a plausible picture.
+
+    The real tool runs both times, so what is under test is the shipped path
+    rather than a reimplementation of it. Only `_rmsf`'s answer is permuted,
+    and the permutation is checked before it is used: a trajectory whose atoms
+    all fluctuate alike would make this vacuous, and `checked_shuffle_values`
+    refuses that rather than drawing it.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        template = server_mod._require_structure()
+        base = np.asarray(template.coord, dtype=np.float32)
+        half = base.shape[0] // 2
+        # Half pinned, half swinging: a spread with *structure*, so scattering
+        # the numbers across the molecule is visible rather than merely
+        # different. A uniform spread would shuffle to something similar.
+        frames = [base.copy() for _ in range(8)]
+        for step, coord in enumerate(frames):
+            coord[half:, 1] += step * 0.4
+
+        handle = XTCFile()
+        handle.set_coord(np.stack(frames))
+        path = tmp_path / "hinge.xtc"
+        handle.write(str(path))
+        await server_mod.load_trajectory(str(path))
+
+        await server_mod.color_by_rmsf()
+        true = await _shot(session)
+
+        # Imported from its own module rather than read off `server_mod`: it is
+        # the same function object (`server.py` does `from .analysis.trajectory
+        # import rmsf as _rmsf`), and mypy will not let a re-export be reached
+        # through the importing module. The patch below still targets
+        # `server_mod`, because that namespace is what `color_by_rmsf` calls.
+        def permuting(stack: Any) -> Any:
+            return np.asarray(
+                checked_shuffle_values([float(v) for v in measured_rmsf(stack)]),
+                dtype=float,
+            )
+
+        monkeypatch.setattr(server_mod, "_rmsf", permuting)
+        await server_mod.color_by_rmsf()
+        permuted = await _shot(session)
+
+    _both_on_screen(true, permuted, DRAWN)
+    measured = difference(true, permuted)
+    assert measured > STYLED, (
+        f"the rmsf ramp drew the same picture from the same numbers on "
+        f"different atoms: {measured:.6f} against a threshold of {STYLED}. The "
+        "B-factor column reached the viewer either way, so what this says is "
+        "that the ramp is not reading which atom it is on."
+    )
