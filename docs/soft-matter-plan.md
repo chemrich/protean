@@ -4,10 +4,13 @@
 
 Status: draft v1 · Target engines: Mol\* (primary), PyMOL (secondary), Blender/Molecular Nodes (hero renders)
 
-> **Reviewed 2026-08-22 — read `docs/soft-matter-review.md` before building from
-> this document.** Six adversarial reviews found the catalogue is about 6–12
-> viable treatments rather than 36, that §5's schedule is under by ~1.9× against
-> the plan's own effort tags, that §7's memory budget rejects four treatments
+> **Do not build from this document without reading
+> `docs/soft-matter-status.md` first — it says what is actually true now, and
+> most of what follows is superseded.** The findings behind that are in
+> `docs/soft-matter-review.md`. Six adversarial reviews found the catalogue is
+> about 6–12 viable treatments rather than 36, that §5's schedule is under by
+> ~1.9× against the plan's own effort tags, that §7's memory budget rejects four
+> treatments
 > including the flagship, and that P3 and P5 both need rewriting. The
 > prototyping round in `docs/bakeoff.md` was also retracted: it ran on a
 > structure whose B-factor column is constant, so none of its channel findings

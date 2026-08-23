@@ -316,6 +316,7 @@ strongest ideas (`SD-08`'s refusal, `SP-01`'s see-inside, P5's instinct) are
 compatible with protean while its central machinery (the manifest, the npm
 package, the PyMOL plugin, the fps budget) is not.
 
-The cheapest next move is not a treatment. It is the shuffle test, because
-every question above about which treatments are worth building is a question it
-can answer mechanically.
+**This section is a snapshot from the day of the review and is not maintained.
+For what is true now, read `docs/soft-matter-status.md`.** Everything above is
+findings, which do not change; the state of the work does, and it lives in one
+file so it can be kept true in one place.
