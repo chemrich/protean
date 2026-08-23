@@ -108,6 +108,12 @@ class LoadedStructure:
     this is no longer a difference to explain away -- it is how much of the
     shared atom count is alternates, which is what a caller needs to know
     before reading a number computed over one conformer state.
+
+    ``confidence`` names the per-residue confidence metric this file writes
+    into its B-factor column, or is ``None`` when that column holds an ordinary
+    crystallographic B-factor. It is read here because it can only be read
+    here: the raw text is not retained anywhere, so nothing downstream can go
+    back and ask which of the two a number in that column is.
     """
 
     array: AtomArray[Any]
@@ -115,6 +121,7 @@ class LoadedStructure:
     copies: int
     note: str = ""
     altloc_surplus: int = 0
+    confidence: str | None = None
 
 
 # A whole viral capsid is 60 copies of its asymmetric unit; expanding one
@@ -138,6 +145,64 @@ def _has_assembly(handle: Any) -> bool:
         # "this is normal for a predicted model" on a file that is nothing of
         # the kind. Let it raise and be reported as the parse failure it is.
         return False
+
+
+#: What a local ``ma_qa_metric`` has to be called for its values to be pLDDT.
+#: Matched case-folded and as a substring rather than for equality: AlphaFold DB
+#: writes exactly "pLDDT", but the field is free text and the cost of the two
+#: mistakes is not symmetric -- a missed match ships the backwards picture this
+#: whole check exists to stop, while a spurious one refuses a theme and says why.
+_PLDDT = "plddt"
+
+
+def confidence_metric(handle: Any) -> str | None:
+    """The name of the per-residue confidence score this file carries, if any.
+
+    A predicted model writes its per-residue confidence into ``B_iso_or_equiv``
+    -- the same column a crystal structure writes its B-factor into -- with the
+    **opposite polarity**: a high pLDDT means the residue is *more* trustworthy,
+    a high B-factor means the atom is *less* certain. Nothing in the coordinates
+    says which of the two is in there, so it is read from the one category that
+    does, ``ma_qa_metric``, while the parsed file is still in hand.
+
+    ``ma_qa_metric.name`` is consulted rather than the mere presence of the
+    category: a ModelArchive model scored by QMEAN carries ``ma_qa_metric`` too,
+    and QMEAN is not pLDDT and does not share its scale. Only a **local**
+    metric counts -- the global score is one number for the whole model and
+    never reaches an atom.
+
+    Asked of this category rather than of ``_entry.id`` or ``_struct.title``:
+    the AlphaFold file has no ``_struct`` category at all, and matching an id
+    prefix is the same brittleness ``fetch.py`` already documents.
+
+    Two known gaps, stated rather than papered over:
+
+    * An AlphaFold model in **PDB** format carries pLDDT in the B-factor column
+      with no marker biotite reads. It is undetectable here, so it is reported
+      as an ordinary B-factor and will not be refused.
+    * A pLDDT declared over a ``[0, 1]`` domain -- ``ma_qa_metric.type`` says
+      so, and ModelArchive permits it where AlphaFold DB does not -- is
+      detected as pLDDT, but its column is on the wrong scale for the
+      ``[0, 100]`` ramps both halves of the viewer use. It draws everything at
+      one end of the ramp, which is a visibly wrong picture rather than a
+      plausible backwards one.
+    """
+    try:
+        category = handle.block["ma_qa_metric"]
+        names = category["name"].as_array()
+        modes = category["mode"].as_array()
+    except KeyError:
+        # No block, no category, or a category missing the columns that would
+        # identify it. Any of those is "nothing here says this is predicted",
+        # which is what the B-factor reading already assumes.
+        return None
+    # `strict=False`: a category whose two columns are different lengths is a
+    # malformed file, and raising here would take the whole load down over a
+    # question nothing had asked. The rows that pair up still answer it.
+    for name, mode in zip(names, modes, strict=False):
+        if str(mode) == "local" and _PLDDT in str(name).casefold():
+            return str(name)
+    return None
 
 
 def assembly_multiplicity(text: str) -> int:
@@ -262,6 +327,9 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                 "PDB input carries its assembly in REMARK 350, which is not "
                 "parsed; the asymmetric unit was loaded instead"
             )
+        # `confidence` is left None here and it is a gap, not an answer: a
+        # predicted model in PDB format has pLDDT in its B-factor column and
+        # nothing in the format to say so. See `confidence_metric`.
         return LoadedStructure(
             array=array,
             assembly="asymmetric",
@@ -271,14 +339,22 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
         )
 
     surplus = altloc_surplus(text, fmt)
+    # Bound before the try so the final return, which is outside it, can read
+    # it. Every path that reaches that return has been through `CIFFile.read`.
+    confidence: str | None = None
     try:
         handle = CIFFile.read(io.StringIO(text))
+        confidence = confidence_metric(handle)
         if assembly == "asymmetric":
             array = _normalise_altloc(
                 get_structure(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
             )
             return LoadedStructure(
-                array=array, assembly="asymmetric", copies=1, altloc_surplus=surplus
+                array=array,
+                assembly="asymmetric",
+                copies=1,
+                altloc_surplus=surplus,
+                confidence=confidence,
             )
 
         if not _has_assembly(handle):
@@ -304,6 +380,7 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                     "were loaded and they are the whole structure"
                 ),
                 altloc_surplus=surplus,
+                confidence=confidence,
             )
 
         copies = assembly_multiplicity(text)
@@ -321,6 +398,7 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
                     "loaded instead and the viewer will show more than this"
                 ),
                 altloc_surplus=surplus,
+                confidence=confidence,
             )
         array = _normalise_altloc(
             get_assembly(handle, model=1, extra_fields=EXTRA_FIELDS, altloc="all")
@@ -338,6 +416,7 @@ def load_structure(text: str, fmt: str, assembly: str = "biological") -> LoadedS
         assembly="biological",
         copies=present,
         altloc_surplus=surplus * present,
+        confidence=confidence,
     )
 
 

@@ -479,7 +479,7 @@ describe('createDispatcher', () => {
   it('rejects an unknown size theme against the live registry', async () => {
     const dispatch = createDispatcher(fakePlugin());
     await expect(dispatch('size', { name: 's', size: 'thickness' })).rejects.toThrow(
-      /Unknown size theme 'thickness'\. Available: jitter, physical, uncertainty, uniform/
+      /Unknown size theme 'thickness'\. Available: jitter, physical, plddt, uncertainty, uniform/
     );
   });
 
@@ -497,8 +497,12 @@ describe('createDispatcher', () => {
     await expect(dispatch('capabilities', {})).resolves.toEqual({
       representations: ['cartoon', 'line', 'spacefill'],
       color_themes: ['chain-id', 'element-symbol'],
-      // `jitter` is protean's own, registered when the dispatcher is built.
-      size_themes: ['jitter', 'physical', 'uncertainty', 'uniform'],
+      // `jitter` and `plddt` are protean's own, registered when the dispatcher
+      // is built. `plddt` has no colour twin here because this fake registry
+      // has no `plddt-confidence` to alias — which is the guard working: the
+      // colour half forwards to Mol*'s theme or it does not register at all,
+      // rather than registering a name that paints nothing.
+      size_themes: ['jitter', 'physical', 'plddt', 'uncertainty', 'uniform'],
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
@@ -1098,6 +1102,211 @@ describe('the jitter size theme', () => {
     const provider = jitterOf(plugin);
 
     expect(provider.factory({}, {}).factory).toBe(provider.factory({}, {}).factory);
+  });
+});
+
+describe('the plddt themes', () => {
+  const sizesOf = (plugin: any) =>
+    plugin.representation.structure.themes.sizeThemeRegistry;
+  const colorsOf = (plugin: any) =>
+    plugin.representation.structure.themes.colorThemeRegistry;
+
+  /** A location whose atom carries *plddt* in the B-factor column.
+   *
+   * Which is where a predicted model actually puts it — the same column
+   * `uncertainty` reads, which is the entire problem these themes exist for. */
+  const at = (plddt: number) => ({
+    unit: { model: { atomicConformation: { B_iso_or_equiv: { value: () => plddt } } } },
+    element: 0,
+  });
+
+  /** A colour registry that can be added to and read back, like the size one.
+   *
+   * The default fake's `colorThemeRegistry.add` is a bare spy, which is enough
+   * for the handlers and not enough here: the alias has to be *registered* and
+   * then *found*, and a spy answers neither question. */
+  function withColorRegistry(plugin: any, providers: any[]) {
+    plugin.representation.structure.themes.colorThemeRegistry = {
+      types: providers.map((p) => [p.name]),
+      registered: providers,
+      add(provider: any) {
+        this.registered.push(provider);
+        this.types.push([provider.name]);
+      },
+      get(name: string) {
+        return this.registered.find((p: any) => p.name === name) ?? { name: '' };
+      },
+    };
+    return plugin;
+  }
+
+  /** Mol*'s own theme, reduced to the parts an alias has to carry forward. */
+  const molstarPlddt = () => ({
+    name: 'plddt-confidence',
+    label: 'pLDDT Confidence',
+    category: 'Validation',
+    factory: (_ctx: any, props: any) => ({
+      factory: () => {},
+      color: () => 0x0053d6,
+      props,
+      legend: { kind: 'table-legend', table: [] },
+    }),
+    getParams: () => ({}),
+    defaultValues: {},
+    isApplicable: () => true,
+    ensureCustomProperties: { attach: async () => {}, detach: async () => {} },
+  });
+
+  it('draws the least confident residues thickest, not the most', () => {
+    // The design decision, pinned. Inverting this would rebuild the exact trap
+    // backlog 41 exists to remove, under a friendlier name: fat means "do not
+    // trust this" everywhere else in protean.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = sizesOf(plugin).get('plddt').factory({}, {}).size;
+
+    expect(size(at(30))).toBeGreaterThan(size(at(90)));
+    expect(size(at(90))).toBeGreaterThan(size(at(99)));
+  });
+
+  it('is the exact reverse of uncertainty over the same column', () => {
+    // Not merely "different". `uncertainty` is baseSize + factor * value, so a
+    // correct `plddt` gives *v* the width `uncertainty` gives *100 - v* — which
+    // is what makes the two interchangeable once the polarity is known, and is
+    // the claim the pixel suite makes on the real renderer.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = sizesOf(plugin).get('plddt').factory({}, {}).size;
+
+    for (const plddt of [0, 30, 65.4, 98.8, 100]) {
+      expect(size(at(plddt))).toBeCloseTo(0.2 + 0.1 * (100 - plddt), 10);
+    }
+  });
+
+  it('clamps a value outside the scale rather than stretching to fit it', () => {
+    // A column outside 0-100 is a file that is not what it claimed. Rescaling
+    // would hide that by drawing a plausible tube anyway; clamping draws a flat
+    // one, which is visibly wrong.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = sizesOf(plugin).get('plddt').factory({}, {}).size;
+
+    expect(size(at(-5))).toBe(size(at(0)));
+    expect(size(at(140))).toBe(size(at(100)));
+  });
+
+  it('falls back to the base width on a column that is not there', () => {
+    // A file with no B-factor column reads NaN, and NaN survives the arithmetic
+    // to arrive as a radius — where Mol* builds geometry from it and the
+    // representation vanishes with no error anywhere, which is this project's
+    // signature failure.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = sizesOf(plugin).get('plddt').factory({}, {}).size;
+
+    expect(size(at(NaN))).toBe(0.2);
+    expect(size({})).toBe(0.2);
+  });
+
+  it('takes a bond width from one of its two ends', () => {
+    // A bond location carries `aUnit`/`aIndex` and no `element`, so a theme
+    // that only understood element locations would size every bond at the base
+    // width and read as a uniform theme wherever bonds are drawn.
+    const plugin: any = withCanvas(fakePlugin());
+    createDispatcher(plugin);
+    const size = sizesOf(plugin).get('plddt').factory({}, {}).size;
+    const end = at(30);
+
+    expect(size({ aUnit: { ...end.unit, elements: [0] }, aIndex: 0 })).toBe(size(end));
+  });
+
+  it('keeps both themes equal to themselves, so nothing re-tessellates', () => {
+    // SizeTheme.areEqual and ColorTheme.areEqual compare factory *identity*. A
+    // fresh closure per instantiation makes every theme unequal to the last,
+    // which Mol* turns into createGeometry.
+    const plugin: any = withCanvas(
+      withColorRegistry(fakePlugin(), [molstarPlddt()])
+    );
+    createDispatcher(plugin);
+    const sizeProvider = sizesOf(plugin).get('plddt');
+    const colorProvider = colorsOf(plugin).get('plddt');
+
+    expect(sizeProvider.factory({}, {}).factory).toBe(
+      sizeProvider.factory({}, {}).factory
+    );
+    expect(colorProvider.factory({}, {}).factory).toBe(
+      colorProvider.factory({}, {}).factory
+    );
+  });
+
+  it('aliases Mol*s own colour theme rather than reimplementing its palette', () => {
+    const plugin: any = withCanvas(
+      withColorRegistry(fakePlugin(), [molstarPlddt()])
+    );
+    createDispatcher(plugin);
+    const alias = colorsOf(plugin).get('plddt');
+
+    expect(alias.name).toBe('plddt');
+    // The banding and its legend come through from the theme being aliased.
+    expect(alias.factory({}, {}).color({})).toBe(0x0053d6);
+    expect(alias.factory({}, {}).legend).toBeTruthy();
+  });
+
+  it('carries ensureCustomProperties across, which is what attaches the scores', () => {
+    // The one field an alias must not drop. Mol* calls it before the theme
+    // runs, to attach the Model Archive quality property; without it the theme
+    // silently falls back to the raw B-factor column and stops being the theme
+    // it claims to be.
+    const plugin: any = withCanvas(
+      withColorRegistry(fakePlugin(), [molstarPlddt()])
+    );
+    createDispatcher(plugin);
+
+    expect(colorsOf(plugin).get('plddt').ensureCustomProperties?.attach).toBeTypeOf(
+      'function'
+    );
+  });
+
+  it('registers no colour half at all when Mol* ships no theme to alias', () => {
+    // An older bundle. Forwarding to a provider that is not there would paint
+    // grey and report success; refusing the name is a legible failure.
+    const plugin: any = withCanvas(withColorRegistry(fakePlugin(), []));
+    createDispatcher(plugin);
+
+    expect(colorsOf(plugin).get('plddt').name).toBe('');
+    // The size half is independent and still there.
+    expect(sizesOf(plugin).get('plddt').name).toBe('plddt');
+  });
+
+  it('registers once, so a second dispatcher over one plugin is survivable', () => {
+    const plugin: any = withCanvas(
+      withColorRegistry(fakePlugin(), [molstarPlddt()])
+    );
+    createDispatcher(plugin);
+
+    expect(() => createDispatcher(plugin)).not.toThrow();
+    expect(
+      sizesOf(plugin).registered.filter((p: any) => p.name === 'plddt')
+    ).toHaveLength(1);
+    expect(
+      colorsOf(plugin).registered.filter((p: any) => p.name === 'plddt')
+    ).toHaveLength(1);
+  });
+
+  it('will not let a caller-registered theme claim the name', () => {
+    // `plddt` is protean's own, registered at startup rather than through the
+    // field or palette path — so `claimName` has to know it, or it is refused
+    // with Mol*'s name on it, sending the caller looking through a theme list
+    // it is not in. Asked through `define_elements`, which reaches `claimName`
+    // without first having to match residues against a fake structure.
+    const plugin: any = withCanvas(
+      withColorRegistry(fakePlugin(), [molstarPlddt()])
+    );
+    const dispatch = createDispatcher(plugin);
+
+    return expect(
+      dispatch('define_elements', { name: 'plddt', colors: { C: 0x112233 } })
+    ).rejects.toThrow(/protean's own/);
   });
 });
 

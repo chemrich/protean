@@ -1111,7 +1111,11 @@ async def _as_server(session, load: bool = False, pdb_id: str = FIXTURE):
     # every page-initiated test would then be exercising an arrangement that
     # does not exist in production.
     server_mod.use_bridge(session.bridge)
-    saved = (server_mod._structure, server_mod._structure_identifier)
+    saved = (
+        server_mod._structure,
+        server_mod._structure_identifier,
+        server_mod._b_factor_column,
+    )
     # The handle table is module state and the browser is not: a test that
     # drew a view left `auto_view` registered here while the next test's fresh
     # viewer knew only `auto`, so a styling preset resolved its target to a
@@ -1128,14 +1132,23 @@ async def _as_server(session, load: bool = False, pdb_id: str = FIXTURE):
             # describing a molecule that is not on screen. Cost one debugging
             # session already.
             fetched = await fetch_structure_data(pdb_id)
-            server_mod._structure = load_structure(
-                fetched.data, fetched.format, "asymmetric"
-            ).array
+            loaded = load_structure(fetched.data, fetched.format, "asymmetric")
+            server_mod._structure = loaded.array
             server_mod._structure_identifier = pdb_id
+            # Filled in from the same parse `fetch_structure` would have used.
+            # Left over from a previous test it decides whether `uncertainty`
+            # and `plddt` are refused, which is state no test set on purpose.
+            server_mod._b_factor_column = server_mod._BFactorColumn(
+                confidence=loaded.confidence
+            )
         yield
     finally:
         server_mod._bridge = previous
-        server_mod._structure, server_mod._structure_identifier = saved
+        (
+            server_mod._structure,
+            server_mod._structure_identifier,
+            server_mod._b_factor_column,
+        ) = saved
         server_mod._handles.clear()
         server_mod._handles.handles.update(saved_handles)
 
@@ -1435,6 +1448,183 @@ async def test_putty_width_follows_the_bfactor_it_claims():
     assert control * 5 < measured, (
         f"control {control:.6f} against measured {measured:.6f}: too close to "
         f"separate, so this is measuring the reload rather than B-factor — {shape}"
+    )
+
+
+# The pLDDT half of the same question. `test_putty_width_follows_the_bfactor_it
+# _claims` above established that the tube's width comes from `B_iso_or_equiv`;
+# these establish which *direction* it comes from, which is backlog 41.
+
+#: A confidence ramp with real spread, 30 to 99 along the sequence.
+#:
+#: Synthetic on purpose. Real AlphaFold pLDDT is often clustered almost flat --
+#: AF-P69905 reads p10 97.6, p50 98.6, p90 98.8 over a full range of 65.4 to
+#: 98.9 -- so a picture drawn from it would separate two polarities by a few
+#: pixels around one terminus, and a test built on that would be measuring the
+#: renderer's edge noise. This is the same molecule and the same column with a
+#: quantity in it that a tube can actually show.
+PLDDT_LOW = 30.0
+PLDDT_HIGH = 99.0
+
+
+def _confidence_ramp(array: Any) -> Any:
+    """A per-residue pLDDT running the length of the chain."""
+    residue = np.asarray(array.res_id, dtype=float)
+    span = float(residue.max() - residue.min())
+    return PLDDT_LOW + (PLDDT_HIGH - PLDDT_LOW) * (residue - residue.min()) / span
+
+
+async def test_plddt_width_is_the_exact_reverse_of_uncertaintys():
+    """The polarity, pinned in pixels rather than in arithmetic.
+
+    pLDDT and the B-factor ride the same column and mean opposite things, so a
+    `plddt` size theme is right exactly when it draws a value of *v* the width
+    `uncertainty` draws *100 - v*. That is a claim two loads can settle
+    exactly: one structure carrying the ramp, one carrying its mirror image,
+    nothing else different between them.
+
+    Three frames per load, and the cartoon is the control that carries the
+    test. Cartoon's default size theme is uniform, so it must read identical
+    across the two loads -- which is also what rules out the camera having
+    moved when the second structure replaced the first. A control that moves
+    means the numbers below are measuring the reload.
+
+    Without this, `plddt` could be `uncertainty` under another name and every
+    Python-side test in `test_server.py` would still pass: the refusals would
+    fire correctly and the picture would still make the most trustworthy
+    regions the fattest, which is the whole bug.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    confident = deposited.copy()
+    confident.b_factor = _confidence_ramp(deposited)
+    mirrored = deposited.copy()
+    mirrored.b_factor = 100.0 - confident.b_factor
+
+    # Asserted before anything about the picture. A flat column is the trap
+    # this whole change exists because of, and on a flat column every claim
+    # below would pass for the wrong reason.
+    deciles = np.percentile(confident.b_factor, [10, 50, 90])
+    assert deciles[2] - deciles[0] > 20.0, (
+        f"the fixture's confidence column is nearly flat ({deciles}), so a tube "
+        "drawn from it says nothing about polarity"
+    )
+
+    frames: dict[tuple[str, str], Render] = {}
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        for variant, array in (("confident", confident), ("mirrored", mirrored)):
+            await server_mod._send_structure(array, FIXTURE)
+            server_mod._structure = array
+            await server_mod.hide(server_mod._WHOLE_SCENE)
+            await server_mod.select("polymer", name="fold")
+            # White, so nothing in these frames is a colour theme's doing --
+            # the only thing that varies is the width.
+            await server_mod.show(
+                representation="cartoon", handle="fold", color="#ffffff"
+            )
+            frames[("cartoon", variant)] = await _shot(session)
+            await server_mod.show(representation="putty", handle="fold", color="#ffffff")
+            for theme in ("plddt", "uncertainty"):
+                # Straight down the bridge rather than through `size()`, whose
+                # provenance guard would refuse one of these two on a structure
+                # that never went through `fetch_structure`. What is under test
+                # here is the theme the viewer registers; the guard has its own
+                # tests, in `test_server.py`.
+                await session.request("size", {"name": "fold", "size": theme})
+                frames[(theme, variant)] = await _shot(session)
+
+    control = difference(
+        frames[("cartoon", "confident")], frames[("cartoon", "mirrored")]
+    )
+    inverted = difference(
+        frames[("plddt", "confident")], frames[("uncertainty", "confident")]
+    )
+    mirror = difference(
+        frames[("plddt", "confident")], frames[("uncertainty", "mirrored")]
+    )
+
+    shape = ", ".join(
+        f"{theme}/{variant} coverage {coverage(frame):.4f}"
+        for (theme, variant), frame in sorted(frames.items())
+    )
+
+    # Measured on the development machine: control 0.000000, inverted 0.039881,
+    # mirror 0.000000. The two zeroes are the theory holding exactly -- same
+    # coordinates and same widths produce bit-identical frames -- so all three
+    # claims below are stated as ratios rather than against those numbers. A
+    # renderer with edge noise, or a slower one caught mid-tween, moves the
+    # zeroes and must not move the conclusion.
+    assert inverted > STYLED, (
+        f"'plddt' and 'uncertainty' drew the same tube from the same column: "
+        f"{inverted:.6f} — one of them is not reading the polarity it claims. {shape}"
+    )
+    # The exactness claim, stated against the control rather than against a
+    # number measured on this machine. `plddt` over v and `uncertainty` over
+    # 100 - v are the same widths atom for atom, so the two frames can differ
+    # only by whatever the reload itself costs.
+    assert mirror < inverted / 5, (
+        f"'plddt' over the ramp and 'uncertainty' over its mirror differ by "
+        f"{mirror:.6f} against an inversion of {inverted:.6f}: the two are not "
+        f"the same ramp read from opposite ends. {shape}"
+    )
+    assert control * 5 < inverted, (
+        f"control {control:.6f} against inverted {inverted:.6f}: too close to "
+        f"separate, so this is measuring the reload rather than the theme. {shape}"
+    )
+
+
+async def test_plddt_colour_reaches_the_pixels():
+    """The colour half of the claim `_VIEW_THEMES` can no longer make.
+
+    `plddt` is excluded from that parametrized sweep because its subject is a
+    predicted model while this suite's fixture is a crystal structure, so the
+    provenance guard refuses it there -- correctly, and that refusal is the
+    whole point of backlog 41. But the claim still has to be made somewhere: a
+    theme in the catalogue that paints nothing is a view nobody can use, and an
+    exclusion with no replacement is how a sweep quietly stops covering things.
+
+    Straight down the bridge rather than through `color()`, for the same reason
+    `test_plddt_width_is_the_exact_reverse_of_uncertaintys` above does: what is
+    under test here is the theme the viewer registers, and the guard has its
+    own tests in `test_server.py`.
+
+    The column carries the synthetic ramp rather than a real model's numbers,
+    for the reason `_confidence_ramp` records -- AF-P69905 reads p10 97.6, p50
+    98.6, p90 98.8, so a picture drawn from it would be separating a handful of
+    pixels and this would pass on renderer noise.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    confident = deposited.copy()
+    confident.b_factor = _confidence_ramp(deposited)
+
+    # Asserted before anything about the picture, for the reason this whole
+    # change exists: a flat column draws one flat colour and every claim below
+    # would pass without the binding carrying anything.
+    deciles = np.percentile(confident.b_factor, [10, 50, 90])
+    assert deciles[2] - deciles[0] > 20.0, (
+        f"the fixture's confidence column is nearly flat ({deciles}), so a "
+        "picture drawn from it says nothing about the theme"
+    )
+
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod._send_structure(confident, FIXTURE)
+        server_mod._structure = confident
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="cartoon", handle="fold", color="#ffffff")
+        white = await _shot(session)
+        assert coverage(white) > DRAWN, "nothing was drawn to colour"
+
+        await session.request("color", {"name": "fold", "color": "plddt"})
+        painted = await _shot(session)
+
+    measured = difference(white, painted)
+    assert measured > STYLED, (
+        f"'plddt' painted nothing over a confidence ramp spanning {PLDDT_LOW:g} "
+        f"to {PLDDT_HIGH:g}: {measured:.6f} against a threshold of {STYLED}"
     )
 
 
@@ -1967,14 +2157,32 @@ async def test_a_timeline_needs_two_keyframes():
 # colour of a deleted view and knew nothing of `spacefill` or `skeleton`, so it
 # was pinning a vocabulary nothing used while the one in use went unchecked.
 _VIEW_THEMES = sorted(
-    {view.color for view in server_mod._VIEWS.values()}
-    | {
-        # Not a view's colour today, and both spoken for in docs/views.md: the
-        # charge view is planned on partial-charge (a proxy, not a solve), and
-        # `illustrative` is the colour half of the styling preset of that name.
-        "partial-charge",
-        "illustrative",
-    }
+    (
+        {view.color for view in server_mod._VIEWS.values()}
+        | {
+            # Not a view's colour today, and both spoken for in docs/views.md:
+            # the charge view is planned on partial-charge (a proxy, not a
+            # solve), and `illustrative` is the colour half of the styling
+            # preset of that name.
+            "partial-charge",
+            "illustrative",
+        }
+    )
+    # `plddt` is the one colour in the catalogue that *cannot* be asked for
+    # here, and by design: this suite's fixture is 1UBQ, and `color("plddt")`
+    # on an experimental structure is refused — a crystal structure's B-factors
+    # are not confidences, and painting the AlphaFold ramp over them produces a
+    # confident-looking picture that means nothing (backlog 41). The refusal
+    # firing here is the guard working; excluding it is the test wiring
+    # catching up with a view whose subject is a different kind of file.
+    #
+    # Covered instead by `test_plddt_colour_reaches_the_pixels` and
+    # `test_plddt_width_is_the_exact_reverse_of_uncertaintys` above, both of
+    # which put a confidence ramp in the column and go down the bridge. The
+    # exclusion must not become a hole: this is the failure mode the derived
+    # list exists to prevent, and dropping a theme from it without a named
+    # replacement would reintroduce exactly that.
+    - {"plddt"}
 )
 
 # `cartoon` is what `_bare_fold` draws as its baseline, so drawing it again

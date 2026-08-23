@@ -23,6 +23,7 @@ from protean_mcp.selections_numpy import (
     _SS_CLASSES,
     _has_assembly,
     _residue_keys,
+    confidence_metric,
     load_structure,
     residue_labels,
     select_mask,
@@ -1319,3 +1320,135 @@ class TestAFileWithNoAssembly:
             "1 1 A\n"
         )
         assert _has_assembly(CIFFile.read(io.StringIO(with_category))) is True
+
+
+# A predicted model's confidence block, in the shape AlphaFold DB writes it.
+# `mode` and `name` are the two columns detection reads; the local values are
+# carried along because a fixture that declared a metric with no values would
+# pass a check nobody wrote and mislead the next person to read it.
+def _qa_metrics(metrics: list[tuple[int, str, str, str]]) -> str:
+    """`ma_qa_metric` rows from (id, mode, name, type)."""
+    header = (
+        "loop_\n"
+        "_ma_qa_metric.id\n"
+        "_ma_qa_metric.mode\n"
+        "_ma_qa_metric.name\n"
+        "_ma_qa_metric.software_group_id\n"
+        "_ma_qa_metric.type\n"
+    )
+    rows = "".join(f"{i} {mode} {name} 1 {kind}\n" for i, mode, name, kind in metrics)
+    return header + rows
+
+
+#: What AlphaFold DB actually deposits: a global pLDDT and a local one.
+_ALPHAFOLD_METRICS = [
+    (1, "global", "pLDDT", "pLDDT"),
+    (2, "local", "pLDDT", "pLDDT"),
+]
+
+
+class TestReadingWhatIsInTheBFactorColumn:
+    """pLDDT and the B-factor are one column read two ways, and the file is the
+    only place that says which.
+
+    Backlog 41. Without this, `size("uncertainty")` on an AlphaFold model draws
+    the *most* trustworthy regions fattest and the picture looks entirely
+    plausible — and by the time anything downstream could ask, the raw text has
+    been thrown away. Detection has to happen at load or not at all.
+    """
+
+    def test_an_experimental_structure_reports_no_confidence_score(self):
+        """The common case, and the one a false positive would ruin: a file
+        with no `ma_qa_metric` must keep meaning "this is a B-factor"."""
+        assert (
+            load_structure(_cif(_TWO_AND_THREE), "mmcif", "asymmetric").confidence is None
+        )
+
+    def test_a_predicted_model_is_recognised_by_its_quality_metric(self):
+        text = _cif(_TWO_AND_THREE) + _qa_metrics(_ALPHAFOLD_METRICS)
+
+        assert load_structure(text, "mmcif", "asymmetric").confidence == "pLDDT"
+
+    def test_it_survives_the_assembly_fallback_a_predicted_model_takes(self):
+        """The path every AlphaFold model actually goes down.
+
+        A predicted model declares no `pdbx_struct_assembly_gen`, so a default
+        `assembly="biological"` load returns through the no-assembly branch —
+        a *different* return statement from the asymmetric one. A detection
+        threaded through only the branch the unit test exercises would be
+        None for every real load.
+        """
+        text = _cif(_TWO_AND_THREE) + _qa_metrics(_ALPHAFOLD_METRICS)
+
+        assert load_structure(text, "mmcif", "biological").confidence == "pLDDT"
+
+    def test_a_model_scored_by_qmean_is_not_called_plddt(self):
+        """ModelArchive models carry `ma_qa_metric` too and are not all pLDDT.
+
+        QMEAN runs on a different scale entirely, so labelling one pLDDT would
+        put an AlphaFold legend and an AlphaFold ramp on numbers that are
+        neither — which is the same class of mistake as reading a B-factor as
+        a confidence, one level further in.
+        """
+        text = _cif(_TWO_AND_THREE) + _qa_metrics(
+            [
+                (1, "global", "QMEANDisCo_global", "QMEANDisCo"),
+                (2, "local", "QMEANDisCo", "QMEANDisCo"),
+            ]
+        )
+
+        assert load_structure(text, "mmcif", "asymmetric").confidence is None
+
+    def test_a_global_only_score_does_not_count(self):
+        """One number for the whole model never reaches an atom.
+
+        A file with a global pLDDT and no local one has nothing per-residue to
+        ramp over, so treating it as predicted would refuse `uncertainty` and
+        then offer a `plddt` with no values behind it.
+        """
+        text = _cif(_TWO_AND_THREE) + _qa_metrics([(1, "global", "pLDDT", "pLDDT")])
+
+        assert load_structure(text, "mmcif", "asymmetric").confidence is None
+
+    def test_the_name_is_matched_case_insensitively(self):
+        """ "pLDDT" is the deposited spelling and it is not the only one."""
+        text = _cif(_TWO_AND_THREE) + _qa_metrics([(2, "local", "PLDDT", "pLDDT")])
+
+        assert load_structure(text, "mmcif", "asymmetric").confidence == "PLDDT"
+
+    def test_a_file_with_no_metric_category_at_all_answers_rather_than_raising(self):
+        """`confidence_metric` is asked of every mmCIF protean parses, so the
+        absence of the category is an answer and not an error — the same
+        contract `_has_assembly` keeps."""
+        assert confidence_metric(CIFFile.read(io.StringIO(_cif(_TWO_AND_THREE)))) is None
+
+    def test_a_predicted_model_in_pdb_format_is_a_known_gap_not_a_detection(self):
+        """Stated as a test so the gap is visible rather than assumed.
+
+        An AlphaFold model in PDB format carries pLDDT in the B-factor column
+        with no marker biotite reads, so it comes back as an ordinary
+        structure and will not be refused. Anyone who changes this should be
+        changing this test with it.
+        """
+
+        def atom(serial: int, name: str, x: float, plddt: float, element: str) -> str:
+            # Fixed columns, written out: serial 7-11, name 13-16, x/y/z 31-54,
+            # occupancy 55-60, and the B-factor at 61-66, where a predicted
+            # model puts pLDDT. Element at 77-78, without which biotite guesses
+            # and fails on a read-only array rather than parsing.
+            return (
+                f"ATOM  {serial:>5} {name:<4} GLY A   1    "
+                f"{x:>8.3f}{0.0:>8.3f}{0.0:>8.3f}{1.0:>6.2f}{plddt:>6.2f}"
+                f"{'':<10}{element:>2}"
+            )
+
+        pdb = "\n".join(
+            [atom(1, " N", 0.0, 65.38, "N"), atom(2, " CA", 1.0, 98.81, "C"), "END", ""]
+        )
+
+        loaded = load_structure(pdb, "pdb", "asymmetric")
+        assert loaded.confidence is None
+        # The values really are in there; only the marker saying what they are
+        # is missing. A fixture whose column was empty would pass this test
+        # while demonstrating nothing.
+        assert float(loaded.array.b_factor.max()) == pytest.approx(98.81)

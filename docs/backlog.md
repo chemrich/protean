@@ -1623,7 +1623,7 @@ Recorded because the shape recurs: the moment to fold duplication is when the
 third caller appears, and the cost of waiting is that the third caller is
 usually the one that gets it wrong.
 
-### 41. pLDDT and B-factor are one column with opposite polarity — open
+### 41. pLDDT and B-factor are one column with opposite polarity — fixed
 
 `size("uncertainty")` and `color("uncertainty")` on an AlphaFold model render
 backwards, silently.
@@ -1650,3 +1650,64 @@ caller asked for.
 
 Found by the adversarial review of the soft-matter plan, 2026-08-22. See
 `docs/soft-matter-review.md`.
+
+Fixed 2026-08-22. The provenance is read at load — `ma_qa_metric` with a
+*local* metric named pLDDT, in `selections_numpy.confidence_metric`, where the
+parsed handle is already there and where it is the only place it can be read:
+the raw text is not kept, so nothing later can go back and ask. It is checked
+against the name in `color()`, `size()` and `show(color=)`, and both directions
+refuse with the polarity spelled out.
+
+Five things this turned up that the item above did not say — and the last two
+came out of the adversarial review of the fix rather than out of building it,
+which is the point of running one.
+
+**`preset("putty")` is a third path and neither guard reaches it.** It
+hardwires `color="uncertainty"`, so on a predicted model it was backwards with
+no `color()` call at all — and backwards in its *width* too, for the separate
+reason four paragraphs down. It now draws `plddt` and the reply names both
+views. Swapped
+rather than refused, so the viewer's menu entry keeps working; the reverse
+direction is a refusal, because a crystal structure has no confidence score to
+swap to.
+
+**Superposing two kinds makes a column that is neither.** `fixed + moved`
+concatenates two B-factor columns, and an AlphaFold model fitted onto its own
+crystal structure — the obvious reason to call `superpose` — leaves pLDDT for
+one chain and a B-factor for the other. No ramp is right for both halves, so
+that state refuses both readings rather than serving one of them to half the
+atoms.
+
+**Mol\* had most of the colour half already, and none of the size half.**
+`plddt-confidence` is in the shipped UMD bundle with the official AlphaFold
+banding and its legend, so `plddt` aliases it — forwarding
+`ensureCustomProperties`, which is what attaches the Model Archive property and
+is the one field an alias must not drop. There is no pLDDT *size* theme in the
+bundle; that one is new, `uncertainty`'s own formula with the polarity turned
+around so the **least** confident regions come out fattest. Checked against the
+live registry over CDP rather than assumed, which is also how the absence of
+the size theme was established.
+
+**A putty's width is a fourth path and nothing names the theme at all.** Mol\*
+declares `defaultSizeTheme: {name: 'uncertainty'}` on that representation, so
+`show(representation="putty")` reads the column with neither the caller,
+`color()` nor `size()` having mentioned it. Every test written for the first
+three passed while this shipped. `show()` now swaps that width for `plddt` on a
+predicted model, for every caller, and says so in its reply; the `plddt` view
+leans on that rather than keeping a second copy of the rule.
+
+**A column a `color_by_*` tool overwrote is not a polarity question any more.**
+`color_by_rmsf` and `color_by_conservation` carry a scalar to the screen by
+writing it into that column, stretched into `[0, 100]`, and ramping
+`uncertainty` over it — so the copy on screen then holds neither quantity. The
+first version of this fix kept describing the *analysis* array and got both
+answers wrong at once on a predicted model: it refused `uncertainty`, which is
+the theme those tools had just used and the only way back to the ramp they
+drew, and permitted `plddt`, which paints AlphaFold banding and its legend over
+entropy.
+
+The `B_FACTOR_FULL` duplicate in `backends/molstar.py` was examined and left
+alone: that path overwrites the column with the caller's own scalar before
+anything ramps over it, so there is no pLDDT left in it to misread. Which is
+the same fact as the paragraph above, arriving through a different door — and
+noticing that only in review is worth recording on its own.
