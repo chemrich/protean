@@ -131,7 +131,7 @@ Every one reported success first.
   felt.
 - **The finish painted the empty frame, twice, for two different reasons.**
   First the paper threshold — `analysis/hatching.py` already records that a
-  "white" ground is about 252 and needs a 0.94 cutoff, and writing a second
+  "white" ground is about 252 and needs a 0.96 cutoff, and writing a second
   finish from scratch reproduced the bug immediately. Then the halftone's
   soft-edge term, which adds half a dot at every cell centre even where ink
   coverage is exactly zero. **The constant and the guard belong to the route,

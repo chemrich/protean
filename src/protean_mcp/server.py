@@ -54,7 +54,7 @@ from .analysis.exposure import (
     ExposureError,
     residue_exposure,
 )
-from .analysis.hatching import apply_finish, ink_fraction
+from .analysis.hatching import apply_finish, ink_fraction, validate_finish
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
     UNCLASSIFIED,
@@ -2374,6 +2374,16 @@ async def snapshot(
         )
     width, millimetres = _snapshot_pixels(column, width_mm, dpi)
 
+    # Checked before the capture, not after it. A finish is applied to the
+    # finished PNG, so a mistyped name used to be caught only once a
+    # figure-resolution render had already been paid for — up to a hundred
+    # seconds of work thrown away over a spelling.
+    if finish is not None:
+        try:
+            validate_finish(finish)
+        except ValueError as exc:
+            raise ViewerError(str(exc)) from exc
+
     # Refused here rather than in the viewer: the capture is fine, it is the
     # file we would be asked to write that cannot hold an alpha channel.
     if chosen == "jpeg" and transparent:
@@ -2413,11 +2423,16 @@ async def snapshot(
         )
     inked: float | None = None
     if finish is not None:
+        # Checked above too, before the render was paid for. Repeated here
+        # rather than trusted, because `FINISHES` is a plain dict and the
+        # capture in between is an await — so "it was valid a moment ago" is
+        # an invariant nobody at this line can see. A raw exception escaping a
+        # tool reads to a caller as protean breaking, not as a bad argument.
         try:
             image = apply_finish(image, finish)
-        except KeyError as exc:
-            raise ViewerError(str(exc).strip("\"'")) from exc
-        inked = ink_fraction(image)
+            inked = ink_fraction(image, finish)
+        except ValueError as exc:
+            raise ViewerError(str(exc)) from exc
 
     saved_dpi = float(dpi)
     save: dict[str, Any] = {"dpi": (dpi, dpi)}

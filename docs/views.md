@@ -827,7 +827,7 @@ Three routes, and the middle one is chosen:
    - **A white ground is not white.** The publication preset's is about 252, so
      the lightest band caught the entire background and sprinkled strokes
      across the empty half of the frame. It looked like dirt on the plate.
-     Anything brighter than 0.94 luma takes no ink at all now.
+     Anything brighter than 0.96 luma takes no ink at all now.
    - **Proportional tone is far too dark.** Mapping darkness straight onto
      bands put a mid grey two thirds of the way to solid, and a cartoon whose
      shading sits mostly in the middle came out as a black mass with holes in
@@ -839,15 +839,25 @@ Three routes, and the middle one is chosen:
 
    The reply also reports the **ink fraction**, which was not planned. The
    caller is usually a model and cannot look at the file, and the difference
-   between a good print and a solid black rectangle is not visible in a byte
+   between a good print and a solid rectangle of ink is not visible in a byte
    count.
+
+   It measures distance from **the finish's own declared paper**, added
+   2026-08-23. The first version asked whether the red channel was zero, which
+   is a test for black in disguise: right for both engraving styles because
+   both print black on white, and — for the coloured finishes this route is
+   about to carry — capable of reporting an inked page as blank or a blank one
+   as solid. A finish now declares its paper and its ink, and everything
+   downstream reads those two fields.
 3. **A custom Mol\* post-processing pass.** The right answer technically and
    blocked practically: it needs Mol\* built from source, which this project
-   deliberately does not do — the prebuilt bundle is shipped precisely because
-   a source build wants more than 4 GB. Charlie has raised forking Mol\* to
-   extend it, which would unblock this and more; recorded here as a direction
-   under consideration rather than a decision. It would buy a live preview and
-   cost a fork to maintain and a heavier CI.
+   deliberately does not do. **The "more than 4 GB" figure this used to give as
+   the reason is wrong**, and was measured in #107: bundling Mol\* from its
+   published `lib/` costs **1.2 GB and 4.6 seconds** and produces a bundle the
+   same size as the prebuilt one, because the package ships already-compiled
+   ESM rather than TypeScript. So no fork is required either — what a source
+   build actually costs is a build step protean does not have today. It would
+   buy a live preview and a heavier CI.
 
 **It belongs on `snapshot()`, not in the menu**, and that is the design point
 rather than an implementation detail. Every entry in the menu changes the

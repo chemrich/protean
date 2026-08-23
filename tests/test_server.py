@@ -22,6 +22,7 @@ from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.electrostatics import read_dx
+from protean_mcp.analysis.hatching import FINISHES
 from protean_mcp.analysis.superposition import ResidueDeviation
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
@@ -1704,6 +1705,49 @@ async def test_jpeg_and_transparency_are_refused_together():
 async def test_unknown_format_is_refused():
     with pytest.raises(ViewerError, match="Unknown format 'bmp'"):
         await snapshot("/tmp/x", column="single", format="bmp")
+
+
+def test_every_finish_is_named_where_a_caller_can_find_it():
+    """`snapshot`'s docstring is the only place a finish is discoverable.
+
+    `capabilities()` does not report them, so a finish absent from the
+    docstring exists for anyone reading the source and for nobody calling the
+    tool. Making the suite fail is the whole mechanism: it forces adding one to
+    be a thing a person wrote a sentence about.
+
+    Here rather than beside the finish tests, because it is an assertion about
+    this tool's contract and nothing about image processing — and that module
+    had to import FastMCP to make it, so any import-time failure in the server
+    took the pure-Pillow suite down with it.
+    """
+    documented = snapshot.__doc__ or ""
+
+    missing = [name for name in sorted(FINISHES) if f'"{name}"' not in documented]
+    assert not missing, f"finishes a caller cannot discover: {missing}"
+
+
+async def test_an_unknown_finish_is_refused_before_the_render(wired_bridge, tmp_path):
+    """A finish is applied to the finished PNG, so the name was checked only
+    after a figure-resolution capture had already been paid for — up to a
+    hundred seconds of rendering thrown away over a spelling.
+
+    Asserting the refusal on its own would pass with the check back in its old
+    place, because the message is identical either way. What pins the ordering
+    is that the viewer was never asked to draw anything at all.
+    """
+    sent: dict[str, Any] = {}
+
+    # Served, not merely registered. Registering a handler and never running
+    # the loop leaves `sent` empty whatever the code does, so the assertion
+    # below would hold for the bug as well as the fix — and with nobody
+    # answering, a regression waits out the whole 300 s capture budget before
+    # failing on the wrong message. Under `_serving` the mutation answers at
+    # once and is caught by what it wrote.
+    async with _serving(wired_bridge, snapshot=_snapshot_handler(sent, 1051, 800)):
+        with pytest.raises(ViewerError, match="Unknown finish 'woodblock'"):
+            await snapshot(str(tmp_path / "fig"), column="single", finish="woodblock")
+
+    assert sent == {}, "the viewer rendered before the finish name was checked"
 
 
 @pytest.mark.parametrize(

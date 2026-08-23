@@ -4,7 +4,7 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-23**, at `main` after #118.
+Last updated **2026-08-23**, at `main` after #120.
 
 ---
 
@@ -30,6 +30,9 @@ Each of these is settled. Reopening one needs a reason, not a preference.
 | `felt` ships as a **style with no data channel**, and says so. | Charlie's call, 2026-08-21. The channel was built and could not be seen. |
 | `SM-02` is called **Clay**, not Claymation. | Claymation is a registered trademark. |
 | A treatment may not claim it shows data unless a **shuffle test** proves it. | See below. This is the rule the review said the plan could not enforce. |
+| **Cyanotype ships as declared decoration**, the way `felt` does. | Charlie's call, 2026-08-23. One ink on one ground has no second plate to assign, so there is nothing cheap to bind. Admitting that is what keeps "bind a channel where one is cheap" honest. |
+| After cyanotype: **the plate print, then phosphor-with-trails.** | Charlie's call, 2026-08-23. |
+| **`SP-01` Radiolaria stays parked**, though one of its two blockers is gone. | Charlie's call, 2026-08-23, asked directly. #107 measured the build-from-source cost at 1.2 GB and 4.6 s, so "it needs a Mol\* fork" is no longer true; the memory ceiling on large molecules is. Declined anyway. |
 
 ## What has been built
 
@@ -42,6 +45,13 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   each number belongs to, redraw, and compare. If the picture does not change,
   the colouring was never reading the data. This is what the plan's own
   "every treatment must show data" rule needed in order to mean anything.
+
+- **The finish route's base** — no new look, and the groundwork for the print
+  finishes. A finish declares its own paper and ink; the ink fraction is
+  measured against that paper rather than against black; the finish name is
+  checked before a figure-resolution render is paid for. Three of the tests
+  guarding the route could not fail — the headline one passed for a finish
+  that returned its input unchanged.
 
 - **`scaffold`** — `SD-08` from the catalogue, and the first real treatment.
 - **`boil`** — `TM-01`. The first temporal treatment, and the first thing here
@@ -104,13 +114,38 @@ restored, because a drawing style may not quietly edit the structure.
 ### 1. The print finishes
 
 Charlie's direction on 2026-08-23 is visual impact over analytical capability,
-and the cheapest striking work left is capture-time image treatments in Pillow:
-duotone, cyanotype, risograph. protean already ships cross-hatch and hedcut by
-that route, and duotone was built once in the bake-off and set aside. No engine
-work, days each.
+and the cheapest striking work left is capture-time image treatments in Pillow.
+protean already ships cross-hatch and hedcut by that route. No engine work.
 
-Two unexposed Mol\* knobs ride along cheaply and unlock the painterly looks:
-**fog** and an **orthographic camera lock**.
+The order, settled 2026-08-23:
+
+1. **The finish route's base** — no new look. Done first because the route had
+   *black on white* written into three separate places as though it were a
+   rule, and the next finish would have inherited all three. In particular the
+   ink fraction — the one number a caller who cannot see the file gets — asked
+   whether the red channel was zero, which would have reported a coloured
+   finish as a blank page or a solid one at random.
+2. **Cyanotype**, as declared decoration.
+3. **The plate print** — spot inks, one halftone screen per plate at its own
+   angle, each offset a fraction of a frame so the misregistration shows. This
+   is the one that carries a data channel, and it binds **which plate a region
+   prints in** rather than how dark it is: a category survives shading, where a
+   shade-driven binding is downstream of the lighting rig and gets quantised
+   away. That is the trap the bake-off fell into.
+4. **Phosphor with trails** — accumulate `boil`'s poses with decay so smear
+   length is the channel. The only candidate whose channel already passes a
+   shuffle arm, because `boil` reads mobility per atom.
+
+**Duotone is dropped as its own finish.** It was prototyped in the bake-off,
+never committed, and the picture is the weakest of the candidates — a fine dot
+screen that erases the sphere shading and does not read as a molecule. Its
+halftone screen and tuned constants belong inside the plate print. The
+prototype is preserved outside the repo rather than lost.
+
+Two unexposed Mol\* knobs ride along cheaply afterwards and unlock the
+painterly looks: **fog** and an **orthographic camera lock**. Neither carries a
+data claim; fog's channel is camera depth, which cannot be permuted across
+atoms, so a shuffle arm is the wrong instrument for both.
 
 ### 2. Decide whether a third treatment is worth building
 
@@ -154,17 +189,22 @@ Caveat to state in its docstring: it has two levels, not a smooth range, and it
 means nothing on an experimental structure — so it should refuse there, the way
 `plddt` now does.
 
-### 4. Then decide about `SP-01` Radiolaria
+### 4. `SP-01` Radiolaria — asked and declined, 2026-08-23
+
+**Decided: it stays parked.** Kept below because one of its two blockers is
+gone and someone will ask again. The reasoning as it stood:
 
 The other strong idea: draw each atom as an open lattice cage so you can see
 into the molecule instead of at its outer shell. The review agreed it delivers
 something ordinary rendering cannot.
 
-**Do not start this without deciding two things first**, because both are
-expensive and neither is decided:
+It was blocked on two expensive things. **One of them is no longer true:**
 
 - It needs protean to build Mol\* from source instead of using the prebuilt
-  copy. That is possible (measured in #107) but adds a build step.
+  copy. #107 measured that at **1.2 GB of memory and 4.6 seconds**, producing a
+  bundle the same size as the prebuilt one — so the "over 4 GB" figure still
+  written in `main.ts` is wrong, and no fork is required. What remains is that
+  it adds a build step protean does not have today.
 - It runs out of graphics memory on large molecules. The escape route named in
   the bake-off turned out to save 12%, not the order of magnitude claimed.
 

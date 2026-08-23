@@ -7,11 +7,19 @@ it earns is a property rather than a measurement.
 
 from __future__ import annotations
 
+import itertools
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from PIL import Image
 
-from protean_mcp.analysis.hatching import FINISHES, apply_finish, ink_fraction
+from protean_mcp.analysis.hatching import (
+    FINISHES,
+    apply_finish,
+    ink_fraction,
+    ink_mask,
+)
 
 FINISH_NAMES = sorted(FINISHES)
 
@@ -24,32 +32,50 @@ def _flat(value: int, size: int = 240, alpha: int = 255) -> Image.Image:
     )
 
 
-def _ink(image: Image.Image) -> float:
-    """Fraction of the opaque area that came back black."""
-    pixels = np.asarray(image)
-    opaque = pixels[:, :, 3] > 0
-    if not opaque.any():
-        return 0.0
-    return float((pixels[:, :, 0][opaque] == 0).mean())
+def _ink(image: Image.Image, finish: str) -> float:
+    """The shipped measure, not a second copy of it.
+
+    This used to be its own implementation of "how much came back black",
+    which meant the suite agreed with `ink_fraction` because both had been
+    written from the same wrong idea rather than because either was right.
+    """
+    return ink_fraction(image, finish)
+
+
+# Every tone, not a sample of them. A step of 15 was enough for both shipping
+# finishes, and that is not a property of the route: measured, a finish
+# declaring 12 bands lands in 12 of its 13 at that step and one declaring 14
+# lands in 13 of its 15. So the levels assertion below would have failed a
+# perfectly correct finish and blamed it for the test's own sampling. The full
+# sweep costs 0.8 s per finish and is the only version that means what it says.
+_RAMP = tuple(range(255, -1, -1))
 
 
 @pytest.mark.parametrize("finish", FINISH_NAMES)
 def test_darker_tone_earns_more_ink(finish):
     """The whole claim of the technique: tone becomes line density."""
-    coverage = [
-        _ink(apply_finish(_flat(tone), finish)) for tone in (255, 200, 140, 80, 0)
-    ]
+    coverage = [_ink(apply_finish(_flat(tone), finish), finish) for tone in _RAMP]
 
     assert coverage == sorted(coverage), f"{finish} did not darken monotonically"
     assert coverage[0] == 0.0, "white took ink"
     assert coverage[-1] > 0.9, "black did not fill in"
+    # Every line above passes for a finish that hands its input straight back:
+    # white has no ink, black is solid, and a sorted list tolerates a run of
+    # identical values, so nothing between the ends has to move at all. What a
+    # passthrough cannot do is separate the tones — it yields two levels where
+    # a real finish yields one per band plus the paper. Measured: cross-hatch
+    # 5, hedcut 7, passthrough 2.
+    assert len(set(coverage)) == FINISHES[finish].bands + 1, (
+        f"{finish} declares {FINISHES[finish].bands} bands but produced "
+        f"{len(set(coverage))} distinguishable ink levels"
+    )
 
 
 @pytest.mark.parametrize("finish", FINISH_NAMES)
 def test_a_mid_tone_becomes_neither_blank_nor_solid(finish):
     """A grey that came back all-white or all-black would mean the banding
     collapsed, which is the failure that still looks like a picture."""
-    middle = _ink(apply_finish(_flat(128), finish))
+    middle = _ink(apply_finish(_flat(128), finish), finish)
 
     assert 0.02 < middle < 0.95, f"{finish} turned a mid grey into {middle}"
 
@@ -57,10 +83,23 @@ def test_a_mid_tone_becomes_neither_blank_nor_solid(finish):
 @pytest.mark.parametrize("finish", FINISH_NAMES)
 def test_the_result_is_ink_on_paper_and_nothing_else(finish):
     """Two tones, no greys — that is what makes it an engraving rather than a
-    filter over the original."""
-    values = np.unique(np.asarray(apply_finish(_flat(128), finish))[:, :, :3])
+    filter over the original.
 
-    assert set(values.tolist()) <= {0, 255}
+    Against the finish's *declared* colours, not against black and white. The
+    older form asserted `{0, 255}`, which is the same assumption the ink
+    measure was making: true of both engraving styles by coincidence, and
+    quietly false for the first finish that prints in anything else.
+    """
+    style = FINISHES[finish]
+    engraved = np.asarray(apply_finish(_flat(128), finish))
+    colours = {tuple(c) for c in engraved[:, :, :3].reshape(-1, 3).tolist()}
+
+    declared = {style.paper, style.ink}
+    assert colours <= declared, (
+        f"{finish} printed colours it never declared: {colours - declared}"
+    )
+    assert style.ink in colours, f"{finish} laid down no ink on a mid grey"
+    assert style.paper in colours, f"{finish} left no paper showing on a mid grey"
 
 
 @pytest.mark.parametrize("finish", FINISH_NAMES)
@@ -90,39 +129,118 @@ def test_colour_is_weighted_the_way_an_eye_weighs_it():
         np.full((240, 240, 4), (0, 255, 0, 255), dtype=np.uint8), "RGBA"
     )
 
-    assert _ink(apply_finish(blue, "hedcut")) > _ink(apply_finish(green, "hedcut"))
+    assert _ink(apply_finish(blue, "hedcut"), "hedcut") > _ink(
+        apply_finish(green, "hedcut"), "hedcut"
+    )
 
 
-def test_the_two_finishes_do_not_draw_the_same_picture():
+@pytest.mark.parametrize(("left", "right"), list(itertools.combinations(FINISH_NAMES, 2)))
+def test_no_two_finishes_draw_the_same_picture(left, right):
     """Cross-hatching crosses and a hedcut does not, so the same tone has to
-    come out differently or one of them is not doing its job."""
-    tone = _flat(140)
+    come out differently or one of them is not doing its job.
 
-    crossed = np.asarray(apply_finish(tone, "cross-hatch"))
-    engraved = np.asarray(apply_finish(tone, "hedcut"))
+    Over every pair rather than the two that happened to exist when this was
+    written: a third finish added as a `_Finish` whose fields the code ignores
+    renders byte-identically to one already there, and a test naming the old
+    pair would have gone on passing while the new name drew someone else's
+    picture.
 
-    assert not np.array_equal(crossed, engraved)
+    Compared on where the ink *is*, not on the colours, so a finish that is an
+    existing one recoloured is still caught. Through the shipped `ink_mask`
+    rather than a copy of it, so a change to what counts as ink cannot leave
+    this comparing masks the product no longer draws. Measured over inked
+    tones: the two shipping finishes disagree on 0.37 to 0.50 of the frame,
+    and a duplicate reads exactly 0.0.
+    """
+    # Tones light enough that both finishes leave the paper bare would compare
+    # two blank frames and pass for any pair, including a duplicate.
+    disagreement = max(
+        float(
+            (
+                ink_mask(apply_finish(_flat(tone), left), left)
+                ^ ink_mask(apply_finish(_flat(tone), right), right)
+            ).mean()
+        )
+        for tone in (60, 100, 140)
+    )
+
+    assert disagreement > 0.1, (
+        f"{left} and {right} drew the same picture (disagreed on "
+        f"{disagreement:.4f} of the frame)"
+    )
 
 
-def test_an_unknown_finish_names_the_ones_that_exist():
-    with pytest.raises(KeyError, match="cross-hatch, hedcut"):
-        apply_finish(_flat(128), "woodblock")
+def test_a_finish_prints_in_the_colours_it_declared(monkeypatch):
+    """Both finishes that ship print black on white, which is exactly the
+    coincidence that hid the old bug.
+
+    So nothing else in this file can tell whether `apply_finish` reads the
+    declared colours or has them written into it — a finish declaring anything
+    else is the only thing that asks the question. Registered here rather than
+    shipped, because PR-sized honesty says a finish exists when someone chose
+    how it looks, not when a test needed one.
+    """
+    # A *warm* ink, chosen deliberately. The measure this replaced asked
+    # whether the red channel was zero, and a Prussian blue — the obvious
+    # blueprint colour, and the one this test reached for first — has a red
+    # channel of zero, so it would have satisfied the old code by accident and
+    # proved nothing. Madder red does not.
+    cream = (247, 240, 214)
+    madder = (163, 41, 38)
+    monkeypatch.setitem(
+        FINISHES,
+        "test-madder",
+        replace(FINISHES["hedcut"], paper=cream, ink=madder),
+    )
+
+    engraved = apply_finish(_flat(128), "test-madder")
+    colours = {tuple(c) for c in np.asarray(engraved)[:, :, :3].reshape(-1, 3).tolist()}
+
+    assert colours == {cream, madder}, f"printed {colours}, not what it declared"
+
+    # And the number the reply carries counts ink against *that* paper. Under
+    # the measure this replaced, neither colour here has a zero red channel, so
+    # a page with ink on it would have been reported as blank.
+    inked = ink_fraction(engraved, "test-madder")
+    assert 0.0 < inked < 1.0, f"a mid grey came back at {inked}"
+    assert inked == pytest.approx(_ink(apply_finish(_flat(128), "hedcut"), "hedcut"))
+
+
+@pytest.mark.parametrize("call", [apply_finish, ink_fraction, ink_mask])
+def test_an_unknown_finish_names_the_ones_that_exist(call):
+    """`ValueError`, not `KeyError`: `str(KeyError(msg))` is `repr(msg)`, so a
+    caller has to strip the quotes back off and a name containing one arrives
+    mangled — measured, a finish named `a'b` reached the model with a literal
+    backslash in it."""
+    with pytest.raises(ValueError, match="cross-hatch, hedcut"):
+        call(_flat(128), "woodblock")
+
+
+@pytest.mark.parametrize(
+    "colour", [(255, 255), (300, 0, 0), (-1, 0, 0), (255, 255, 255, 255)]
+)
+def test_a_malformed_colour_is_refused_where_it_is_declared(colour):
+    """Not where it prints. Left to numpy these surface as a broadcasting
+    error, or an `OverflowError` on a channel of 300, from inside a finish that
+    has already been handed a figure-resolution capture to ruin."""
+    with pytest.raises(ValueError, match="three channels"):
+        replace(FINISHES["hedcut"], ink=colour)
 
 
 def test_ink_fraction_says_when_the_tone_had_nowhere_to_go():
     """A dark ground engraves to almost solid ink, and the caller is usually a
     model that cannot look at the file."""
-    assert ink_fraction(apply_finish(_flat(255), "hedcut")) == 0.0
+    assert ink_fraction(apply_finish(_flat(255), "hedcut"), "hedcut") == 0.0
     # Only true black fills completely: the tone curve puts a value of 10 in
     # the second-darkest band, at five sixths ink, which is the point of
     # having bands at all.
-    assert ink_fraction(apply_finish(_flat(0), "hedcut")) == 1.0
-    assert ink_fraction(apply_finish(_flat(10), "hedcut")) > 0.8
-    middle = ink_fraction(apply_finish(_flat(150), "hedcut"))
+    assert ink_fraction(apply_finish(_flat(0), "hedcut"), "hedcut") == 1.0
+    assert ink_fraction(apply_finish(_flat(10), "hedcut"), "hedcut") > 0.8
+    middle = ink_fraction(apply_finish(_flat(150), "hedcut"), "hedcut")
     assert 0.0 < middle < 0.5
 
 
 def test_ink_fraction_ignores_what_was_never_drawn():
     """Transparent pixels are not pale ones; counting them would report every
     cropped capture as mostly paper."""
-    assert ink_fraction(apply_finish(_flat(128, alpha=0), "hedcut")) == 0.0
+    assert ink_fraction(apply_finish(_flat(128, alpha=0), "hedcut"), "hedcut") == 0.0

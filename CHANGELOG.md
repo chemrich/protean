@@ -53,6 +53,66 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **The finish route grew a base, before there is a third finish.** No new
+  look. `snapshot(finish=)` hosts cross-hatch and hedcut, both of which print
+  black on white, and three separate pieces of the route had that coincidence
+  written into them as though it were a rule:
+
+  - **The ink fraction asked whether the red channel was zero.** That is a test
+    for black wearing a disguise. It is the one number the reply carries so a
+    caller who cannot look at the file can tell a good print from a solid mass,
+    and for a finish printing in any other colour it would have answered
+    "blank page" or "solid page" at random. There is now one definition of
+    where the ink is — `ink_mask`, read by the measure and by the tests — and
+    it is **exact**: `apply_finish` writes each pixel as either the paper or
+    the ink and nothing between, so "not the paper" recovers the mask it drew
+    bit for bit rather than estimating it within a tolerance. Measured, that
+    also took the cost of the measure at 20 MP from 425 MB back to 180.
+  - **A finish now declares its own paper and ink** rather than having white
+    and black compiled into the compositing step, and a malformed colour is
+    refused where it is written. Left to numpy, a two-channel paper surfaces as
+    a broadcasting error and a channel of 300 as an `OverflowError`, both from
+    inside a finish that has already been handed a figure-resolution capture.
+  - **The name is checked before the render, not after it.** A finish is
+    applied to the finished PNG, so a mistyped name cost a full
+    figure-resolution capture — up to a hundred seconds — before anything
+    looked at the string. The refusal is a `ValueError` rather than a
+    `KeyError`, because `str(KeyError(msg))` is `repr(msg)`: the caller had to
+    strip the quotes back off, and a name containing one arrived mangled — a
+    finish named `a'b` reached the model as `Unknown finish "a\'b"`.
+
+  Three tests could not have caught any of it, and were the reason to look.
+  The headline one, whose docstring calls itself "the whole claim of the
+  technique", **passes for a finish that hands its input straight back**: white
+  takes no ink, black fills in, and a sorted list tolerates a run of identical
+  values in between. It now asserts that a finish separates tone into the
+  `bands + 1` levels it declares — measured at 5 for cross-hatch, 7 for hedcut,
+  and **2 for a passthrough**. Over every tone rather than a sample of them:
+  at the step of 15 this was first written with, a finish declaring 12 bands
+  lands in 12 of its 13 and one declaring 14 lands in 13 of its 15, so the
+  assertion would have failed a correct finish and blamed it for the test's
+  own sampling. "The two finishes differ" named the two that
+  existed, so a third registered with fields the code ignores would have
+  rendered byte-identically to one already there while the test went on
+  passing; it now runs over every pair, compares where the ink is rather than
+  what colour it is, and a duplicate reads exactly 0.0 against a 0.1 floor.
+  And the suite's own ink measure was a second copy of the shipped one's
+  mistake, so the two agreed because both had been written from the same wrong
+  idea; the tests now call the shipped function.
+
+  Every `FINISHES` key is asserted present in `snapshot`'s docstring, which is
+  the only place a finish is discoverable — `capabilities()` does not report
+  them, so one left undocumented exists for a reader of the source and for
+  nobody calling the tool.
+
+  `docs/bakeoff.md` argued for exactly this after writing a second finish
+  reproduced the paper-threshold bug from scratch: "the constant and the guard
+  belong to the route, not to any one finish".
+
+- **The paper cutoff is 0.96, and two documents said 0.94.** It has been 0.96
+  since the finish shipped and 0.94 was never in the code, so both were
+  describing a number that never existed.
+
 - **`felt` — felted wool, and the first thing out of the soft-matter plan.**
   All-atom spheres in a dyed-wool palette, no speculars, a fibrous surface and
   a soft halo layer at 1.12x. **Shipped as a style, not as a treatment**: the
