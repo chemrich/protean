@@ -1574,6 +1574,60 @@ async def test_plddt_width_is_the_exact_reverse_of_uncertaintys():
     )
 
 
+async def test_plddt_colour_reaches_the_pixels():
+    """The colour half of the claim `_VIEW_THEMES` can no longer make.
+
+    `plddt` is excluded from that parametrized sweep because its subject is a
+    predicted model while this suite's fixture is a crystal structure, so the
+    provenance guard refuses it there -- correctly, and that refusal is the
+    whole point of backlog 41. But the claim still has to be made somewhere: a
+    theme in the catalogue that paints nothing is a view nobody can use, and an
+    exclusion with no replacement is how a sweep quietly stops covering things.
+
+    Straight down the bridge rather than through `color()`, for the same reason
+    `test_plddt_width_is_the_exact_reverse_of_uncertaintys` above does: what is
+    under test here is the theme the viewer registers, and the guard has its
+    own tests in `test_server.py`.
+
+    The column carries the synthetic ramp rather than a real model's numbers,
+    for the reason `_confidence_ramp` records -- AF-P69905 reads p10 97.6, p50
+    98.6, p90 98.8, so a picture drawn from it would be separating a handful of
+    pixels and this would pass on renderer noise.
+    """
+    fetched = await fetch_structure_data(FIXTURE)
+    deposited = load_structure(fetched.data, fetched.format, "asymmetric").array
+
+    confident = deposited.copy()
+    confident.b_factor = _confidence_ramp(deposited)
+
+    # Asserted before anything about the picture, for the reason this whole
+    # change exists: a flat column draws one flat colour and every claim below
+    # would pass without the binding carrying anything.
+    deciles = np.percentile(confident.b_factor, [10, 50, 90])
+    assert deciles[2] - deciles[0] > 20.0, (
+        f"the fixture's confidence column is nearly flat ({deciles}), so a "
+        "picture drawn from it says nothing about the theme"
+    )
+
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod._send_structure(confident, FIXTURE)
+        server_mod._structure = confident
+        await server_mod.hide(server_mod._WHOLE_SCENE)
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="cartoon", handle="fold", color="#ffffff")
+        white = await _shot(session)
+        assert coverage(white) > DRAWN, "nothing was drawn to colour"
+
+        await session.request("color", {"name": "fold", "color": "plddt"})
+        painted = await _shot(session)
+
+    measured = difference(white, painted)
+    assert measured > STYLED, (
+        f"'plddt' painted nothing over a confidence ramp spanning {PLDDT_LOW:g} "
+        f"to {PLDDT_HIGH:g}: {measured:.6f} against a threshold of {STYLED}"
+    )
+
+
 # -- a control that asks the server, from docs/views.md §4 ---------------------
 
 # Driven by what a person does — open the menu, click the entry — rather than by
@@ -2103,14 +2157,32 @@ async def test_a_timeline_needs_two_keyframes():
 # colour of a deleted view and knew nothing of `spacefill` or `skeleton`, so it
 # was pinning a vocabulary nothing used while the one in use went unchecked.
 _VIEW_THEMES = sorted(
-    {view.color for view in server_mod._VIEWS.values()}
-    | {
-        # Not a view's colour today, and both spoken for in docs/views.md: the
-        # charge view is planned on partial-charge (a proxy, not a solve), and
-        # `illustrative` is the colour half of the styling preset of that name.
-        "partial-charge",
-        "illustrative",
-    }
+    (
+        {view.color for view in server_mod._VIEWS.values()}
+        | {
+            # Not a view's colour today, and both spoken for in docs/views.md:
+            # the charge view is planned on partial-charge (a proxy, not a
+            # solve), and `illustrative` is the colour half of the styling
+            # preset of that name.
+            "partial-charge",
+            "illustrative",
+        }
+    )
+    # `plddt` is the one colour in the catalogue that *cannot* be asked for
+    # here, and by design: this suite's fixture is 1UBQ, and `color("plddt")`
+    # on an experimental structure is refused — a crystal structure's B-factors
+    # are not confidences, and painting the AlphaFold ramp over them produces a
+    # confident-looking picture that means nothing (backlog 41). The refusal
+    # firing here is the guard working; excluding it is the test wiring
+    # catching up with a view whose subject is a different kind of file.
+    #
+    # Covered instead by `test_plddt_colour_reaches_the_pixels` and
+    # `test_plddt_width_is_the_exact_reverse_of_uncertaintys` above, both of
+    # which put a confidence ramp in the column and go down the bridge. The
+    # exclusion must not become a hole: this is the failure mode the derived
+    # list exists to prevent, and dropping a theme from it without a named
+    # replacement would reintroduce exactly that.
+    - {"plddt"}
 )
 
 # `cartoon` is what `_bare_fold` draws as its baseline, so drawing it again
