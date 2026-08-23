@@ -238,9 +238,10 @@ The size arm's 1.3x is the thinnest margin, and it looks thin only against the
 whole frame: a putty tube covers 0.014 of that viewport where a cartoon covers
 0.033, so 0.0105 is 73% of the tube's own pixels. **These four numbers were not
 measured on CI.** CI passes no `--window-size`, so its viewport is a third one
-again, and the only evidence about the size arm's margin there is whether the
-job is green. If that arm ever fails on CI, measure the viewport before
-touching the threshold.
+again, and the only evidence about the size arm's margin there is that the job
+is green — which it is, first time, at 46m35s for the whole browser job. That
+is a pass, not a measurement: if that arm ever fails on CI, measure the
+viewport before touching the threshold.
 
 **The control is the load-bearing part.** 1UBQ has one chain, so a chain-id
 channel has no permutation but the identity, and the arm must read exactly 0.0.
