@@ -53,6 +53,38 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`snapshot(finish="spot-ink-plates")` — a two-colour press, and the first
+  finish that carries data.** The frame is sorted into colour families, each
+  family screened onto its own plate at its own angle, and the plates printed a
+  little out of register so the inks cross in fringes along every boundary and
+  make a colour neither carries alone.
+
+  **What it binds is which plate a region prints on** — a category rather than
+  a shade, and that is the point. A shade-driven binding sits downstream of the
+  lighting rig, so the screen converts *shading* into dot area and the
+  measurement never reaches the page: that is the trap `docs/bakeoff.md` fell
+  into. A plate assignment cannot be quantised away, because shading multiplies
+  brightness and leaves hue alone.
+
+  It reads the colours already in the render and **claims no more than that**.
+  Colour by element and the plates are elements. An earlier plan had
+  `snapshot()` set the theme itself so the finish would know what a hue meant;
+  a capture tool silently mutating the caller's scene is a worse surprise than
+  a narrow claim, so it reads what is there and says so.
+
+  The channel is proved by taking the colour away: the same subject reaches the
+  paper in two inks and their crossing, and its own greyscale reaches it in one
+  ink and nothing else — categorical, not a margin. Measured on myoglobin:
+  madder 0.261, indigo 0.083, crossing 0.010 in colour; madder 0.364 and no
+  other ink in greyscale. `hedcut` is the control at 0.0022 of the frame.
+
+  **The crossing colour very nearly never happened.** Family assignment is
+  exclusive, so shifting each plate's *screen* off register moves its dots and
+  leaves the regions pinned — no two plates could cover the same pixel, and the
+  overlap was declared in the palette, described in the docstring, and reached
+  the page zero times. Found by counting what actually printed. The separation
+  now travels off register with its screen.
+
 - **`snapshot(finish="cyanotype")` — a blueprint, and the third finish.** White
   on Prussian blue, and the first one that is not an engraving: it **contours**
   the shading rather than hatching it. The render's lighting is read as

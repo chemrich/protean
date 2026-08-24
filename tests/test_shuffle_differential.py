@@ -58,24 +58,6 @@ from typing import Any
 import numpy as np
 from biotite.structure.io.xtc import XTCFile
 
-import protean_mcp.server as server_mod
-from protean_mcp.analysis.trajectory import rmsf as measured_rmsf
-from protean_mcp.fetch import fetch_structure_data
-from protean_mcp.selections import parse as parse_selection
-from protean_mcp.selections_numpy import evaluate, load_structure
-
-from .browser import BROWSER_MARKS, viewer_session
-from .pixels import Render, coverage, decode, difference
-from .shuffle import (
-    Entry,
-    checked_shuffle,
-    checked_shuffle_values,
-    distinct,
-    moved,
-    numbers,
-    shuffled,
-)
-
 # Reused rather than restated. STYLED is the measured floor for "this style
 # change moved the picture" and DRAWN for "something is on screen"; a shuffle
 # that changes the picture less than a lighting rig does is not a finding worth
@@ -104,6 +86,26 @@ from .shuffle import (
 # tube's own pixels** — against 86% for the colour ramp and 80% for burial.
 # These four numbers are local; the viewport CI renders into is a different
 # one, and the only measurement of these arms there is whether the job is green.
+from PIL import Image
+
+import protean_mcp.server as server_mod
+from protean_mcp.analysis.hatching import apply_finish
+from protean_mcp.analysis.trajectory import rmsf as measured_rmsf
+from protean_mcp.fetch import fetch_structure_data
+from protean_mcp.selections import parse as parse_selection
+from protean_mcp.selections_numpy import evaluate, load_structure
+
+from .browser import BROWSER_MARKS, viewer_session
+from .pixels import Render, coverage, decode, difference
+from .shuffle import (
+    Entry,
+    checked_shuffle,
+    checked_shuffle_values,
+    distinct,
+    moved,
+    numbers,
+    shuffled,
+)
 from .test_render_differential import DRAWN, FIXTURE, STYLED, _as_server, _shot
 
 pytestmark = BROWSER_MARKS
@@ -199,6 +201,95 @@ async def test_a_colour_field_repaints_when_its_values_are_shuffled():
         assert difference(true, permuted) > STYLED, (
             "shuffling the values across residues changed nothing on screen, "
             "so the colour theme is not reading the field"
+        )
+
+
+def _printed(render: Render, finish: str = "spot-ink-plates") -> Render:
+    """The same frame, put through the press."""
+    inked = apply_finish(Image.fromarray(render.pixels, "RGBA"), finish)
+    return Render(pixels=np.asarray(inked))
+
+
+async def test_the_plates_follow_the_field_they_were_coloured_by():
+    """The arm this file's own rule requires of `spot-ink-plates`.
+
+    The finish claims that which plate a region prints on follows the colour
+    family it had in the render. `tests/test_hatching.py` proves the finish
+    reads colour at all, by taking the colour away and watching two inks and a
+    crossing collapse to one ink. That is a property of the Pillow half. This
+    is the whole chain: a number per residue becomes a colour theme, the theme
+    becomes pixels, and the press sorts those pixels onto plates. Permute the
+    numbers across the residues and a different separation has to come out.
+
+    **Retention is the assertion that matters**, and it is the one a finish
+    cannot fake. Any finish at all will differ between these two arms, because
+    the renders differ — a passthrough would score the raw difference exactly.
+    What a *plate print* has to do is carry that difference through to the page
+    rather than flattening it, so the check is the finished difference as a
+    share of the raw one.
+
+    Measured on 1UBQ spacefill at this viewport: the render carries 0.0903 of
+    the frame between the two arms, the press keeps 0.0438 of it, and the ratio
+    is **0.485**. The same finish with its colour sorting removed — everything
+    onto one plate — keeps 0.0165, a ratio of **0.183**, and fails here. The
+    floor at 0.25 sits between them.
+
+    Under that mutation the line above, `printed > STYLED`, **still passes**:
+    the two renders genuinely differ, and a press that flattens them still
+    prints two different pages. So retention is not a second opinion on that
+    assertion. It is the only one here that can tell a separation from a
+    screen.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        permuted_values = checked_shuffle(RAMP, "value")
+        # Spacefill, not cartoon: the plates sort by colour *family*, and a
+        # per-atom representation is what gives a ramp enough distinct hue to
+        # separate. A cartoon averages colour along the ribbon.
+        await _scene("spacefill")
+
+        true = await _arm(
+            session, "ramp", RAMP, server_mod.color, key="value", domain=RAMP_DOMAIN
+        )
+        permuted = await _arm(
+            session,
+            "ramp_shuffled",
+            permuted_values,
+            server_mod.color,
+            key="value",
+            domain=RAMP_DOMAIN,
+        )
+
+        _both_on_screen(true, permuted, DRAWN)
+        raw = difference(true, permuted)
+        printed = difference(_printed(true), _printed(permuted))
+
+        assert printed > STYLED, (
+            "the two separations printed the same page, so the plates are not "
+            "reading the colours the field painted"
+        )
+        assert printed / raw > 0.25, (
+            f"the press kept only {printed / raw:.2f} of the difference the "
+            f"render carried ({printed:.4f} of {raw:.4f}), which is a finish "
+            "flattening its subject rather than separating it"
+        )
+
+
+async def test_a_printed_identity_reads_exactly_zero():
+    """The control, and the reason the arm above is not vacuous.
+
+    Two presses of the *same* frame must be bit-identical. If they are not, the
+    finish has a source of randomness that is not the picture — and every
+    number in this file would then be measuring that instead. A hashed grain is
+    repeatable by construction; this is what proves it stayed that way.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await _scene("spacefill")
+        once = await _arm(
+            session, "ramp", RAMP, server_mod.color, key="value", domain=RAMP_DOMAIN
+        )
+
+        assert difference(_printed(once), _printed(once)) == 0.0, (
+            "the same frame printed twice came out different"
         )
 
 

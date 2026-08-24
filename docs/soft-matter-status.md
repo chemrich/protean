@@ -46,6 +46,13 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   the colouring was never reading the data. This is what the plan's own
   "every treatment must show data" rule needed in order to mean anything.
 
+- **`spot-ink-plates`** — the fourth finish and **the first that carries a
+  data channel**. Binds which plate a region prints on, which is a category and
+  so survives shading, where a shade-driven binding does not. Proved by taking
+  the colour away: two inks and their crossing become one ink and nothing else.
+  Still owed: the arm in `tests/test_shuffle_differential.py` that this file's
+  own standing rule requires.
+
 - **`cyanotype`** — the third finish and the first that is not an engraving.
   A drawing style with no data channel, said outright in its docstring, the way
   `felt` is. No shuffle arm, because it claims nothing a shuffle arm could
@@ -136,7 +143,9 @@ The order, settled 2026-08-23:
    a four-way bake-off judged on the pictures; an **opaque background** decided
    it, because two of the four dissolved into a texture of their own making
    once the ground was not paper-white.
-3. **The plate print** — spot inks, one halftone screen per plate at its own
+3. **The plate print** — *shipped* as `spot-ink-plates`, named for the
+   technique rather than for a manufacturer, and assigned by element, both
+   Charlie's calls on 2026-08-24. Spot inks, one halftone screen per plate at its own
    angle, each offset a fraction of a frame so the misregistration shows. This
    is the one that carries a data channel, and it binds **which plate a region
    prints in** rather than how dark it is: a category survives shading, where a
