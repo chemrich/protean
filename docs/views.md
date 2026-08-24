@@ -859,6 +859,43 @@ Three routes, and the middle one is chosen:
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
 
+#### Spot-ink plates — a two-colour press, 2026-08-24
+
+The fourth finish, and the first that carries data. The frame is sorted into
+colour families, each family screened onto its own plate at its own angle, and
+the plates printed a little out of register so the inks cross in fringes along
+every boundary and make a colour neither carries alone.
+
+**What it binds is which plate a region prints on** — a category rather than a
+shade. That is the design, not a convenience: a shade-driven binding sits
+downstream of the lighting rig, so the screen converts *shading* into dot area
+and the measurement never reaches the page. `docs/bakeoff.md` fell into exactly
+that and had to retract. Shading multiplies brightness and leaves hue alone, so
+a plate assignment survives it.
+
+**The capture is coloured by element for the one frame, and the scene is put
+back.** A capture-time finish reads pixels and cannot know what a hue was
+*made* to mean, so "a plate per element" could only ever have been a hope about
+how the caller had coloured their scene. `snapshot()` now asks the viewer to
+apply `element-symbol` for the capture and restores the previous theme in a
+`finally`, and the reply says both — `separated_by` and `scene_restored` — so
+nothing has to be inferred from the picture.
+
+That ordering was the whole design question. The first version read whatever
+hues were present and claimed only "a plate per colour family", on the grounds
+that a capture tool silently changing a caller's scene is a worse surprise than
+a narrow claim. That is true, and it is answerable: restoring removes the
+surprise and leaves the guarantee. Charlie overruled the narrow version and was
+right to.
+
+Its guard paints the scene **flat white** first, which is the worst case — a
+white scene has no colour families at all. If the theme were not applied the
+print could not separate; if it were not put back, the screenshot afterwards
+would come back in element colours. Both halves are asserted, because either
+alone passes for a broken version, and all three mutations go red: dropping the
+restore, dropping the request, and — the one that matters — reporting the
+recolour while applying nothing.
+
 #### Cyanotype — a survey sheet, 2026-08-23
 
 The third finish, and the first that is not an engraving. White on Prussian

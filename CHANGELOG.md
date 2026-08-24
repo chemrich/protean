@@ -66,11 +66,18 @@ nothing is released yet, so everything below is unreleased.
   into. A plate assignment cannot be quantised away, because shading multiplies
   brightness and leaves hue alone.
 
-  It reads the colours already in the render and **claims no more than that**.
-  Colour by element and the plates are elements. An earlier plan had
-  `snapshot()` set the theme itself so the finish would know what a hue meant;
-  a capture tool silently mutating the caller's scene is a worse surprise than
-  a narrow claim, so it reads what is there and says so.
+  **The capture is coloured by element for the one frame, and the scene is put
+  back.** A finish reads pixels and cannot know what a hue was *made* to mean,
+  so "a plate per element" could only ever have been a hope about how the
+  caller had coloured their scene. `snapshot()` asks the viewer to apply
+  `element-symbol` for the capture and restores the previous theme in a
+  `finally`; the reply carries `separated_by` and `scene_restored` so neither
+  has to be inferred from the picture.
+
+  The first version read whatever hues were present and claimed only "a plate
+  per colour family", on the grounds that a capture tool silently changing a
+  caller's scene is a worse surprise than a narrow claim. That is true and it
+  is answerable: restoring removes the surprise and keeps the guarantee.
 
   The channel is proved by taking the colour away: the same subject reaches the
   paper in two inks and their crossing, and its own greyscale reaches it in one

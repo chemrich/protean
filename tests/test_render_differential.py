@@ -2818,6 +2818,56 @@ async def test_a_snapshot_can_be_engraved_on_the_way_out(tmp_path):
         assert set(np.unique(engraved.pixels[:, :, :3]).tolist()) <= {0, 255}
 
 
+async def test_a_plate_print_colours_for_its_capture_and_puts_the_scene_back(
+    tmp_path,
+):
+    """The separation is guaranteed rather than hoped for, and it costs the
+    caller nothing.
+
+    A capture-time finish reads pixels and cannot know what a hue was *made* to
+    mean, so `spot-ink-plates` sorting by colour could only ever claim "a plate
+    per whatever this render happened to be coloured by". Asking the viewer to
+    colour by element for the one capture makes "a plate per element" true.
+
+    The price would be a capture tool quietly changing the caller's scene,
+    which is a worse surprise than a narrow claim — so it does not. The scene
+    here is deliberately painted a flat white first, which is the *worst* case:
+    a white scene has no colour families at all, so if the theme were not
+    applied the print could not separate, and if it were not put back the
+    screenshot afterwards would come back in element colours.
+
+    Both halves are asserted, because either alone passes for a broken version.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.select("polymer", name="fold")
+        await server_mod.show(representation="spacefill", handle="fold", color="#ffffff")
+
+        before = await _shot(session)
+        reply = await server_mod.snapshot(
+            str(tmp_path / "press.png"), width_mm=60, finish="spot-ink-plates"
+        )
+        after = await _shot(session)
+
+        assert reply["separated_by"] == "element-symbol"
+        assert reply["scene_restored"] is True
+
+        printed = decode((tmp_path / "press.png").read_bytes())
+        paper = (247, 243, 233)
+        inks = {
+            tuple(c)
+            for c in np.unique(printed.pixels[:, :, :3].reshape(-1, 3), axis=0).tolist()
+        } - {paper}
+        assert len(inks) > 1, (
+            f"a white scene printed on one plate, so the capture was never "
+            f"recoloured: {sorted(inks)}"
+        )
+
+        assert difference(before, after) == 0.0, (
+            "the viewer was left in the colours the print asked for, so the "
+            "capture changed the caller's scene"
+        )
+
+
 async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path):
     """A file half-written in a style nobody asked for is worse than an error."""
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
