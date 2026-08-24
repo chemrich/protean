@@ -2822,7 +2822,7 @@ async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path)
     """A file half-written in a style nobody asked for is worse than an error."""
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         out = tmp_path / "nope.png"
-        with pytest.raises(ViewerError, match="cross-hatch, hedcut"):
+        with pytest.raises(ViewerError, match="cross-hatch, cyanotype, hedcut"):
             await server_mod.snapshot(str(out), width_mm=60, finish="woodblock")
 
 

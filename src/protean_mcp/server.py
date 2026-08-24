@@ -2357,10 +2357,17 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
-    finish: redraw the capture in ink — "cross-hatch" or "hedcut". Tone becomes
-      line: the image is banded by brightness and each band filled with
-      strokes, more of them where it is darker, the way an engraving carries
-      shading without any greys.
+    finish: redraw the capture as a print. "cross-hatch" and "hedcut" are
+      engravings — tone becomes line, the image banded by brightness and each
+      band filled with strokes, more of them where it is darker, the way an
+      engraving carries shading without any greys.
+
+      "cyanotype" is a blueprint: white on Prussian blue, and it contours the
+      shading like a landscape rather than hatching it, so every atom comes out
+      as a set of nested rings and the frame reads as a survey sheet. **It is a
+      drawing style and carries no data** — the rings follow the lighting, not
+      any measurement, and nothing in the picture is a number. Say so if you
+      caption it.
 
       **Applied after the capture, in Python, and the viewer will not show
       it.** Mol* has no hatching of any kind, so there is no live preview and

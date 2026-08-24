@@ -859,6 +859,44 @@ Three routes, and the middle one is chosen:
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
 
+#### Cyanotype — a survey sheet, 2026-08-23
+
+The third finish, and the first that is not an engraving. White on Prussian
+blue, and it **contours** the shading instead of hatching it: the render's
+lighting is treated as elevation, so every atom — a lit dome — comes out as a
+set of nested rings, and the frame reads as a survey chart of a landscape that
+happens to be a protein.
+
+**It carries no data, and its docstring says so**, the way `felt` does. The
+rings follow the light, not any measurement. It gets no shuffle arm because it
+makes no claim that a shuffle arm could test.
+
+Three things it needed that a hatch did not:
+
+- **The element colour has to be divided out.** A spacefill render is coloured
+  by element and shaded by multiplying that colour, so raw luma jumps at every
+  atom boundary and a blue atom spans twice the range of a green one — the
+  rings would count differently per element and the sheet would read as noise.
+  Dividing each pixel by the brightest value seen at its hue recovers the
+  lighting alone.
+- **The levels are spaced for a sphere, not evenly in brightness.** A lit
+  sphere's shade is the cosine of the angle from the light, so equal-brightness
+  levels crowd into a solid rind at the rim and leave the summit bare.
+  Contouring `sqrt(1 - shade^2)` — the radius at which a level sits on a sphere
+  — spaces the rings evenly. The subject really is spheres, so this is a fact
+  about the render rather than a fudge.
+- **Grain, because a contour is an edge.** A flat tone has no edges at all, so
+  a pure contour finish reads zero ink at every step of the tone ramp and fails
+  the route's own rule. A jittered dot lattice, rank-equalised so its coverage
+  is exactly the tone asked for, is what makes a flat grey grade.
+
+It was picked from a four-way bake-off — drafting rules, contours, photographic
+grain, and halation — judged on the pictures. **What decided it was an opaque
+background.** All four look competent over a transparent capture; on an
+ordinary grey field two of them dissolved, the ground earning a dense texture
+of its own with the molecule sinking into it. The contour survey was the one
+that still read.
+
 **It belongs on `snapshot()`, not in the menu**, and that is the design point
 rather than an implementation detail. Every entry in the menu changes the
 *scene*; a hatch is applied to the *capture*. Two consequences follow and both
