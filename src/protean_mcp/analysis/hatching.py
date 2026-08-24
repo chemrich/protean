@@ -19,6 +19,7 @@ rather than leaving it to be inferred from the picture.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
@@ -126,15 +127,53 @@ class _Style:
     paper: tuple[int, int, int] = (255, 255, 255)
     """The ground this finish prints on."""
 
-    ink: tuple[int, int, int] = (0, 0, 0)
-    """The colour the marks are made in.
+    inks: tuple[tuple[int, int, int], ...] = ((0, 0, 0),)
+    """The colours the marks are made in — a palette, not a colour.
 
     Declared per finish rather than assumed black, because the route carries
     finishes that are not. Everything downstream — the ink fraction reported to
     a caller who cannot look at the file, and the test that two finishes do not
-    draw the same picture — reads these two fields rather than testing for
+    draw the same picture — reads this and the paper rather than testing for
     black, which was only ever black by coincidence.
+
+    Plural because a print may lay down more than one. A finish that puts each
+    ink on its own plate produces the overlaps as well, and the overlaps are
+    where the third and fourth colours of a spot print come from — so what a
+    finish may legitimately put on the page is not the list itself but
+    `palette()`, which is derived from it.
     """
+
+    @property
+    def ink(self) -> tuple[int, int, int]:
+        """The first ink, for the finishes that have only one."""
+        return self.inks[0]
+
+    def palette(self) -> frozenset[tuple[int, int, int]]:
+        """Every colour this finish may legitimately print.
+
+        The paper, each ink as itself, and a blend wherever two or more plates
+        coincide — because that overlap is where a spot print's third and
+        fourth colours come from. Derived rather than declared, so a finish
+        cannot name one palette and print another, and so the suite can check
+        the whole page against one rule.
+
+        **An ink is laid as its own colour, not multiplied into the ground.**
+        The first version of this multiplied every ink over the paper, which is
+        right for a dark ink on white and wrong for `cyanotype`, whose ink is
+        *lighter* than its ground — those white marks are unexposed paper
+        showing through, not a transparent ink lying over blue. Caught by the
+        suite: cyanotype started printing a colour its own palette disowned.
+        Multiplying is reserved for where plates cross, which is the only place
+        the physical model actually holds.
+
+        For a finish with one ink this is exactly the two colours it always
+        was: the paper, and the ink.
+        """
+        colours = {self.paper, *self.inks}
+        for count in range(2, len(self.inks) + 1):
+            for chosen in itertools.combinations(self.inks, count):
+                colours.add(_multiply(chosen))
+        return frozenset(colours)
 
     def __post_init__(self) -> None:
         """Refuse a malformed colour where it is written, not where it prints.
@@ -146,7 +185,13 @@ class _Style:
         figure-resolution capture has already been paid for. Which is the same
         cost this module moved the name check to avoid.
         """
-        for role, colour in (("paper", self.paper), ("ink", self.ink)):
+        roles: tuple[tuple[str, tuple[int, int, int]], ...] = (
+            ("paper", self.paper),
+            *((f"ink {n}", ink) for n, ink in enumerate(self.inks)),
+        )
+        if not self.inks:
+            raise ValueError("A finish must declare at least one ink")
+        for role, colour in roles:
             if len(colour) != _CHANNELS or not all(
                 isinstance(c, int) and 0 <= c <= _FULL for c in colour
             ):
@@ -330,7 +375,7 @@ FINISHES: dict[str, _Style] = {
     "hedcut": _Engraving(angles=(75.0,), cumulative=False, bands=6),
     # Prussian blue and the white of unexposed paper — never pure 255, because
     # a cyanotype's highlight is paper rather than light.
-    "cyanotype": _Survey(bands=5, paper=(17, 48, 92), ink=(238, 245, 252)),
+    "cyanotype": _Survey(bands=5, paper=(17, 48, 92), inks=((238, 245, 252),)),
 }
 
 
@@ -351,6 +396,20 @@ def validate_finish(finish: str) -> None:
         raise ValueError(
             f"Unknown finish {finish!r}. Available: {', '.join(sorted(FINISHES))}"
         )
+
+
+def _multiply(inks: tuple[tuple[int, int, int], ...]) -> tuple[int, int, int]:
+    """The colour where plates cross: each ink multiplied into the last.
+
+    Two spot inks crossing make a third colour rather than the second one
+    winning, and that third colour is the reason a two-plate print looks like
+    more than two.
+    """
+    out = [255.0, 255.0, 255.0]
+    for ink in inks:
+        out = [o * (c / 255.0) for o, c in zip(out, ink, strict=True)]
+    first, second, third = (round(c) for c in out)
+    return (first, second, third)
 
 
 def _strokes(

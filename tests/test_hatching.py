@@ -16,6 +16,7 @@ from PIL import Image
 
 from protean_mcp.analysis.hatching import (
     FINISHES,
+    _multiply,
     _Survey,
     apply_finish,
     ink_fraction,
@@ -105,7 +106,7 @@ def test_the_result_is_ink_on_paper_and_nothing_else(finish):
     engraved = np.asarray(apply_finish(_flat(128), finish))
     colours = {tuple(c) for c in engraved[:, :, :3].reshape(-1, 3).tolist()}
 
-    declared = {style.paper, style.ink}
+    declared = style.palette()
     assert colours <= declared, (
         f"{finish} printed colours it never declared: {colours - declared}"
     )
@@ -328,7 +329,7 @@ def test_a_finish_prints_in_the_colours_it_declared(monkeypatch):
     monkeypatch.setitem(
         FINISHES,
         "test-madder",
-        replace(FINISHES["hedcut"], paper=cream, ink=madder),
+        replace(FINISHES["hedcut"], paper=cream, inks=(madder,)),
     )
 
     engraved = apply_finish(_flat(128), "test-madder")
@@ -354,6 +355,60 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
         call(_flat(128), "woodblock")
 
 
+def test_two_plates_make_a_third_colour_where_they_cross():
+    """The overlap is the point of a spot print, and no shipped finish has two
+    inks yet — so without this the whole overlap branch of `palette()` ships
+    untested. Mutation confirmed it: deleting the branch outright passed.
+
+    Madder and indigo, from the plan's dyed-wool palette, on white.
+    """
+    two = replace(
+        FINISHES["hedcut"], inks=((163, 41, 38), (41, 61, 107)), paper=(255, 255, 255)
+    )
+    palette = two.palette()
+
+    assert len(palette) == 4, f"two inks should make four colours, not {len(palette)}"
+    assert (255, 255, 255) in palette, "the paper"
+    assert (163, 41, 38) in palette and (41, 61, 107) in palette, "each ink alone"
+    # Multiplied, not averaged: ink over ink subtracts light, so the overlap is
+    # darker than either plate rather than sitting between them.
+    crossed = _multiply(((163, 41, 38), (41, 61, 107)))
+    assert crossed in palette, "the crossing"
+    assert crossed == (26, 10, 16), f"the overlap came out {crossed}"
+    assert crossed[0] < min(163, 41), "the crossing is lighter than either plate"
+
+
+def test_a_finish_must_declare_an_ink():
+    """A finish with an empty palette would print its paper everywhere and
+    report a perfectly good ink fraction of zero — the silent-success shape,
+    arriving through the one number built to prevent it."""
+    with pytest.raises(ValueError, match="at least one ink"):
+        replace(FINISHES["hedcut"], inks=())
+
+
+@pytest.mark.parametrize("finish", FINISH_NAMES)
+def test_a_finish_may_print_only_from_the_palette_it_declares(finish):
+    """`palette()` is what the page is checked against, so it has to be right.
+
+    A finish with one ink may print two colours. A finish with two may print
+    four — the paper, each ink, and the overlap — because ink multiplies what
+    is under it rather than replacing it, which is where a spot print's third
+    colour comes from. Derived rather than declared, so a finish cannot name
+    one palette and print another.
+    """
+    style = FINISHES[finish]
+    palette = style.palette()
+
+    assert style.paper in palette, "the paper is not in the finish's own palette"
+    for ink in style.inks:
+        assert ink in palette, f"{ink} prints nothing"
+    assert len(palette) == 2 ** len(style.inks), (
+        f"{finish} declares {len(style.inks)} inks, which is "
+        f"{2 ** len(style.inks)} possible colours, but its palette holds "
+        f"{len(palette)}"
+    )
+
+
 @pytest.mark.parametrize(
     "colour", [(255, 255), (300, 0, 0), (-1, 0, 0), (255, 255, 255, 255)]
 )
@@ -362,7 +417,7 @@ def test_a_malformed_colour_is_refused_where_it_is_declared(colour):
     error, or an `OverflowError` on a channel of 300, from inside a finish that
     has already been handed a figure-resolution capture to ruin."""
     with pytest.raises(ValueError, match="three channels"):
-        replace(FINISHES["hedcut"], ink=colour)
+        replace(FINISHES["hedcut"], inks=(colour,))
 
 
 def test_ink_fraction_says_when_the_tone_had_nowhere_to_go():
