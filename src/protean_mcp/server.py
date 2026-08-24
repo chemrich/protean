@@ -2362,6 +2362,20 @@ async def snapshot(
       band filled with strokes, more of them where it is darker, the way an
       engraving carries shading without any greys.
 
+      "spot-ink-plates" is a two-colour press: the frame is sorted into colour
+      families, each family screened onto its own plate at its own angle, and
+      the plates printed a little out of register so the ink crosses in fringes
+      along every boundary. **It is the one finish that carries data**, and
+      what it binds is *which plate a region prints on* — a category, not a
+      shade, so shading cannot quantise it away.
+
+      It reads the colours already in the render and claims no more than that.
+      Colour by element, which is the default for a spacefill, and the plates
+      are elements: carbon on one, oxygen and nitrogen on the other, their
+      crossing where the two disagree. Colour by chain and they are chains. On
+      a greyscale render there is nothing to sort and everything prints on one
+      plate, which is the honest picture rather than a failure.
+
       "cyanotype" is a blueprint: white on Prussian blue, and it contours the
       shading like a landscape rather than hatching it, so every atom comes out
       as a set of nested rings and the frame reads as a survey sheet. **It is a

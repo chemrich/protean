@@ -19,6 +19,7 @@ rather than leaving it to be inferred from the picture.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
@@ -63,6 +64,10 @@ _MIN_HUE_SAMPLES = 64
 # beyond it a stride, because a figure-resolution capture is a hundred million
 # pixels and the field only needs the shape of the distribution.
 _RANK_SAMPLES = 400_000
+
+# It takes two of something to be a separation. Below this a plate print has
+# nothing to sort, and everything goes to the key plate.
+_A_SEPARATION = 2
 
 
 @dataclass(frozen=True)
@@ -126,15 +131,53 @@ class _Style:
     paper: tuple[int, int, int] = (255, 255, 255)
     """The ground this finish prints on."""
 
-    ink: tuple[int, int, int] = (0, 0, 0)
-    """The colour the marks are made in.
+    inks: tuple[tuple[int, int, int], ...] = ((0, 0, 0),)
+    """The colours the marks are made in — a palette, not a colour.
 
     Declared per finish rather than assumed black, because the route carries
     finishes that are not. Everything downstream — the ink fraction reported to
     a caller who cannot look at the file, and the test that two finishes do not
-    draw the same picture — reads these two fields rather than testing for
+    draw the same picture — reads this and the paper rather than testing for
     black, which was only ever black by coincidence.
+
+    Plural because a print may lay down more than one. A finish that puts each
+    ink on its own plate produces the overlaps as well, and the overlaps are
+    where the third and fourth colours of a spot print come from — so what a
+    finish may legitimately put on the page is not the list itself but
+    `palette()`, which is derived from it.
     """
+
+    @property
+    def ink(self) -> tuple[int, int, int]:
+        """The first ink, for the finishes that have only one."""
+        return self.inks[0]
+
+    def palette(self) -> frozenset[tuple[int, int, int]]:
+        """Every colour this finish may legitimately print.
+
+        The paper, each ink as itself, and a blend wherever two or more plates
+        coincide — because that overlap is where a spot print's third and
+        fourth colours come from. Derived rather than declared, so a finish
+        cannot name one palette and print another, and so the suite can check
+        the whole page against one rule.
+
+        **An ink is laid as its own colour, not multiplied into the ground.**
+        The first version of this multiplied every ink over the paper, which is
+        right for a dark ink on white and wrong for `cyanotype`, whose ink is
+        *lighter* than its ground — those white marks are unexposed paper
+        showing through, not a transparent ink lying over blue. Caught by the
+        suite: cyanotype started printing a colour its own palette disowned.
+        Multiplying is reserved for where plates cross, which is the only place
+        the physical model actually holds.
+
+        For a finish with one ink this is exactly the two colours it always
+        was: the paper, and the ink.
+        """
+        colours = {self.paper, *self.inks}
+        for count in range(2, len(self.inks) + 1):
+            for chosen in itertools.combinations(self.inks, count):
+                colours.add(_multiply(chosen))
+        return frozenset(colours)
 
     def __post_init__(self) -> None:
         """Refuse a malformed colour where it is written, not where it prints.
@@ -146,7 +189,13 @@ class _Style:
         figure-resolution capture has already been paid for. Which is the same
         cost this module moved the name check to avoid.
         """
-        for role, colour in (("paper", self.paper), ("ink", self.ink)):
+        roles: tuple[tuple[str, tuple[int, int, int]], ...] = (
+            ("paper", self.paper),
+            *((f"ink {n}", ink) for n, ink in enumerate(self.inks)),
+        )
+        if not self.inks:
+            raise ValueError("A finish must declare at least one ink")
+        for role, colour in roles:
             if len(colour) != _CHANNELS or not all(
                 isinstance(c, int) and 0 <= c <= _FULL for c in colour
             ):
@@ -157,6 +206,17 @@ class _Style:
     def marks(self, frame: _Frame) -> np.ndarray:
         """Where this finish puts ink. True is a mark."""
         raise NotImplementedError
+
+    def plates(self, frame: _Frame) -> tuple[np.ndarray, ...]:
+        """One mask per ink: what each plate of the press lays down.
+
+        Most finishes are a single plate, and say so by leaving this alone —
+        their `marks` is the whole print. A finish that separates its subject
+        onto several plates overrides this instead, and then the overlaps are
+        composited from `palette()` rather than by painting one plate over
+        another.
+        """
+        return (self.marks(frame),)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -325,12 +385,138 @@ class _Survey(_Style):
         return np.asarray((contours | grain) & ~frame.is_paper)
 
 
+@dataclass(frozen=True, kw_only=True)
+class _Plates(_Style):
+    """Spot inks, one plate each, screened at their own angle and off register.
+
+    A separation rather than a rendering: the frame is sorted into as many
+    colour families as there are inks, each family is screened onto its own
+    plate, and the plates are printed a little out of register the way a small
+    press prints. Where two plates cross, the inks multiply and make a colour
+    neither carries alone — which is the whole reason a two-ink print looks
+    like more than two.
+
+    **What it binds is which plate a region prints on**, which is a category
+    rather than a shade, and that is deliberate. A shade-driven binding — dot
+    area from a measurement — sits downstream of the lighting rig, so the
+    screen converts *shading* to dot area and the measurement never reaches the
+    page. That is the trap `docs/bakeoff.md` fell into. A plate assignment
+    cannot be quantised away by shading, because shading multiplies brightness
+    and leaves hue alone.
+
+    **It reads the colours already in the render, and claims no more than
+    that.** Colour by element — which is the default for a spacefill — and the
+    plates are elements. Colour by chain and they are chains. The finish sees
+    pixels and cannot know what a hue was made to mean, so it does not pretend
+    to: the reply reports how many plates were used and what share of the
+    drawing each took, and the docstring says what the binding actually is.
+    """
+
+    angles: tuple[float, ...] = (15.0, 75.0, 45.0)
+    """Screen angle per plate, in degrees.
+
+    The printer's angles, thirty degrees apart — but **not for the printer's
+    reason**. A press separates its screens to stop them beating into a moire,
+    and that hardly applies here: the plates carry different *regions* rather
+    than different tonal channels, so they barely overlap, and a round dot is
+    isotropic enough that rotating its lattice changes no directional statistic
+    I could measure. Two plates at the same angle came back identical on every
+    number I tried.
+
+    They earn their place by eye and only by eye: with its own angle each plate
+    reads as its own screen, and the blue lattice visibly runs across the red
+    instead of lying parallel to it. Verified by looking at a 3x crop, and
+    **untested** — a mutation setting every plate to one angle passes the whole
+    suite.
+    """
+
+    offset: float = 1 / 300
+    """How far each plate sits out of register, as a fraction of the frame.
+
+    The defining artefact. Too little and the print is merely a halftone; too
+    much and it reads as a fault rather than as a hand-fed press. Each plate
+    is pushed a different way so the error does not look like one global
+    shift.
+    """
+
+    pitch: float = 1 / 110
+    """Distance between dot centres, as a fraction of the frame. Coarse on
+    purpose: a screen fine enough to disappear is a photograph, and the dots
+    are meant to be seen."""
+
+    grain: float = 0.10
+    """How much the dot threshold is roughed up, as a fraction of its range.
+
+    A small press does not lay a perfect dot. Enough to break the edge of each
+    dot, not enough to break the tone.
+    """
+
+    tone_curve: float = 1.35
+    """Darkness is raised to this power before it becomes dot area."""
+
+    achromatic: float = 0.10
+    """Below this saturation a pixel has no colour family to sort by, and goes
+    to the first plate — the key, in the way a woodblock's key block carries
+    everything the colour blocks do not."""
+
+    def plates(self, frame: _Frame) -> tuple[np.ndarray, ...]:
+        family = _families(frame.rgb, len(self.inks), self.achromatic)
+        darkness = np.clip(1.0 - frame.luma, 0.0, 1.0) ** self.tone_curve
+        drawn = ~frame.is_paper
+
+        made = []
+        for index in range(len(self.inks)):
+            angle = self.angles[index % len(self.angles)]
+            # Each plate pushed its own way, so the misregistration reads as a
+            # press rather than as one global shift of the whole image.
+            step = frame.diagonal * self.offset
+            radians = np.deg2rad(120.0 * index)
+            shift = (step * float(np.cos(radians)), step * float(np.sin(radians)))
+            screen = _screen(frame, self.pitch, angle, shift)
+            if self.grain:
+                rough = _hash01(
+                    np.arange(frame.shape[0])[:, None],
+                    np.arange(frame.shape[1])[None, :],
+                    7 + index,
+                )
+                screen = np.clip(screen + (rough - 0.5) * self.grain, 0.0, 1.0)
+            # The plate carries its own separation off register, not just its
+            # own screen. Shifting the screen alone moves the dots and leaves
+            # the *regions* pinned, so no two plates could ever cover the same
+            # pixel and the crossing colour — the point of printing in two inks
+            # — could never appear. Shifted together, the plates disagree about
+            # where a region ends, and the overlap shows up as a fringe along
+            # every boundary. Which is exactly what misregistration looks like
+            # on paper.
+            mine = np.roll(
+                family == index, (round(shift[1]), round(shift[0])), axis=(0, 1)
+            )
+            made.append((screen < darkness) & drawn & mine)
+        return tuple(made)
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        """Every plate at once, for anything that wants the ink as a whole."""
+        covered = np.zeros(frame.shape, dtype=bool)
+        for plate in self.plates(frame):
+            covered |= plate
+        return covered
+
+
 FINISHES: dict[str, _Style] = {
     "cross-hatch": _Engraving(angles=(45.0, -45.0, 90.0), cumulative=True, bands=4),
     "hedcut": _Engraving(angles=(75.0,), cumulative=False, bands=6),
     # Prussian blue and the white of unexposed paper — never pure 255, because
     # a cyanotype's highlight is paper rather than light.
-    "cyanotype": _Survey(bands=5, paper=(17, 48, 92), ink=(238, 245, 252)),
+    "cyanotype": _Survey(bands=5, paper=(17, 48, 92), inks=((238, 245, 252),)),
+    # Madder and indigo on a warm white, from the plan's dyed-wool palette —
+    # two inks a small press could actually mix, rather than process colours.
+    # Their crossing is a near-black with a plum cast, which is what a
+    # two-colour print gives you instead of a real black.
+    "spot-ink-plates": _Plates(
+        bands=5,
+        paper=(247, 243, 233),
+        inks=((163, 41, 38), (41, 61, 107)),
+    ),
 }
 
 
@@ -351,6 +537,20 @@ def validate_finish(finish: str) -> None:
         raise ValueError(
             f"Unknown finish {finish!r}. Available: {', '.join(sorted(FINISHES))}"
         )
+
+
+def _multiply(inks: tuple[tuple[int, int, int], ...]) -> tuple[int, int, int]:
+    """The colour where plates cross: each ink multiplied into the last.
+
+    Two spot inks crossing make a third colour rather than the second one
+    winning, and that third colour is the reason a two-plate print looks like
+    more than two.
+    """
+    out = [255.0, 255.0, 255.0]
+    for ink in inks:
+        out = [o * (c / 255.0) for o, c in zip(out, ink, strict=True)]
+    first, second, third = (round(c) for c in out)
+    return (first, second, third)
 
 
 def _strokes(
@@ -501,6 +701,89 @@ def _grain(frame: _Frame, style: _Survey) -> np.ndarray:
     return _equalise(closest)
 
 
+def _screen(
+    frame: _Frame, pitch: float, angle: float, shift: tuple[float, float]
+) -> np.ndarray:
+    """A halftone screen: a uniform [0, 1) field whose level sets are dots.
+
+    Ruled rather than jittered, because a screen is a screen — the regularity
+    is what makes the rosette where two of them cross, and jitter would turn a
+    press into a sandstorm. Rank-equalised for the same reason the survey's
+    grain is: once the field is uniform, `field < c` covers exactly a fraction
+    `c`, so dot area *is* tone rather than approximately tone.
+    """
+    height, width = frame.shape
+    step = max(2.0, frame.diagonal * pitch)
+    radians = np.deg2rad(angle)
+    y, x = np.ogrid[0:height, 0:width]
+    ox, oy = shift
+    u = ((x - ox) * np.cos(radians) + (y - oy) * np.sin(radians)) / step
+    v = (-(x - ox) * np.sin(radians) + (y - oy) * np.cos(radians)) / step
+    # Distance to the nearest cell centre, which makes the level sets circles.
+    du = u - np.floor(u) - 0.5
+    dv = v - np.floor(v) - 0.5
+    return _equalise(np.hypot(du, dv))
+
+
+def _families(rgb: np.ndarray, count: int, achromatic: float) -> np.ndarray:
+    """Sort each pixel into one of `count` colour families, by hue.
+
+    The separation a plate print needs. A render coloured by element has a
+    handful of well-parted hues — carbon, oxygen, nitrogen — so the dominant
+    peaks of the hue histogram *are* the elements, and sorting by nearest peak
+    recovers them without the finish being told what they mean.
+
+    A pixel too grey to have a hue goes to family 0, the key plate. So does
+    every pixel when the render is greyscale, which is the honest answer: a
+    picture with one colour family separates onto one plate, and the reply says
+    so rather than inventing three.
+    """
+    unit = rgb / 255.0
+    value = unit.max(axis=2)
+    low = unit.min(axis=2)
+    saturation = np.where(value > 0.0, (value - low) / np.maximum(value, 1e-6), 0.0)
+    coloured = saturation >= achromatic
+
+    family = np.zeros(rgb.shape[:2], dtype=np.int64)
+    if count < _A_SEPARATION or not coloured.any():
+        return family
+
+    r, g, b = unit[:, :, 0], unit[:, :, 1], unit[:, :, 2]
+    span = np.maximum(value - low, 1e-6)
+    hue = (
+        np.where(
+            value == r,
+            ((g - b) / span) % 6.0,
+            np.where(value == g, (b - r) / span + 2.0, (r - g) / span + 4.0),
+        )
+        / 6.0
+    )
+
+    # The dominant hues, taken greedily and kept apart, so two bins either side
+    # of one peak do not come back as two families.
+    counts, edges = np.histogram(hue[coloured], bins=_HUE_BINS, range=(0.0, 1.0))
+    centres = (edges[:-1] + edges[1:]) / 2.0
+    peaks: list[float] = []
+    for index in np.argsort(counts)[::-1]:
+        if counts[index] == 0:
+            break
+        here = float(centres[index])
+        apart = min((min(abs(here - p), 1.0 - abs(here - p)) for p in peaks), default=1.0)
+        if apart > 1.0 / (2 * count):
+            peaks.append(here)
+        if len(peaks) == count:
+            break
+    if len(peaks) < _A_SEPARATION:
+        return family
+
+    distance = np.stack(
+        [np.minimum(np.abs(hue - p), 1.0 - np.abs(hue - p)) for p in peaks], axis=0
+    )
+    nearest = np.argmin(distance, axis=0)
+    family[coloured] = nearest[coloured]
+    return family
+
+
 def apply_finish(
     image: Image.Image,
     finish: str,
@@ -544,14 +827,29 @@ def apply_finish(
         # calculated.
         gap=spacing if spacing is not None else max(4.0, round(max(rgba.size) / 110)),
     )
-    marks = style.marks(frame)
+    plates = style.plates(frame)
+
+    # Which plates cover each pixel, as a bit per plate. A print is composited
+    # by asking that question once rather than by laying each plate down in
+    # turn: an ink is its own colour where it prints alone and a blend where it
+    # crosses another, and painting them in sequence would give the last plate
+    # the crossing instead.
+    code = np.zeros(shape, dtype=np.int64)
+    for index, plate in enumerate(plates):
+        code |= plate.astype(np.int64) << index
 
     out = np.empty((*shape, 4), dtype=np.uint8)
-    out[:, :, :3] = np.where(
-        marks[:, :, None],
-        np.array(style.ink, dtype=np.uint8),
-        np.array(style.paper, dtype=np.uint8),
-    )
+    out[:, :, :3] = np.array(style.paper, dtype=np.uint8)
+    for covering in range(1, 1 << len(plates)):
+        here = code == covering
+        if not here.any():
+            continue
+        crossed = tuple(
+            ink for index, ink in enumerate(style.inks) if covering >> index & 1
+        )
+        colour = crossed[0] if len(crossed) == 1 else _multiply(crossed)
+        out[:, :, :3][here] = np.array(colour, dtype=np.uint8)
+
     out[:, :, 3] = np.where(alpha > _OPAQUE_ENOUGH, 255, 0).astype(np.uint8)
     return Image.fromarray(out, mode="RGBA")
 

@@ -16,6 +16,7 @@ from PIL import Image
 
 from protean_mcp.analysis.hatching import (
     FINISHES,
+    _multiply,
     _Survey,
     apply_finish,
     ink_fraction,
@@ -105,7 +106,7 @@ def test_the_result_is_ink_on_paper_and_nothing_else(finish):
     engraved = np.asarray(apply_finish(_flat(128), finish))
     colours = {tuple(c) for c in engraved[:, :, :3].reshape(-1, 3).tolist()}
 
-    declared = {style.paper, style.ink}
+    declared = style.palette()
     assert colours <= declared, (
         f"{finish} printed colours it never declared: {colours - declared}"
     )
@@ -308,6 +309,93 @@ def test_the_survey_inks_exactly_the_tone_it_was_asked_for():
         )
 
 
+def _two_families(size: int = 240) -> Image.Image:
+    """Two lit domes in different hues on an opaque ground: a spacefill in
+    miniature, coloured the way an element theme colours one."""
+    y, x = np.ogrid[0:size, 0:size]
+    field = np.full((size, size, 3), 200.0)
+    for across, hue in ((0.34, (0.25, 0.75, 0.30)), (0.68, (0.85, 0.25, 0.22))):
+        cx, cy, radius = across * size, 0.5 * size, size * 0.24
+        r = np.hypot(x - cx, y - cy) / radius
+        inside = r <= 1.0
+        shade = np.clip(0.25 + 0.75 * np.sqrt(np.clip(1.0 - r**2, 0.0, 1.0)), 0.0, 1.0)
+        for channel in range(3):
+            field[:, :, channel] = np.where(
+                inside, shade * hue[channel] * 255.0, field[:, :, channel]
+            )
+    out = np.dstack([field.astype(np.uint8), np.full((size, size, 1), 255, np.uint8)])
+    return Image.fromarray(out, "RGBA")
+
+
+def _inks_on_the_page(engraved: Image.Image, finish: str) -> set[tuple[int, int, int]]:
+    """Every colour other than the paper that actually reached the page."""
+    paper = FINISHES[finish].paper
+    seen = {tuple(c) for c in np.asarray(engraved)[:, :, :3].reshape(-1, 3).tolist()}
+    return {c for c in seen if c != paper}
+
+
+def test_a_plate_print_sorts_by_colour_and_goes_blind_without_it():
+    """The channel, stated as something that can fail.
+
+    `spot-ink-plates` claims that which plate a region prints on follows the
+    colour family it had in the render. If that is true, taking the colour away
+    must take the separation with it — and it does, categorically rather than
+    by a margin: the same subject in colour reaches the paper in two inks and
+    their crossing, and its own greyscale reaches it in one ink and nothing
+    else.
+
+    Measured on the bake-off's myoglobin as well as on this fixture: in colour,
+    madder 0.261, indigo 0.083, crossing 0.010; in greyscale, madder 0.364 and
+    no other ink at all. `hedcut` is the control — it reads only tone, and
+    differs by 0.0022 of the frame between the two, so it could neither pass
+    this nor be expected to.
+    """
+    subject = _two_families()
+    px = np.asarray(subject).astype(float)
+    luma = 0.299 * px[:, :, 0] + 0.587 * px[:, :, 1] + 0.114 * px[:, :, 2]
+    greyed = Image.fromarray(
+        np.dstack([np.repeat(luma[:, :, None], 3, axis=2), px[:, :, 3:4]]).astype(
+            np.uint8
+        ),
+        "RGBA",
+    )
+
+    coloured = _inks_on_the_page(
+        apply_finish(subject, "spot-ink-plates"), "spot-ink-plates"
+    )
+    grey = _inks_on_the_page(apply_finish(greyed, "spot-ink-plates"), "spot-ink-plates")
+
+    assert len(coloured) > 1, f"colour separated onto one plate only: {coloured}"
+    assert len(grey) == 1, f"greyscale still separated onto {len(grey)}: {grey}"
+
+
+def test_the_plates_cross_where_they_disagree_about_a_boundary():
+    """The crossing colour is the reason to print in two inks, and it very
+    nearly never happened.
+
+    Family assignment is exclusive — a pixel belongs to one plate — so shifting
+    each plate's *screen* off register moves its dots and leaves the regions
+    pinned, and no two plates can ever cover the same pixel. The first version
+    did exactly that: the overlap was declared in the palette, described in the
+    docstring, and reached the page **zero times**. Found by counting what
+    actually printed, not by reading the code.
+
+    The separation now travels off register with its screen, so the plates
+    disagree about where a region ends and the overlap appears as a fringe
+    along every boundary — which is what misregistration looks like on paper.
+    """
+    crossed = _multiply(FINISHES["spot-ink-plates"].inks)
+
+    reached = _inks_on_the_page(
+        apply_finish(_two_families(), "spot-ink-plates"), "spot-ink-plates"
+    )
+
+    assert crossed in reached, (
+        f"the plates never crossed: {crossed} is declared in the palette and "
+        f"only {sorted(reached)} reached the paper"
+    )
+
+
 def test_a_finish_prints_in_the_colours_it_declared(monkeypatch):
     """Both finishes that ship print black on white, which is exactly the
     coincidence that hid the old bug.
@@ -328,7 +416,7 @@ def test_a_finish_prints_in_the_colours_it_declared(monkeypatch):
     monkeypatch.setitem(
         FINISHES,
         "test-madder",
-        replace(FINISHES["hedcut"], paper=cream, ink=madder),
+        replace(FINISHES["hedcut"], paper=cream, inks=(madder,)),
     )
 
     engraved = apply_finish(_flat(128), "test-madder")
@@ -350,8 +438,64 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
     caller has to strip the quotes back off and a name containing one arrives
     mangled — measured, a finish named `a'b` reached the model with a literal
     backslash in it."""
-    with pytest.raises(ValueError, match="cross-hatch, cyanotype, hedcut"):
+    with pytest.raises(
+        ValueError, match="cross-hatch, cyanotype, hedcut, spot-ink-plates"
+    ):
         call(_flat(128), "woodblock")
+
+
+def test_two_plates_make_a_third_colour_where_they_cross():
+    """The overlap is the point of a spot print, and no shipped finish has two
+    inks yet — so without this the whole overlap branch of `palette()` ships
+    untested. Mutation confirmed it: deleting the branch outright passed.
+
+    Madder and indigo, from the plan's dyed-wool palette, on white.
+    """
+    two = replace(
+        FINISHES["hedcut"], inks=((163, 41, 38), (41, 61, 107)), paper=(255, 255, 255)
+    )
+    palette = two.palette()
+
+    assert len(palette) == 4, f"two inks should make four colours, not {len(palette)}"
+    assert (255, 255, 255) in palette, "the paper"
+    assert (163, 41, 38) in palette and (41, 61, 107) in palette, "each ink alone"
+    # Multiplied, not averaged: ink over ink subtracts light, so the overlap is
+    # darker than either plate rather than sitting between them.
+    crossed = _multiply(((163, 41, 38), (41, 61, 107)))
+    assert crossed in palette, "the crossing"
+    assert crossed == (26, 10, 16), f"the overlap came out {crossed}"
+    assert crossed[0] < min(163, 41), "the crossing is lighter than either plate"
+
+
+def test_a_finish_must_declare_an_ink():
+    """A finish with an empty palette would print its paper everywhere and
+    report a perfectly good ink fraction of zero — the silent-success shape,
+    arriving through the one number built to prevent it."""
+    with pytest.raises(ValueError, match="at least one ink"):
+        replace(FINISHES["hedcut"], inks=())
+
+
+@pytest.mark.parametrize("finish", FINISH_NAMES)
+def test_a_finish_may_print_only_from_the_palette_it_declares(finish):
+    """`palette()` is what the page is checked against, so it has to be right.
+
+    A finish with one ink may print two colours. A finish with two may print
+    four — the paper, each ink, and the overlap — because ink multiplies what
+    is under it rather than replacing it, which is where a spot print's third
+    colour comes from. Derived rather than declared, so a finish cannot name
+    one palette and print another.
+    """
+    style = FINISHES[finish]
+    palette = style.palette()
+
+    assert style.paper in palette, "the paper is not in the finish's own palette"
+    for ink in style.inks:
+        assert ink in palette, f"{ink} prints nothing"
+    assert len(palette) == 2 ** len(style.inks), (
+        f"{finish} declares {len(style.inks)} inks, which is "
+        f"{2 ** len(style.inks)} possible colours, but its palette holds "
+        f"{len(palette)}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -362,7 +506,7 @@ def test_a_malformed_colour_is_refused_where_it_is_declared(colour):
     error, or an `OverflowError` on a channel of 300, from inside a finish that
     has already been handed a figure-resolution capture to ruin."""
     with pytest.raises(ValueError, match="three channels"):
-        replace(FINISHES["hedcut"], ink=colour)
+        replace(FINISHES["hedcut"], inks=(colour,))
 
 
 def test_ink_fraction_says_when_the_tone_had_nowhere_to_go():
