@@ -46,6 +46,10 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   the colouring was never reading the data. This is what the plan's own
   "every treatment must show data" rule needed in order to mean anything.
 
+- **`boil(trails=True)`** — the boil held open on one plate. Makes `boil`'s
+  channel legible in a single frame, where before it could only be seen by
+  watching the sequence play. `smear` reads 0.0 exactly when nothing moved.
+
 - **`spot-ink-plates`** — the fourth finish and **the first that carries a
   data channel**. Binds which plate a region prints on, which is a category and
   so survives shading, where a shade-driven binding does not. Proved by taking
@@ -156,9 +160,18 @@ The order, settled 2026-08-23:
    prints in** rather than how dark it is: a category survives shading, where a
    shade-driven binding is downstream of the lighting rig and gets quantised
    away. That is the trap the bake-off fell into.
-4. **Phosphor with trails** — accumulate `boil`'s poses with decay so smear
-   length is the channel. The only candidate whose channel already passes a
-   shuffle arm, because `boil` reads mobility per atom.
+4. **Phosphor with trails** — *shipped* as `boil(trails=True)`. Accumulates
+   the poses into one long exposure with decay, so smear length is the channel.
+   It needed no shuffle arm of its own: the binding is `boil`'s, already proven
+   by `test_the_boil_wobbles_the_atoms_the_data_is_unsure_of`, and what this
+   adds is making that binding **visible in a still** rather than only by
+   watching.
+
+   **Not built, deliberately:** a general tool that composites any existing
+   frame directory. It would let a turntable or a trajectory take the same
+   treatment, and its claim would honestly be "smear shows whatever moved" —
+   but that is a second public tool for a caller to reach for, and the plan's
+   item was the boil. Worth revisiting if anyone wants a motion-blurred spin.
 
 **Duotone is dropped as its own finish.** It was prototyped in the bake-off,
 never committed, and the picture is the weakest of the candidates — a fine dot
