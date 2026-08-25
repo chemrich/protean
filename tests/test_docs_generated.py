@@ -20,6 +20,8 @@ from types import ModuleType
 
 import pytest
 
+from tests.docs_pages import documentation_pages, engineering_records
+
 REPO = Path(__file__).resolve().parents[1]
 GENERATOR = REPO / "docs" / "generate" / "tool_reference.py"
 
@@ -73,20 +75,7 @@ def test_every_tool_has_a_summary_line():
     assert not undocumented, f"No docstring: {undocumented}"
 
 
-@pytest.mark.parametrize(
-    "page",
-    [
-        "README.md",
-        "docs/README.md",
-        "docs/getting-started.md",
-        "docs/cookbook.md",
-        "docs/gallery.md",
-        "docs/selections.md",
-        "docs/tools.md",
-        "docs/troubleshooting.md",
-        "docs/for-pymol-users.md",
-    ],
-)
+@pytest.mark.parametrize("page", documentation_pages())
 def test_documentation_links_and_images_resolve(page: str):
     """Every relative link and image in the documentation points at something.
 
@@ -103,3 +92,36 @@ def test_documentation_links_and_images_resolve(page: str):
         if not (source.parent / target).exists():
             broken.append(target)
     assert not broken, f"{page} points at missing files: {sorted(set(broken))}"
+
+
+def test_every_documentation_page_is_filed_in_the_index():
+    """A page in `docs/` that neither table mentions is a page nothing checks.
+
+    The two lists in `docs/README.md` are what `tests/docs_pages.py` derives
+    from, so a file missing from both is invisible to every test in this module
+    — including the link check directly above. That is not hypothetical: this
+    test found `molstar-capabilities.md`, added the same day, filed nowhere.
+    """
+    filed = {Path(page).name for page in documentation_pages() + engineering_records()}
+    present = {page.name for page in (REPO / "docs").glob("*.md")}
+    assert present - filed == set(), (
+        f"In docs/ but in neither table of docs/README.md: {sorted(present - filed)}. "
+        f"Add each to Documentation (how to use protean) or to Engineering "
+        f"records (how a piece of work was built)."
+    )
+
+
+def test_the_derived_page_list_can_see_the_documentation():
+    """A guard on the guard: an empty list would pass every page check silently.
+
+    The same shape as `test_the_test_can_see_tools_at_all` in
+    `test_docs_examples.py`. If `docs/README.md`'s headings are renamed, the
+    derivation returns the two index pages and nothing else, and every
+    parametrised test above would vanish rather than fail.
+    """
+    pages = documentation_pages()
+    assert len(pages) > 5, f"only derived {len(pages)} pages: {pages}"
+    for expected in ("README.md", "docs/gallery.md", "docs/cookbook.md"):
+        assert expected in pages, f"{expected} missing from {pages}"
+    for page in pages + engineering_records():
+        assert (REPO / page).exists(), f"index points at missing file: {page}"
