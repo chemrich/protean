@@ -5,8 +5,15 @@ on 2026-08-11 from PyMOL 3.1.0 and protean at `c6caed3`. The scripts are in
 [`docs/benchmark/`](benchmark/) so the comparison can be re-run and disagreed
 with.
 
-**protean loses two of the five outright** and carries a serious caveat on a
-third. A benchmark that only showed wins would not be evidence.
+**protean loses one of the five outright** — the selection grammar — draws two,
+and carries a serious caveat on a third. A benchmark that only showed wins would
+not be evidence.
+
+> **Corrected 2026-08-25.** This line said "loses two of the five" and
+> contradicted its own summary table below, which has recorded one loss since
+> task 3 was re-measured from a loss to a draw further down this page. The
+> header was not updated with it, and the README repeated the stale figure for
+> months.
 
 ## What is and is not measured
 
