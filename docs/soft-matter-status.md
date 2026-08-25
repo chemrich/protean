@@ -179,10 +179,17 @@ screen that erases the sphere shading and does not read as a molecule. Its
 halftone screen and tuned constants belong inside the plate print. The
 prototype is preserved outside the repo rather than lost.
 
-Two unexposed Mol\* knobs ride along cheaply afterwards and unlock the
-painterly looks: **fog** and an **orthographic camera lock**. Neither carries a
-data claim; fog's channel is camera depth, which cannot be permuted across
-atoms, so a shuffle arm is the wrong instrument for both.
+Two unexposed Mol\* knobs — **fog** and an **orthographic camera lock** —
+*shipped* as `lens()`. Neither carries a data claim; fog's channel is camera
+depth, which cannot be permuted across atoms, so a shuffle arm is the wrong
+instrument for both.
+
+The finding worth carrying past this item: **Mol\*'s default fog is
+invisible.** It has been on at intensity 15 since the beginning, so every
+protean figure ever made carries it — and measured with no tolerance it is
+bit-identical to off below 40. A default being *set* is not evidence that it
+*does* anything, and that is a question worth asking of every parameter protean
+inherits. It is what the Mol\* capability audit was commissioned to ask.
 
 ### 2. Decide whether a third treatment is worth building
 

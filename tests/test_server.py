@@ -44,6 +44,7 @@ from protean_mcp.server import (
     electrostatics,
     fetch_structure,
     interface,
+    lens,
     lighting,
     load_session,
     load_volume,
@@ -1756,6 +1757,28 @@ async def test_the_destination_is_still_checked_at_the_write(wired_bridge, tmp_p
     assert target.read_text() == "something that is not a figure", (
         "the file was overwritten by a figure"
     )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"projection": "isometric"}, "Unknown projection 'isometric'"),
+        ({"fog": -1}, "between 0 and 100"),
+        ({"fog": 101}, "between 0 and 100"),
+        ({"fog": float("nan")}, "between 0 and 100"),
+        ({}, "Nothing to change"),
+    ],
+)
+async def test_a_lens_that_cannot_be_set_is_refused(kwargs, message):
+    """Refused in Python, before the viewer is asked for anything.
+
+    Mol* takes an out-of-range intensity or an unknown camera mode without
+    complaint and leaves the canvas as it was, so a bad argument would come
+    back as a reply reporting the old value — which reads as "nothing
+    happened" rather than as "you asked for something that does not exist".
+    """
+    with pytest.raises(ViewerError, match=message):
+        await lens(**kwargs)
 
 
 def test_every_finish_is_named_where_a_caller_can_find_it():

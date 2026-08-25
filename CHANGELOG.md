@@ -53,6 +53,42 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`lens()` — the projection, and how far the distance fades.** Two stock Mol*
+  parameters protean had never exposed. `projection` is `perspective` or
+  `orthographic`; `fog` is 0 for off, or 1 to 100.
+
+  Orthographic is the projection of technical illustration: no convergence, so
+  two atoms the same size are drawn the same size wherever they sit in depth. A
+  helix down its axis is honest in orthographic and subtly tapered in
+  perspective. Measured against perspective on 1UBQ spacefill: 0.1066 of the
+  frame, no tolerance.
+
+  **Fog has been on this whole time and has never been visible.** Mol*'s
+  default is on at intensity 15, so every figure protean has ever produced
+  carries it — and measured with no tolerance, 5, 15 and 25 are *bit-identical*
+  to fog off. The first flicker is at 40 (0.00009); it reaches 0.026 at 60 and
+  0.103 at 100. The default is not a mild version of the effect, it is the
+  absence of one, which is the reason this is worth exposing rather than
+  leaving alone.
+
+  `cameraFog` is a **mapped** parameter — `{name, params}` — and Mol* accepts a
+  bare `{intensity}` without complaint while leaving the fog exactly as it was.
+  The reply is therefore read back off `canvas3d.props`, never echoed. That
+  matters more here than usual: `fog=0` produces no pixel change at all, so
+  read-back is the only possible evidence that off ever happened.
+
+  Neither knob carries data. Fog's channel is distance from the camera — a
+  property of where you are standing rather than of the molecule — so there is
+  nothing to permute across atoms and a shuffle arm is the wrong instrument.
+
+  **One guard was nearly written from reasoning instead of measurement.** The
+  intuitive depth-cue test is that fog changes fewer pixels than a global dim
+  would, since only the far ones fade. Measured, that is false: fog at 100
+  moves **0.9994** of the drawn pixels, because even the nearest atom has some
+  depth. What separates a depth cue from a dim is the *spread* of the shift —
+  mean 46.35, standard deviation 25.26, a spread of **0.545**, against 0.000
+  for a uniform dim of the same average strength.
+
 - **`boil(trails=True)` — the boil, held open on one plate.** Every pose
   accumulated into one long exposure written as `exposure.png`, the newest
   sharp and the ones before it fading behind it.

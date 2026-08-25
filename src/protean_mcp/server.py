@@ -3263,6 +3263,14 @@ _BOIL_LIMIT = 1.0
 #: Frames per pose. Two is what hand-drawn animation calls "on twos" — the
 #: rate at which a held drawing reads as deliberate rather than as a dropped
 #: frame. One is a shimmer, four is a stutter.
+#: The two projections Mol* offers. Named here so the refusal can list them
+#: rather than leaving a caller to guess at the spelling.
+_PROJECTIONS = ("perspective", "orthographic")
+
+#: Mol*'s own ceiling for fog intensity (`CameraFogParams`, min 1 max 100). Its
+#: default is **on at 15**, which is what every protean figure has carried.
+_MAX_FOG = 100.0
+
 _BOIL_HOLD = 2
 
 #: Where a background stops being paper and starts being a screen. Sampled from
@@ -3644,6 +3652,71 @@ async def shading(
     if cel_steps is not None:
         args["cel_steps"] = cel_steps
     return await _call("shading", args)
+
+
+@_tool()
+async def lens(
+    projection: str | None = None,
+    fog: float | None = None,
+) -> dict[str, Any]:
+    """How the camera sees: the projection, and how far the distance fades.
+
+    Two stock Mol* parameters protean has never exposed, and between them most
+    of the technical-illustration and painterly looks that were otherwise out
+    of reach.
+
+    projection: "perspective" or "orthographic".
+
+      Perspective is a photograph — nearer atoms are drawn larger, and parallel
+      lines converge. Orthographic is a **drawing**: no convergence, and two
+      atoms the same size are the same size wherever they sit in depth. That is
+      what makes it the projection of technical illustration, and the one to
+      reach for when a figure is meant to be *measured* rather than looked at.
+      A helix down its axis is honest in orthographic and subtly tapered in
+      perspective.
+
+    fog: 0 to turn it off, or 1 to 100 for how heavily the distance fades.
+
+      **Fog has been on this whole time.** Mol*'s default is on at 15, so
+      every figure protean has ever produced carries it, and "no fog" is a
+      change from the baseline rather than the baseline. Raising it deepens the
+      scene and buries the far side of a molecule; turning it off flattens the
+      depth cue and is often what a diagram wants.
+
+      It is depth-cueing, not a filter: what fades is what is *far away*, so
+      orbiting changes which parts fade. A uniform dim would not.
+
+    Neither carries data. Fog's channel is distance from the camera, which is a
+    property of where you are standing rather than of the molecule, so a
+    shuffle test is the wrong instrument for it — there is nothing to permute
+    across atoms.
+
+    Returns what the canvas actually holds afterwards, read back rather than
+    echoed: Mol* accepts a malformed parameter group without complaint and
+    keeps the old value, so a reply built from the request would report a
+    change that never happened.
+    """
+    args: dict[str, Any] = {}
+    if projection is not None:
+        if projection not in _PROJECTIONS:
+            raise ViewerError(
+                f"Unknown projection {projection!r}. "
+                f"Available: {', '.join(sorted(_PROJECTIONS))}"
+            )
+        args["projection"] = projection
+    if fog is not None:
+        if not math.isfinite(fog) or not 0 <= fog <= _MAX_FOG:
+            raise ViewerError(
+                f"Fog must be between 0 and {_MAX_FOG:g}, got {fog:g}. "
+                "0 turns it off; Mol* draws at 15 by default."
+            )
+        args["fog"] = float(fog)
+    if not args:
+        raise ViewerError(
+            "Nothing to change. Pass projection, fog, or both — `lens()` with "
+            "no arguments would be a question, and `capabilities()` answers it."
+        )
+    return await _call("lens", args)
 
 
 @_tool()
