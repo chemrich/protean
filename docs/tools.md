@@ -1,6 +1,6 @@
 # Tool reference
 
-All 66 tools protean registers, grouped by what you would be
+All 68 tools protean registers, grouped by what you would be
 doing when you reach for one.
 
 **This page is generated** from the decorators in
@@ -24,7 +24,7 @@ read off the running Mol\*, so it is the authority rather than any table.
 - [Session](#session) — 6 tools
 - [Selections](#selections) — 6 tools
 - [Display](#display) — 8 tools
-- [One-call views](#one-call-views) — 6 tools
+- [One-call views](#one-call-views) — 8 tools
 - [Custom themes](#custom-themes) — 2 tools
 - [Camera](#camera) — 7 tools
 - [Analysis](#analysis) — 5 tools
@@ -257,6 +257,22 @@ pharmacophore_view(resn: str)
 ```
 
 Colour a ligand's atoms by what each can do: donate, accept, or be greasy.
+
+### `conservation_view`
+
+```python
+conservation_view(chain: str | None = None, mode: str = 'gradient', representation: str | None = None, scale: str = 'relative')
+```
+
+Colour a chain by how conserved each position is. Blue is conserved.
+
+### `electrostatic_view`
+
+```python
+electrostatic_view(method: str = 'auto', ph: float = 7.0, ionic_strength: float = 0.15, spacing: float = 1.0, padding: float = 10.0, domain: list[float] | None = None, selection: str = 'polymer')
+```
+
+Show the charge on a molecule's surface: red acidic, blue basic.
 
 ---
 

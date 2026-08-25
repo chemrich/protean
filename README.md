@@ -224,7 +224,7 @@ path-trace quality, and whether ffmpeg is installed.
 | Session | `open_viewer`, `fetch_structure`, `clear_viewer`, `save_session`, `load_session`, `capabilities` |
 | Selections | `select`, `combine`, `near`, `invert`, `list_selections`, `remove` |
 | Display | `show`, `hide`, `unhide`, `color`, `size`, `opacity`, `label`, `measure` |
-| One-call views | `ligand_view`, `pocket_view`, `interface_view`, `mutation_view`, `crosslink_view`, `pharmacophore_view` |
+| One-call views | `ligand_view`, `pocket_view`, `interface_view`, `mutation_view`, `crosslink_view`, `pharmacophore_view`, `conservation_view`, `electrostatic_view` |
 | Custom themes | `define_field`, `define_elements` |
 | Camera | `focus`, `orient`, `reset_view`, `lens`, `spin`, `keyframe`, `list_keyframes` |
 | Analysis | `interface`, `superpose`, `conservation`, `electrostatics`, `sasa` |

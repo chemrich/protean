@@ -68,6 +68,8 @@ AREAS: dict[str, tuple[str, ...]] = {
         "mutation_view",
         "crosslink_view",
         "pharmacophore_view",
+        "conservation_view",
+        "electrostatic_view",
     ),
     "Custom themes": ("define_field", "define_elements"),
     "Camera": (
