@@ -53,6 +53,33 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`boil(trails=True)` — the boil, held open on one plate.** Every pose
+  accumulated into one long exposure written as `exposure.png`, the newest
+  sharp and the ones before it fading behind it.
+
+  **It makes `boil`'s channel visible in a still.** How far an atom wanders
+  already follows how sure the data is about it, and that binding is real and
+  separately tested — but it is invisible in any single frame, because one
+  frame of a boil is just the molecule slightly displaced. Held open, certainty
+  becomes shape: a confident core stays sharp and a loop the data is guessing
+  at smears. The reply carries `smear`, which reads **0.0 exactly** when
+  nothing moved, so a structure whose column is flat is told rather than handed
+  a picture that looks fine.
+
+  Decay rather than a flat average, and that is the whole difference between a
+  trail and a blur. Averaging leaves the last pose at a quarter strength and
+  the subject is a smudge; weighting it fully gives the smear a head and a
+  tail. The ground is read off the capture's own corners — ink darkens paper,
+  phosphor brightens a dark screen, and a caller should not have to tell a tool
+  which of those their scene is.
+
+  **A bug its own tests could not see at first.** On a transparent capture,
+  untouched pixels carry RGB `(0, 0, 0)`; faded towards white they were still
+  dark enough to win a `minimum`, so an older frame's *background* composited
+  its own blackness over the newest pose and turned a red atom to mud. Every
+  fixture in the suite was opaque, so nothing could observe it. `smear` reading
+  exactly 1.0 — the whole drawing changed — is what gave it away.
+
 - **`snapshot(finish="spot-ink-plates")` — a two-colour press, and the first
   finish that carries data.** The frame is sorted into colour families, each
   family screened onto its own plate at its own angle, and the plates printed a

@@ -66,6 +66,7 @@ from .analysis.pharmacophore import (
     NoConnectivity,
     classify,
 )
+from .analysis.phosphor import accumulate, smear
 from .analysis.superposition import SuperpositionError, parse_structure
 from .analysis.superposition import superpose as _superpose
 from .analysis.timeline import EASINGS as _EASINGS
@@ -3264,6 +3265,12 @@ _BOIL_LIMIT = 1.0
 #: frame. One is a shimmer, four is a stutter.
 _BOIL_HOLD = 2
 
+#: Where a background stops being paper and starts being a screen. Sampled from
+#: a frame's corners to decide which way a long exposure should accumulate:
+#: ink darkens paper, phosphor brightens a dark screen, and a caller should not
+#: have to tell a tool which of those their scene is.
+_MID_GREY = 128.0
+
 
 def _boil_wobble(array: Any, amplitude: float) -> tuple[Any, str]:
     """Per-atom wobble, largest where the data is least sure of itself.
@@ -3319,6 +3326,7 @@ async def boil(
     width: int = 1200,
     seed: int = 0,
     transparent: bool | None = None,
+    trails: bool = False,
 ) -> dict[str, Any]:
     """Redraw the molecule every few frames, slightly differently — a stop-motion boil.
 
@@ -3348,6 +3356,24 @@ async def boil(
     components, so anything drawn outside a registered handle is gone when this
     returns. `color_by_rmsf` has the same property for the same reason. The
     reply says so; redraw the view you had.
+
+    trails: also write `exposure.png` — every frame accumulated into one long
+      exposure, the last pose sharp and the ones before it fading behind it.
+
+      **This is the only way the boil's channel can be seen without watching
+      it.** The wobble is bound to how sure the data is, and that binding is
+      real and tested — but it is invisible in any single frame, because one
+      frame of a boil is just the molecule slightly displaced. Held open on one
+      plate the certainty becomes shape: a confident core stays sharp and a
+      loop the data is guessing at smears. The reply carries `smear`, which is
+      how much of the exposure is trail, and reads 0.0 exactly when nothing
+      moved.
+
+      **A trail wants room to be seen.** At the default amplitude on 1UBQ the
+      ghosting is there and slight; at 0.9 over 12 frames it reads clearly as a
+      long exposure, at a `smear` of 0.0216. More poses lengthen the trail,
+      more amplitude widens it — a boil tuned for playback is not necessarily
+      tuned for one plate.
 
     directory: where frames are written, as frame_0000.png upward.
     frames: total captures. With `hold` at 2 this is half as many poses.
@@ -3427,8 +3453,30 @@ async def boil(
                 await _display(handle, _handles.get(handle).indices)
                 restored += 1
 
+    exposure: dict[str, Any] = {}
+    if trails:
+        written = sorted(Path(result["directory"]).glob("frame_*.png"))
+        held = [PILImage.open(frame).copy() for frame in written]
+        # The ground decides which way ink accumulates, and a caller should not
+        # have to know: sampled from the corners of the last frame, which is
+        # background in every capture this writes.
+        corners = np.asarray(held[-1].convert("RGB"))[[0, 0, -1, -1], [0, -1, 0, -1]]
+        ground = "light" if float(corners.mean()) >= _MID_GREY else "dark"
+        plate = accumulate(held, ground=ground)
+        out = Path(result["directory"]) / "exposure.png"
+        plate.save(out)
+        exposure = {
+            "exposure": str(out),
+            "ground": ground,
+            # 0.0 exactly means nothing moved, which is the honest answer on a
+            # structure whose column is flat rather than a picture that looks
+            # fine and says nothing.
+            "smear": smear(plate, held[-1]),
+        }
+
     return {
         **result,
+        **exposure,
         "poses": len(poses),
         "hold": hold,
         "amplitude": amplitude,

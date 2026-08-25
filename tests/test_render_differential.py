@@ -2016,6 +2016,58 @@ async def test_a_boil_puts_the_coordinates_back(boiled):
     assert any("reloaded" in step for step in boiled["loud"]["steps"])
 
 
+async def test_a_boil_with_trails_writes_the_exposure_its_frames_add_up_to(
+    tmp_path,
+):
+    """End to end: poses on a real molecule become one long exposure.
+
+    The accumulation itself is tested on fixtures whose answer is set, in
+    `tests/test_phosphor.py`. What only a real boil can show is that the frames
+    it writes are the frames that get accumulated — that the glob finds them in
+    order, that the ground is read off the capture rather than guessed, and
+    that the number in the reply describes the file on disk.
+
+    Its own control is built in. A boil whose amplitude is far below a pixel
+    draws the same pose every time, so its exposure is the still and `smear`
+    must read **0.0 exactly** — the honest answer on a structure the wobble has
+    nothing to say about, and the assertion that would catch an exposure
+    reporting motion it invented.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("publication-cartoon")
+        moving = await server_mod.boil(
+            str(tmp_path / "moving"), frames=6, width=400, trails=True
+        )
+        held = await server_mod.boil(
+            str(tmp_path / "held"),
+            frames=6,
+            width=400,
+            amplitude=0.001,
+            trails=True,
+        )
+
+    for result in (moving, held):
+        assert Path(result["exposure"]).is_file(), "no exposure was written"
+        assert result["ground"] in ("light", "dark")
+
+    assert moving["smear"] > 0.0, (
+        f"a boil that visibly moves left no trail: {moving['smear']}"
+    )
+    assert held["smear"] == 0.0, (
+        f"a boil too small to see reported a smear of {held['smear']}, so the "
+        "exposure is inventing motion"
+    )
+
+    # The exposure is the frames, not one of them: it must differ from the
+    # sharp last pose it ends on, and cover at least as much as it does.
+    frames = sorted(Path(moving["directory"]).glob("frame_*.png"))
+    last = decode(frames[-1].read_bytes())
+    exposure = decode(Path(moving["exposure"]).read_bytes())
+
+    assert exposure.pixels.shape == last.pixels.shape
+    assert difference(exposure, last) > 0.0, "the exposure is just the last frame"
+
+
 async def test_a_boil_says_what_its_wobble_follows(boiled):
     """The channel, reported rather than implied.
 

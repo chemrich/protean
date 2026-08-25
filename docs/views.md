@@ -859,6 +859,36 @@ Three routes, and the middle one is chosen:
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
 
+#### The boil, held open — `trails=True`, 2026-08-25
+
+`boil` already redraws the molecule every few frames with the atoms nudged, and
+how far an atom wanders follows how sure the data is about it. That binding is
+real and tested. It is also **invisible in any one frame** — a single frame of
+a boil is just the molecule slightly displaced, and only playing the sequence
+reveals which parts are restless.
+
+`trails=True` accumulates the poses into one long exposure. The newest pose
+stays sharp and the ones before it fade behind it, so certainty becomes shape:
+a confident core is crisp, a loop the data is guessing at smears. The channel
+was always there; this is what makes it readable at a glance, and measurable
+off a still.
+
+Three decisions worth keeping:
+
+- **Decay, not a flat average.** Averaging four poses leaves the last at a
+  quarter strength and the subject becomes a smudge with no direction. Weighting
+  the newest fully and fading backwards gives the trail a head and a tail,
+  which is what makes the eye read travel rather than blur.
+- **The ground is read, not asked for.** Ink darkens paper and a phosphor
+  brightens a dark screen, so the two composite opposite ways. Sampling the
+  capture's own corners decides it, because a caller should not have to tell a
+  tool which kind of scene they are in.
+- **`smear` is reported.** How much of the exposure is trail rather than the
+  pose that ended it, over the *drawn* area rather than the frame. It reads 0.0
+  exactly when nothing moved — the honest answer on a structure whose column is
+  flat, and the difference between saying so and handing back a picture that
+  looks fine.
+
 #### Spot-ink plates — a two-colour press, 2026-08-24
 
 The fourth finish, and the first that carries data. The frame is sorted into
