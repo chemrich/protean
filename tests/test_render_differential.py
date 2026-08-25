@@ -698,6 +698,127 @@ async def test_turning_the_gradient_off_restores_the_flat_canvas(styled_effects)
     assert background(styled_effects["no_gradient"]) == background(styled_effects["base"])
 
 
+# -- the lens: how the camera sees ---------------------------------------------
+
+
+def _shift(clear: Render, changed: Render) -> Any:
+    """How far each drawn pixel moved, in levels, between two renders."""
+    a = np.asarray(clear.pixels).astype(float)
+    b = np.asarray(changed.pixels).astype(float)
+    ground = a[0, 0, :3]
+    drawn = np.abs(a[:, :, :3] - ground).max(axis=2) > 6
+    return np.abs(b[:, :, :3] - a[:, :, :3]).mean(axis=2)[drawn]
+
+
+async def _deep_scene() -> None:
+    """A spacefill, which fills far more depth than a ribbon does — and depth
+    is the only thing fog reads."""
+    await server_mod.preset("publication-cartoon")
+    await server_mod.select("polymer", name="deep")
+    await server_mod.show(representation="spacefill", handle="deep")
+
+
+async def test_fog_is_a_depth_cue_and_not_a_dim():
+    """The assertion a "just darken everything" fog cannot pass.
+
+    The obvious test is that fog changes fewer pixels than a global dim would,
+    since only the far ones fade. **Measured, that is false**: fog at 100 moves
+    0.9994 of the drawn pixels, because even the nearest atom has some depth
+    and shifts by at least a level. A test built on it would have passed for
+    real fog, passed for a uniform dim, and read as a rigorous depth-cue guard
+    while proving nothing.
+
+    What separates them is the *spread*. A uniform dim moves every pixel by the
+    same amount, so its standard deviation is zero; a depth cue grades the
+    shift with distance. Measured on 1UBQ spacefill: mean 46.35, std 25.26 — a
+    spread of **0.545** — with deciles at 14.7 / 31.3 / 45.0 / 57.3 / 81.7,
+    smooth rather than bimodal. A dim of the same average strength reads 0.000.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await _deep_scene()
+        await server_mod.lens(fog=0)
+        clear = await _shot(session)
+        await server_mod.lens(fog=100)
+        fogged = await _shot(session)
+
+    shift = _shift(clear, fogged)
+    spread = float(shift.std() / max(shift.mean(), 1e-9))
+
+    assert float(shift.mean()) > 10.0, f"fog moved almost nothing: {shift.mean():.2f}"
+    assert spread > 0.2, (
+        f"fog moved every drawn pixel by about the same amount (spread "
+        f"{spread:.3f}), which is a dim rather than a depth cue"
+    )
+
+
+async def test_fog_draws_nothing_at_the_default_it_has_always_had():
+    """Mol*'s fog defaults to *on* at 15, so every protean figure ever made has
+    carried it — and it has never once been visible.
+
+    Measured with no tolerance, on a spacefill: 5, 15 and 25 are bit-identical
+    to fog off. 40 reads 0.00009, 60 reads 0.026, 100 reads 0.103. That is the
+    reason this knob is worth exposing at all: the default is not a mild
+    version of the effect, it is the absence of one.
+
+    It is also why `fog=0` can only be checked by reading the canvas back.
+    There is nothing to see, so a pixel test for "off" would either fail on
+    correct code or be loosened until it measured nothing.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await _deep_scene()
+        await server_mod.lens(fog=0)
+        off = await _shot(session)
+        await server_mod.lens(fog=15)
+        default = await _shot(session)
+        heavy_reply = await server_mod.lens(fog=100)
+        heavy = await _shot(session)
+
+    assert difference(off, default) == 0.0, (
+        "Mol*'s default fog became visible — the range this tool exposes was "
+        "calibrated on it being invisible, so re-measure before trusting it"
+    )
+    assert difference(off, heavy) > 0.05, (
+        f"fog at full strength moved only {difference(off, heavy):.5f}"
+    )
+    assert heavy_reply["fog"] == 100
+
+
+async def test_the_lens_reports_what_the_canvas_holds_not_what_it_was_asked():
+    """`cameraFog` is a *mapped* parameter — `{name, params}` — and Mol* takes a
+    bare `{intensity}` without complaint while leaving the fog as it was. A
+    reply built from the request would report a change that never happened, and
+    for fog off there are no pixels to catch it.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("publication-cartoon")
+
+        assert (await server_mod.lens(fog=0))["fog"] == 0
+        assert (await server_mod.lens(fog=60))["fog"] == 60
+        turned = await server_mod.lens(projection="orthographic")
+        assert turned["projection"] == "orthographic"
+        # And the projection survives a call that says nothing about it.
+        both = await server_mod.lens(fog=15)
+        assert both["projection"] == "orthographic"
+        assert both["fog"] == 15
+
+
+async def test_an_orthographic_lens_draws_a_different_picture():
+    """Perspective converges and orthographic does not, so the same scene from
+    the same camera is a different picture — which is the point of the knob.
+    Measured on 1UBQ spacefill with no tolerance: 0.1066 of the frame.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await _deep_scene()
+        await server_mod.lens(projection="perspective")
+        perspective = await _shot(session)
+        await server_mod.lens(projection="orthographic")
+        orthographic = await _shot(session)
+
+    assert difference(perspective, orthographic) > 0.01, (
+        "the projection changed nothing, so the camera mode never reached the canvas"
+    )
+
+
 # -- background and opacity ----------------------------------------------------
 
 

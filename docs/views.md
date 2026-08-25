@@ -859,6 +859,36 @@ Three routes, and the middle one is chosen:
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
 
+#### The lens — projection and fog, 2026-08-25
+
+Two Canvas3D parameters protean never exposed, and between them most of the
+technical-illustration and painterly looks that were otherwise out of reach.
+
+**Orthographic** removes convergence: two atoms the same size are drawn the
+same size wherever they sit in depth. That is what makes it the projection of a
+technical drawing rather than a photograph, and what makes a helix viewed down
+its axis honest rather than subtly tapered.
+
+**Fog** fades the distance. It has been on since the beginning and has never
+done anything — Mol*'s default is intensity 15, and measured with no tolerance,
+5, 15 and 25 are bit-identical to off. It first flickers at 40 and only becomes
+substantial at 60. Every protean figure to date is nominally fogged and
+visually unfogged.
+
+Three things worth keeping from building it:
+
+- **A default being "on" is not a claim that it does anything.** The parameter
+  was set the whole time and the pixels never moved. Reading a default value is
+  not the same as measuring the default *behaviour*, and that question is worth
+  asking of every parameter protean inherits.
+- **`cameraFog` is a mapped parameter**, `{name, params}`, and Mol* swallows a
+  bare `{intensity}` without complaint. The reply is read back off
+  `canvas3d.props` rather than echoed — and for `fog=0` the read-back is the
+  only possible evidence, because there is nothing to see.
+- **The intuitive falsifier was wrong.** "A dim moves every drawn pixel, a
+  depth cue only the far ones" is false: fog moves 0.9994 of them. What
+  separates them is the *spread* of the shift, 0.545 against a dim's 0.000.
+
 #### The boil, held open — `trails=True`, 2026-08-25
 
 `boil` already redraws the molecule every few frames with the atoms nudged, and

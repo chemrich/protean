@@ -1935,6 +1935,48 @@ export function createDispatcher(plugin: any): Handler {
       },
     },
 
+    lens: {
+      render: true,
+      async run({ projection, fog }: { projection?: string; fog?: number }) {
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const props: Record<string, unknown> = {};
+        if (projection !== undefined) {
+          checkName('projection', projection, ['perspective', 'orthographic']);
+          props.camera = { mode: projection };
+        }
+        if (fog !== undefined) {
+          if (!Number.isFinite(fog) || fog < 0 || fog > 100) {
+            throw new Error(`Fog must be between 0 and 100, got ${fog}`);
+          }
+          // `cameraFog` is a *mapped* parameter, not a plain group: it is
+          // `{ name, params }` and Mol* takes a bare `{ intensity }` without
+          // complaint, leaving the fog exactly as it was. Off is its own
+          // branch rather than an intensity of zero, because the minimum the
+          // group accepts is 1.
+          props.cameraFog =
+            fog === 0 ? { name: 'off', params: {} } : { name: 'on', params: { intensity: fog } };
+        }
+        if (!Object.keys(props).length) {
+          throw new Error('Nothing to change: pass projection, fog, or both.');
+        }
+        canvas3d.setProps(props);
+
+        // Read back rather than echo. Mol* accepts a malformed parameter group
+        // silently and keeps the old value, so a reply built from the request
+        // would report a change that never happened.
+        const applied = canvas3d.props;
+        return {
+          projection: applied?.camera?.mode ?? null,
+          fog:
+            applied?.cameraFog?.name === 'on'
+              ? (applied.cameraFog.params?.intensity ?? null)
+              : 0,
+        };
+      },
+    },
+
     lighting: {
       render: true,
       async run({ rig, intensity, ambient, exposure }: LightingArgs) {
