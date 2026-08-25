@@ -93,6 +93,15 @@ ignore = [
 # is what the corpus is meant to be; restructuring it into functions would
 # hide the one thing it is for, which is being read straight through.
 "docs/benchmark/*" = ["E501", "E702", "PLR2004", "T201", "INP001", "PLR0915", "PLR0912"]
+# The figure script drives a real browser for the same reasons the differential
+# harness does — blocking subprocess calls, a module-level handle on the
+# debugging port, broad excepts that report a refusal rather than crashing a
+# twenty-figure run — and its thresholds are one-off framing constants that
+# naming would not clarify.
+"docs/figures/*" = [
+    "ASYNC220", "ASYNC221", "PLW1510", "PLW0603", "BLE001", "PLR2004",
+    "PLC0415", "PLR0913", "PLR0917", "PLR0402", "T201", "INP001",
+]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = [
