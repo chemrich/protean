@@ -4,9 +4,26 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-23**, at `main` after #121.
+Last updated **2026-08-25**, at `main` after #126.
 
 ---
+
+## The sequence Charlie set is finished
+
+Six PRs, #121 to #126, all merged. `main` is at `cf5013e`, clean, zero open
+PRs. What shipped: the finish route's base, `cyanotype`, `spot-ink-plates`,
+plates-by-element, `boil(trails=True)`, and `lens()`.
+
+**What comes next is not another treatment.** `docs/molstar-capabilities.md` —
+an audit of Mol\*'s actual parameter surface, commissioned because `lens()`
+found that fog had been on and invisible since the beginning — says the
+bottleneck is structural. `show()` forwards two representation parameters and
+`color()` forwards none unless you pass a hex literal. Twenty-odd of Mol\*'s
+most valuable knobs sit behind that one gap, and six independent readers each
+priced their find as "one handler" without noticing they share a prerequisite.
+
+Read that document before planning anything. Its §5 says plainly what it could
+not settle without rendering, and that list is where the next measurements go.
 
 ## In one paragraph
 
@@ -129,6 +146,36 @@ Two things it does not do. The **scene** is not restored, because each pose
 reloads the structure and that rebuilds the viewer's components — the same
 property `color_by_rmsf` has, reported in the reply. And the coordinates *are*
 restored, because a drawing style may not quietly edit the structure.
+
+## What the audit changes about the plan
+
+Read `docs/molstar-capabilities.md` §4 in full. The cost errors cluster by tier
+rather than scattering:
+
+- The tier the plan priced **highest** — surface-derived treatments, gated
+  behind a two-week prerequisite — is the one Mol\* has most already built.
+  Surfaces ship fully parameterised; clipping a molecule open, which the plan
+  buries inside an L-effort treatment, is two independent parameter sets that
+  ship today and which protean has **none** of.
+- The tier the plan priced at **6-8 weeks** — per-atom generated geometry:
+  radiolaria, pom-poms, vacuum tubes — is the one the prebuilt bundle genuinely
+  cannot do at any price.
+
+So roughly weeks 5 to 20 of that schedule is work that either already exists or
+is impossible without bundling Mol\* from source.
+
+Three findings worth acting on regardless of the plan:
+
+1. **`color("accessible-surface-area")` already works today** and nobody
+   noticed. protean validates theme names against the live registry, and a
+   default plugin behavior registers that theme. The plan budgets a week for
+   pulling SASA forward.
+2. **`spin(speed=-0.1)` is promised by protean's own docstring and refused by
+   protean's own code.** Mol\* accepts -2 to 2; `dispatch.ts` throws below 0.
+   A model following the tool description gets an error.
+3. **`show(representation='interactions')` passes the name check and draws
+   almost nothing**, for three independent parameter reasons. A picture protean
+   nearly has and does not know it.
 
 ## What to do next
 
