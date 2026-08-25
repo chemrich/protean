@@ -147,6 +147,18 @@ class _Style:
     `palette()`, which is derived from it.
     """
 
+    needs_colour: str | None = None
+    """The colour theme this finish's claim depends on, if it has one.
+
+    A capture-time finish sees pixels and cannot know what a hue was *made* to
+    mean, so a finish that sorts by colour can only honestly claim "a plate per
+    element" if something guarantees the capture was element-coloured. Naming
+    the theme here is that guarantee: `snapshot()` asks the viewer to apply it
+    for the capture and put the scene back afterwards.
+
+    `None` for a finish that reads only tone, which is most of them.
+    """
+
     @property
     def ink(self) -> tuple[int, int, int]:
         """The first ink, for the finishes that have only one."""
@@ -516,6 +528,7 @@ FINISHES: dict[str, _Style] = {
         bands=5,
         paper=(247, 243, 233),
         inks=((163, 41, 38), (41, 61, 107)),
+        needs_colour="element-symbol",
     ),
 }
 

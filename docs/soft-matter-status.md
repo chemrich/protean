@@ -50,8 +50,13 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   data channel**. Binds which plate a region prints on, which is a category and
   so survives shading, where a shade-driven binding does not. Proved by taking
   the colour away: two inks and their crossing become one ink and nothing else.
-  Still owed: the arm in `tests/test_shuffle_differential.py` that this file's
-  own standing rule requires.
+  The capture is coloured by element for the one frame and the scene is put
+  back, so the binding is a guarantee rather than a hope about how the caller
+  had coloured their scene. Proved twice: taking the colour away turns two inks
+  and their crossing into one ink and nothing else, and the arm this file's own
+  standing rule requires is in `tests/test_shuffle_differential.py`, where the
+  press keeps 0.485 of the difference the render carries against 0.183 for the
+  same finish with its separation removed.
 
 - **`cyanotype`** — the third finish and the first that is not an engraving.
   A drawing style with no data channel, said outright in its docstring, the way

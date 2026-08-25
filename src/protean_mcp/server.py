@@ -54,7 +54,12 @@ from .analysis.exposure import (
     ExposureError,
     residue_exposure,
 )
-from .analysis.hatching import apply_finish, ink_fraction, validate_finish
+from .analysis.hatching import (
+    FINISHES,
+    apply_finish,
+    ink_fraction,
+    validate_finish,
+)
 from .analysis.pharmacophore import (
     CLASS_COLOURS,
     UNCLASSIFIED,
@@ -2440,6 +2445,15 @@ async def snapshot(
     args: dict[str, Any] = {"width": width, "crop": crop}
     if transparent is not None:
         args["transparent"] = transparent
+    # A finish that separates a frame by colour cannot know what a hue was made
+    # to mean, so "a plate per element" is only true if the capture is
+    # element-coloured. The viewer applies the theme for this one capture and
+    # puts the scene back in a `finally` — the alternative was to leave the
+    # claim narrower than the caller expects, or to recolour the scene and not
+    # say so.
+    separated_by = FINISHES[finish].needs_colour if finish is not None else None
+    if separated_by:
+        args["recolour"] = separated_by
 
     bridge = _require_viewer()
     timeout = _capture_timeout(width, traced=_path_tracing)
@@ -2511,6 +2525,18 @@ async def snapshot(
                 "finish": finish,
                 "finish_applied": "after the capture, in Python — the viewer "
                 "does not show this",
+                # Said outright: the scene was coloured for this capture and
+                # restored, so a caller who looks at the viewer afterwards and
+                # sees their own colours has not been lied to about what the
+                # file separates by.
+                **(
+                    {
+                        "separated_by": separated_by,
+                        "scene_restored": bool(result.get("recoloured")),
+                    }
+                    if separated_by
+                    else {}
+                ),
                 # The caller usually cannot look at the result. Near 1 means
                 # the tone had nowhere to go — a dark ground engraves to a
                 # filled rectangle with the molecule showing through as a few

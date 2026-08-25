@@ -96,6 +96,15 @@ interface SnapshotArgs {
   transparent?: boolean;
   /** Trim to the molecule's bounds, which changes the output dimensions. */
   crop?: boolean;
+  /** Colour every representation this way for the capture, then put it back.
+   *
+   * For the print finishes that separate a frame by colour: they read pixels
+   * and cannot know what a hue was *made* to mean, so the only way "a plate
+   * per element" can be true rather than hoped for is if the capture is
+   * element-coloured by the tool that asked for it. Restored in a `finally`,
+   * so a caller's scene is the same afterwards as before.
+   */
+  recolour?: string;
 }
 
 interface PathTraceArgs {
@@ -1156,6 +1165,35 @@ export function createDispatcher(plugin: any): Handler {
     );
   }
 
+  /** Colour every representation one way for one capture, and return the undo.
+   *
+   * The colour theme of a representation lives on its transform params, so it
+   * can be read before the change and written back after. Per component rather
+   * than in one call, because two components may have been coloured
+   * differently and restoring them all to the first one's theme would be a
+   * quiet way of losing a scene.
+   */
+  async function recolourForPrint(theme: string): Promise<() => Promise<void>> {
+    checkName('colour theme', theme, colorThemeNames());
+    const before = allComponents().map((component: any) => ({
+      component,
+      was: component.representations?.[0]?.cell?.transform?.params?.colorTheme,
+    }));
+    await plugin.managers.structure.component.updateRepresentationsTheme(
+      allComponents(),
+      colorParams(theme)
+    );
+    return async () => {
+      for (const { component, was } of before) {
+        if (!was?.name) continue;
+        await plugin.managers.structure.component.updateRepresentationsTheme([component], {
+          color: was.name,
+          colorParams: was.params,
+        });
+      }
+    };
+  }
+
   /** The hierarchy's view of our refs, which is what the managers act on. */
   function hierarchyComponents(refs: string[]) {
     const wanted = new Set(refs);
@@ -1581,7 +1619,7 @@ export function createDispatcher(plugin: any): Handler {
 
     snapshot: {
       render: true,
-      async run({ width, height, transparent, crop }: SnapshotArgs) {
+      async run({ width, height, transparent, crop, recolour }: SnapshotArgs) {
         const helper = plugin.helpers?.viewportScreenshot;
         if (!helper?.getImageDataUri) {
           throw new Error('This Mol* build has no viewport screenshot helper');
@@ -1602,6 +1640,10 @@ export function createDispatcher(plugin: any): Handler {
         // ordinary screenshot would come back at figure resolution.
         const previousValues = { ...helper.values };
         const previousCrop = { ...helper.cropParams };
+        // Before the try: if recolouring throws there is nothing to put back,
+        // and running the capture on a half-recoloured scene would be worse
+        // than refusing.
+        const putColourBack = recolour ? await recolourForPrint(recolour) : null;
 
         try {
           helper.behaviors.values.next({
@@ -1637,10 +1679,12 @@ export function createDispatcher(plugin: any): Handler {
             // that the render never finished.
             transparent: !!helper.values.transparent,
             ...(traced ? { traced_ms: elapsed } : { elapsed_ms: elapsed }),
+            ...(recolour ? { recoloured: recolour } : {}),
           };
         } finally {
           helper.behaviors.values.next(previousValues);
           helper.behaviors.cropParams.next(previousCrop);
+          if (putColourBack) await putColourBack();
         }
       },
     },
