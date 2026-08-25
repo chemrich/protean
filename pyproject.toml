@@ -102,6 +102,8 @@ ignore = [
     "ASYNC220", "ASYNC221", "PLW1510", "PLW0603", "BLE001", "PLR2004",
     "PLC0415", "PLR0913", "PLR0917", "PLR0402", "T201", "INP001",
 ]
+# A generator that prints what it wrote and imports nothing at runtime.
+"docs/generate/*" = ["T201", "INP001"]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = [
