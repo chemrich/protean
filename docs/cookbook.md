@@ -461,8 +461,8 @@ first and the plates come out as elements. See
 ## 14. Hand the scene to someone else
 
 ```python
-save_session("scene.molx")
-load_session("scene.molx")
+save_session("scene.protean")
+load_session("scene.protean")
 ```
 
 One file holding the scene *and* the structure, which reopens as it was.

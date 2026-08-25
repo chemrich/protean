@@ -57,7 +57,7 @@ Everything else about the grammar is in [selections.md](selections.md).
 | `cealign target, mobile` | `superpose(..., mode="structural")` — **not equivalent**, see below |
 | `get_area sele` | `sasa(selection="...")` |
 | `png out.png, dpi=300` | `snapshot(path="out.png", column="single", dpi=300)` |
-| `save scene.pse` | `save_session("scene.molx")` |
+| `save scene.pse` | `save_session("scene.protean")` |
 | `set ray_trace_mode, 1` | `shading(style="cel") + effects(outline=True)` |
 | `ray 1200, 900` | `path_trace(enabled=True, quality="high")` |
 | `bg_color white` | `background(color="#ffffff")` |
