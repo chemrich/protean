@@ -1,17 +1,29 @@
 /**
- * Boots the prebuilt Mol* viewer (loaded globally from molstar.js — bundling
- * molstar from source needs >4 GB RAM, the prebuilt bundle needs none) and
- * connects the protean bridge.
+ * Boots Mol* and connects the protean bridge.
+ *
+ * Mol* is bundled from `molstar/lib` rather than loaded as a prebuilt global.
+ * The comment that used to sit here said bundling "needs >4 GB RAM"; that was
+ * measured on 2026-08-21 and is wrong — see `docs/molstar-bundling.md`. It is
+ * the cost of building Mol*'s own repository from TypeScript, and not what this
+ * does: the published package ships `lib/` as already-compiled ESM with the
+ * GLSL inlined as JavaScript strings, so Vite is bundling JavaScript and never
+ * compiles Mol* at all. Measured here: 1.2 GB peak, a few seconds.
+ *
+ * `apps/viewer/app` rather than `apps/viewer`: the index module imports its own
+ * `index.html`, `embedded.html` and `mvs.html`, which exist for Mol*'s
+ * standalone build and drag Vite's html plugin into a library build until it
+ * fails. The `Viewer` class lives one file down, and imports no styles.
+ *
+ * The load order that `raf-pump.js` depends on still holds, and is now
+ * structural rather than a matter of two script tags being in the right order:
+ * the pump is a classic script and so runs during parsing, and Mol* is inside
+ * this module's graph, which is deferred. A classic script always runs first.
  */
+
+import { Viewer } from 'molstar/lib/apps/viewer/app';
 
 import { connectBridge, type PageChannel } from './bridge';
 import { createDispatcher } from './dispatch';
-
-declare const molstar: {
-  Viewer: {
-    create(target: string | HTMLElement, options?: Record<string, unknown>): Promise<{ plugin: any }>;
-  };
-};
 
 /**
  * A tab on the right edge that opens Mol*'s controls panel.
@@ -197,7 +209,7 @@ async function init() {
   // own kind of opaque: when the picture looks wrong, the state tree is where
   // the answer is. The default is out of the way; the cost of reaching them is
   // one click, and the risk of *using* them is on whoever clicks.
-  const viewer = await molstar.Viewer.create('app', {
+  const viewer = await Viewer.create('app', {
     layoutIsExpanded: false,
     layoutShowControls: true,
     collapseLeftPanel: true,

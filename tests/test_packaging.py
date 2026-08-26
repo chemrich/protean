@@ -65,10 +65,28 @@ def test_the_wheel_carries_the_viewer(wheel):
 
     assert static, "the wheel contains no viewer files at all"
     assert any(name.endswith("static/index.html") for name in static)
-    # The Mol* bundle is the largest part and the one an install is useless
-    # without; its absence would leave an index.html that loads nothing.
-    assert any(name.endswith("static/molstar.js") for name in static)
     assert any("/static/assets/" in name for name in static)
+
+    # Mol* is the largest part and the one an install is useless without; its
+    # absence would leave an index.html that loads nothing.
+    #
+    # This used to look for `static/molstar.js`, a prebuilt bundle copied in
+    # beside the app. Mol* is now bundled from source into the app's own chunk,
+    # so there is no file by that name and the check has to be for the code
+    # rather than for a filename. Size is the honest proxy: the app without
+    # Mol* is about 50 kB, with it about 5 MB, so anything past a megabyte
+    # cannot be the app alone.
+    scripts = {
+        name: zipfile.ZipFile(wheel).getinfo(name).file_size
+        for name in static
+        if name.endswith(".js") and "/static/assets/" in name
+    }
+    assert scripts, f"the wheel carries no JavaScript at all: {sorted(static)}"
+    biggest, size = max(scripts.items(), key=lambda kv: kv[1])
+    assert size > 1_000_000, (
+        f"the largest script in the wheel is {biggest} at {size} bytes, which "
+        f"is too small to contain Mol*. An install would load an empty viewer."
+    )
 
 
 @needs_viewer
