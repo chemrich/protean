@@ -25,7 +25,8 @@ current tool surface, and several describe work that was dropped.
 |---|---|---|
 | [getting-started.md](getting-started.md) | Install, your first picture, the vocabulary a non-biologist needs | novice |
 | [cookbook.md](cookbook.md) | 14 worked recipes, each with its figure and what it needs | both |
-| [gallery.md](gallery.md) | Every representation, colour theme, preset, lighting rig, shading style, material and print finish — shown | both |
+| [gallery.md](gallery.md) | What protean makes: the one-call views, the presets, the print finishes, the boil, the lens — each with the question that asks for it | both |
+| [style-reference.md](style-reference.md) | Every representation, colour theme, lighting rig, shading style, material and background — the building blocks, shown | both |
 | [selections.md](selections.md) | The complete selection language: keywords, properties, operators, and what is refused | both |
 | [tools.md](tools.md) | Every tool, grouped. **Generated** from the source | both |
 | [for-pymol-users.md](for-pymol-users.md) | Command translation, and the gaps stated honestly | power user |
