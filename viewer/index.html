@@ -68,10 +68,12 @@
   <body>
     <div id="app"></div>
     <div id="status">disconnected</div>
-    <!-- Must precede molstar.js: Mol* captures window.requestAnimationFrame at
-         module-eval time, so the hidden-tab pump has to be installed first. -->
+    <!-- Must precede Mol*: it captures window.requestAnimationFrame at
+         module-eval time, so the hidden-tab pump has to be installed first.
+         This is a classic script and runs during parsing; Mol* is bundled into
+         main.ts, which is a module and therefore deferred. The order is
+         structural rather than a matter of tag sequence. -->
     <script src="/raf-pump.js"></script>
-    <script src="/molstar.js"></script>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

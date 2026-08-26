@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "sync-molstar": "mkdir -p public && cp node_modules/molstar/build/viewer/molstar.js node_modules/molstar/build/viewer/molstar.css public/ && cp node_modules/molstar/LICENSE public/molstar-LICENSE.txt",
+    "sync-molstar": "mkdir -p public && cp node_modules/molstar/build/viewer/molstar.css public/ && cp node_modules/molstar/LICENSE public/molstar-LICENSE.txt",
     "predev": "npm run sync-molstar",
     "prebuild": "npm run sync-molstar",
     "dev": "vite",
