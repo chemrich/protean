@@ -102,23 +102,27 @@ numbers are the same molecule, and when they are not, the reply says so.
 
 ---
 
-## Six questions, six calls
+## Eight questions, eight answers
 
-```python
-ligand_view("BEN")            # a bound drug and what lines its pocket
-pocket_view("BEN")            # the cavity, as a surface
-pharmacophore_view("BEN")     # what each ligand atom can do
-interface_view("A", "B")      # where two chains touch
-mutation_view("K48R")         # the residues a mutation names — checked
-crosslink_view()              # disulfides and metal sites
-```
+> Show me the inhibitor in trypsin and what lines its pocket.
+> What shape is the pocket it sits in?
+> What can each atom of the HIV protease inhibitor do?
+> Where do haemoglobin's alpha and beta chains touch, and how much does it bury?
+> Is the residue this mutation names the residue that is actually there?
+> What holds crambin's fold together?
+> Which parts of trypsin has evolution refused to change?
+> Where is the charge on ubiquitin's surface?
 
 ![Six one-call views: ligand, pocket, interface, mutation, pharmacophore and crosslink](docs/images/views.png)
 
-Each returns the residues it found, and each **refuses rather than mislead**:
-`mutation_view` verifies the residue you named is the residue that is there,
-because a mutation view highlighting the wrong residue because of a numbering
-offset looks exactly like one that worked.
+One call each. Every one sets up its own scene — colouring, transparency,
+labels, framing — returns the residues it found, and **refuses rather than
+mislead**. Asked for a mutation the structure does not carry, `mutation_view`
+declines the whole request and says which position disagreed, because a view
+highlighting the wrong residue because of a numbering offset looks exactly like
+one that worked.
+
+**[Each of the eight, at size, with what came back →](docs/gallery.md)**
 
 ---
 
