@@ -1368,6 +1368,37 @@ async def test_every_view_looks_different_from_every_other(views):
             )
 
 
+async def test_felts_halo_is_visible_in_the_picture():
+    """The halo earns its cost, or it does not — and until now nobody had looked.
+
+    `felt` draws a second spacefill at 1.12x and alpha 0.2 under its own
+    handle. Both `docs/views.md` and the unit test that stands in for this one
+    say the same thing about it: *"at that opacity nobody can tell from the
+    picture whether it drew"*. That claim was never measured. The unit test's
+    own docstring records why — a differential test "was written first and
+    could not work, because the browser fixture restores the handle table on
+    teardown and the assertion ran after it". A fixture problem became a
+    statement about a picture, and then became the reason not to test it.
+
+    It is false. Hiding the halo inside one session, so the handle is still
+    live, moves **0.0970 of the frame past protean's own 8/255 tolerance**,
+    with a worst single-channel delta of 202. That is not invisible; it is one
+    of the larger single-layer effects in the whole view set.
+
+    Asserted as a floor rather than a window because it is evidence the layer
+    is doing work, not a pin on how much.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("felt")
+        with_halo = await _shot(session)
+        await server_mod.hide(name=server_mod._FELT_HALO)
+        without = await _shot(session)
+
+    assert difference(with_halo, without) > STYLED, (
+        "hiding felt's halo changed nothing, so the second layer is not drawing"
+    )
+
+
 def _frame(views: list[tuple[str, Render]], name: str) -> Render:
     return dict(views)[name]
 
