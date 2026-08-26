@@ -4117,6 +4117,8 @@ async def capabilities() -> dict[str, Any]:
 # component under an existing name. That is what a switcher needs, and what the
 # eye needs — two coincident representations read as one muddy one.
 _SCENE_HANDLE = f"{_WHOLE_SCENE}_view"
+#: What a cartoon cannot draw, kept beside the faded scene an active site sits in.
+_CONTEXT_HETERO = f"{_WHOLE_SCENE}_hetero"
 
 # Every screen-space effect a preset has an opinion about. A preset states all
 # of them rather than only the ones it changes, because `effects()` leaves
@@ -4519,6 +4521,22 @@ async def _preset_hide_sidechains(target: str) -> list[str]:
     return [_step("hide", name=_SIDECHAIN_HANDLE)]
 
 
+async def _context_hetero() -> str | None:
+    """A handle for what a cartoon cannot draw: ligands, cofactors, ions.
+
+    None when the structure has none, because registering an empty handle and
+    drawing it would report success for nothing — and `show()` on an empty
+    selection is exactly the silent success the views refuse elsewhere.
+    """
+    array = _require_structure()
+    mask = _evaluate(_parse_selection("not polymer and not solvent"), array)
+    indices = np.flatnonzero(mask)
+    if not len(indices):
+        return None
+    _register(_CONTEXT_HETERO, indices, "active-site(context)")
+    return _CONTEXT_HETERO
+
+
 async def _preset_active_site(target: str) -> list[str]:
     """Sticks and labels on the site, the rest faded back out of the way."""
     if target == _WHOLE_SCENE:
@@ -4526,8 +4544,45 @@ async def _preset_active_site(target: str) -> list[str]:
             "active-site needs a handle saying which site — from select(), "
             "interface(), or near()"
         )
-    rest = _styleable(_WHOLE_SCENE)
+    # Drop the ordered waters before fading what is left. The load preset draws
+    # every one of them, and fading the scene to 0.2 fades them too rather than
+    # removing them — so an active site on a well-resolved crystal structure
+    # came out behind a few hundred pale red dots. `make_figures.py` had already
+    # worked around this by hand, with the note that it is "the difference
+    # between a figure and a screenshot"; a workaround in the figure script
+    # meant the documentation was quietly showing something the tool does not
+    # do. Solvent that is *asked for* is untouched: this only rebuilds the
+    # background scene, and `target` is drawn afterwards whatever it contains.
+    steps: list[str] = []
+    if _SCENE_HANDLE not in _handles.names():
+        rest, taken = await _take_the_scene(_WHOLE_SCENE, "not solvent")
+        steps += taken
+        steps.append(await _run(show, representation="cartoon", handle=rest))
+        # A cartoon draws backbone and nothing else, so a haem, a nucleotide or
+        # a metal would simply vanish from the context the site sits in. They
+        # are drawn separately when there are any, under their own handle, so
+        # the 0.2 fade below lands on the cartoon and leaves them legible.
+        #
+        # "not solvent" above rather than "polymer" is a description, not a
+        # mechanism: the cartoon draws the same pixels either way, because a
+        # cartoon has nothing to say about a zinc. Sabotaging it to "polymer"
+        # changes no picture and no test, and that was checked rather than
+        # assumed. It is written as "not solvent" because that is what the
+        # scene now is.
+        hetero = await _context_hetero()
+        if hetero is not None:
+            steps.append(
+                await _run(
+                    show,
+                    representation="ball-and-stick",
+                    handle=hetero,
+                    color="element-symbol",
+                )
+            )
+    else:
+        rest = _styleable(_WHOLE_SCENE)
     return [
+        *steps,
         await _run(opacity, opacity=0.2, name=rest),
         await _run(
             show, representation="ball-and-stick", handle=target, color="element-symbol"
