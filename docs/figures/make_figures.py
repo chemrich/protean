@@ -634,37 +634,109 @@ async def interface() -> list[Path]:
 
 @figure("views")
 async def views() -> list[Path]:
-    """The one-call views, each on a structure that suits it."""
-    with scratch() as tmp:
-        tiles = []
+    """Every one-call view, each its own full-size figure.
 
-        await load("3ptb")
-        await server.ligand_view("BEN")
-        tiles.append(('ligand_view("BEN")', await capture(tmp / "ligand.png")))
+    These used to be six 420 px tiles on one shared sheet. At the width a
+    README column actually renders, that put each view at about 289 px against
+    the 800x600 a reader of the reference documentation gets — a seventh of the
+    area, for the tools that are the whole point. Each view is now photographed
+    at 900 px and published under its own name, and the sheet is rebuilt from
+    the same captures as an index rather than as the primary artifact.
 
-        await load("3ptb")
-        await server.pocket_view("BEN")
-        tiles.append(('pocket_view("BEN")', await capture(tmp / "pocket.png")))
+    Subjects matter more here than anywhere else in this file, because a view
+    can only show what its structure has to show. Two were changed after
+    someone opened the old sheet and looked: `mutation_view` on ubiquitin's
+    K48R was one lysine and a floating label in an almost empty tile, and
+    `pharmacophore_view` on nine-heavy-atom benzamidine was an orange
+    caterpillar with no protein anywhere near it.
+    """
+    shots: list[tuple[str, str, Path]] = []
 
-        await load("1hho")
-        await server.interface_view("A", "B")
-        tiles.append(('interface_view("A","B")', await capture(tmp / "iface.png")))
+    async def shoot(slug: str, label: str) -> None:
+        """Full size for the page, and the same frame for the index."""
+        shots.append(
+            (slug, label, trim(await capture(IMAGES / f"{slug}.png", pixels=900)))
+        )
 
-        await load("1ubq")
-        await server.mutation_view("K48R", chain="A")
-        tiles.append(('mutation_view("K48R")', await capture(tmp / "mutation.png")))
+    await load("3ptb")
+    await server.ligand_view("BEN")
+    await shoot("ligand-view", 'ligand_view("BEN")')
 
-        await load("3ptb")
-        await server.pharmacophore_view("BEN")
-        tiles.append(('pharmacophore_view("BEN")', await capture(tmp / "pharm.png")))
+    await load("3ptb")
+    await server.pocket_view("BEN")
+    await shoot("pocket-view", 'pocket_view("BEN")')
 
-        # Crambin, for its three disulfides. crosslink_view refuses outright on
-        # a structure with neither a disulfide nor a metal — which ubiquitin is.
-        await load("1crn")
-        await server.crosslink_view(distance=2.5)
-        tiles.append(("crosslink_view()", await capture(tmp / "crosslink.png")))
+    await load("1hho")
+    await server.interface_view("A", "B")
+    await shoot("interface-view", 'interface_view("A","B")')
 
-        return [contact_sheet(IMAGES / "views.png", tiles, columns=3, share_frame=False)]
+    # Haemoglobin, not ubiquitin's K48R, and three positions rather than one.
+    # K48R alone came out as a single lysine and a floating label in an almost
+    # empty tile; three sites give the view something to frame around, and E6V
+    # is the best-known point mutation in biology.
+    #
+    # The reference documentation for the tool this is modelled on shows
+    # E6V/K16E/V67F. K16E does not verify here — position 16 of 4HHB chain B
+    # holds GLY, not LYS — and the view refuses the whole spec rather than
+    # highlight the wrong residue, which is the behaviour worth having. H63Y
+    # replaces it. Nothing is claimed about all three being disease variants;
+    # they are three positions that are what the notation says they are.
+    await load("4hhb")
+    await server.mutation_view("E6V,H63Y,V67F", chain="B")
+    await shoot("mutation-view", 'mutation_view("E6V,H63Y,V67F", chain="B")')
+
+    # Indinavir in HIV protease, not benzamidine. Benzamidine has nine
+    # heavy atoms; a view whose subject is what each ligand atom can *do*
+    # needs a ligand with enough atoms to do several different things.
+    await load("1hsg")
+    await server.pharmacophore_view("MK1")
+    await shoot("pharmacophore-view", 'pharmacophore_view("MK1")')
+
+    # Crambin, for its three disulfides. crosslink_view refuses outright on
+    # a structure with neither a disulfide nor a metal — which ubiquitin is.
+    await load("1crn")
+    await server.crosslink_view(distance=2.5)
+    await shoot("crosslink-view", "crosslink_view()")
+
+    return [
+        *(path for _, _, path in shots),
+        contact_sheet(
+            IMAGES / "views.png",
+            [(label, path) for _, label, path in shots],
+            columns=3,
+            share_frame=False,
+        ),
+    ]
+
+
+@figure("analysis-views")
+async def analysis_views() -> list[Path]:
+    """The two views that wrap an analysis rather than a selection.
+
+    Kept apart from `views` because both are expensive in a way the others are
+    not — one solves a potential on a grid, the other waits on an alignment
+    search — and a figure run should be able to skip them without skipping the
+    cheap six.
+    """
+    shots = []
+
+    # Trypsin rather than ubiquitin, and the reason is worth recording. Under
+    # the default `scale="relative"` the ramp is stretched across whatever
+    # entropy range the protein has, so the full blue-to-red spread is used no
+    # matter how conserved the protein actually is. Rendered on 1UBQ that
+    # produces a mostly-red picture of one of the most conserved proteins in
+    # biology — true to the scaling and the opposite of the truth to a reader.
+    # Trypsin has the story the ramp is good at: an invariant catalytic triad
+    # inside variable surface loops.
+    await load("3ptb")
+    await server.conservation_view()
+    shots.append(trim(await capture(IMAGES / "conservation-view.png", pixels=900)))
+
+    await load("1ubq")
+    await server.electrostatic_view(method="coulombic")
+    shots.append(trim(await capture(IMAGES / "electrostatic-view.png", pixels=900)))
+
+    return shots
 
 
 @figure("plddt")
