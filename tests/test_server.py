@@ -27,12 +27,14 @@ from protean_mcp.analysis.hatching import FINISHES
 from protean_mcp.analysis.superposition import ResidueDeviation
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
+from protean_mcp.selections import parse as parse_selection
 from protean_mcp.selections_numpy import (
     LoadedStructure,
     conformer_state,
     load_structure,
     select_mask,
 )
+from protean_mcp.selections_numpy import evaluate as evaluate_selection
 from protean_mcp.server import (
     background,
     capabilities,
@@ -502,6 +504,28 @@ def _water_only_pdb(path: Path) -> Path:
         (1, "O", "HOH", 101, (0.0, 0.0, 0.0), "O"),
         (2, "O", "HOH", 102, (3.0, 0.0, 0.0), "O"),
         (3, "O", "HOH", 103, (0.0, 3.0, 0.0), "O"),
+    ]
+    path.write_text(
+        "\n".join(_pdb_line(s, n, r, "A", i, xyz, e) for s, n, r, i, xyz, e in atoms)
+        + "\nEND\n"
+    )
+    return path
+
+
+def _tiny_protein_with_ligand_pdb(path: Path) -> Path:
+    """The tiny protein, three waters, and a zinc a cartoon cannot draw."""
+    atoms = [
+        (1, "N", "GLY", 1, (0.0, 0.0, 0.0), "N"),
+        (2, "CA", "GLY", 1, (1.46, 0.0, 0.0), "C"),
+        (3, "C", "GLY", 1, (2.0, 1.42, 0.0), "C"),
+        (4, "O", "GLY", 1, (1.25, 2.39, 0.0), "O"),
+        (5, "N", "GLY", 2, (3.33, 1.5, 0.0), "N"),
+        (6, "CA", "GLY", 2, (4.0, 2.78, 0.0), "C"),
+        (7, "C", "GLY", 2, (5.5, 2.65, 0.0), "C"),
+        (8, "O", "GLY", 2, (6.1, 1.58, 0.0), "O"),
+        (9, "OXT", "GLY", 2, (6.05, 3.75, 0.0), "O"),
+        (10, "O", "HOH", 101, (0.0, 5.0, 0.0), "O"),
+        (11, "ZN", "ZN", 201, (2.5, -2.5, 0.0), "ZN"),
     ]
     path.write_text(
         "\n".join(_pdb_line(s, n, r, "A", i, xyz, e) for s, n, r, i, xyz, e in atoms)
@@ -3733,7 +3757,22 @@ def _quiet_viewer() -> dict[str, Any]:
         return {}
 
     return dict.fromkeys(
-        ("select", "show", "hide", "color", "opacity", "focus", "load_structure"),
+        (
+            "select",
+            "show",
+            "hide",
+            "color",
+            "opacity",
+            "focus",
+            "label",
+            "lighting",
+            "effects",
+            "material",
+            "shading",
+            "background",
+            "size",
+            "load_structure",
+        ),
         nothing,
     )
 
@@ -3862,3 +3901,76 @@ async def test_electrostatic_view_refuses_a_selection_with_nothing_in_it(
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     with pytest.raises(ViewerError, match="no atoms"):
         await electrostatic_view(selection="resn HEM", spacing=2.0, padding=6.0)
+
+
+# -- the active site's background scene ----------------------------------------
+
+
+async def test_active_site_leaves_the_ordered_waters_out_of_its_scene(
+    wired_bridge, tmp_path
+):
+    """The waters are removed, not faded.
+
+    Fading the whole scene to 0.2 fades the solvent with it, so an active site
+    on a well-resolved structure sat behind a few hundred pale red dots.
+    `docs/figures/make_figures.py` had already worked around this by hand — and
+    a workaround in the figure script means the documentation shows something
+    the tool does not do.
+    """
+    await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
+    array = server_mod._require_structure()
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        await select("resi 1", name="site")
+        await preset("active-site", handle="site")
+
+    drawn = server_mod._handles.get(server_mod._SCENE_HANDLE).indices
+    solvent = np.flatnonzero(evaluate_selection(parse_selection("solvent"), array))
+    assert len(drawn), "the background scene must still be drawn"
+    assert not set(drawn.tolist()) & set(solvent.tolist()), (
+        "the faded background scene still contains solvent atoms"
+    )
+
+
+async def test_active_site_keeps_what_a_cartoon_cannot_draw(wired_bridge, tmp_path):
+    """A cartoon draws backbone only, so dropping solvent must not drop the rest.
+
+    Asserts the draw, not just the handle. Registering the handle and never
+    showing it would leave the zinc invisible while this test passed, which is
+    the shape of failure the whole change exists to remove.
+    """
+    await _load(wired_bridge, _tiny_protein_with_ligand_pdb(tmp_path / "lig.pdb"))
+    array = server_mod._require_structure()
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        await select("resi 1", name="site")
+        applied = await preset("active-site", handle="site")
+
+    drawn = [
+        step
+        for step in applied["steps"]
+        if server_mod._CONTEXT_HETERO in step and "ball-and-stick" in step
+    ]
+    assert drawn, (
+        f"nothing drew {server_mod._CONTEXT_HETERO}; steps were {applied['steps']}"
+    )
+    hetero = server_mod._handles.get(server_mod._CONTEXT_HETERO).indices
+    expected = np.flatnonzero(
+        evaluate_selection(parse_selection("not polymer and not solvent"), array)
+    )
+    assert set(hetero.tolist()) == set(expected.tolist()), (
+        "the ligand a cartoon cannot draw was not drawn separately"
+    )
+
+
+async def test_active_site_registers_no_hetero_handle_when_there_is_none(
+    wired_bridge, tmp_path
+):
+    """An empty handle drawn would report success for nothing."""
+    await _load(wired_bridge, _protein_and_water_pdb(tmp_path / "wet.pdb"))
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        await select("resi 1", name="site")
+        await preset("active-site", handle="site")
+
+    assert server_mod._CONTEXT_HETERO not in server_mod._handles.names()
