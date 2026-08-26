@@ -26,6 +26,20 @@ from protean_mcp.analysis.hatching import (
 FINISH_NAMES = sorted(FINISHES)
 
 
+#: The size the finish-comparison test draws at. Big enough that no two
+#: finishes' grain lattices collapse onto the same floor.
+#:
+#: `_grain` resolves its step as `max(2.0, diagonal * pitch)`, so below a
+#: certain size every fine finish clamps to 2 px and draws an identical
+#: lattice. Measured across all ten finish pairs: at 240 and 360 px the worst
+#: pair scores **0.0000** — indistinguishable — and at 480 it jumps to 0.4800.
+#: The cliff is where `engraving`'s 1/320 pitch clears the floor.
+#:
+#: Only the comparison uses it. The rest of the suite stays at 240, because
+#: raising the fixture everywhere took the file from 26 s to 113 s.
+_ENGRAVABLE = 480
+
+
 def _flat(value: int, size: int = 240, alpha: int = 255) -> Image.Image:
     """A square of one tone, which is the cleanest thing to engrave."""
     return Image.fromarray(
@@ -169,8 +183,8 @@ def test_no_two_finishes_draw_the_same_picture(left, right):
     disagreement = max(
         float(
             (
-                ink_mask(apply_finish(_flat(tone), left), left)
-                ^ ink_mask(apply_finish(_flat(tone), right), right)
+                ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), left), left)
+                ^ ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), right), right)
             ).mean()
         )
         for tone in (60, 100, 140)
@@ -439,7 +453,7 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
     mangled — measured, a finish named `a'b` reached the model with a literal
     backslash in it."""
     with pytest.raises(
-        ValueError, match="cross-hatch, cyanotype, hedcut, spot-ink-plates"
+        ValueError, match="cross-hatch, cyanotype, engraving, hedcut, spot-ink-plates"
     ):
         call(_flat(128), "woodblock")
 
@@ -526,3 +540,37 @@ def test_ink_fraction_ignores_what_was_never_drawn():
     """Transparent pixels are not pale ones; counting them would report every
     cropped capture as mostly paper."""
     assert ink_fraction(apply_finish(_flat(128, alpha=0), "hedcut"), "hedcut") == 0.0
+
+
+def test_no_two_finishes_share_a_grain_lattice_at_the_test_size():
+    """A guard on the guard above, aimed at the mechanism rather than the number.
+
+    `test_no_two_finishes_draw_the_same_picture` compares ink masks, so it can
+    only see a difference the fixture is large enough to render. `_grain`
+    resolves its step as `max(2.0, diagonal * pitch)`: below a certain size
+    every fine finish clamps to the same 2 px floor and draws the same lattice,
+    and the comparison scores a perfect 0.0000 while reporting a failure whose
+    cause looks like the finishes rather than the fixture. That is what
+    happened when `engraving` was added — cyanotype and engraving disagreed on
+    nothing at 240 px and on 0.4811 of the frame at 1200.
+
+    This asserts the fixture can still tell them apart, so shrinking `_flat`
+    or adding a finer finish fails *here*, naming the real reason.
+    """
+    diagonal = float(np.hypot(_ENGRAVABLE, _ENGRAVABLE))
+    steps = {
+        name: max(2.0, diagonal * style.pitch)
+        for name, style in FINISHES.items()
+        if hasattr(style, "pitch")
+    }
+    assert len(steps) >= 2, f"expected at least two grained finishes, got {steps}"
+    collided = [name for name, step in steps.items() if step <= 2.0]
+    assert not collided, (
+        f"at {_ENGRAVABLE}px these finishes are pinned to the 2px grain floor "
+        f"and cannot be told apart: {sorted(collided)}. Raise _ENGRAVABLE. "
+        f"Resolved steps: { {n: round(v, 2) for n, v in steps.items()} }"
+    )
+    assert len({round(v, 2) for v in steps.values()}) == len(steps), (
+        f"two finishes resolve to the same grain step: "
+        f"{ {n: round(v, 2) for n, v in steps.items()} }"
+    )

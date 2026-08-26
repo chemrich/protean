@@ -2561,6 +2561,14 @@ async def snapshot(
       any measurement, and nothing in the picture is a number. Say so if you
       caption it.
 
+      "engraving" is that same contour engine in ink on paper and four times as
+      fine: fourteen levels rather than five, hairline contours with every
+      fifth drawn heavy the way a relief map indexes its own. Unlike the two
+      hatchings it is **depth-cued** — the marks follow the form because they
+      are isolines of the recovered lighting, and the line holds a constant
+      width up a steep face instead of smearing. It carries no data either, for
+      the same reason cyanotype does not.
+
       **Applied after the capture, in Python, and the viewer will not show
       it.** Mol* has no hatching of any kind, so there is no live preview and
       no menu entry — a caller sees this only in the file, and the reply says
