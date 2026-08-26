@@ -4286,10 +4286,20 @@ async def _preset_illustrative(target: str) -> list[str]:
 
 
 async def _preset_cinematic(target: str) -> list[str]:
-    """A lit render: dark ground, raking back light, deep crevices, shallow focus.
+    """Retired. Not in `_PRESETS`, so nothing can reach it.
 
-    Styling only, like `publication-cartoon` — it lights whatever is on screen
-    rather than choosing it. Pair it with a view that draws.
+    A lit render: dark ground, raking back light, deep crevices, shallow focus.
+    Styling only, like `publication-cartoon` — it lit whatever was on screen
+    rather than choosing it.
+
+    Withdrawn on 2026-08-26 for being underwhelming: a near-black ground and a
+    rim light, and the shallow focus was the only thing it did that nothing
+    else does. Kept dormant rather than deleted so the one idea worth saving
+    stays visible — **this was the only preset that turned depth of field on**,
+    and `effects(depth_of_field=True)` is now the only way to reach it. If a
+    lit-render look returns it should be built from what the shadow sweep
+    measured, not from this, whose glossy-and-occluded reading of "cinematic"
+    leaned on a cast shadow Mol* cannot draw.
     """
     target = _styleable(target)
     return [
@@ -5142,7 +5152,6 @@ async def _draw_view(name: str, target: str) -> list[str]:
 _PRESETS: dict[str, Any] = {
     "publication-cartoon": _preset_publication_cartoon,
     "illustrative": _preset_illustrative,
-    "cinematic": _preset_cinematic,
     "ghost-heart": _preset_ghost_heart,
     "active-site": _preset_active_site,
     "light-ground": _preset_light_ground,
@@ -5176,8 +5185,6 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            on. The default figure.
       illustrative         Flat cel shading with a black outline. The textbook
                            look; pairs well with a simple cartoon.
-      cinematic            Near-black ground, back light, ambient occlusion and
-                           a shallow depth of field. A render, not a diagram.
       light-ground         A white ground, and nothing else touched.
       dark-ground          A near-black ground, and nothing else touched.
 
@@ -5413,7 +5420,6 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     "richardson": ("richardson", _VIEW_DRAWS),
     "publication-cartoon": ("publication-cartoon", _VIEW_STYLES),
     "illustrative": ("illustrative", _VIEW_STYLES),
-    "cinematic": ("cinematic", _VIEW_STYLES),
     "light-ground": ("light-ground", _VIEW_STYLES),
     "dark-ground": ("dark-ground", _VIEW_STYLES),
     "ghost-heart": ("ghost-heart", _VIEW_LAYERS),

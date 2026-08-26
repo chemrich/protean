@@ -289,8 +289,7 @@ can adjust any step afterwards.
 *Restyle only* — ground, lighting, shading, material. What is drawn is left
 alone, so these stack onto whatever you have:
 
-`publication-cartoon` · `illustrative` · `cinematic` · `light-ground` ·
-`dark-ground`
+`publication-cartoon` · `illustrative` · `light-ground` · `dark-ground`
 
 *Decide what is drawn* — these **replace** the picture rather than adding to
 it, so applying a second one switches views instead of piling up:

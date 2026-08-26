@@ -469,12 +469,12 @@ describe('the views a page may ask for', () => {
       version: 1,
       views: [
         { name: 'putty', kind: 'draws' },
-        { name: 'cinematic', kind: 'styles' },
+        { name: 'illustrative', kind: 'styles' },
       ],
     });
 
     expect(seen).toHaveLength(1);
-    expect(seen[0].map((v: any) => v.name)).toEqual(['putty', 'cinematic']);
+    expect(seen[0].map((v: any) => v.name)).toEqual(['putty', 'illustrative']);
   });
 
   it('hands it over again on a reconnect, which may reach a different server', () => {
