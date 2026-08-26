@@ -631,6 +631,7 @@ Remove one loaded volume from the viewer.
 ## See also
 
 - [Selections](selections.md) — the language every `selection` argument takes
-- [The gallery](gallery.md) — what each style value looks like
+- [The gallery](gallery.md) — what protean makes with these
+- [Style reference](style-reference.md) — what each style value looks like
 - [The cookbook](cookbook.md) — these tools in combination
 - [Troubleshooting](troubleshooting.md) — what a refusal means

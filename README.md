@@ -132,8 +132,9 @@ preset("textbook")
 
 Twenty named recipes. A preset is a composition of the other display tools and
 its reply lists every call it made, so nothing is reachable only through one.
-**[The full gallery →](docs/gallery.md)** — every representation, colour theme,
-lighting rig, shading style and material finish, shown rather than listed.
+**[The full gallery →](docs/gallery.md)** — what protean makes, each with the
+question that asks for it. The building blocks it is made of are in the
+**[style reference](docs/style-reference.md)**.
 
 ---
 
@@ -195,7 +196,8 @@ data is about it, so a disordered loop swings and an ordered core holds.
 |---|---|
 | [Getting started](docs/getting-started.md) | install, first picture, the vocabulary |
 | [Cookbook](docs/cookbook.md) | 14 worked recipes, each with its figure |
-| [Gallery](docs/gallery.md) | every style value, shown |
+| [Gallery](docs/gallery.md) | what protean makes, shown |
+| [Style reference](docs/style-reference.md) | every style value, shown |
 | [Selections](docs/selections.md) | the complete selection language |
 | [Tool reference](docs/tools.md) | every tool, generated from source |
 | [Troubleshooting](docs/troubleshooting.md) | what a refusal means and what to do |

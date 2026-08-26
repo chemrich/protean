@@ -239,7 +239,9 @@ each one prints.
 
 - **[The cookbook](cookbook.md)** — worked recipes for the things people
   actually ask for, each with its picture.
-- **[The gallery](gallery.md)** — every representation, colour theme, preset,
-  lighting rig and print finish, shown rather than listed.
+- **[The gallery](gallery.md)** — what protean makes: views, presets, print
+  finishes, the boil, the lens.
+- **[Style reference](style-reference.md)** — every representation, colour
+  theme, lighting rig, shading style and material, shown rather than listed.
 - **[Selections](selections.md)** — how to say *which atoms*, exactly.
 - **[Tool reference](tools.md)** — every tool, grouped and explained.
