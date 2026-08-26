@@ -2314,22 +2314,27 @@ async def test_a_view_on_a_handle_redraws_that_handle_and_leaves_the_scene(
 async def test_a_preset_states_every_effect_rather_than_inheriting_one(
     wired_bridge, tmp_path, name
 ):
-    """`cinematic` is the only preset that turns depth of field on.
+    """A preset states all six toggles or it does not control its own picture.
 
     effects() leaves anything omitted exactly as it was — right for a tool
     composing calls, wrong for a recipe declaring a whole look. These three
-    never mentioned depth of field, so after cinematic the flat outlined
-    diagram came out with a shallow-focus blur and reported success. A preset
-    states all six toggles or it does not control its own picture.
+    never mention depth of field, so with a blur already on, the flat outlined
+    diagram came out with a shallow focus and reported success.
+
+    The blur used to be turned on by running `preset("cinematic")` first, which
+    tied this guard to one preset and broke it when that preset was withdrawn.
+    Turning it on directly is what the test always meant: the polluter is not
+    the point, the inheritance is.
     """
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
-    await _preset_calls(wired_bridge, tmp_path, "cinematic")
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        await effects(depth_of_field=True)
     _, calls = await _preset_calls(wired_bridge, tmp_path, name)
 
     applied = [args for action, args in calls if action == "effects"]
     assert applied, f"{name} set no effects at all"
     assert applied[0].get("depth_of_field") is False, (
-        f"{name} left depth of field wherever cinematic put it"
+        f"{name} left depth of field wherever it found it"
     )
     assert set(server_mod._PRESET_EFFECTS) <= set(applied[0])
 
@@ -2366,7 +2371,7 @@ async def test_styling_after_a_view_follows_the_scene_it_drew(wired_bridge, tmp_
     """
     await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
     await _preset_calls(wired_bridge, tmp_path, "putty")
-    _, calls = await _preset_calls(wired_bridge, tmp_path, "cinematic")
+    _, calls = await _preset_calls(wired_bridge, tmp_path, "publication-cartoon")
 
     styled = [args["name"] for action, args in calls if action in ("shading", "material")]
     assert styled == ["auto_view", "auto_view"]

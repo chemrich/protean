@@ -331,7 +331,7 @@ def test_the_catalogue_says_what_each_view_does_to_the_scene():
 
     kinds = {entry["name"]: entry["kind"] for entry in catalogue}
     assert kinds["putty"] == server_mod._VIEW_DRAWS
-    assert kinds["cinematic"] == server_mod._VIEW_STYLES
+    assert kinds["illustrative"] == server_mod._VIEW_STYLES
     assert kinds["ghost-heart"] == server_mod._VIEW_LAYERS
 
 

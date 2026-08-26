@@ -1332,7 +1332,6 @@ _VIEW_SEQUENCE = [
     "textbook",
     "putty",
     "hydrophobic-surface",
-    "cinematic",
     "spacefill",
     "skeleton",
     "painting",

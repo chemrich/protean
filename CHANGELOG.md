@@ -53,6 +53,29 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`cinematic` is withdrawn.** Nineteen presets, not twenty. It was a
+  near-black ground and a rim light, and the only thing it did that nothing
+  else does was turn on a shallow depth of field — which
+  `effects(depth_of_field=True)` reaches directly.
+
+  Its reading of "cinematic" also leaned on a cast shadow: it asked for
+  `shadow=True` on top of ambient occlusion, and measurement has since
+  established that **no cast shadow is possible at any setting**, because
+  Mol\*'s shadow pass is screen-space self-shadowing and its background is a
+  flat colour with no geometry to receive one. So the effect it was named for
+  was never there.
+
+  `_preset_cinematic` is kept dormant rather than deleted, unreachable from
+  `_PRESETS`, so the one idea worth saving stays visible.
+
+  Two things this exposed. The guard that proves a preset states all six effect
+  toggles rather than inheriting them was written with `cinematic` as its
+  polluter, which tied a general invariant to one preset; it now turns the blur
+  on directly, which is what it always meant. And
+  `docs/benchmark/protean_corpus.py` has been probing `preset("cinematic")`
+  expecting a refusal for as long as the preset existed — an adversarial probe
+  that was wrong the whole time and is now right.
+
 - **`conservation_view()` and `electrostatic_view()` — the two answers that
   needed more than one call.** protean had six one-call views and two analyses
   that were only ever useful in sequence: `conservation()` then
