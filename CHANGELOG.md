@@ -51,6 +51,44 @@ nothing is released yet, so everything below is unreleased.
   selection and analysis tool to "File has no 'pdbx_struct_assembly_gen'
   category". The deposited coordinates are now loaded with a note saying so.
 
+### Print finishes
+
+- **`engraving` — depth-cued line work, in ink on paper.** A fifth finish, and
+  no new rendering code: it is the engine that already draws `cyanotype`, with
+  the paper set white and the ink black.
+
+  `_Survey` was written to draw a survey sheet and has always been a depth-cued
+  renderer. It contours the *recovered lighting field* — each element's colour
+  divided back out of the render — and holds constant line width by dividing
+  the residual by the local slope, so a steep face gets a thin line rather than
+  a fat smear. The marks follow the form because they **are** isolines of it.
+  That is what the two hatchings cannot do: `cross-hatch` and `hedcut` rule
+  strokes at a fixed angle regardless of what is underneath, which is why
+  neither reads as having depth.
+
+  Fourteen levels rather than cyanotype's five, chosen by rendering
+  5 / 9 / 14 / 20 / 28 on carbonic anhydrase at plate size and looking, not from
+  print convention.
+
+  Every fifth contour is drawn heavy — a relief map indexing its own levels.
+  That weighting was tuned when `bands` was 5, where it fell on the silhouette
+  alone; at 14 it lands mid-dome as well. Kept deliberately.
+
+  `brightest` is raised from 0.975 to 0.9975. The clamp flattens everything
+  brighter to one elevation, and measured on the capture it takes **3.27% of
+  molecule pixels** — a small area that sits on the summit of every single
+  atom, so each dome lost its innermost ring.
+
+  **The test that compares finishes could not have seen this one.** `_grain`
+  resolves its lattice step as `max(2.0, diagonal * pitch)`, so at the suite's
+  240 px fixture every fine finish clamps to the same 2 px floor and draws an
+  identical lattice: cyanotype and engraving disagreed on **0.0000** of the
+  frame at 240 px and on **0.4811** at 1200 — a failure reporting a perfect
+  score. The comparison now draws at 480, the first size past the cliff, and a
+  new guard asserts no two finishes share a resolved grain step, so the next
+  fine finish fails on the mechanism rather than on a number.
+
+
 ### Views
 
 - **`conservation_view()` and `electrostatic_view()` — the two answers that

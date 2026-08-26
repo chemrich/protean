@@ -524,6 +524,36 @@ FINISHES: dict[str, _Style] = {
     # two inks a small press could actually mix, rather than process colours.
     # Their crossing is a near-black with a plum cast, which is what a
     # two-colour print gives you instead of a real black.
+    # The same contour engine as cyanotype, in ink on paper and four times as
+    # fine. `_Survey` was written to draw a survey sheet and has always been a
+    # depth-cued renderer — it contours the recovered lighting field and holds
+    # constant line width by dividing the residual by the local slope, so a
+    # steep face gets a thin line rather than a fat smear. It had only ever
+    # been drawn in blue.
+    #
+    # 14 bands rather than cyanotype's 5, chosen by looking at a sweep of
+    # 5/9/14/20/28 on carbonic anhydrase rather than from print convention.
+    #
+    # `brightest` is raised from the 0.975 the survey uses. That clamp flattens
+    # everything brighter to one elevation, and measured on the same capture it
+    # takes 3.27% of molecule pixels — a small area that happens to sit on the
+    # summit of every single atom, so each dome lost its innermost ring. At
+    # 0.9975 the summits come back and the highlight spray the clamp exists to
+    # prevent still does not appear, because the blur before contouring has
+    # already taken the specular pixels down.
+    #
+    # The every-fifth-contour index weighting is kept deliberately. It was
+    # tuned when `bands` was 5, where it fell on the silhouette alone; at 14 it
+    # also lands mid-dome, and that reads as the index contour of a relief map,
+    # which is what this is.
+    "engraving": _Survey(
+        bands=14,
+        line=1 / 2000,
+        pitch=1 / 320,
+        brightest=0.9975,
+        paper=(255, 255, 255),
+        inks=((0, 0, 0),),
+    ),
     "spot-ink-plates": _Plates(
         bands=5,
         paper=(247, 243, 233),
