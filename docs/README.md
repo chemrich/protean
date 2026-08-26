@@ -79,6 +79,7 @@ these documents describe wrongly, fix the document in the same PR."*
 | [soft-matter-review.md](soft-matter-review.md) | An adversarial review of the above |
 | [bakeoff.md](bakeoff.md) | Four candidate treatments compared, and what decided it |
 | [molstar-bundling.md](molstar-bundling.md) | What bundling Mol\* from source would cost — measured, and the answer was "do not" |
+| [molstar-capabilities.md](molstar-capabilities.md) | What Mol\* can do that protean does not — read from source, with §5 listing what it could not settle without rendering |
 | [wiggles-em-integration.md](wiggles-em-integration.md) | The `wiggles-em` seam |
 | [going-public.md](going-public.md) | Making the repo public. This has happened |
 
