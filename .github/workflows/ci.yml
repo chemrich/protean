@@ -25,8 +25,25 @@ jobs:
         run: uv run ruff format --check src tests
       - name: mypy (strict)
         run: uv run mypy
+      # The packaging tests skip themselves when `static/index.html` is absent,
+      # and this job never built the viewer — so every test asserting the wheel
+      # can actually draw has been skipping here, silently, for as long as they
+      # have existed. Found by breaking one: bundling Mol* from source removed
+      # `static/molstar.js`, the file `test_the_wheel_carries_the_viewer`
+      # looked for, and CI stayed green.
+      #
+      # A skip is not a pass. Building the viewer here costs about a minute and
+      # is what makes those four tests mean anything.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: viewer/package-lock.json
+      - name: build the viewer, so the packaging tests do not skip
+        run: npm ci && npm run build
+        working-directory: viewer
       - name: pytest
-        run: uv run pytest -q
+        run: uv run pytest -q -rs
 
   viewer:
     name: viewer types and unit tests

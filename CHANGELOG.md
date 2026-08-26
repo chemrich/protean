@@ -51,6 +51,39 @@ nothing is released yet, so everything below is unreleased.
   selection and analysis tool to "File has no 'pdbx_struct_assembly_gen'
   category". The deposited coordinates are now loaded with a note saying so.
 
+### The viewer
+
+- **Mol\* is bundled from source rather than loaded as a prebuilt global.**
+  `viewer/src/main.ts` had said since the first commit that bundling "needs
+  >4 GB RAM, the prebuilt bundle needs none", and a great deal followed from
+  it — `docs/views.md` §5.9 put cross-hatching in Pillow rather than in a
+  render pass *because of* that sentence.
+
+  It is wrong. `>4 GB` is the cost of building Mol\*'s own repository from
+  TypeScript; the published package ships `lib/` as already-compiled ESM with
+  the GLSL inlined as JavaScript strings, so Vite bundles JavaScript and never
+  compiles Mol\*. Measured on the change: **1.07 GB peak, 5.35 s**. The bundle
+  goes 4,800 kB to 5,147 kB.
+
+  This unblocks a custom post-processing pass and mesh-based representations,
+  neither of which is built yet.
+
+  **It fixes Mol\*'s backdrop artwork as a side effect.**
+  `extensions/backgrounds/index.js` imports `./images/cells.jpg` as a module —
+  a bundler-resolved import that the prebuilt UMD had frozen into a relative
+  URL protean never copied. That 404 does not degrade quietly: it leaves
+  `updateBackground()` awaiting a promise nothing resolves and **permanently
+  wedges `snapshot()`**. All seven images are now emitted and referenced.
+
+  **And it found that the packaging tests have never run in CI.** They skip
+  when `static/index.html` is absent, and the python job never built the
+  viewer — so every test asserting a wheel can actually draw has been skipping
+  silently. Bundling removed `static/molstar.js`, the file
+  `test_the_wheel_carries_the_viewer` looked for, and CI stayed green. That job
+  now builds the viewer, and the assertion checks for Mol\*'s *code* rather
+  than a filename.
+
+
 ### Print finishes
 
 - **`engraving` — depth-cued line work, in ink on paper.** A fifth finish, and
