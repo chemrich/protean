@@ -17,23 +17,24 @@ from pathlib import Path
 
 import pytest
 
+from tests.docs_pages import documentation_pages
+
 REPO = Path(__file__).resolve().parents[1]
 SERVER = REPO / "src" / "protean_mcp" / "server.py"
 
-PAGES = [
-    "README.md",
-    "docs/README.md",
-    "docs/getting-started.md",
-    "docs/cookbook.md",
-    "docs/gallery.md",
-    "docs/selections.md",
-    "docs/troubleshooting.md",
-    "docs/for-pymol-users.md",
-]
+#: Derived from `docs/README.md`, not listed here — see `tests/docs_pages.py`.
+PAGES = documentation_pages()
 
 BLOCK = re.compile(r"```python\n(.*?)```", re.DOTALL)
 
 # Names that appear in documentation blocks and are deliberately not tool calls.
+#
+# This is an allowlist, and the default is now failure rather than silence: a
+# call to a name that is neither a registered tool nor listed here fails the
+# page. It used to be skipped, which meant a documented call to a tool that does
+# not exist — the exact thing this file was written to catch — passed without a
+# word. Nothing in the documentation needed the escape hatch when it was flipped;
+# these builtins are kept so an illustrative snippet can use them.
 NOT_A_TOOL = {"print", "len", "range", "sorted", "cmd", "dict", "list"}
 
 
@@ -75,10 +76,13 @@ def test_documented_calls_use_real_tools_and_real_arguments(page: str):
     for block in BLOCK.findall(text):
         for call in _calls(block):
             name = call.func.id
-            if name in NOT_A_TOOL or name not in TOOLS:
-                # Only tool calls are checked. An unknown name here is either a
-                # helper in an illustrative snippet or a PyMOL command being
-                # contrasted, and this test is not the place to police those.
+            if name in NOT_A_TOOL:
+                continue
+            if name not in TOOLS:
+                problems.append(
+                    f"{name}() is not a registered tool. If it is a helper in an "
+                    f"illustrative snippet, add it to NOT_A_TOOL deliberately."
+                )
                 continue
             spec = TOOLS[name]
             valid = {a.arg for a in spec.args} | {a.arg for a in spec.kwonlyargs}
