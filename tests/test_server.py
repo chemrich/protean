@@ -21,6 +21,7 @@ from biotite.structure import stack as atom_stack
 from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
+from protean_mcp.analysis.conservation import SHALLOW_MSA
 from protean_mcp.analysis.electrostatics import read_dx
 from protean_mcp.analysis.hatching import FINISHES
 from protean_mcp.analysis.superposition import ResidueDeviation
@@ -40,7 +41,9 @@ from protean_mcp.server import (
     color_by_potential,
     combine,
     conservation,
+    conservation_view,
     effects,
+    electrostatic_view,
     electrostatics,
     fetch_structure,
     interface,
@@ -3716,3 +3719,146 @@ async def test_a_click_is_reported_to_the_model_as_the_view_that_ran(
 
     assert server_mod._user_actions[-1].startswith("applied the plddt view")
     assert "clicked putty" in server_mod._user_actions[-1]
+
+
+def _quiet_viewer() -> dict[str, Any]:
+    """Handlers for every viewer action a composed view makes on its way through.
+
+    A view calls three or four display tools, and `_serving` raises
+    "no handler: show" for any it was not given. Named here rather than spelled
+    out per test so adding a step to a view does not need five edits.
+    """
+
+    def nothing(args: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    return dict.fromkeys(
+        ("select", "show", "hide", "color", "opacity", "focus", "load_structure"),
+        nothing,
+    )
+
+
+# -- one-call views over the two-step analyses ---------------------------------
+#
+# `conservation_view` and `electrostatic_view` exist because each was a sequence
+# nobody ran half of: score then colour, solve then surface then paint. What
+# they must not do is restate a judgement the half they wrap already made — the
+# first draft of `conservation_view` carried its own shallow-alignment threshold
+# of 50 beside `analysis.conservation.SHALLOW_MSA`'s 10, which is two numbers
+# for one idea and a guaranteed disagreement at any depth between them.
+#
+# `_fake_msa(depth=n)` yields `msa_depth == n + 1`: the query counts as an
+# aligned sequence, which is why `MIN_MSA_DEPTH` is 2 rather than 1.
+
+
+async def test_conservation_view_runs_both_halves_and_says_so(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The reply names both calls, so neither is reachable only through this."""
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    _fake_msa(monkeypatch, sequence_length=12, depth=20)
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        out = await conservation_view()
+
+    assert out["view"] == "conservation"
+    assert out["msa_depth"] == 21
+    assert any(step.startswith("conservation(") for step in out["steps"]), out["steps"]
+    assert any(step.startswith("color_by_conservation(") for step in out["steps"]), out[
+        "steps"
+    ]
+    assert "warning" not in out, "a 21-deep alignment is not shallow"
+
+
+async def test_conservation_view_raises_the_shallow_warning_to_the_top(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The caveat belongs to the half a caller of this tool never sees.
+
+    `conservation()` attaches it below `SHALLOW_MSA`. Someone calling the view
+    gets one reply, and a warning buried in a nested dict is the same as no
+    warning — the picture is a uniform blue chain either way.
+    """
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    _fake_msa(monkeypatch, sequence_length=12, depth=3)
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        out = await conservation_view()
+
+    assert out["msa_depth"] == 4
+    assert "shallow" in out["warning"], out.get("warning")
+
+
+async def test_conservation_view_does_not_invent_a_second_threshold(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """One number for one idea.
+
+    Just above the scorer's threshold a duplicate would disagree with itself:
+    flagged by the view, unflagged by the scorer it wraps.
+    """
+    await _load(wired_bridge, _peptide_pdb(tmp_path / "pep.pdb"))
+    _fake_msa(monkeypatch, sequence_length=12, depth=SHALLOW_MSA + 5)
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        out = await conservation_view()
+
+    assert out["msa_depth"] > SHALLOW_MSA
+    assert "warning" not in out, (
+        f"depth {out['msa_depth']} is above the scorer's only threshold "
+        f"({SHALLOW_MSA}); a warning here means a second one was added"
+    )
+
+
+async def test_electrostatic_view_draws_a_surface_to_paint_on(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """A potential map with nothing to display it on answers no visible question."""
+    monkeypatch.setenv("PROTEAN_CACHE", str(tmp_path))
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+
+    sent: dict[str, Any] = {}
+    async with _serving(
+        wired_bridge,
+        **_quiet_viewer(),
+        color_by_volume=lambda args: sent.update(args) or {"components": 1},
+    ):
+        out = await electrostatic_view(method="coulombic", spacing=2.0, padding=6.0)
+
+    assert out["view"] == "electrostatic"
+    assert "molecular-surface" in " ".join(out["steps"]), out["steps"]
+    assert sent["name"] == out["handles"][0], "it painted the surface it drew"
+    assert "object 1 class gridpositions" in sent["volume"], "the OpenDX itself"
+
+
+async def test_electrostatic_view_carries_the_approximation_caveat_up(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """The Coulombic fallback's caveat is the reason to read the number twice.
+
+    `electrostatics()` attaches it, and a caller of the view never sees that
+    reply — so a caveat left nested is a caveat nobody reads.
+    """
+    monkeypatch.setenv("PROTEAN_CACHE", str(tmp_path))
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+
+    async with _serving(
+        wired_bridge, **_quiet_viewer(), color_by_volume=lambda args: {"components": 1}
+    ):
+        out = await electrostatic_view(method="coulombic", spacing=2.0, padding=6.0)
+
+    assert "Uniform dielectric" in out["caveat"]
+    assert "screened Coulomb" in out["method"]
+
+
+async def test_electrostatic_view_refuses_a_selection_with_nothing_in_it(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """An empty surface would report success for a picture with nothing in it.
+
+    Checked before the solve, so a typo does not cost a Poisson-Boltzmann run.
+    """
+    monkeypatch.setenv("PROTEAN_CACHE", str(tmp_path))
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    with pytest.raises(ViewerError, match="no atoms"):
+        await electrostatic_view(selection="resn HEM", spacing=2.0, padding=6.0)

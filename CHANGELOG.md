@@ -53,6 +53,29 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`conservation_view()` and `electrostatic_view()` — the two answers that
+  needed more than one call.** protean had six one-call views and two analyses
+  that were only ever useful in sequence: `conservation()` then
+  `color_by_conservation()`, and `electrostatics()` then a surface then
+  `color_by_potential()`. Running half of either gets you numbers with no
+  picture, or a picture with nothing painted on it.
+
+  Both halves stay reachable on their own, and each view's reply lists the calls
+  it made, so nothing here is available only through the composition.
+
+  **Neither view restates a judgement the half it wraps already made.** The
+  first draft of `conservation_view` carried its own shallow-alignment
+  threshold of 50 sequences, beside the `SHALLOW_MSA` of 10 that
+  `analysis/conservation.py` has always used — two numbers for one idea, which
+  disagree at every depth between them. It now raises the scorer's existing
+  `warning` to the top of its own reply instead. `electrostatic_view` does the
+  same with the Coulombic fallback's caveat: the whole point of a one-call view
+  is that nobody reads the half they did not call, so a caveat left nested is a
+  caveat nobody sees.
+
+  `electrostatic_view` takes `spacing` and `padding` because solving cost goes
+  as the cube of 1/spacing, and on a large assembly that is the knob you need.
+
 - **`lens()` — the projection, and how far the distance fades.** Two stock Mol*
   parameters protean had never exposed. `projection` is `perspective` or
   `orthographic`; `fog` is 0 for off, or 1 to 100.

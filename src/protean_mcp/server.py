@@ -2033,6 +2033,178 @@ def _residue_count(array: Any, mask: Any) -> int:
 
 
 @_tool()
+async def conservation_view(
+    chain: str | None = None,
+    mode: str = "gradient",
+    representation: str | None = None,
+    scale: str = "relative",
+) -> dict[str, Any]:
+    """Colour a chain by how conserved each position is. Blue is conserved.
+
+    Two calls that were only ever made together: `conservation()` scores a
+    chain against an alignment of its homologs, `color_by_conservation()` draws
+    the result. Both remain reachable on their own — this composes them and
+    reports what each found.
+
+    **The first call for a sequence is slow and needs the network.** It submits
+    the sequence to an MMseqs2 server and waits, which takes tens of seconds to
+    minutes. The alignment is then cached on disk, so asking again is
+    immediate. Nothing about the picture says which of those two just
+    happened, so `msa_depth` is in the reply.
+
+    chain: defaults to the first protein chain.
+    mode: "gradient" is the usual conservation figure — a continuous ramp on a
+      cartoon. "bands" splits the range into discrete handles you can then
+      address individually, which is what you want if the next question is
+      about a particular band rather than about the picture.
+    representation: defaults to cartoon for gradient, molecular-surface for
+      bands. Bands drawn as a cartoon mostly do not draw at all, because a
+      ribbon needs consecutive backbone and bands are scattered residues.
+    scale: "relative" stretches the ramp over this protein's own range, which
+      is what makes a conserved core visible. "absolute" uses the full entropy
+      range so two proteins can be compared.
+
+    **Read `msa_depth` before you read the picture.** A protein with few known
+    homologs comes out conserved everywhere, because nothing was found to
+    disagree with it — and that picture is indistinguishable from a genuinely
+    invariant protein. The scorer already refuses an alignment of fewer than
+    two sequences and already attaches a `warning` below
+    `analysis.conservation.SHALLOW_MSA`; this view carries that warning up to
+    the top of its own reply rather than restating the judgement, because a
+    second threshold here would be a second number to disagree with the first.
+    """
+    scored = await conservation(chain=chain)
+    depth = int(scored.get("msa_depth", 0))
+    steps = [_step("conservation", chain=chain)]
+    drawn = await color_by_conservation(
+        chain=chain, mode=mode, representation=representation, scale=scale
+    )
+    steps.append(
+        _step(
+            "color_by_conservation",
+            chain=chain,
+            mode=mode,
+            representation=representation,
+            scale=scale,
+        )
+    )
+    return {
+        "view": "conservation",
+        "chain": drawn.get("chain", chain),
+        "mode": mode,
+        "msa_depth": depth,
+        "scored": {
+            key: scored[key]
+            for key in ("chain", "msa_depth", "entropy_min", "entropy_max", "source")
+            if key in scored
+        },
+        "drawn": drawn,
+        "steps": steps,
+        # Raised out of the nested reply for the same reason `electrostatic_view`
+        # raises its caveat: the whole point of a one-call view is that nobody
+        # reads the half they did not call.
+        **({"warning": scored["warning"]} if "warning" in scored else {}),
+    }
+
+
+@_tool()
+async def electrostatic_view(
+    method: str = "auto",
+    ph: float = 7.0,
+    ionic_strength: float = 0.15,
+    spacing: float = 1.0,
+    padding: float = 10.0,
+    domain: list[float] | None = None,
+    selection: str = "polymer",
+) -> dict[str, Any]:
+    """Show the charge on a molecule's surface: red acidic, blue basic.
+
+    Three calls that were only ever made together: `electrostatics()` solves
+    the potential and writes a grid, `show()` puts up the surface to paint it
+    on, and `color_by_potential()` paints it. The surface is the point — a
+    potential map with nothing to display it on answers no question you can
+    look at.
+
+    method: "auto" uses APBS when a runnable binary is present and falls back
+      to a screened Coulomb field otherwise. The reply always states which
+      actually ran, because the two are not equivalent and a potential whose
+      provenance is unstated is worth nothing.
+    ph: protonation states are assigned at this pH.
+    ionic_strength: mol/L; sets how fast the field is screened.
+    spacing, padding: the grid the potential is solved on, in angstroms.
+      Solving cost goes as the cube of 1/spacing, so this is the knob to reach
+      for on a large assembly — 2 A is visibly coarser and several times
+      faster.
+    domain: [min, max] in kT/e. Defaults to a symmetric range about zero, which
+      keeps neutral white and makes the two signs comparable.
+    selection: what to draw the surface over. Defaults to the polymer, so
+      waters and buffer components do not become blobs on the surface.
+
+    The Coulombic fallback assumes one uniform dielectric, so it has no protein
+    interior and no reaction field at the solvent boundary. Measured against
+    APBS on ubiquitin it tracks surface potential closely in shape (r = 0.96,
+    94% sign agreement) while running about 1.6x low in magnitude. Read it for
+    *where* the charge is, never for an energy — and the reply carries that
+    caveat whenever it is the one that ran.
+    """
+    array = _require_structure()
+    try:
+        surface_mask = _evaluate(_parse_selection(selection), array)
+    except SelectionError as exc:
+        raise ViewerError(f"Bad selection {selection!r}: {exc}") from exc
+    if not surface_mask.any():
+        raise ViewerError(
+            f"{selection!r} matches no atoms, so there would be no surface to "
+            "paint the potential onto and the call would report success for an "
+            "empty picture."
+        )
+
+    solved = await electrostatics(
+        method=method,
+        ph=ph,
+        ionic_strength=ionic_strength,
+        spacing=spacing,
+        padding=padding,
+    )
+    handle = "potential_surface"
+    _register(handle, np.flatnonzero(surface_mask), f"electrostatic_view({selection!r})")
+
+    steps = [
+        _step(
+            "electrostatics",
+            method=method,
+            ph=ph,
+            ionic_strength=ionic_strength,
+            spacing=spacing,
+            padding=padding,
+        ),
+        await _run(hide, name=_WHOLE_SCENE),
+        await _run(show, representation="molecular-surface", handle=handle),
+    ]
+    painted = await color_by_potential(handle=handle, domain=domain)
+    steps.append(_step("color_by_potential", handle=handle, domain=domain))
+
+    result: dict[str, Any] = {
+        "view": "electrostatic",
+        "method": solved.get("method", method),
+        "apbs_available": solved.get("apbs_available"),
+        "dx_path": solved.get("dx_path"),
+        "atoms": int(surface_mask.sum()),
+        "residues": _residue_count(array, surface_mask),
+        "handles": [handle],
+        "painted": painted,
+        "steps": steps,
+    }
+    # Carried up rather than left in the nested reply. The whole reason this
+    # view exists is that the two halves were always called together, and the
+    # caveat belongs to the half a caller of *this* tool never sees.
+    for key in ("caveat", "conformer"):
+        if key in solved:
+            result[key] = solved[key]
+    return result
+
+
+@_tool()
 async def define_elements(
     name: str = _ELEMENT_THEME, colors: dict[str, str] | None = None
 ) -> dict[str, Any]:
