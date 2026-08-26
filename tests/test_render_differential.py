@@ -3045,7 +3045,8 @@ async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path)
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         out = tmp_path / "nope.png"
         with pytest.raises(
-            ViewerError, match="cross-hatch, cyanotype, hedcut, spot-ink-plates"
+            ViewerError,
+            match="cross-hatch, cyanotype, engraving, hedcut, spot-ink-plates",
         ):
             await server_mod.snapshot(str(out), width_mm=60, finish="woodblock")
 
