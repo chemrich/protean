@@ -8,11 +8,15 @@ Last updated **2026-08-25**, at `main` after #126.
 
 ---
 
-## The sequence Charlie set is finished
+## The sequence Charlie set is finished, and a second run followed it
 
-Six PRs, #121 to #126, all merged. `main` is at `cf5013e`, clean, zero open
-PRs. What shipped: the finish route's base, `cyanotype`, `spot-ink-plates`,
-plates-by-element, `boil(trails=True)`, and `lens()`.
+Six PRs, #121 to #126, all merged: the finish route's base, `cyanotype`,
+`spot-ink-plates`, plates-by-element, `boil(trails=True)`, and `lens()`.
+
+**Then #128 to #138, on 2026-08-25/26.** Two of those change this document's
+standing facts and are recorded below: a **fifth finish** (`engraving`, #136),
+and the **removal of the reason mesh-based treatments were out of reach**
+(#137). `main` is at `829c95c`.
 
 **What comes next is not another treatment.** `docs/molstar-capabilities.md` —
 an audit of Mol\*'s actual parameter surface, commissioned because `lens()`
@@ -78,6 +82,32 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   standing rule requires is in `tests/test_shuffle_differential.py`, where the
   press keeps 0.485 of the difference the render carries against 0.183 for the
   same finish with its separation removed.
+
+- **`engraving`** — the fifth finish, added #136 on 2026-08-26, and the one
+  that answers "the hatching should be fine and depth cued". **No new rendering
+  code.** It is `_Survey` — the engine behind `cyanotype` — with the paper set
+  white and the ink black, at fourteen levels rather than five.
+
+  The finding is that `_Survey` was always a depth-cued renderer and had only
+  ever been drawn in blue. It contours the *recovered lighting field* and holds
+  constant line width by dividing the residual by the local slope, so the marks
+  follow the form because they **are** isolines of it. `cross-hatch` and
+  `hedcut` rule strokes at a fixed angle regardless of what is underneath,
+  which is why neither reads as having depth.
+
+  Its numbers were chosen by rendering 5 / 9 / 14 / 20 / 28 at plate size and
+  looking, not from print convention. `brightest` is raised to 0.9975 because
+  the survey's 0.975 clamp takes 3.27% of molecule pixels and all of them sit
+  on the summit of an atom.
+
+  A drawing style with no data channel, like `cyanotype`. No shuffle arm.
+
+  **It exposed that the finish-comparison test could not see a fine finish.**
+  `_grain` resolves its lattice as `max(2.0, diagonal * pitch)`, so at the
+  suite's 240 px fixture every fine finish clamped to the same 2 px floor:
+  cyanotype and engraving disagreed on 0.0000 of the frame at 240 px and 0.4811
+  at 1200. The comparison now draws at 480 and a guard asserts no two finishes
+  share a resolved grain step.
 
 - **`cyanotype`** — the third finish and the first that is not an engraving.
   A drawing style with no data channel, said outright in its docstring, the way
@@ -163,6 +193,10 @@ rather than scattering:
 
 So roughly weeks 5 to 20 of that schedule is work that either already exists or
 is impossible without bundling Mol\* from source.
+
+**As of #137 on 2026-08-26, protean bundles Mol\* from source.** That last
+clause is no longer a hypothetical: per-atom generated geometry and a custom
+post-processing pass are reachable. Nothing has been built on it yet.
 
 Three findings worth acting on regardless of the plan:
 
@@ -289,13 +323,27 @@ The other strong idea: draw each atom as an open lattice cage so you can see
 into the molecule instead of at its outer shell. The review agreed it delivers
 something ordinary rendering cannot.
 
-It was blocked on two expensive things. **One of them is no longer true:**
+It was blocked on two expensive things. **The first is now simply done:**
 
-- It needs protean to build Mol\* from source instead of using the prebuilt
-  copy. #107 measured that at **1.2 GB of memory and 4.6 seconds**, producing a
-  bundle the same size as the prebuilt one — so the "over 4 GB" figure still
-  written in `main.ts` is wrong, and no fork is required. What remains is that
-  it adds a build step protean does not have today.
+- It needed protean to build Mol\* from source instead of using the prebuilt
+  copy. #107 measured that at 1.2 GB and 4.6 seconds; **#137 did it**, on
+  2026-08-26, measured at **1.07 GB peak and 5.35 seconds**, bundle 4,800 kB to
+  5,147 kB. Three files changed. The "over 4 GB" sentence is gone from
+  `main.ts`, and with it the reason `docs/views.md` §5.9 put cross-hatching in
+  Pillow rather than in a render pass.
+
+  It carries protean's own machinery, which the 2026-08-21 spike never tested:
+  bridge, dispatch, live registries, presets, `lens` read-back, `snapshot`,
+  the analysis views, and the raf pump — whose load-order requirement is now
+  structural, since a classic script always runs before a deferred module.
+
+  It also fixed Mol\*'s backdrop artwork by construction: those images are a
+  bundler-resolved import the prebuilt UMD had frozen to a path protean never
+  copied, and that 404 **permanently wedges `snapshot()`** rather than
+  degrading quietly.
+
+  The cost that remains is real: a 5-second, 1.1 GB step in every build and CI
+  run, and protean now owns a build it used to inherit.
 - It runs out of graphics memory on large molecules. The escape route named in
   the bake-off turned out to save 12%, not the order of magnitude claimed.
 
