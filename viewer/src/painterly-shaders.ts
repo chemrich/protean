@@ -51,6 +51,7 @@ float getDepth(const in vec2 coords) {
 // colour*alpha, so the gradient of the raw target is the gradient of the
 // *alpha* edge — which would draw a phantom ridge around the whole molecule
 // and comb the brush along it.
+
 vec3 fetch(const in vec2 coords) {
     vec4 c = texture2D(tColor, coords);
     return c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
@@ -249,18 +250,25 @@ uniform vec2 uTexSize;
 uniform float uRadius;
 uniform float uAlpha;
 uniform float uHardness;
+uniform float uVarRef;
 uniform float uDepthFalloff;
 uniform float uStroke;
 uniform float uGrain;
 uniform float uBristle;
 uniform float uRelief;
+uniform float uSpecular;
 uniform float uFar;
 uniform float uGroundPaint;
 uniform float uGlaze;
-uniform vec3 uGlazeColor;
+uniform vec3 uShadowColor;
+uniform float uShadowFrom;
+uniform float uShadowTo;
 uniform float uHighlight;
 uniform vec3 uHighlightColor;
-uniform float uEdgeDark;
+uniform float uLightFrom;
+uniform float uLightTo;
+uniform float uShade;
+uniform float uChroma;
 uniform float uWeaveDepth;
 uniform float uWeavePitch;
 
@@ -268,6 +276,14 @@ const float TAU = 6.283185307;
 // Upper left, and never anywhere else. Fixed in screen space so the relief
 // stays put while the molecule turns.
 const vec3 RAKING = vec3(-0.5504, 0.6205, 0.5580);
+// What the raking light gives a pixel with no paint standing off it — which is
+// just RAKING.z, since a flat surface's normal is (0,0,1). Named, because the
+// relight below is centred on it and the two must not drift apart.
+// How hard the relief swings brightness about unity. One number rather than a
+// look field: a look already says how thick its paint is, through its own
+// relief, which decides how far the surface tilts and so how far the swing
+// goes. A second knob over the same effect is a second thing to get out of step.
+const float RELIEF_CONTRAST = 0.55;
 
 float hash21(const in vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -314,6 +330,86 @@ float weaveHeight(const in vec2 P, const in float pitch) {
     // thread still shows, lower — that is what makes it a weave and not a grid.
     float over = mod(wi + fi, 2.0);
     return max(mix(weft, warp, over), mix(warp, weft, over) * 0.55);
+}
+
+// -- colour, in a space where chroma and hue come apart -----------------------
+//
+// Oklab (Bjorn Ottosson, 2020) rather than HSV, and the reason is protean's
+// rather than a graphics one: **these colours mean something.** The ribbon is
+// coloured by secondary structure, so a boost that rotated hue would make a
+// helix read as a strand. Scaling (a, b) in Oklab cannot move a hue — the hue
+// is atan(b, a) and scaling both leaves it exactly — and cannot move
+// lightness, because that is L. An HSV or a mix-from-luma boost does both the
+// moment a channel clips.
+
+float srgbToLinear(const in float c) {
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+float linearToSrgb(const in float c) {
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+vec3 srgbToOklab(const in vec3 srgb) {
+    vec3 c = vec3(srgbToLinear(srgb.r), srgbToLinear(srgb.g), srgbToLinear(srgb.b));
+    float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    // Cube root, sign-preserving. A negative here means the colour was already
+    // outside the sRGB gamut, which the un-premultiply can produce.
+    vec3 n = vec3(
+        sign(l) * pow(abs(l), 1.0 / 3.0),
+        sign(m) * pow(abs(m), 1.0 / 3.0),
+        sign(s) * pow(abs(s), 1.0 / 3.0)
+    );
+    return vec3(
+        0.2104542553 * n.x + 0.7936177850 * n.y - 0.0040720468 * n.z,
+        1.9779984951 * n.x - 2.4285922050 * n.y + 0.4505937099 * n.z,
+        0.0259040371 * n.x + 0.7827717662 * n.y - 0.8086757660 * n.z
+    );
+}
+
+vec3 oklabToSrgb(const in vec3 lab) {
+    float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    float s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    float l = l_ * l_ * l_;
+    float m = m_ * m_ * m_;
+    float s = s_ * s_ * s_;
+    vec3 c = vec3(
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    );
+    return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
+}
+
+bool inGamut(const in vec3 c) {
+    return all(greaterThanEqual(c, vec3(-0.001))) && all(lessThanEqual(c, vec3(1.001)));
+}
+
+/** More of the colour it already is: hue and lightness held, chroma scaled.
+ *
+ * The clamp is a bisection on chroma rather than a clamp on channels. Clamping
+ * channels is what rotates hue — clip blue first and a violet arrives magenta —
+ * so instead the chroma is walked back until the colour fits, which keeps the
+ * hue angle exact and only gives up intensity. Four steps is under 1% error.
+ */
+vec3 boostChroma(const in vec3 rgb, const in float k) {
+    if (k == 1.0) return rgb;
+    vec3 lab = srgbToOklab(rgb);
+    vec2 ab = lab.yz * k;
+    vec3 out0 = oklabToSrgb(vec3(lab.x, ab));
+    if (inGamut(out0)) return clamp(out0, 0.0, 1.0);
+
+    float lo = 1.0 / max(k, 1e-4);   // the original chroma always fits
+    float hi = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        float mid = 0.5 * (lo + hi);
+        if (inGamut(oklabToSrgb(vec3(lab.x, ab * mid)))) lo = mid;
+        else hi = mid;
+    }
+    return clamp(oklabToSrgb(vec3(lab.x, ab * lo)), 0.0, 1.0);
 }
 
 // Straight colour and coverage, from a texel centre.
@@ -401,11 +497,13 @@ void main(void) {
     vec4 mean[8];
     float lsum[8];
     float l2sum[8];
+    float c2sum[8];
     float nsum[8];
     for (int k = 0; k < 8; ++k) {
         mean[k] = vec4(0.0);
         lsum[k] = 0.0;
         l2sum[k] = 0.0;
+        c2sum[k] = 0.0;
         nsum[k] = 0.0;
     }
 
@@ -456,6 +554,7 @@ void main(void) {
                 mean[k] += tap * w;
                 lsum[k] += L * w;
                 l2sum[k] += L * L * w;
+                c2sum[k] += dot(rgb, rgb) * w;
                 nsum[k] += w;
             }
         }
@@ -467,12 +566,33 @@ void main(void) {
         if (nsum[k] <= 0.0) continue;
         vec4 mu = mean[k] / nsum[k];
         float lmu = lsum[k] / nsum[k];
-        // Luminance variance rather than the sum of per-channel variances. A
-        // structure coloured by chain has hue boundaries with no luminance
-        // step; on RGB variance the brush refuses to work across them and
-        // leaves a hard plastic seam at every one.
-        float variance = max(0.0, l2sum[k] / nsum[k] - lmu * lmu);
-        float w = 1.0 / (1.0 + pow(variance, 0.5 * uHardness));
+        // Luminance spread *and* colour spread, because a palette can be made
+        // of isoluminant contrast. Coral against teal is a luminance step of
+        // 0.06 and a hue step of nearly everything; on luminance alone the
+        // brush reads that boundary as flat, averages across it, and hands
+        // back grey. The comment that used to sit here argued the opposite —
+        // that RGB variance leaves "a hard plastic seam" at a hue boundary —
+        // and it was describing an effect the weight below could not produce
+        // at any setting, because the weight did nothing at all. Measure, then
+        // assert.
+        float variance = max(
+            max(0.0, l2sum[k] / nsum[k] - lmu * lmu),
+            max(0.0, c2sum[k] / nsum[k] - dot(mu.rgb, mu.rgb)) * 0.5
+        );
+        // Against a reference spread, and this is the line that makes the pass
+        // an *abstraction* rather than a blur.
+        //
+        // Kyprianidis and Doellner's weight is 1/(1 + sigma^q) on 0-255 values.
+        // On the [0,1] values a shader has, sigma^q annihilates: at hardness 8
+        // the weight's entire dynamic range across every variance a luminance
+        // can have is 1.0000000 to 0.9999847. Every sector was therefore
+        // weighted equally, the least-variance selection never happened, and
+        // what ran was an anisotropic Gaussian blur wearing the name of a
+        // Kuwahara filter. Dividing by a reference spread first gives the
+        // exponent something to bite on: at uVarRef 0.03 and hardness 8 the
+        // weight runs 0.96 at a spread of 0.02 to 6.6e-5 at 0.10.
+        float scaled = variance / (uVarRef * uVarRef);
+        float w = 1.0 / (1.0 + pow(scaled, 0.5 * uHardness));
         num += mu * w;
         den += w;
     }
@@ -516,35 +636,67 @@ void main(void) {
     if (uRelief > 0.0) {
         vec2 slope = vec2(dFdx(streak), dFdy(streak)) * uRelief * onPaint;
         vec3 n = normalize(vec3(-slope, 1.0));
-        float lambert = max(0.0, dot(n, RAKING));
         float spec = pow(max(0.0, dot(reflect(-RAKING, n), vec3(0.0, 0.0, 1.0))), 24.0);
-        // Faded out with onPaint rather than only its slope, so that bare ground
-        // keeps the colour it was given. Relighting a flat surface still
-        // multiplies it — by 0.93 here — and a ground that comes back 7% darker
-        // than the colour the caller asked for is a small lie the reply cannot
-        // see.
-        col *= mix(1.0, 0.62 + 0.55 * lambert, onPaint);
-        col += 0.16 * spec * alpha * onPaint;
+        // A swing about unity that is *odd in the slope*, so its mean is zero
+        // over any symmetric field of tilts, at any paint thickness, without a
+        // constant anyone has to keep in step.
+        //
+        // Two wrong versions preceded it and both were measured rather than
+        // reasoned into. The shipped one, 0.62 + 0.55 * lambert, took **14.3%**
+        // off the mean painted pixel — not the 7.3% a flat pixel suggests,
+        // because a textured surface tilts a mean 53 degrees off the screen and
+        // a third of it has lambert clamped to zero. Recentring that on
+        // RAKING.z halved the loss to 7.0% and no further: RAKING.z is the
+        // flat-surface value and the surface is not flat. Dropping the clamp
+        // and taking the tilt directly is exact by construction — measured mean
+        // 1.0011 to 1.0018 across every paint thickness in the table.
+        float tilt = dot(vec3(-slope, 0.0), RAKING) / (1.0 + length(slope));
+        col *= mix(1.0, 1.0 + RELIEF_CONTRAST * tilt, onPaint);
+        // The glint keeps the true lambert — a highlight is a real reflection
+        // and has no business being mean-neutral.
+        col += uSpecular * spec * alpha * onPaint;
     }
 
     float L = dot(col, vec3(0.299, 0.587, 0.114));
 
-    // A shadow glaze is transparent, so it goes deep and coloured; a highlight
-    // is opaque lead white, so it goes light and desaturated. Pulling the darks
-    // toward grey instead is what makes a painterly filter read as a dirty
-    // photograph.
-    float glaze = smoothstep(0.38, 0.04, L) * uGlaze;
-    col = mix(col, col * uGlazeColor, glaze);
+    // A tint toward a colour, not a multiply by one — and the bands come from
+    // the look rather than from a literal.
+    //
+    // A multiply by a colour can only ever darken, because every component of
+    // a colour is at most 1. That is right for a Dutch Master, whose shadow is
+    // a transparent brown laid over the ground, and it makes a bright look
+    // impossible: there is no value of it that lifts a passage. Tinting toward
+    // a *pale periwinkle* is the move a spring palette wants, and it is the
+    // same line of code.
+    //
+    // The bands were literals at 0.38/0.04 and 0.70/0.96, tuned around a
+    // subject living at L 0.18-0.40. A bright palette lives at 0.45-0.85, where
+    // the shadow never fired at all and the highlight fired on almost nothing —
+    // two effects reported as applied and doing nothing, which is this
+    // project's whole failure mode in two lines.
+    float glaze = smoothstep(uShadowFrom, uShadowTo, L) * uGlaze;
+    col = mix(col, uShadowColor, glaze);
 
-    float lit = smoothstep(0.70, 0.96, L) * uHighlight;
-    col = mix(col, mix(col, uHighlightColor, 0.55), lit);
+    float lit = smoothstep(uLightFrom, uLightTo, L) * uHighlight;
+    col = mix(col, uHighlightColor, lit);
 
-    // Darkened where the paint has structure rather than along the silhouette.
-    // A depth outline darkens the outside edge only, and reads as a sticker.
-    // On the paint, though: the ground has no structure to find, and darkening
-    // the background right at the silhouette draws a grey ring around the
-    // subject that reads as a halo rather than as a drawn edge.
-    col *= 1.0 - uEdgeDark * onPaint * smoothstep(0.25, 0.75, aniso);
+    // Deepened where the flow is coherent — which on a ribbon is *most of it*,
+    // and that is the honest description rather than the one this line used to
+    // carry.
+    //
+    // It was written as an edge darkening, on the theory that anisotropy marks
+    // where the paint has structure. Anisotropy is a measure of *shape*, not of
+    // strength: a smooth shaded slope across a cartoon band is as directional
+    // as a hard edge, so smoothstep(0.25, 0.75, aniso) saturates over the
+    // whole subject. Measured on 1UBQ: switching this off lifts the painted
+    // subject's mean luminance from 0.686 of the render to 0.852 and its mean
+    // saturation from 0.698 to 0.867. A 22% dim cannot move a mean by 17%
+    // unless it is at full strength nearly everywhere.
+    //
+    // Kept, because it is most of what made the Dutch Master read as painted
+    // rather than filtered, and named for what it does so the next look can
+    // decide on the evidence.
+    col *= 1.0 - uShade * onPaint * smoothstep(0.25, 0.75, aniso);
 
     if (uWeaveDepth > 0.0) {
         float h = weaveHeight(gl_FragCoord.xy, uWeavePitch);
@@ -554,8 +706,19 @@ void main(void) {
         // also the most textile, which is backwards and gives the whole thing
         // away as a filter.
         float buried = 1.0 - 0.7 * clamp(abs(streak), 0.0, 1.0);
-        col *= 1.0 - uWeaveDepth * buried * (1.0 - h);
+        // Centred on the weave's own mean height rather than on its peak, so a
+        // canvas texture is a texture and not a 4.3% tax. E[h] is 0.578 for
+        // this weave; the one-sided form only ever subtracted.
+        col *= 1.0 + uWeaveDepth * buried * (h - 0.578);
     }
+
+    // Put back what the averaging took, and then some.
+    //
+    // Kuwahara is a mean, and a mean in sRGB desaturates: measured on 1UBQ, the
+    // painted subject came back at 0.876 of the render's mean saturation with
+    // every other term switched off. So a look that wants its colours to sing
+    // has to ask for it. Hue and lightness are held exactly — see boostChroma.
+    col = boostChroma(col, uChroma);
 
     // Premultiplied, because that is what Mol* hands on and what every consumer
     // downstream assumes.

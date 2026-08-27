@@ -127,6 +127,39 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   shuffle arm, because it claims nothing a shuffle arm could test — the marks
   follow the shading, which is a property of where the light is.
 
+  **It shipped as a Dutch Master and Charlie sent it back**: *"way too earth
+  tone, too dark ... brighten the mood. Make it joyful."* It is `spring` now —
+  coral against sky on cream — with `poster` and `orchard` beside it. The
+  interesting part is what the hunt for the gloom turned up, because the ground
+  was the least of it and all four of these reported success:
+
+  1. **The pass was not running a Kuwahara filter.** The sector weight is the
+     published one, which operates on 0-255 values; on [0,1] the exponent
+     annihilates it, and at `hardness 8` the weight's entire dynamic range is
+     1.0000000 to 0.9999847. An anisotropic Gaussian blur had been wearing the
+     name of an abstraction for the feature's whole life, and **two comments in
+     this repo described behaviour that arithmetic cannot produce**.
+  2. The impasto relight took 14.3% off every painted pixel, quoted as an
+     absolute range rather than as contrast.
+  3. The "edge darkening" was a 21% global dim, keyed on a gradient's *shape*
+     rather than its strength.
+  4. The shadow could only ever darken, and its luminance band never fired on a
+     bright palette.
+
+  **The lesson for the next treatment is the guard, not the bug.** None of these
+  could be seen in a picture: an abstraction going missing looks like a slightly
+  softer painting, and every other term still runs. Three were found by
+  re-deriving the shader's arithmetic on the CPU and printing the numbers. The
+  one now guarded is guarded by a **property test** — that the weight can
+  discriminate at all — rather than by a value, plus an assertion that the
+  TypeScript mirror still matches the GLSL it mirrors.
+
+  And the biggest lever was not in the pass at all: the studio rig with its cast
+  shadow was taking the colour out of the palette before the paint saw it. Same
+  palette and look, only the light changed — subject luminance 112 to 162,
+  saturation 112 to 146. **A treatment that reads the shading is downstream of
+  the lighting rig, and the rig is the first thing to look at.**
+
   The finding worth carrying: **abstraction alone is not a painting.** The first
   version was anisotropic Kuwahara and nothing else, which is what the
   literature says a painterly filter is, and it gave back a clean render with a

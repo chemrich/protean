@@ -26,23 +26,42 @@ import asyncio
 import math
 from typing import Any
 
+import numpy as np
 import pytest
 
 import protean_mcp.server as server_mod
 from protean_mcp.connection import ViewerError
 
 from .browser import BROWSER_MARKS, viewer_session
-from .pixels import Render, background, close, coverage, decode, difference
+from .pixels import (
+    TOLERANCE,
+    Render,
+    background,
+    close,
+    coverage,
+    decode,
+    difference,
+)
 from .test_render_differential import _as_server
 
 pytestmark = BROWSER_MARKS
 
 FIXTURE = "1ubq"
 
-#: A painterly finish repaints every pixel of the frame, so the fraction it
-#: changes is most of it. Measured on 1UBQ at a 1200px capture: 0.86. This sits
-#: well below that and well above anything a lighting change produces.
-PAINTED = 0.4
+#: How much of the *subject* a finish has to repaint. Of the subject, not of the
+#: frame, and that distinction is the whole of this constant's history.
+#:
+#: It was 0.4 of the frame, measured at 0.86 — and 0.86 of a frame whose subject
+#: covers 0.03 can only have been the *background* moving. It was: the canvas
+#: weave was one-sided and took up to 13% off every ground pixel, which is above
+#: `tests/pixels.py`'s 8/255 tolerance. So the guard for "the finish reaches the
+#: capture" was passing on the strength of a darkened background, and would have
+#: gone on passing with the brush switched off entirely.
+#:
+#: Centring the weave on its own mean height — which it should always have been —
+#: dropped the frame difference to 0.118 and left this test with nothing to
+#: stand on. Measured over the subject instead: 0.93 of it changes.
+PAINTED = 0.6
 
 #: Two brush sizes differ over the *subject*, not over the frame — the ground
 #: takes no brushwork at all. So the claim is expressed against how much of the
@@ -58,6 +77,25 @@ MARKED_FRACTION_OF_SUBJECT = 0.4
 
 def _decode(data_uri: str) -> Render:
     return decode(data_uri)
+
+
+def _subject(render: Render) -> Any:
+    """The drawn pixels, as a mask: everything unlike this frame's own corner.
+
+    A painterly finish touches the ground too — that is what a canvas texture
+    is — but the ground is 96% of the frame, so a claim measured over the whole
+    frame is a claim about the background whatever it says in its name.
+    """
+    px = render.pixels[:, :, :3].astype(np.int16)
+    corner = px[4, 4]
+    return np.abs(px - corner).max(axis=2) > 24
+
+
+def _repainted(before: Render, after: Render) -> float:
+    """Fraction of the drawn subject that the finish actually changed."""
+    mask = _subject(before)
+    gap = np.abs(before.pixels.astype(np.int16) - after.pixels.astype(np.int16))
+    return float((gap.max(axis=2) > TOLERANCE)[mask].mean())
 
 
 async def _capture(session, width: int = 1200) -> Render:
@@ -227,10 +265,10 @@ async def test_the_finish_survives_multisampling_being_switched_off(painted):
         lit = float(painted[name].pixels[:, :, :3].mean())
         assert lit > 16, f"{name} came back at a mean brightness of {lit:.1f}"
 
-    changed = difference(plain, painted["single_painted"])
+    changed = _repainted(plain, painted["single_painted"])
     assert changed > PAINTED, (
         f"with multisampling off the canvas changed on {changed:.4f} of the "
-        "frame, so the plain draw route has no finish on it"
+        "subject, so the plain draw route has no finish on it"
     )
 
     # And the route still delivers *new* frames with no look on it. This is the
@@ -267,9 +305,9 @@ async def test_the_finish_reaches_the_capture(painted):
     patched onto the canvas's instance paints the screen and leaves every
     `snapshot()` plain — with a success message on it.
     """
-    changed = difference(painted["plain"], painted["painted"])
+    changed = _repainted(painted["plain"], painted["painted"])
     assert changed > PAINTED, (
-        f"the capture changed on {changed:.4f} of the frame, so the finish "
+        f"the capture changed on {changed:.4f} of the subject, so the finish "
         "never reached ImagePass"
     )
 
@@ -277,9 +315,9 @@ async def test_the_finish_reaches_the_capture(painted):
 async def test_the_finish_reaches_the_canvas(painted):
     """And the screen has to carry it, which is the whole reason this pass
     exists rather than a sixth entry in `snapshot(finish=...)`."""
-    changed = difference(painted["plain_canvas"], painted["painted_canvas"])
+    changed = _repainted(painted["plain_canvas"], painted["painted_canvas"])
     assert changed > PAINTED, (
-        f"the drawing buffer changed on {changed:.4f} of the frame, so the "
+        f"the drawing buffer changed on {changed:.4f} of the subject, so the "
         "finish is in the file and not on the screen"
     )
 
@@ -486,8 +524,12 @@ async def test_painting_no_longer_reproduces_felt():
         await server_mod.preset("painting")
         painting = await _capture(session, width=600)
 
-    apart = difference(felt, painting)
-    assert apart > 0.5, (
-        f"felt and painting differ on {apart:.4f} of the frame, which is the "
-        "complaint this change exists to answer"
+    # Over the subject, and the reason is the same as everywhere else in this
+    # file: both views now sit on a light ground, so almost all of the frame is
+    # identical between them and a whole-frame number would be a statement about
+    # the paper. What is being asked is whether the two draw the same *picture*.
+    apart = _repainted(felt, painting)
+    assert apart > 0.6, (
+        f"felt and painting differ on {apart:.4f} of what felt drew, which is "
+        "the complaint this change exists to answer"
     )

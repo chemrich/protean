@@ -1403,18 +1403,24 @@ def _frame(views: list[tuple[str, Render]], name: str) -> Render:
     return dict(views)[name]
 
 
-# Measured on 1UBQ rather than guessed, and the tolerance is the point. The
-# painting ground is #4a3b2c — the warm brown a seventeenth-century panel was
-# primed with — and it is nothing like the white the plain load carries, so a
-# tolerance of 20 separates them with room to spare while still refusing a
-# ground that merely landed in the same quadrant of the colour cube.
+# Measured on 1UBQ rather than guessed, and the tolerance is the point.
 #
-# It was #efe9dc until 2026-08-26, when `painting` became an oil painting. The
-# tolerance argument from then is worth keeping: at 40, plain white *also*
-# matched buff on every channel at 0.969, and the test would have passed for
-# every view in the catalogue while appearing to check the one thing different.
-GROUND = (0x4A, 0x3B, 0x2C, 255)
-GROUND_TOLERANCE = 20
+# Three grounds in two days, which is worth recording because each move was
+# taste correcting an earlier one: `#efe9dc` buff paper while `painting` was a
+# sphere model under a studio rig; `#4a3b2c` when it became a Dutch Master and
+# the lights had to be put *on* a dark ground; and `#f2f0e4` now, because
+# Charlie looked at the Dutch Master and said it was too earth-toned and too
+# dark. That last is close to what `felt` uses — the view they said they liked.
+#
+# The tolerance argument survives all three. At 40, plain white *also* matches a
+# buff ground on every channel at 0.969, and the test would pass for every view
+# in the catalogue while appearing to check the one thing that is different. At
+# 20 it does not, and this ground is 13 counts from the white the plain load
+# carries on its green channel — so the two are still told apart, but only just.
+# If this ground ever moves closer to white, the tolerance has to come down with
+# it or this test stops meaning anything.
+GROUND = (0xF2, 0xF0, 0xE4, 255)
+GROUND_TOLERANCE = 8
 
 
 async def test_painting_lays_down_the_ground_it_names(views):

@@ -165,6 +165,40 @@ nothing is released yet, so everything below is unreleased.
     colour, and a painted ground leaves none to match, so the box would come
     back as the whole frame while the reply said it had cropped.
 
+  **It shipped as a Dutch Master and that was the wrong idea.** Charlie, on the
+  plates: *"way too earth tone, too dark ... brighten the mood. Make it
+  joyful."* `painting` is coral against sky on a cream ground now — `spring` —
+  with `poster` and `orchard` beside it and `chiaroscuro` still available.
+
+  Chasing the gloom found four defects, every one of which reported success:
+
+  - **The pass was not running a Kuwahara filter.** Its sector weight is
+    Kyprianidis and Döllner's, which operates on 0-255 values; on the [0,1]
+    values a shader has, the exponent annihilates it. At `hardness 8` the
+    weight's entire dynamic range across every spread a luminance can have is
+    1.0000000 to 0.9999847 — so every sector was weighted the same, the
+    least-variance selection never happened, and an anisotropic Gaussian blur
+    had been wearing the name of an abstraction. Two comments in this repo
+    described behaviour that arithmetic cannot produce.
+  - **The impasto relight took 14.3% off every painted pixel**, quoted as an
+    absolute range rather than as contrast. A flat pixel suggests 7.3%; the mean
+    is twice that, because a textured surface tilts 53° off the screen and a
+    third of it has its light clamped to zero.
+  - **The "edge darkening" was a 21% global dim**, keyed on anisotropy — which
+    measures a gradient's *shape*, not its strength, so a smoothly shaded ribbon
+    saturated it over 87% of the subject. It is called `shade` now.
+  - **The shadow could only ever darken and its band never fired.** A multiply
+    by a colour cannot lift; the band was a literal tuned around a subject at
+    luminance 0.18-0.40. Both are look fields now and the shadow tints.
+
+  And the biggest lever was not in the pass: the studio rig with its cast shadow
+  was taking the colour out of the palette before the paint saw it. Same palette
+  and look, only the light changed — subject luminance 112 → 162, saturation
+  112 → 146.
+
+  `felt` is untouched, as asked. It shares no code path with the pass, and its
+  numbers were the target: ground 237, subject 114, saturation 41.
+
   What is not built: `divisionist` (Seurat) and `impasto` (Van Gogh), the other
   two Charlie named. The engine is shared and waiting.
 

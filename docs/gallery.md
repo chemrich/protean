@@ -364,11 +364,21 @@ renderer. This is the other thing entirely: **protean's own render pass, on the
 GPU, running every frame.** The viewer shows the painting, and `snapshot()`
 returns what the viewer is showing.
 
-`brushwork(look="chiaroscuro")` reaches it directly, on whatever is on screen.
-`preset("painting")` is the whole scene set up for it — a ribbon in earth
-pigments, studio light, a warm dark ground — because an oil painting is built
-the other way round from a diagram: the lights are put *on* a dark ground, and
-on white paper the whole apparatus has nothing to work against.
+`brushwork(look="spring")` reaches it directly, on whatever is on screen.
+`preset("painting")` is the whole scene set up for it — a ribbon in coral and
+sky, an open ring light, a cream ground.
+
+Four looks: **`spring`** is the default, **`poster`** is flatter and more
+whimsical, **`orchard`** is vermilion against deep teal, and **`chiaroscuro`**
+is the Dutch Master this started as. A look sets how the paint behaves; the
+ribbon's colours are a colour theme of the same name, so `color("poster")` and
+`brushwork(look="spring")` is a pairing you can ask for.
+
+**The light matters more than any of it.** A studio rig with a cast shadow is a
+rig for a dark ground: it models hard and takes the colour out of a palette
+before the paint ever sees it. Same palette, same look, only the light changed —
+the subject's luminance went 112 to 162 and its saturation 112 to 146. Occlusion
+stays, because the brush reads the shading to find the form.
 
 **What makes it paint rather than a filter.** The first version was anisotropic
 Kuwahara, which is what a painterly filter is made of in every paper on the

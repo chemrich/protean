@@ -209,18 +209,25 @@ const BrushSchema = {
   uRadius: UniformSpec('f'),
   uAlpha: UniformSpec('f'),
   uHardness: UniformSpec('f'),
+  uVarRef: UniformSpec('f'),
   uDepthFalloff: UniformSpec('f'),
   uStroke: UniformSpec('f'),
   uGrain: UniformSpec('f'),
   uBristle: UniformSpec('f'),
   uRelief: UniformSpec('f'),
+  uSpecular: UniformSpec('f'),
   uFar: UniformSpec('f'),
   uGroundPaint: UniformSpec('f'),
   uGlaze: UniformSpec('f'),
-  uGlazeColor: UniformSpec('v3'),
+  uShadowColor: UniformSpec('v3'),
+  uShadowFrom: UniformSpec('f'),
+  uShadowTo: UniformSpec('f'),
   uHighlight: UniformSpec('f'),
   uHighlightColor: UniformSpec('v3'),
-  uEdgeDark: UniformSpec('f'),
+  uLightFrom: UniformSpec('f'),
+  uLightTo: UniformSpec('f'),
+  uShade: UniformSpec('f'),
+  uChroma: UniformSpec('f'),
   uWeaveDepth: UniformSpec('f'),
   uWeavePitch: UniformSpec('f'),
   dSamples: DefineSpec('number'),
@@ -314,18 +321,25 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uRadius: ValueCell.create(radius),
     uAlpha: ValueCell.create(1),
     uHardness: ValueCell.create(8),
+    uVarRef: ValueCell.create(0.03),
     uDepthFalloff: ValueCell.create(1),
     uStroke: ValueCell.create(1),
     uGrain: ValueCell.create(1),
     uBristle: ValueCell.create(0),
     uRelief: ValueCell.create(0),
+    uSpecular: ValueCell.create(0),
     uFar: ValueCell.create(100),
     uGroundPaint: ValueCell.create(0.3),
     uGlaze: ValueCell.create(0),
-    uGlazeColor: ValueCell.create(Vec3.create(0, 0, 0)),
+    uShadowColor: ValueCell.create(Vec3.create(0, 0, 0)),
+    uShadowFrom: ValueCell.create(0.38),
+    uShadowTo: ValueCell.create(0.04),
     uHighlight: ValueCell.create(0),
     uHighlightColor: ValueCell.create(Vec3.create(1, 1, 1)),
-    uEdgeDark: ValueCell.create(0),
+    uLightFrom: ValueCell.create(0.7),
+    uLightTo: ValueCell.create(0.96),
+    uShade: ValueCell.create(0),
+    uChroma: ValueCell.create(1),
     uWeaveDepth: ValueCell.create(0),
     uWeavePitch: ValueCell.create(4),
     dSamples: ValueCell.create(samples),
@@ -506,6 +520,7 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uRadius, radius);
   ValueCell.updateIfChanged(state.brush.values.uAlpha, look.eccentricity);
   ValueCell.updateIfChanged(state.brush.values.uHardness, look.hardness);
+  ValueCell.updateIfChanged(state.brush.values.uVarRef, look.varRef);
   ValueCell.updateIfChanged(state.brush.values.uDepthFalloff, falloff);
   ValueCell.updateIfChanged(state.brush.values.uStroke, strokePx);
   ValueCell.updateIfChanged(state.brush.values.uGrain, Math.max(1, lengths.grain));
@@ -520,19 +535,25 @@ function paint(
     state.brush.values.uRelief,
     (look.relief * lengths.grain) / REFERENCE_GRAIN_PX
   );
+  ValueCell.updateIfChanged(state.brush.values.uSpecular, look.specular);
   ValueCell.updateIfChanged(state.brush.values.uFar, camera.far);
   ValueCell.updateIfChanged(state.brush.values.uGroundPaint, look.groundPaint);
   ValueCell.updateIfChanged(state.brush.values.uGlaze, look.glaze);
   ValueCell.update(
-    state.brush.values.uGlazeColor,
-    Vec3.set(state.brush.values.uGlazeColor.ref.value, ...look.glazeColor)
+    state.brush.values.uShadowColor,
+    Vec3.set(state.brush.values.uShadowColor.ref.value, ...look.shadowColor)
   );
+  ValueCell.updateIfChanged(state.brush.values.uShadowFrom, look.shadowBand[0]);
+  ValueCell.updateIfChanged(state.brush.values.uShadowTo, look.shadowBand[1]);
+  ValueCell.updateIfChanged(state.brush.values.uLightFrom, look.lightBand[0]);
+  ValueCell.updateIfChanged(state.brush.values.uLightTo, look.lightBand[1]);
   ValueCell.updateIfChanged(state.brush.values.uHighlight, look.highlight);
   ValueCell.update(
     state.brush.values.uHighlightColor,
     Vec3.set(state.brush.values.uHighlightColor.ref.value, ...look.highlightColor)
   );
-  ValueCell.updateIfChanged(state.brush.values.uEdgeDark, look.edge);
+  ValueCell.updateIfChanged(state.brush.values.uShade, look.shade);
+  ValueCell.updateIfChanged(state.brush.values.uChroma, look.chroma);
   ValueCell.updateIfChanged(
     state.brush.values.uWeaveDepth,
     weavePx >= MIN_WEAVE_PX ? look.weave : 0

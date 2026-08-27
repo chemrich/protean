@@ -693,8 +693,13 @@ function jitterRadius(element: number, radius: number): number {
   return radius * (0.93 + 0.14 * ((h >>> 0) / 4294967296));
 }
 
+/** The secondary-structure palettes, named here because `BUILT_IN_THEMES` needs
+ *  them before the table itself is declared. `registerPaletteThemes` asserts
+ *  the two agree, so this cannot become a second, drifting list. */
+const STRUCTURE_PALETTE_NAMES = ['pigment', 'spring', 'poster', 'orchard'] as const;
+
 /** Themes protean registers itself, which are not Mol*'s and are not fields. */
-const BUILT_IN_THEMES = new Set(['jitter', 'plddt', 'pigment']);
+const BUILT_IN_THEMES = new Set(['jitter', 'plddt', ...STRUCTURE_PALETTE_NAMES]);
 
 /** Registers `jitter` as an ordinary size theme, once per plugin. */
 function registerJitterSize(plugin: any): void {
@@ -878,64 +883,163 @@ function registerPlddtThemes(plugin: any): void {
  * `docs/benchmark` found when it treated a depositor's `struct_conf` records as
  * ground truth.
  */
-const PIGMENTS: Record<string, number> = {
-  alphaHelix: 0xa5563c,
-  threeTenHelix: 0x8f4835,
-  piHelix: 0x7c3f31,
-  betaStrand: 0xc8a03c,
-  betaTurn: 0x8a7f52,
-  coil: 0xddd3bf,
-  bend: 0x94886a,
-  turn: 0x84795c,
-  dna: 0x6f5f86,
-  rna: 0x8a5b6b,
-  carbohydrate: 0x9c8f6d,
+/** Secondary-structure palettes protean registers, by the name a caller uses.
+ *
+ * One table so that adding a palette is one entry rather than a function.
+ * `capabilities()` reports these keys and `show()` checks a colour name against
+ * the live registry, so an entry here is reachable the moment it exists and
+ * there is no second list to keep in step.
+ *
+ * Every one of them has to answer the same question, which is not a question
+ * about mood: **helix, strand and coil must be separable at a glance**, and
+ * separable to a reader with red-green colour blindness. That rules out the
+ * obvious warm/cool pairing of coral against leaf green, which is exactly the
+ * axis deuteranopia collapses.
+ */
+const STRUCTURE_PALETTES: Record<string, Record<string, number>> = {
+  // Earth pigments, and the darkest of them. Madder and burnt sienna for the
+  // helices, lead-tin yellow for the strands, lead white for the coil.
+  pigment: {
+    alphaHelix: 0xa5563c,
+    threeTenHelix: 0x8f4835,
+    piHelix: 0x7c3f31,
+    betaStrand: 0xc8a03c,
+    betaTurn: 0x8a7f52,
+    coil: 0xddd3bf,
+    bend: 0x94886a,
+    turn: 0x84795c,
+    dna: 0x6f5f86,
+    rna: 0x8a5b6b,
+    carbohydrate: 0x9c8f6d,
+  },
+
+  // Spring. The relationship taken from Miyazaki rather than any swatch: a
+  // *warm* subject read against a *cool* one, both at high value, with the
+  // cream of a cloud carrying the connective tissue — the way a Totoro field
+  // is green and coral and sky all at once and none of it is dark.
+  //
+  // Coral against sky rather than the obvious coral against leaf green,
+  // because red-against-green is the one axis deuteranopia collapses and a
+  // helix that reads as a strand is a figure that lies.
+  //
+  // Deeper than the first attempt, which came back washed out: under the open
+  // lighting a bright look needs, pale values bleach. Pastel is the failure
+  // mode of "brighten it", and this palette fell straight into it on the first
+  // render.
+  spring: {
+    alphaHelix: 0xd9564e,
+    threeTenHelix: 0xc94a43,
+    piHelix: 0xb8423c,
+    betaStrand: 0x3d95bd,
+    betaTurn: 0x5fa88c,
+    coil: 0xe6dfcd,
+    bend: 0x77b195,
+    turn: 0x6aa8c8,
+    dna: 0xa98cc4,
+    rna: 0xd18fb0,
+    carbohydrate: 0xcbbf94,
+  },
+
+  // Whimsy, after Marimekko: a few flat colours at full strength, paired
+  // unexpectedly, on near-white. What is taken is the *pairing* — hot pink
+  // beside mustard, which no colour wheel suggests and which works — and the
+  // flatness, not any print.
+  poster: {
+    alphaHelix: 0xe0407a,
+    threeTenHelix: 0xc93569,
+    piHelix: 0xb32d5c,
+    betaStrand: 0xf2b32e,
+    betaTurn: 0x4f9d8c,
+    coil: 0xdcd6c8,
+    bend: 0x6fae9e,
+    turn: 0x3f5f8f,
+    dna: 0x7a5fa8,
+    rna: 0xe0637f,
+    carbohydrate: 0xc9b878,
+  },
+
+  // Neither a pastel nor a poster. Vermilion against a deep teal is a real
+  // complementary pair at full chroma with genuine value contrast between
+  // them, so the picture is bright without being weightless — which is the
+  // failure mode of "brighten it".
+  orchard: {
+    alphaHelix: 0xc2452f,
+    threeTenHelix: 0xad3c2a,
+    piHelix: 0x983425,
+    betaStrand: 0x2f7d6a,
+    betaTurn: 0x5d9c6a,
+    coil: 0xe8dfc8,
+    bend: 0x7fae86,
+    turn: 0x4a8f7d,
+    dna: 0x6b5f9e,
+    rna: 0xb8577a,
+    carbohydrate: 0xcdb277,
+  },
 };
 
-export function registerPigmentTheme(plugin: any): void {
+export function registerPaletteThemes(plugin: any): void {
   const colors = plugin.representation?.structure?.themes?.colorThemeRegistry;
   if (!colors?.add) return;
-  if (colors.get?.('pigment')?.name === 'pigment') return;
   const base = colors.get?.('secondary-structure');
   // Absent rather than assumed. An alias forwarding to a provider that is not
   // there paints everything the no-data grey while reporting success; a name
   // the registry has never heard of is refused by `show()` and says so.
   if (base?.name !== 'secondary-structure') return;
 
-  const custom = { name: 'custom', params: { ...PIGMENTS } };
-  // `base.defaultValues` first, and this is not defensive tidiness — it is the
-  // whole theme. `SecondaryStructureColorTheme` runs
-  // `getAdjustedColorMap(map, props.saturation, props.lightness)`
-  // (`mol-theme/color/secondary-structure.js:89`), and with those two undefined
-  // every channel comes out NaN and the molecule renders **solid black** while
-  // the theme reports itself applied. That is exactly the failure this project
-  // has met before with an empty colour list, and it took one render to find.
-  const factory = (ctx: any, props: any) => ({
-    ...base.factory(ctx, { ...base.defaultValues, ...props, colors: custom }),
-    factory,
-    props,
-  });
-  colors.add({
-    ...base,
-    name: 'pigment',
-    label: 'pigment',
-    factory,
-    // Fixed rather than exposed. The point of the theme is that it *is* a
-    // palette; a caller who wants to choose the colours wants
-    // `define_atom_classes`, not this.
-    getParams: () => ({}),
-    defaultValues: {},
-    description:
-      "Secondary structure in a painter's earth pigments rather than Jmol's " +
-      'shapely colours: madder helices, lead-tin yellow strands, lead white coil.',
-  });
+  for (const name of Object.keys(STRUCTURE_PALETTES)) {
+    if (colors.get?.(name)?.name === name) continue;
+    const custom = { name: 'custom', params: { ...STRUCTURE_PALETTES[name] } };
+    // `base.defaultValues` first, and this is not defensive tidiness — it is
+    // the whole theme. `SecondaryStructureColorTheme` runs
+    // `getAdjustedColorMap(map, props.saturation, props.lightness)`
+    // (`mol-theme/color/secondary-structure.js:89`), and with those two
+    // undefined every channel comes out NaN and the molecule renders **solid
+    // black** while the theme reports itself applied. That is exactly the
+    // failure this project has met before with an empty colour list, and it
+    // took one render to find.
+    const factory = (ctx: any, props: any) => ({
+      ...base.factory(ctx, { ...base.defaultValues, ...props, colors: custom }),
+      factory,
+      props,
+    });
+    colors.add({
+      ...base,
+      name,
+      label: name,
+      factory,
+      // Fixed rather than exposed. The point of a palette theme is that it *is*
+      // a palette; a caller who wants to choose the colours wants
+      // `define_atom_classes`, not this.
+      getParams: () => ({}),
+      defaultValues: {},
+      description: `Secondary structure in protean's '${name}' palette.`,
+    });
+  }
+}
+
+/** The palette names, for `capabilities()` and for anything that has to check
+ *  one without asking a live registry. */
+export const PALETTE_NAMES: readonly string[] = Object.keys(STRUCTURE_PALETTES);
+
+// The two lists are declared apart because one is needed before the other can
+// exist, so they are compared rather than trusted. A palette added to the table
+// and not to the name list would be registrable and then refused by name — the
+// silent-success shape, in the one file that keeps meeting it.
+if (
+  PALETTE_NAMES.length !== STRUCTURE_PALETTE_NAMES.length ||
+  PALETTE_NAMES.some((name) => !STRUCTURE_PALETTE_NAMES.includes(name as never))
+) {
+  throw new Error(
+    `protean: the structure palettes ${PALETTE_NAMES.join(', ')} and the names ` +
+      `${STRUCTURE_PALETTE_NAMES.join(', ')} disagree.`
+  );
 }
 
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
   registerJitterSize(plugin);
   registerPlddtThemes(plugin);
-  registerPigmentTheme(plugin);
+  registerPaletteThemes(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();

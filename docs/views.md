@@ -1203,6 +1203,71 @@ to the canvas never runs, so a blit that silently does nothing turns the canvas
 **black** rather than leaving a plain picture. Every test of this feature reads
 pixels, and each seam was proved by breaking it.
 
+#### The Dutch Master was the wrong idea, and chasing it found four defects
+
+Charlie, on the plates: *"the painted styles are way too earth tone, too dark.
+Maybe suggesting a dutch master style wasn't the right thing. Brighten the mood.
+Make it joyful."* The ground was part of it. Most of it was not, and the hunt is
+worth writing down in full because every one of these reported success.
+
+1. **The pass was not running a Kuwahara filter.** The sector weight is
+   `1/(1 + spread^hardness)`, which is Kyprianidis and Döllner's — on *0-255*
+   values. On the [0,1] values a shader has, the exponent annihilates it: at
+   `hardness 8` its entire dynamic range across every spread a luminance can
+   have is **1.0000000 to 0.9999847**. Every sector was weighted the same, the
+   least-variance selection never happened, and what ran was an anisotropic
+   Gaussian blur wearing the name of an abstraction. Two comments in this repo —
+   one about posterising above hardness 16, one about a "hard plastic seam" at
+   hue boundaries — described behaviour that arithmetic cannot produce. It is
+   fixed by dividing by a reference spread first, and it is guarded by a unit
+   test on the *property* (that the weight can discriminate at all) rather than
+   on a value, because a picture cannot see this: an abstraction going missing
+   looks like a slightly softer painting.
+2. **The relight took 14.3% off every painted pixel.** Quoted as an absolute
+   range rather than as contrast. A flat pixel suggests 7.3%; the real mean is
+   twice that, because a textured surface tilts a mean 53° off the screen and a
+   third of it has its lambert clamped to zero. It is odd in the slope now, so
+   its mean is zero at any paint thickness by construction.
+3. **The "edge darkening" was a 21% global dim.** Keyed on *anisotropy*, which
+   measures the shape of a gradient and not its strength — so a smoothly shaded
+   ribbon is as directional as a hard edge and the term saturated over 87% of
+   the subject. Renamed `shade`, for what it measurably does.
+4. **The shadow could only ever darken, and its band never fired.**
+   `mix(col, col * G, g)` cannot lift, because every component of a colour is at
+   most 1 — right for a brown laid over a ground, arithmetically incapable of
+   joy. And its luminance band was a literal tuned around a subject at L
+   0.18-0.40, so on a bright palette it did not fire at all. Both are look
+   fields now, and the shadow *tints* toward a colour, so a pale periwinkle
+   lifts a dark passage.
+
+**And the biggest lever was not in the pass at all.** `painting` was lit with a
+studio rig and a cast shadow, which is a rig for a dark ground: it models hard
+and takes the colour out of a palette before the paint ever sees it. Same
+palette, same look, only the light changed — subject luminance **112 → 162**,
+saturation **112 → 146**. Occlusion stays, because the brush reads the shading
+to find the form and a flat-lit ribbon has no gradient to follow; the cast
+shadow goes.
+
+The measurement to keep, because it is the target: `felt` — the view Charlie
+said they liked — sits on a ground at luminance 237 with its subject at 114 and
+saturation 41. `painting` sat on 54 with its subject at 82. All three bright
+candidates now sit at or above felt's numbers.
+
+#### Three palettes, and the one that ships
+
+`spring` is the default: coral against sky rather than the obvious coral against
+leaf green, because red-against-green is the one axis deuteranopia collapses and
+a helix that reads as a strand is a figure that lies. `poster` is the whimsical
+one — hot pink beside mustard, a pairing no colour wheel suggests. `orchard` is
+vermilion against deep teal, bright with real value contrast.
+
+The first `spring` came back **pastel**, which is the failure mode of "brighten
+it" and was named as such in review before it was rendered. Deepening the
+palette and raising the chroma took its subject saturation from 35 to 62.
+
+A look and a palette are separate — `brushwork(look=…)` and `color(…)` — so any
+pairing is available; the preset picks a pair.
+
 #### What is not built
 
 `divisionist` (Seurat) and `impasto` (Van Gogh) are the other two Charlie named.

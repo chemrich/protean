@@ -626,7 +626,11 @@ async def brushwork() -> list[Path]:
         # as wide as the tile arrives *magnified* — and magnifying a painterly
         # frame coarsens exactly the marks the figure exists to show.
         plain = await capture(tmp / "plain.png", pixels=1400)
-        await server.brushwork(look="chiaroscuro")
+        # The preset's own look, read rather than named: a figure whose label
+        # says `chiaroscuro` under a picture of something else is exactly the
+        # stale caption this whole script exists to prevent.
+        look = server._PAINTING_LOOK
+        await server.brushwork(look=look)
         painted = await capture(tmp / "painted.png", pixels=1400)
         await server.brushwork(look="off")
         await server.background(color=ground)
@@ -639,7 +643,7 @@ async def brushwork() -> list[Path]:
         # while a look is on.
         window = _bounds(plain)
         tiles = []
-        for name, source in (("the render", plain), ("chiaroscuro", painted)):
+        for name, source in (("the render", plain), (look, painted)):
             cut = tmp / f"cut-{source.name}"
             Image.open(source).convert("RGB").crop(window).save(cut)
             tiles.append((name, cut))

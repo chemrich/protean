@@ -3840,7 +3840,7 @@ async def shading(
 #: The viewer holds the real list and `capabilities()` reports it; this copy
 #: exists so a refusal can name the choices without a round trip, and
 #: `test_the_looks_are_the_ones_the_viewer_offers` compares the two.
-_PAINTERLY_LOOKS = ("off", "chiaroscuro")
+_PAINTERLY_LOOKS = ("off", "chiaroscuro", "spring", "poster", "orchard")
 _BRUSH_SIZES = ("fine", "medium", "broad")
 
 
@@ -3865,13 +3865,22 @@ async def brushwork(
 
     look: the painting, or "off".
 
-      chiaroscuro  A Dutch Master: earth pigments, a shadow glaze that goes
-                   deeper and warmer as it goes down, opaque lead white in the
-                   lights, and visible brush marks that follow the form. Made
-                   for a ribbon on a dark warm ground — `preset("painting")`
-                   sets the whole scene up for it.
+      spring       Coral against sky on cream, shadows tinted cool rather
+                   than darkened. What `preset("painting")` reaches for.
+      poster       The whimsical one: hot pink beside mustard on near-white, a
+                   harder brush, almost no relief. Flat and graphic.
+      orchard      Vermilion against deep teal — bright, but with real value
+                   contrast rather than pastel.
+      chiaroscuro  A Dutch Master: earth pigments, a brown glaze in the darks,
+                   lead white in the lights. Wants a dark ground and a studio
+                   rig, so it is the one look that does not suit the scene
+                   `preset("painting")` builds.
       off          Back to a plain render. Bit-for-bit the picture you had
                    before, which is asserted rather than hoped.
+
+    A look sets how the paint behaves; the ribbon's colours are a *colour
+    theme* of the same name — `color("spring")` — so any pairing is available
+    and `capabilities()` lists both sets.
 
     brush_size: "fine", "medium" or "broad".
 
@@ -4739,19 +4748,25 @@ _PAINTING_PALETTE = {
 }
 _PAINTING_THEME = "protean-painting"
 
-# Rembrandt's ground: a warm mid-brown, the colour a seventeenth-century panel
-# was primed before anything was painted on it. Not paper, and deliberately not:
-# the old `painting` laid buff paper down because it was an all-atom sphere
-# model lit from a studio rig, and a light ground is right for that. An oil
-# painting is built the other way — the lights are put *on* a dark ground — and
-# on buff the whole chiaroscuro apparatus has nothing to work against.
-_PAINTING_GROUND = "#4a3b2c"
+# A primed panel, and a light one. It was `#4a3b2c` — the brown a
+# seventeenth-century ground was laid in — for exactly one day, because a Dutch
+# Master was the wrong idea. Charlie, having looked at it: *"the painted styles
+# are way too earth tone, too dark ... brighten the mood. Make it joyful."*
+#
+# So the ground is nearly the one `felt` uses, which is the view they said they
+# liked, and the paint is put *on* it rather than dug out of it.
+_PAINTING_GROUND = "#f2f0e4"
 
-#: Secondary structure in a painter's earth pigments, registered by the viewer.
-#: See `registerPigmentTheme` in `viewer/src/dispatch.ts` for why it is Mol*'s
+#: The look and the palette `painting` reaches for. Named together because the
+#: preset picks a pair; `brushwork()` and `color()` take them separately, so any
+#: other pairing is one call away. `capabilities()` lists both sets.
+_PAINTING_LOOK = "spring"
+
+#: Secondary structure in the painting's own palette, registered by the viewer.
+#: See `registerPaletteThemes` in `viewer/src/dispatch.ts` for why it is Mol*'s
 #: own secondary-structure assignment wearing a different colour map rather than
 #: a second opinion computed here.
-_PIGMENT_THEME = "pigment"
+_PIGMENT_THEME = _PAINTING_LOOK
 
 
 async def _painting_style(_target: str, handle: str) -> list[str]:
@@ -4781,10 +4796,19 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
     """
     return [
         await _run(background, color=_PAINTING_GROUND, gradient="off"),
-        # A warm key against a cool fill, which is the closest description of
-        # how the originals were lit, and the rig the old recipe already chose.
-        await _run(lighting, rig="studio"),
-        await _set_effects(occlusion=True, shadow=True),
+        # Open, and this is most of what makes the picture bright.
+        #
+        # It was `studio` with a cast shadow, which is a rig for a dark ground:
+        # it models hard, and it was taking the colour out of the palette before
+        # the paint ever saw it. Measured on 1UBQ with the same palette and the
+        # same look, only the rig changed: subject luminance 112 -> 162 and
+        # saturation 112 -> 146. The renderer was the biggest lever of the
+        # several this look has, and none of the others is close.
+        await _run(lighting, rig="ring", ambient=0.72),
+        # Occlusion stays because the pass reads the shading to find the form —
+        # a flat-lit ribbon has no gradient, so no flow, and the brush would
+        # have nothing to follow. The cast shadow goes.
+        await _set_effects(occlusion=True, shadow=False),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),
         # Registered before `brushwork`, because it has to exist before anything
@@ -4793,7 +4817,7 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # draws that separately, and `_paint_the_ligands` recolours it if so.
         await _run(define_elements, name=_PAINTING_THEME, colors=_PAINTING_PALETTE),
         *await _paint_the_ligands(),
-        await _run(brushwork, look="chiaroscuro", brush_size="medium"),
+        await _run(brushwork, look=_PAINTING_LOOK, brush_size="medium"),
     ]
 
 
@@ -5341,9 +5365,9 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       spacefill            Every non-solvent atom as a CPK sphere, lit so the
                            packing reads as volume rather than as a blob.
       skeleton             Ball-and-stick over everything but the solvent.
-      painting             An oil painting of a ribbon: earth pigments on a
-                           warm dark ground, a shadow glaze, opaque lead white
-                           in the lights, and brush marks that follow the form.
+      painting             An oil painting of a ribbon: coral and sky on a
+                           cream ground, shadows tinted cool rather than
+                           darkened, and brush marks that follow the form.
                            Painted live by `brushwork()`, so the viewer shows it
                            and `snapshot()` returns it. A look, not a
                            measurement — it carries no data.

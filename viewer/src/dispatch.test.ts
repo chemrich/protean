@@ -524,7 +524,7 @@ describe('createDispatcher', () => {
       path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
       // 'off' leads rather than sorting into the middle of the painters: it is
       // a value `brushwork()` accepts and not a look.
-      painterly_looks: ['off', 'chiaroscuro'],
+      painterly_looks: ['off', 'chiaroscuro', 'orchard', 'poster', 'spring'],
       brush_sizes: ['fine', 'medium', 'broad'],
     });
   });
