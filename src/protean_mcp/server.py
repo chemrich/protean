@@ -4716,6 +4716,29 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
 
 # Gouache rather than CPK. Geis mixed his own colours and the plastic-sphere
 # palette did not exist yet; more to the point, hard green carbon against hard
+# The one thing the old `painting` had that the new one still needs. CPK's hard
+# green carbon against hard red oxygen is the loudest thing in any frame, and a
+# haem drawn that way inside an oil painting reads as a sticker on it — which is
+# what the first plate of haemoglobin showed. Warm stone carbon, slate nitrogen,
+# brick oxygen, ochre sulfur, and the iron named so a haem is findable.
+#
+# It goes on the *ligand*, not on the ribbon: `pigment` colours secondary
+# structure and a haem has none, so painting it through that theme would give it
+# the no-data grey. A ligand is the one thing in the frame whose chemistry a
+# reader is entitled to read, and this keeps it legible without leaving the
+# painting's world.
+_PAINTING_PALETTE = {
+    "C": "#cdbfa6",
+    "N": "#8397ad",
+    "O": "#b25a4a",
+    "S": "#c8a13c",
+    "P": "#a9825c",
+    "H": "#e8e0d2",
+    "FE": "#8f3222",
+    "X": "#94897b",
+}
+_PAINTING_THEME = "protean-painting"
+
 # Rembrandt's ground: a warm mid-brown, the colour a seventeenth-century panel
 # was primed before anything was painted on it. Not paper, and deliberately not:
 # the old `painting` laid buff paper down because it was an all-atom sphere
@@ -4764,8 +4787,27 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         await _set_effects(occlusion=True, shadow=True),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),
+        # Registered before `brushwork`, because it has to exist before anything
+        # can name it and registering is itself a viewer call. Whether it gets
+        # used depends on whether the structure has a ligand — `_draw_view`
+        # draws that separately, and `_paint_the_ligands` recolours it if so.
+        await _run(define_elements, name=_PAINTING_THEME, colors=_PAINTING_PALETTE),
+        *await _paint_the_ligands(),
         await _run(brushwork, look="chiaroscuro", brush_size="medium"),
     ]
+
+
+async def _paint_the_ligands() -> list[str]:
+    """Bring whatever `_draw_the_ligands` drew into the painting's palette.
+
+    A view selecting `polymer` gets its ligands drawn for it, in CPK — which is
+    right for `textbook` and wrong here for exactly the reason CPK is always the
+    problem in a picture that is trying to be a picture. Nothing if there was no
+    ligand to draw: the handle only exists once something has bound.
+    """
+    if _LIGAND_HANDLE not in _handles.names():
+        return []
+    return [await _run(color, color=_PAINTING_THEME, name=_LIGAND_HANDLE)]
 
 
 async def _richardson_style(_target: str, handle: str) -> list[str]:
