@@ -488,6 +488,35 @@ async def test_a_plate_sized_capture_of_a_large_molecule_survives():
     )
 
 
+async def test_a_view_that_does_not_ask_for_paint_does_not_get_it():
+    """The painterly pass is canvas-wide, like the ground and unlike a
+    representation — so it survives a preset unless the next one says otherwise.
+
+    It did. CI caught `richardson` reporting *"there is no line at all"*: the
+    grey outline that test measures was still being drawn, and the brush that
+    `painting` had switched on two presets earlier was abstracting it away.
+    Exactly the shape of `cinematic`'s depth of field surviving into every view
+    that came after it, which is why `_set_effects` states every effect rather
+    than the ones being changed — and why it states the paint now too.
+
+    Bit-identical rather than merely similar, because "off" is a different code
+    path that has to arrive at the same pixels, and because anything looser
+    would pass for a brush that had merely been turned down.
+    """
+    async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
+        await server_mod.preset("richardson")
+        clean = await _capture(session, width=600)
+        await server_mod.preset("painting")
+        await server_mod.preset("richardson")
+        again = await _capture(session, width=600)
+
+    changed = difference(clean, again)
+    assert changed == 0.0, (
+        f"richardson drawn after painting differs on {changed:.4f} of the "
+        "frame, so the paint outlived the view that asked for it"
+    )
+
+
 async def test_the_looks_are_the_ones_the_viewer_offers():
     """Python gates on `_PAINTERLY_LOOKS` so a refusal can name the choices
     without a round trip, and the viewer gates on its own list. Two hardcoded

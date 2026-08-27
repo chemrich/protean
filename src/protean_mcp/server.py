@@ -4256,12 +4256,30 @@ async def _run(tool: Any, **kwargs: Any) -> str:
     return _step(tool.__name__, **kwargs)
 
 
-async def _set_effects(**wanted: Any) -> str:
-    """Set every effect in `_PRESET_EFFECTS`, not only the ones being changed."""
+async def _set_effects(*, painterly: str = "off", **wanted: Any) -> list[str]:
+    """State the whole screen-space look: every effect, and the painterly pass.
+
+    Every effect in `_PRESET_EFFECTS` rather than only the ones being changed,
+    because `effects()` leaves anything omitted exactly as it was — right for a
+    tool composing calls, wrong for a recipe declaring a look.
+
+    **And the painterly pass, for exactly the same reason.** It is canvas-wide,
+    like the ground and unlike a representation, so it survives a preset the way
+    `cinematic`'s depth of field once survived into every view that came after
+    it. It did: CI caught `richardson` reporting *"there is no line at all"*,
+    because `painting` had run first and the brush was quietly abstracting away
+    the grey outline that test exists to measure. A view that says nothing about
+    the paint is a view that wants none.
+    """
     settings: dict[str, Any] = dict.fromkeys(_PRESET_EFFECTS, False)
     settings.update(wanted)
     await effects(**settings)
-    return _step("effects", **settings)
+    steps = [_step("effects", **settings)]
+    # Only when there is a viewer to tell. `_set_effects` runs inside every
+    # preset, and a look the page has never heard of is not worth a refusal.
+    with contextlib.suppress(ViewerError):
+        steps.append(await _run(brushwork, look=painterly))
+    return steps
 
 
 def _styleable(target: str) -> str:
@@ -4364,7 +4382,7 @@ async def _preset_publication_cartoon(target: str) -> list[str]:
     return [
         await _run(background, color="#ffffff", gradient="off"),
         await _run(lighting, rig="three-point"),
-        await _set_effects(occlusion=True),
+        *await _set_effects(occlusion=True),
         await _run(shading, style="normal", name=target),
         await _run(material, finish="matte", name=target),
     ]
@@ -4376,7 +4394,7 @@ async def _preset_illustrative(target: str) -> list[str]:
     return [
         await _run(background, color="#ffffff", gradient="off"),
         await _run(lighting, rig="flat"),
-        await _set_effects(outline=True, outline_color="#000000"),
+        *await _set_effects(outline=True, outline_color="#000000"),
         await _run(shading, style="cel", name=target, cel_steps=4),
     ]
 
@@ -4401,7 +4419,7 @@ async def _preset_cinematic(target: str) -> list[str]:
     return [
         await _run(background, color="#05070c", gradient="off"),
         await _run(lighting, rig="rim"),
-        await _set_effects(occlusion=True, depth_of_field=True),
+        *await _set_effects(occlusion=True, depth_of_field=True),
         await _run(shading, style="normal", name=target),
         await _run(material, finish="glossy", name=target),
     ]
@@ -4696,7 +4714,7 @@ async def _preset_active_site(target: str) -> list[str]:
         await _run(label, name=target, level="residue"),
         await _run(focus, name=target),
         await _run(lighting, rig="studio"),
-        await _set_effects(occlusion=True),
+        *await _set_effects(occlusion=True),
     ]
 
 
@@ -4718,7 +4736,7 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
     return [
         await _run(background, color="#ffffff", gradient="off"),
         await _run(lighting, rig="ring"),
-        await _set_effects(occlusion=True),
+        *await _set_effects(occlusion=True),
         await _run(material, finish="matte", name=handle),
     ]
 
@@ -4808,7 +4826,7 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # Occlusion stays because the pass reads the shading to find the form —
         # a flat-lit ribbon has no gradient, so no flow, and the brush would
         # have nothing to follow. The cast shadow goes.
-        await _set_effects(occlusion=True, shadow=False),
+        *await _set_effects(occlusion=True, shadow=False, painterly=_PAINTING_LOOK),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),
         # Registered before `brushwork`, because it has to exist before anything
@@ -4817,7 +4835,6 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # draws that separately, and `_paint_the_ligands` recolours it if so.
         await _run(define_elements, name=_PAINTING_THEME, colors=_PAINTING_PALETTE),
         *await _paint_the_ligands(),
-        await _run(brushwork, look=_PAINTING_LOOK, brush_size="medium"),
     ]
 
 
@@ -4854,7 +4871,7 @@ async def _richardson_style(_target: str, handle: str) -> list[str]:
         # shading: a lit side and a shaded side, the way a wash drawing has.
         await _run(shading, style="cel", name=handle, cel_steps=2),
         await _run(lighting, rig="standard"),
-        await _set_effects(outline=True, outline_color="#4a4a4a"),
+        *await _set_effects(outline=True, outline_color="#4a4a4a"),
     ]
 
 
@@ -4915,7 +4932,7 @@ async def _felt_style(target: str, handle: str) -> list[str]:
         # No outline: a drawn edge is the opposite of a fibrous one. Occlusion
         # rather than a cast shadow, because shadow on a fuzzy surface reads as
         # dirt.
-        await _set_effects(occlusion=True),
+        *await _set_effects(occlusion=True),
         await _run(shading, style="normal", name=handle),
         await _run(define_elements, name=_WOOL_THEME, colors=_WOOL_PALETTE),
         await _run(color, color=_WOOL_THEME, name=handle),
@@ -5022,7 +5039,7 @@ async def _scaffold_style(target: str, handle: str) -> list[str]:
         # Occlusion so the cover reads as sitting *over* the fold rather than
         # beside it. No outline — a drawn edge would give the covered region a
         # crisp boundary, which is the opposite of what it is claiming.
-        await _set_effects(occlusion=True),
+        *await _set_effects(occlusion=True),
         # No `color()` here. `_draw_view` has already applied this view's
         # `color`, and re-sending it would cost a round trip and put a
         # misleading step in every reply. `felt` and `painting` re-colour
