@@ -4275,9 +4275,17 @@ async def _set_effects(*, painterly: str = "off", **wanted: Any) -> list[str]:
     settings.update(wanted)
     await effects(**settings)
     steps = [_step("effects", **settings)]
-    # Only when there is a viewer to tell. `_set_effects` runs inside every
-    # preset, and a look the page has never heard of is not worth a refusal.
-    with contextlib.suppress(ViewerError):
+    if painterly == "off":
+        # Taking off a finish a page has never heard of is a no-op, not a
+        # failure — and an older page that predates the pass would otherwise
+        # refuse every preset in the catalogue.
+        with contextlib.suppress(ViewerError):
+            steps.append(await _run(brushwork, look=painterly))
+    else:
+        # But a look that was *asked for* and could not be applied is a refusal
+        # the caller has to hear. Suppressing both directions was the shape this
+        # project spends most of its effort on: a preset that quietly drew no
+        # paint and reported every step it had meant to take.
         steps.append(await _run(brushwork, look=painterly))
     return steps
 
