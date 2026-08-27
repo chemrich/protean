@@ -425,7 +425,17 @@ void main(void) {
             float wz = exp(-abs(flowAt(pixel).w - z0) / uDepthFalloff);
             float wr = exp(-r2 / (2.0 * 0.4 * 0.4));
             float L = dot(rgb, vec3(0.299, 0.587, 0.114));
-            float ang = atan(u.y, u.x);
+            // The centre tap has no angle: atan(0.0, 0.0) is undefined in
+            // GLSL, and on a real driver it came back as NaN, which poisoned
+            // every sum in the pixel and arrived as **alpha zero**. That is not
+            // a visible artefact: it is one transparent pixel in a frame, and
+            // snapshot() refuses the whole capture on it, because on an
+            // opaque canvas a transparent pixel means part of the image was
+            // never rendered. Found by a 1890px plate of haemoglobin, on the
+            // frames where the geometry happened to put an isolated pixel under
+            // the centre of the brush.
+            bool centred = r2 < 1e-12;
+            float ang = centred ? 0.0 : atan(u.y, u.x);
 
             for (int k = 0; k < 8; ++k) {
                 float delta = ang - TAU * float(k) / 8.0;
@@ -435,7 +445,13 @@ void main(void) {
                 // and no sector boundary is a seam. A hard pie slice leaves a
                 // faint eight-pointed star on every flat region, which is the
                 // most recognisable way this filter looks wrong.
-                float wa = abs(delta) < TAU / 8.0 ? 0.5 + 0.5 * cos(delta * 4.0) : 0.0;
+                //
+                // The centre belongs to every sector equally, at an eighth
+                // each — which keeps the same total of 1 without pretending it
+                // points somewhere.
+                float wa = centred
+                    ? 0.125
+                    : (abs(delta) < TAU / 8.0 ? 0.5 + 0.5 * cos(delta * 4.0) : 0.0);
                 float w = wa * wr * wz;
                 mean[k] += tap * w;
                 lsum[k] += L * w;
@@ -461,7 +477,12 @@ void main(void) {
         den += w;
     }
 
-    vec4 painted = num / max(den, 1e-6);
+    // A second guard on the same failure, and independent of the first: if the
+    // brush found nothing to average — every tap in the disc across a depth
+    // break from an isolated pixel — the answer is the pixel itself, not black
+    // and certainly not transparent.
+    vec4 here = fetchAt(gl_FragCoord.xy);
+    vec4 painted = den > 1e-5 ? num / den : here;
     vec3 col = painted.rgb;
     float alpha = clamp(painted.a, 0.0, 1.0);
 

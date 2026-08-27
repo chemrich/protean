@@ -348,6 +348,38 @@ async def test_the_pigment_palette_is_not_jmols_and_is_not_black():
     )
 
 
+async def test_a_plate_sized_capture_of_a_large_molecule_survives():
+    """One transparent pixel makes `snapshot()` refuse the whole capture, and
+    the brush produced them.
+
+    `atan(0.0, 0.0)` is undefined in GLSL. The brush's centre tap sits at
+    exactly that offset, and on a real driver it came back NaN, poisoned every
+    sector sum in the pixel and arrived as alpha zero. On an opaque canvas a
+    transparent pixel cannot be legitimate, so `_incomplete_capture` reads it as
+    a frame that was never finished and raises — which is the right behaviour
+    and made the failure look like a size limit rather than a shader bug.
+
+    Haemoglobin at plate size because that is where it appeared: 1UBQ at 1200px
+    never showed a single one, and 4HHB at 1890px showed a scatter of them
+    through the middle of the frame. It is geometry-dependent, so a small cheap
+    fixture is exactly the fixture that cannot see it.
+    """
+    async with viewer_session("4hhb") as session:
+        await _ribbon(session)
+        await session.request("brushwork", {"look": "chiaroscuro"})
+        plate = await _capture(session, width=1890)
+
+    # Asserted on the pixels rather than by catching `snapshot()`'s refusal:
+    # `_incomplete_capture` reads the alpha channel's *minimum*, so a single
+    # bad pixel and a whole unrendered half of the frame are the same failure
+    # to it, and only this says which.
+    empty = float((plate.pixels[:, :, 3] == 0).mean())
+    assert empty == 0.0, (
+        f"{empty:.6f} of a {plate.size} plate came back transparent, which "
+        "makes snapshot() refuse the whole capture"
+    )
+
+
 async def test_the_looks_are_the_ones_the_viewer_offers():
     """Python gates on `_PAINTERLY_LOOKS` so a refusal can name the choices
     without a round trip, and the viewer gates on its own list. Two hardcoded
