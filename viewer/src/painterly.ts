@@ -216,6 +216,7 @@ const BrushSchema = {
   uStrokeFill: UniformSpec('f'),
   uRidge: UniformSpec('f'),
   uBristle: UniformSpec('f'),
+  uLoad: UniformSpec('f'),
   uRelief: UniformSpec('f'),
   uSpecular: UniformSpec('f'),
   uFar: UniformSpec('f'),
@@ -329,6 +330,7 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uStrokeFill: ValueCell.create(0.8),
     uRidge: ValueCell.create(0),
     uBristle: ValueCell.create(0),
+    uLoad: ValueCell.create(0),
     uRelief: ValueCell.create(0),
     uSpecular: ValueCell.create(0),
     uFar: ValueCell.create(100),
@@ -526,6 +528,7 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uStrokeFill, look.strokeFill);
   ValueCell.updateIfChanged(state.brush.values.uRidge, look.ridge);
   ValueCell.updateIfChanged(state.brush.values.uBristle, look.bristle);
+  ValueCell.updateIfChanged(state.brush.values.uLoad, look.load);
   // Scaled with the grain, not fixed. The relief reads `dFdx` of the streak
   // field, whose slope goes as 1/grain — so a fixed number gives a thin bristle
   // a violently steeper ridge than a thick one, and at a small plate the paint

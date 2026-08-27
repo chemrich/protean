@@ -257,6 +257,7 @@ uniform float uStrokeLen;
 uniform float uStrokeWidth;
 uniform float uStrokeFill;
 uniform float uBristle;
+uniform float uLoad;
 uniform float uRidge;
 uniform float uRelief;
 uniform float uSpecular;
@@ -503,6 +504,11 @@ vec3 strokeAt(const in vec2 P) {
             float r = along * along * along * along + across * across;
             if (r >= 1.0) continue;
 
+            // Nearest paint wins, and the marks are laid to *tile* rather than
+            // to speckle. A mark that covers part of a surface reads as a
+            // fleck sitting on it; a surface made entirely of marks reads as
+            // paint. The first is what crumpled foil looks like, and it is
+            // what this produced until the fill went past 1.
             float cover = 1.0 - r;
             if (cover <= best.z) continue;
             // Across the width: a crest with the paint thinning to nothing at
@@ -663,9 +669,18 @@ void main(void) {
     // not a threshold anybody has to tune.
     float onPaint = z0 > -2.0 * uFar ? 1.0 : uGroundPaint;
 
-    // Tone varies *by stroke*, not by pixel. That is the whole difference
-    // between a loaded brush and a layer of grain.
-    col *= 1.0 + uBristle * onPaint * (mark.x - 0.5) * 2.0 * mark.z;
+    // Tone varies by stroke, and mostly in *chroma* rather than in value.
+    //
+    // Value was the mylar. A random brightness shift per mark, on a curved
+    // surface, is exactly what a crumpled reflective sheet looks like — it
+    // reads as light catching facets at random angles, because that is what
+    // random brightness *is*. A loaded brush varies far more in how much
+    // pigment it is carrying than in how bright it is, so the variation goes
+    // into chroma, where it reads as paint, and only a whisper is left in
+    // value.
+    float pigment = (mark.x - 0.5) * 2.0 * mark.z * onPaint;
+    col *= 1.0 + uBristle * pigment;
+    col = boostChroma(col, 1.0 + uLoad * pigment);
 
     // -- the thickness of the paint -------------------------------------------
     // A height field from the same streaks, relit. Applied to luminance rather

@@ -82,8 +82,17 @@ export interface Look {
    *  a plain wedge; at 1 it is an eased ridge with the paint thinning to
    *  nothing at both edges, which is the section a bristle leaves. */
   ridge: number;
-  /** How strongly the bristle modulates colour. */
+  /** How much a stroke's own tone shifts its *value*.
+   *
+   * Small, and it has to be. A random brightness per mark on a curved surface
+   * is what crumpled foil looks like — random brightness *is* light catching
+   * facets at random angles — and at 0.30 that is exactly what it looked
+   * like. */
   bristle: number;
+  /** How much a stroke's own tone shifts its *chroma*: how loaded the brush
+   *  was. This is where the variation belongs, because a brush carries more or
+   *  less pigment far more than it carries more or less light. */
+  load: number;
   /** How thick the paint stands off the canvas, for the raking light.
    *
    * **Zero for every bright look, and that is the finding rather than a
@@ -147,9 +156,10 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     // where the brush went — but it describes the form rather than performing.
     stroke: 1 / 26,
     grain: 1 / 150,
-    strokeFill: 0.8,
+    strokeFill: 1.15,
     ridge: 0.55,
-    bristle: 0.2,
+    bristle: 0.07,
+    load: 0.2,
     relief: 6,
     specular: 0.04,
     chroma: 1.0,
@@ -165,8 +175,13 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
   // and stays where it is instead of going brown and going down. And `chroma`
   // is above 1, because the abstraction is a mean and a mean desaturates.
 
-  // Soft, high-key, luminous. A gouache rather than an oil: matte, barely any
-  // specular, a light weave.
+  // The three bright looks differ in *how much brush you see*, as well as in
+  // colour: `spring` is the quietest, `orchard` in between, `poster` the most
+  // worked. That is `load` and the mark's width — not `bristle`, which is
+  // value, and value is the one thing a brush mark must not vary much.
+  //
+  // Soft, high-key, luminous. A gouache rather than an oil: matte, no specular,
+  // a light weave, and the quietest brush of the three.
   spring: {
     glaze: 0.34,
     shadowColor: [0.62, 0.66, 0.92],
@@ -181,9 +196,10 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     weave: 0.05,
     stroke: 1 / 30,
     grain: 1 / 170,
-    strokeFill: 0.78,
+    strokeFill: 1.2,
     ridge: 0.7,
-    bristle: 0.3,
+    bristle: 0.06,
+    load: 0.24,
     relief: 0,
     specular: 0.0,
     chroma: 1.5,
@@ -205,10 +221,11 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     eccentricity: 1,
     weave: 0.04,
     stroke: 1 / 34,
-    grain: 1 / 190,
-    strokeFill: 0.72,
+    grain: 1 / 105,
+    strokeFill: 1.0,
     ridge: 0.8,
-    bristle: 0.32,
+    bristle: 0.05,
+    load: 0.62,
     relief: 0,
     specular: 0.0,
     chroma: 1.55,
@@ -229,10 +246,11 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     eccentricity: 1,
     weave: 0.06,
     stroke: 1 / 28,
-    grain: 1 / 160,
-    strokeFill: 0.76,
+    grain: 1 / 130,
+    strokeFill: 1.1,
     ridge: 0.65,
-    bristle: 0.3,
+    bristle: 0.07,
+    load: 0.42,
     relief: 0,
     specular: 0.0,
     chroma: 1.4,
