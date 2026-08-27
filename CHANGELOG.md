@@ -124,6 +124,50 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`painting` is an oil painting now, and the paint is real.** Charlie, from
+  using the viewer: *"Painting just reproduces felt."* It did — both drew
+  `not solvent` as spacefill, their carbons differed by 13 counts of 255 and
+  their grounds by exactly 8, which `tests/pixels.py` counts as identical, so
+  protean's own differ could not tell the two views apart.
+
+  It is now a ribbon in earth pigments on a warm dark ground, painted by
+  **`brushwork()`** — protean's own GPU render pass, patched into Mol\*'s. The
+  first thing built on #137's decision to bundle Mol\* from source, and the
+  thing the print finishes could never be: the viewer shows the finish, and
+  `snapshot()` returns what the viewer is showing.
+
+  - **The finding that shaped it: abstraction alone is not a painting.** The
+    first version was anisotropic Kuwahara and nothing else, which is what a
+    painterly filter is made of — and it gave back a clean cartoon with a
+    softer silhouette. Kuwahara abstracts texture that is *already there*, and
+    every published demonstration runs on a photograph. A Mol\* cartoon is a
+    smooth surface under a smooth light. So the paint is made rather than
+    found: noise dragged along the flow field for the bristle, the same field
+    read as a height and relit by a raking light for the impasto, a woven
+    ground under both.
+  - **Three seams, not one.** `ImagePass` owns its own `DrawPass`, so patching
+    the canvas's instance would paint the screen and leave every capture plain
+    — with a success message on it. And the live canvas accumulates four
+    jittered sub-frames where a capture accumulates sixteen, so a finish
+    applied *inside* that is averaged away by different amounts on screen and
+    in the file. So the pass sits after accumulation, on all three routes.
+  - **`brush_size` was almost a no-op and the reply hid it.** It scaled the
+    abstraction radius, which over a textureless render changes nearly
+    nothing; `fine` and `broad` came back as the same picture with different
+    numbers. Every length moves together now, and the guard walks all three.
+  - **The new `pigment` colour theme painted the molecule solid black** on its
+    first render and reported itself applied. It is Mol\*'s own
+    secondary-structure theme wearing earth colours, and that theme reads
+    `props.saturation` and `props.lightness` — a props object carrying only the
+    colour map hands it two undefineds and every channel comes out NaN.
+  - **`snapshot(crop=True)` is refused while a look is on.** `autocrop` finds
+    the molecule by testing each pixel for exact equality with the background
+    colour, and a painted ground leaves none to match, so the box would come
+    back as the whole frame while the reply said it had cropped.
+
+  What is not built: `divisionist` (Seurat) and `impasto` (Van Gogh), the other
+  two Charlie named. The engine is shared and waiting.
+
 - **`cinematic` is withdrawn.** Nineteen presets, not twenty. It was a
   near-black ground and a rim light, and the only thing it did that nothing
   else does was turn on a shallow depth of field — which

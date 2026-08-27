@@ -1,6 +1,6 @@
 # Tool reference
 
-All 68 tools protean registers, grouped by what you would be
+All 69 tools protean registers, grouped by what you would be
 doing when you reach for one.
 
 **This page is generated** from the decorators in
@@ -29,7 +29,7 @@ read off the running Mol\*, so it is the authority rather than any table.
 - [Camera](#camera) — 7 tools
 - [Analysis](#analysis) — 5 tools
 - [Scalar colouring](#scalar-colouring) — 3 tools
-- [Style](#style) — 7 tools
+- [Style](#style) — 8 tools
 - [Capture](#capture) — 7 tools
 - [Trajectories](#trajectories) — 4 tools
 - [Volumes](#volumes) — 5 tools
@@ -477,6 +477,14 @@ material(finish: str = 'matte', name: str = 'sele', metalness: float | None = No
 ```
 
 Give a displayed selection a surface finish.
+
+### `brushwork`
+
+```python
+brushwork(look: str | None = None, brush_size: str | None = None)
+```
+
+Paint the whole scene, live, in the viewer rather than at capture time.
 
 ### `path_trace`
 

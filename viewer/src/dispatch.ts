@@ -10,6 +10,13 @@
  */
 
 import type { Handler } from './bridge';
+import {
+  BRUSH_SIZES,
+  MIN_BRUSH_PX,
+  PAINTERLY_LOOKS,
+  brushPixels,
+  resolveBrush,
+} from './painterly-looks';
 
 interface LoadStructureArgs {
   name: string;
@@ -687,7 +694,7 @@ function jitterRadius(element: number, radius: number): number {
 }
 
 /** Themes protean registers itself, which are not Mol*'s and are not fields. */
-const BUILT_IN_THEMES = new Set(['jitter', 'plddt']);
+const BUILT_IN_THEMES = new Set(['jitter', 'plddt', 'pigment']);
 
 /** Registers `jitter` as an ordinary size theme, once per plugin. */
 function registerJitterSize(plugin: any): void {
@@ -854,10 +861,81 @@ function registerPlddtThemes(plugin: any): void {
   });
 }
 
+/** Secondary structure in the pigments a seventeenth-century studio had.
+ *
+ * Mol\*'s own `secondary-structure` theme is Jmol's shapely scheme — magenta
+ * helices, chrome-yellow strands, pure white coil — and those three are the
+ * loudest thing in a frame that is trying to be a painting. This is the same
+ * theme with a different colour map: madder and burnt sienna for the helices,
+ * lead-tin yellow for the strands, a warm lead white for the coil.
+ *
+ * **Mol\*'s own secondary structure, not a second opinion.** The colour map is
+ * handed to `SecondaryStructureColorThemeParams.colors`, so the assignment that
+ * decides a hue is the same one that decided to draw an arrow there. Computing
+ * secondary structure again on the Python side and colouring from *that* would
+ * put a strand's colour and a strand's arrowhead in different places whenever
+ * the two assignments disagreed — and they do disagree, which is what
+ * `docs/benchmark` found when it treated a depositor's `struct_conf` records as
+ * ground truth.
+ */
+const PIGMENTS: Record<string, number> = {
+  alphaHelix: 0xa5563c,
+  threeTenHelix: 0x8f4835,
+  piHelix: 0x7c3f31,
+  betaStrand: 0xc8a03c,
+  betaTurn: 0x8a7f52,
+  coil: 0xddd3bf,
+  bend: 0x94886a,
+  turn: 0x84795c,
+  dna: 0x6f5f86,
+  rna: 0x8a5b6b,
+  carbohydrate: 0x9c8f6d,
+};
+
+export function registerPigmentTheme(plugin: any): void {
+  const colors = plugin.representation?.structure?.themes?.colorThemeRegistry;
+  if (!colors?.add) return;
+  if (colors.get?.('pigment')?.name === 'pigment') return;
+  const base = colors.get?.('secondary-structure');
+  // Absent rather than assumed. An alias forwarding to a provider that is not
+  // there paints everything the no-data grey while reporting success; a name
+  // the registry has never heard of is refused by `show()` and says so.
+  if (base?.name !== 'secondary-structure') return;
+
+  const custom = { name: 'custom', params: { ...PIGMENTS } };
+  // `base.defaultValues` first, and this is not defensive tidiness — it is the
+  // whole theme. `SecondaryStructureColorTheme` runs
+  // `getAdjustedColorMap(map, props.saturation, props.lightness)`
+  // (`mol-theme/color/secondary-structure.js:89`), and with those two undefined
+  // every channel comes out NaN and the molecule renders **solid black** while
+  // the theme reports itself applied. That is exactly the failure this project
+  // has met before with an empty colour list, and it took one render to find.
+  const factory = (ctx: any, props: any) => ({
+    ...base.factory(ctx, { ...base.defaultValues, ...props, colors: custom }),
+    factory,
+    props,
+  });
+  colors.add({
+    ...base,
+    name: 'pigment',
+    label: 'pigment',
+    factory,
+    // Fixed rather than exposed. The point of the theme is that it *is* a
+    // palette; a caller who wants to choose the colours wants
+    // `define_atom_classes`, not this.
+    getParams: () => ({}),
+    defaultValues: {},
+    description:
+      "Secondary structure in a painter's earth pigments rather than Jmol's " +
+      'shapely colours: madder helices, lead-tin yellow strands, lead white coil.',
+  });
+}
+
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
   registerJitterSize(plugin);
   registerPlddtThemes(plugin);
+  registerPigmentTheme(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
@@ -1627,6 +1705,22 @@ export function createDispatcher(plugin: any): Handler {
         if (!Number.isInteger(width) || width < 1) {
           throw new Error(`Snapshot width must be a whole number of pixels, got ${width}`);
         }
+        // Refused rather than quietly ignored. `autocrop` finds the molecule by
+        // testing each pixel for *exact* equality with the background colour
+        // (`mol-plugin/util/viewport-screenshot.js:209`), and a painterly look
+        // lays canvas weave and a glaze across the whole frame — so every
+        // background pixel differs, the box comes back as the whole frame, and
+        // the reply would report a crop that did not happen. The ground of a
+        // painting is part of the painting anyway.
+        const painting = (window as any).__protean?.painterly?.state?.()?.look;
+        if (crop && painting) {
+          throw new Error(
+            `A '${painting}' finish paints the ground as well as the molecule, so ` +
+              'there is no background left for crop=True to find and it would ' +
+              'return the whole frame while reporting a crop. Turn the finish ' +
+              'off with brushwork(look="off"), or capture without cropping.'
+          );
+        }
 
         // Keep the figure proportioned like what is on screen unless a height
         // was given, rather than defaulting to a square nobody asked for.
@@ -1973,6 +2067,78 @@ export function createDispatcher(plugin: any): Handler {
             applied?.cameraFog?.name === 'on'
               ? (applied.cameraFog.params?.intensity ?? null)
               : 0,
+        };
+      },
+    },
+
+    // The one styling action that is not a Mol* parameter. Everything else here
+    // forwards to something the library already does; this one drives protean's
+    // own render pass, patched into Mol*'s by `painterly.ts` and reached the way
+    // the raf pump is reached, through `window.__protean`. Keeping Mol* out of
+    // this module is what lets the unit suite run the dispatcher in jsdom.
+    brushwork: {
+      render: true,
+      async run({ look, brush_size }: { look?: string; brush_size?: string }) {
+        const control = (window as any).__protean?.painterly;
+        if (!control) {
+          throw new Error(
+            'This page has no painterly pass, so brushwork() cannot draw. It is ' +
+              'installed once at boot; a page missing it has lost the feature ' +
+              'rather than one setting.'
+          );
+        }
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const current = control.state();
+        const wanted = look ?? (current.look ?? 'off');
+        if (wanted !== 'off') {
+          checkName('painterly look', wanted, ['off', ...Object.keys(PAINTERLY_LOOKS)]);
+        }
+        const size = brush_size ?? current.brushSize;
+        checkName('brush size', size, Object.keys(BRUSH_SIZES));
+
+        // Resolved against the frame the caller is looking at, and reported.
+        // The brush is a fraction of the diagonal, so a capture resolves its own
+        // — which is the point, and also the thing that has to be visible in the
+        // reply rather than inferred.
+        const frame = canvas3d.webgl?.getDrawingBufferSize?.() ?? { width: 0, height: 0 };
+        const px = brushPixels(frame.width, frame.height, size);
+        const lengths =
+          wanted === 'off'
+            ? null
+            : resolveBrush(frame.width, frame.height, PAINTERLY_LOOKS[wanted], size);
+        if (wanted !== 'off' && Number.isFinite(px) && px < MIN_BRUSH_PX) {
+          throw new Error(
+            `A ${size} brush on a ${frame.width}x${frame.height} frame is ` +
+              `${px.toFixed(1)}px across, below the ${MIN_BRUSH_PX}px floor where the ` +
+              'marks stop being marks and become tone. Widen the window, or ask ' +
+              'for a broader brush.'
+          );
+        }
+
+        const applied = control.set({
+          look: wanted === 'off' ? null : wanted,
+          brushSize: size,
+        });
+        // Nothing about a Mol* prop changed, so nothing has asked for a frame.
+        // Without this the look lands on whatever redraw happens next — which,
+        // on a still scene, is never.
+        canvas3d.requestDraw?.();
+
+        return {
+          look: applied.look ?? 'off',
+          brush_size: applied.brushSize,
+          brush_px: Number.isFinite(px) ? Math.round(px * 100) / 100 : null,
+          // The other length that decides the mark. Reported because
+          // `brush_size` claims to change how the paint looks, and the width of
+          // the abstraction on its own does not — see `resolveBrush`.
+          stroke_px: lengths ? Math.round(lengths.stroke * 100) / 100 : null,
+          frame: [frame.width, frame.height],
+          // Whether the patch landed on the classes this viewer is actually
+          // using. `null` where it could not be checked; `false` means the look
+          // is set and will not draw, which is worth more than a picture.
+          reaches_viewer: control.patched ?? null,
         };
       },
     },
@@ -2849,6 +3015,10 @@ export function createDispatcher(plugin: any): Handler {
           gradients: ['off', ...Object.keys(GRADIENTS).sort()],
           material_finishes: Object.keys(MATERIAL_FINISHES).sort(),
           path_trace_quality: Object.keys(TRACE_QUALITY).sort(),
+          // 'off' is a value `brushwork()` accepts and not a look, so it leads
+          // rather than sorting into the middle of the painters.
+          painterly_looks: ['off', ...Object.keys(PAINTERLY_LOOKS).sort()],
+          brush_sizes: ['fine', 'medium', 'broad'],
         };
       },
     },

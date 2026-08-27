@@ -728,6 +728,12 @@ field**, bloom and sharpening.
 
 #### `painting` — after Irving Geis
 
+> **Superseded on 2026-08-26.** `painting` is now an oil painting of a ribbon,
+> drawn by a render pass rather than by a lighting recipe. Everything below is
+> the record of what it was and why, kept because the reasoning about *what a
+> recipe over existing controls can and cannot deliver* is exactly what
+> §5.11 goes on to answer. Read that section for what ships.
+
 All-atom, painterly, depth carried by shading rather than by line. Sketch:
 spacefill or ball-and-stick, occlusion strong, **shadow on**, `ring` or `studio`
 lighting, matte, **no outline**, a warm muted ground, possibly a little depth of
@@ -1081,6 +1087,131 @@ now does, by hiding the handle inside the session while it is still live.
 Worth keeping in mind before optimising `felt`: the halo is the obvious thing
 to drop for speed, and it is doing visible work. Dropping it saved 0.47 s of a
 1.78 s apply and changed a tenth of the frame.
+
+---
+
+### 5.11 `painting` becomes an oil painting — 2026-08-26
+
+Charlie, from using the viewer: *"Painting just reproduces felt."* It did. Both
+drew `not solvent` as spacefill; their carbons differed by 13 counts of 255 and
+their grounds by exactly 8, which `tests/pixels.py:40` counts as identical. So
+protean's own differ could not tell two entries in its catalogue apart, and the
+all-pairs test in `test_render_differential.py` was passing on the strength of
+the wool palette alone.
+
+Their redirect: **an oil painting of a ribbon drawing — brush strokes and canvas
+texture — Dutch Master first, then a Seurat pointillist, then a bold Van Gogh**,
+and **live in the viewer** rather than as a capture-time finish. This section is
+the first of those three.
+
+#### What §5.9 got wrong, and it was not a detail
+
+§5.9 built `painting` as a *recipe over controls protean already has*: a ground,
+a rig, occlusion, a shadow, a matte material, a palette. That is the right way
+to build `richardson` and it cannot build a painting, because none of those
+controls puts paint on anything. The picture it produced was a well-lit render
+on a warm ground — which is exactly what the levers it pulled do.
+
+The block that priced the alternative is in the cross-hatching section further
+up: *"A custom Mol\* post-processing pass. The right answer technically and
+blocked practically."* It stopped being blocked when #137 landed.
+
+#### The finding: abstraction alone is not a painting
+
+The first version of the pass was anisotropic Kuwahara and nothing else, which
+is what a painterly filter is made of in every paper on the subject. Rendered,
+it gave back a clean cartoon with a slightly softer silhouette.
+
+The reason is worth writing down, because it generalises to every filter anyone
+will reach for next: **Kuwahara abstracts texture that is already there.** Every
+published demonstration runs on a photograph, where the grass and the brickwork
+supply the variation the filter sorts through. A Mol\* cartoon supplies none —
+it is a smooth surface under a smooth light — and the honest output of an
+abstraction filter over it is the same smooth surface.
+
+So the paint has to be *made*. Three layers over the abstraction, in
+`viewer/src/painterly-shaders.ts`:
+
+- **Bristle.** Value noise dragged along the flow field by line-integral
+  convolution, which turns isotropic noise into streaks that follow the form.
+- **Impasto.** The same streak field read as a height and relit by a raking
+  light fixed in screen space. This is the single strongest signal that a
+  surface is oil rather than print, and screen-fixed because a relief that
+  rotated with the molecule would read as a bug.
+- **Canvas.** A woven ground under both, buried where the paint is thick.
+
+#### Three renders, three findings
+
+Each of these cost one build and one look, and none was visible by reading:
+
+1. **The background shouted the molecule down.** Full impasto across the whole
+   frame read as fur. The fix is that the ground is a *ground*: `groundPaint` is
+   0, so bare canvas gets its weave and nothing else, and the tensor pass parks
+   the background beyond four times the far plane so the test is clean rather
+   than tuned.
+2. **A bright halo hugged the silhouette.** A streak walked from a ground pixel
+   beside the molecule stops after two steps, and two samples of noise average
+   to whatever those two happened to be — an extreme value, relit. The walk now
+   counts the weight a complete walk *would* have carried and fades the mark by
+   the ratio.
+3. **`brush_size` was very nearly a no-op.** It scaled the abstraction radius,
+   which over a textureless render changes almost nothing; `fine` against
+   `broad` came back as the same picture with a different number in the reply.
+   Every length moves together now, and `resolveBrush` is a pure function so
+   that a unit test can say so without a GPU.
+
+#### The ground, and the palette
+
+The ground is `#4a3b2c`, the warm brown a seventeenth-century panel was primed
+with. `#efe9dc` was right for §5.9's subject — a sphere model under a studio rig
+wants a light ground — and wrong for this one, because an oil painting is built
+the other way round: the lights are put *on* a dark ground, and on buff the
+whole chiaroscuro apparatus has nothing to work against.
+
+The palette is a new colour theme, `pigment`: **Mol\*'s own secondary-structure
+assignment wearing earth colours**, not a second opinion. `SecondaryStructure
+ColorThemeParams.colors` takes a custom map, so the thing that decides a hue is
+the thing that decided to draw an arrow there. Computing secondary structure
+again on the Python side would put a strand's colour and its arrowhead in
+different places whenever the two assignments disagreed, and they do disagree.
+
+It painted the whole molecule **black** on its first render, and reported itself
+applied. `SecondaryStructureColorTheme` reads `props.saturation` and
+`props.lightness`; a props object carrying only the colour map hands it two
+undefineds and every channel comes out NaN. Nothing about the registration could
+see that — only a picture could.
+
+#### Where the pass runs, and why it is three seams
+
+Mol\* has no registry, no props variant and no hook for a third-party pass; the
+search is in `viewer/src/painterly.ts`. So the passes are wrapped, and the seam
+has to satisfy two conditions at once:
+
+- **Every route that makes pixels.** `ImagePass` owns its *own* `DrawPass`,
+  `MultiSamplePass` and `IlluminationPass`, so patching the canvas's instances
+  gives a finish that is on screen and absent from every capture — protean's
+  signature failure, arriving through the one door that reports success.
+  Patching the *prototypes* catches both.
+- **After multisample accumulation, not inside it.** The live canvas runs
+  `multiSample: temporal` at level 2 and a capture runs `on` at level 4 — four
+  jittered sub-frames against sixteen. A finish applied per sub-frame is
+  *averaged*, which low-pass filters exactly the marks it exists to make, and by
+  different amounts on screen and in the file.
+
+The cost is stated plainly: with `toDrawingBuffer` forced off, Mol\*'s own copy
+to the canvas never runs, so a blit that silently does nothing turns the canvas
+**black** rather than leaving a plain picture. Every test of this feature reads
+pixels, and each seam was proved by breaking it.
+
+#### What is not built
+
+`divisionist` (Seurat) and `impasto` (Van Gogh) are the other two Charlie named.
+The engine is shared — the flow field, the bristle and the relief are already
+here — and what each needs is its own entry in `PAINTERLY_LOOKS` plus, for the
+pointillist, a dab lattice that must not collide with `spot-ink-plates`. That
+collision is real and named in `docs/soft-matter-status.md`: a halftone
+modulates dot *area* at fixed spacing with a fixed ink, and a pointillist dab
+modulates *colour* at near-constant area.
 
 ---
 

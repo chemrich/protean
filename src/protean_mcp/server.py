@@ -3834,6 +3834,85 @@ async def shading(
     return await _call("shading", args)
 
 
+#: The looks `brushwork()` offers. Named for the technique rather than for a
+#: painter, the way `painting` is named for the technique rather than for Geis:
+#: a view called `rembrandt` would promise more than a render pass can deliver.
+#: The viewer holds the real list and `capabilities()` reports it; this copy
+#: exists so a refusal can name the choices without a round trip, and
+#: `test_the_looks_are_the_ones_the_viewer_offers` compares the two.
+_PAINTERLY_LOOKS = ("off", "chiaroscuro")
+_BRUSH_SIZES = ("fine", "medium", "broad")
+
+
+@_tool()
+async def brushwork(
+    look: str | None = None,
+    brush_size: str | None = None,
+) -> dict[str, Any]:
+    """Paint the whole scene, live, in the viewer rather than at capture time.
+
+    This is not one of Mol\\*'s effects. It is protean's own render pass, and it
+    is the first thing that could not have existed before the viewer began
+    bundling Mol\\* from source: it abstracts the picture along the form, drags
+    a bristle through it, stands the paint up off a woven ground and lights the
+    ridges from the upper left.
+
+    **The difference from a print finish is that you can see it.** The finishes
+    `snapshot()` offers — cross-hatch, hedcut, cyanotype, engraving, the plate
+    print — run in Python over captured pixels, so the viewer shows a plain
+    render and only the file has the look. This one is on the canvas, and
+    `snapshot()` returns what is on the canvas.
+
+    look: the painting, or "off".
+
+      chiaroscuro  A Dutch Master: earth pigments, a shadow glaze that goes
+                   deeper and warmer as it goes down, opaque lead white in the
+                   lights, and visible brush marks that follow the form. Made
+                   for a ribbon on a dark warm ground — `preset("painting")`
+                   sets the whole scene up for it.
+      off          Back to a plain render. Bit-for-bit the picture you had
+                   before, which is asserted rather than hoped.
+
+    brush_size: "fine", "medium" or "broad".
+
+      The mark, not a kernel width — the abstraction, the stroke length and the
+      grain of the bristle all move together. It is a fraction of the frame, so
+      a 1200px plate gets a proportionally larger brush than an 800px viewport
+      and the two look like the same painting rather than the same pixels. The
+      reply says what it resolved to.
+
+    **It carries no data.** Like `felt` and `cyanotype`, this is a look: the
+    marks follow the shading, not any measurement, and nothing in the picture is
+    a number. Say so if you caption it.
+
+    Two things it costs, both in the reply rather than implied. `crop=True` on a
+    `snapshot()` is refused while a look is on, because a painted ground leaves
+    no background for the crop to find. And the pass is patched into Mol\\*'s own
+    render passes, so the reply reports whether the patch reached the viewer the
+    page is actually using.
+    """
+    args: dict[str, Any] = {}
+    if look is not None:
+        if look not in _PAINTERLY_LOOKS:
+            raise ViewerError(
+                f"Unknown look {look!r}. Available: {', '.join(_PAINTERLY_LOOKS)}"
+            )
+        args["look"] = look
+    if brush_size is not None:
+        if brush_size not in _BRUSH_SIZES:
+            raise ViewerError(
+                f"Unknown brush size {brush_size!r}. Available: {', '.join(_BRUSH_SIZES)}"
+            )
+        args["brush_size"] = brush_size
+    if not args:
+        raise ViewerError(
+            "Nothing to change. Pass look — "
+            f"{', '.join(_PAINTERLY_LOOKS)} — or brush_size — "
+            f"{', '.join(_BRUSH_SIZES)} — or both."
+        )
+    return await _call("brushwork", args)
+
+
 @_tool()
 async def lens(
     projection: str | None = None,
@@ -4637,52 +4716,55 @@ async def _hydrophobic_style(_target: str, handle: str) -> list[str]:
 
 # Gouache rather than CPK. Geis mixed his own colours and the plastic-sphere
 # palette did not exist yet; more to the point, hard green carbon against hard
-# red oxygen is the single loudest thing in an all-atom picture, and it is what
-# makes a spacefill read as a rendering. Warm stone carbon, slate nitrogen and a
-# brick oxygen let the light do the work instead. The iron is named so the heme
-# is findable, though on myoglobin the sphere model buries it — which is the
-# honest behaviour of a spacefill and not something the palette can fix.
-_PAINTING_PALETTE = {
-    "C": "#cdbfa6",
-    "N": "#8397ad",
-    "O": "#b25a4a",
-    "S": "#c8a13c",
-    "P": "#a9825c",
-    "H": "#e8e0d2",
-    "FE": "#8f3222",
-    "X": "#94897b",
-}
-_PAINTING_THEME = "protean-painting"
+# Rembrandt's ground: a warm mid-brown, the colour a seventeenth-century panel
+# was primed before anything was painted on it. Not paper, and deliberately not:
+# the old `painting` laid buff paper down because it was an all-atom sphere
+# model lit from a studio rig, and a light ground is right for that. An oil
+# painting is built the other way — the lights are put *on* a dark ground — and
+# on buff the whole chiaroscuro apparatus has nothing to work against.
+_PAINTING_GROUND = "#4a3b2c"
+
+#: Secondary structure in a painter's earth pigments, registered by the viewer.
+#: See `registerPigmentTheme` in `viewer/src/dispatch.ts` for why it is Mol*'s
+#: own secondary-structure assignment wearing a different colour map rather than
+#: a second opinion computed here.
+_PIGMENT_THEME = "pigment"
 
 
 async def _painting_style(_target: str, handle: str) -> list[str]:
-    """Depth carried by light rather than by line — after Irving Geis.
+    """An oil painting of a ribbon: earth pigments, a dark ground, real paint.
 
-    An homage to how structures were drawn before they were rendered, and not a
-    facsimile: Geis worked in gouache from coordinates on paper, and what can be
-    borrowed here is the set of decisions, not the hand. No outline at all,
-    which is what separates this from every other styled view in the catalogue;
-    form comes from a warm key against a cool fill, occlusion in the crevices
-    and a cast shadow, over a ground that is paper rather than white.
+    **What this used to be, and why it is not that any more.** Until 2026-08-26
+    `painting` was all-atom spheres in a gouache palette on buff paper, after
+    Irving Geis. Charlie's verdict, from using it: *"Painting just reproduces
+    felt."* It did — both drew `not solvent` as spacefill, and their carbons
+    differed by 13 counts of 255 while their grounds differed by exactly 8,
+    which `tests/pixels.py` counts as identical. protean's own differ could not
+    tell them apart.
 
-    Named for the technique and not for the man. A view named `geis` would
-    promise more than a recipe can deliver, and his name has no currency as a
-    style term the way `richardson` does.
+    So the subject moved to the thing an oil painting of a molecule should
+    obviously be — a ribbon — and the look moved from a lighting recipe to
+    `brushwork()`, a render pass that actually makes paint. The Geis homage is
+    not retired so much as admitted to have been a set of lighting choices
+    rather than a painting.
+
+    **It carries no data**, and says so the way `felt` does. The brush follows
+    the shading, which is a property of where the light is, not of the molecule.
+
+    The order matters in one place: `brushwork()` last. Everything above it
+    changes what is rendered, and the pass paints whatever the frame ends up
+    holding — so a `lighting()` after it would be repainted correctly but the
+    reported steps would no longer replay in the order they were made.
     """
     return [
-        # Not white. A painting has a ground, and pure white makes the matte
-        # atoms read as cut out and pasted on; this is about a quarter of the
-        # way to buff, which is where the cast shadow has somewhere to fall.
-        await _run(background, color="#efe9dc", gradient="off"),
+        await _run(background, color=_PAINTING_GROUND, gradient="off"),
+        # A warm key against a cool fill, which is the closest description of
+        # how the originals were lit, and the rig the old recipe already chose.
         await _run(lighting, rig="studio"),
         await _set_effects(occlusion=True, shadow=True),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),
-        # Recoloured after the draw rather than at it, because the palette has
-        # to be registered with the viewer before anything can name it, and
-        # registering is itself a viewer call. The steps say so.
-        await _run(define_elements, name=_PAINTING_THEME, colors=_PAINTING_PALETTE),
-        await _run(color, color=_PAINTING_THEME, name=handle),
+        await _run(brushwork, look="chiaroscuro", brush_size="medium"),
     ]
 
 
@@ -5037,21 +5119,16 @@ _VIEWS: dict[str, _View] = {
     # look was invented for: Geis painted all the atoms, Richardson drew the
     # fold, and either recipe applied to the other's subject is not the thing.
     "painting": _View(
-        selection="not solvent",
-        # Spheres, and this was settled by looking at both. Ball-and-stick is
-        # the nearer relative of what Geis actually drew, and on myoglobin it
-        # came out as a thicket of green wire with no depth at all: occlusion
-        # and a cast shadow need something to fall across, and a stick model
-        # gives them almost nothing. The sphere model is the only one of the
-        # two that this lighting can model. What it costs is the interior,
-        # which a spacefill always costs.
-        representation="spacefill",
-        # Mol*'s own, and overwritten a moment later by the style, which
-        # registers the palette it wants and applies it. It has to be a theme
-        # that already exists: `show()` refuses a name the viewer has never
-        # heard of, and a protean palette exists only once something has
-        # registered it.
-        color="element-symbol",
+        # A ribbon, since 2026-08-26. It was `not solvent` spacefill, which is
+        # the subject Geis actually painted — and which made this view a second
+        # copy of `felt`. The reversal is recorded in `_painting_style`.
+        selection="polymer",
+        representation="cartoon",
+        # Registered by the viewer at startup rather than by this recipe, so it
+        # can be named at `show()` time. `felt` still registers its palette from
+        # here because a per-element map has to be sent; a secondary-structure
+        # map is Mol*'s own theme with different colours in it.
+        color=_PIGMENT_THEME,
         style=_painting_style,
     ),
     # A style rather than a treatment: it carries no data, and the docstring
@@ -5222,9 +5299,12 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
       spacefill            Every non-solvent atom as a CPK sphere, lit so the
                            packing reads as volume rather than as a blob.
       skeleton             Ball-and-stick over everything but the solvent.
-      painting             All-atom, no outline at all, warm ground, studio
-                           light and a cast shadow. Depth from light rather
-                           than from line — an homage to Irving Geis.
+      painting             An oil painting of a ribbon: earth pigments on a
+                           warm dark ground, a shadow glaze, opaque lead white
+                           in the lights, and brush marks that follow the form.
+                           Painted live by `brushwork()`, so the viewer shows it
+                           and `snapshot()` returns it. A look, not a
+                           measurement — it carries no data.
       richardson           The ribbon diagram: cartoon in one pale tone, cel
                            shaded at two steps, a grey line, white paper.
       felt                 All-atom spheres as felted wool: dyed-wool palette,

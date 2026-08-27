@@ -4,7 +4,7 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-25**, at `main` after #126.
+Last updated **2026-08-26**, at `main` after #139 plus the painterly branch.
 
 ---
 
@@ -17,6 +17,13 @@ Six PRs, #121 to #126, all merged: the finish route's base, `cyanotype`,
 standing facts and are recorded below: a **fifth finish** (`engraving`, #136),
 and the **removal of the reason mesh-based treatments were out of reach**
 (#137). `main` is at `829c95c`.
+
+**A sixth finish landed on 2026-08-26, and it is the first that is not a
+finish at all.** `brushwork()` is a GPU render pass, not a Pillow pass over
+captured pixels — see "The one that runs in the viewer" below. It is the first
+thing built on #137, and it changes this document's oldest standing fact: the
+sentence in `analysis/hatching.py` that says the cost of drawing a finish in
+Python rather than in the renderer is that *the viewer cannot show it*.
 
 **What comes next is not another treatment.** `docs/molstar-capabilities.md` —
 an audit of Mol\*'s actual parameter surface, commissioned because `lens()`
@@ -109,6 +116,35 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   at 1200. The comparison now draws at 480 and a guard asserts no two finishes
   share a resolved grain step.
 
+- **`brushwork(look="chiaroscuro")`** — the sixth finish, 2026-08-26, and the
+  first that runs in the viewer. An oil painting: the picture abstracted along
+  the form, noise dragged through it by line-integral convolution for the
+  bristle, that same field read as a height and relit by a raking light for the
+  impasto, and a woven ground under both. `preset("painting")` is the scene set
+  up for it and is no longer the Geis homage it was.
+
+  **A drawing style with no data channel**, like `cyanotype` and `felt`. No
+  shuffle arm, because it claims nothing a shuffle arm could test — the marks
+  follow the shading, which is a property of where the light is.
+
+  The finding worth carrying: **abstraction alone is not a painting.** The first
+  version was anisotropic Kuwahara and nothing else, which is what the
+  literature says a painterly filter is, and it gave back a clean render with a
+  softer silhouette. Kuwahara abstracts texture that is *already there*, and
+  every published demonstration runs on a photograph. Whatever the next
+  treatment borrows from image processing, ask first what texture in the source
+  it is meant to be sorting.
+
+  The other finding is this document's own §2.3 rule arriving on the GPU. Both
+  of the pass's own resolution bugs were the same shape: `brush_size` scaled the
+  abstraction radius and nothing else, so it changed a reported number and
+  almost no pixels; and the impasto relief was quoted as a fixed number while
+  the slope it reads goes as one over the grain, so a small plate came back as
+  black speckle. **A length inside a shader is exactly as prone to this as a
+  length inside Pillow, and harder to see** — there is no `ink_fraction` in the
+  reply to catch it. Hence `resolveBrush`, a pure function, and a reply carrying
+  both `brush_px` and `stroke_px`.
+
 - **`cyanotype`** — the third finish and the first that is not an engraving.
   A drawing style with no data channel, said outright in its docstring, the way
   `felt` is. No shuffle arm, because it claims nothing a shuffle arm could
@@ -196,7 +232,16 @@ is impossible without bundling Mol\* from source.
 
 **As of #137 on 2026-08-26, protean bundles Mol\* from source.** That last
 clause is no longer a hypothetical: per-atom generated geometry and a custom
-post-processing pass are reachable. Nothing has been built on it yet.
+post-processing pass are reachable. **The post-processing half is now built** —
+`brushwork()` — and what it learned about the seam is recorded in
+`docs/views.md` §5.11. The short version, for anyone reaching for the same door:
+Mol\* has no registry, no props variant and no hook for a third-party pass, so
+the passes are wrapped; `ImagePass` owns its *own* copies of them, so patching
+the canvas's instances gives a finish that is on screen and absent from every
+capture; and the live canvas accumulates four jittered sub-frames where a
+capture accumulates sixteen, so anything applied inside that is averaged away by
+different amounts in the two places. Per-atom generated geometry is still
+untouched.
 
 Three findings worth acting on regardless of the plan:
 
@@ -271,6 +316,33 @@ protean figure ever made carries it — and measured with no tolerance it is
 bit-identical to off below 40. A default being *set* is not evidence that it
 *does* anything, and that is a question worth asking of every parameter protean
 inherits. It is what the Mol\* capability audit was commissioned to ask.
+
+### 1b. The rest of the painting
+
+Charlie's direction on 2026-08-26, from using the viewer: **an oil painting of a
+ribbon drawing — brush strokes and canvas texture. Dutch Master first, then a
+Seurat pointillist, then a bold Van Gogh.** They chose **live in the viewer**
+rather than a capture-time finish, which is why #137 was done first.
+
+The Dutch Master is shipped as `chiaroscuro`. The other two are entries in
+`PAINTERLY_LOOKS` over the same engine — the flow field, the bristle and the
+relief already exist — plus one thing each:
+
+- **`divisionist`** (Seurat) needs a dab lattice, and it must not collide with
+  `spot-ink-plates`. The difference is structural rather than cosmetic and is
+  the thing to build to: **a halftone modulates dot *area* at fixed spacing with
+  a fixed ink; a pointillist dab modulates *colour* at near-constant area.**
+  Everything else falls out of that — the lattice is jittered rather than ruled
+  because the rosette is the failure here and the point there, the ground shows
+  as a positive colour rather than as absence of ink, and coverage is held below
+  1. A test can assert the difference directly: within one flat-coloured region
+  the dabs must not all be the same RGB, which for `spot-ink-plates` they are by
+  construction.
+- **`impasto`** (Van Gogh) is `chiaroscuro`'s own machinery turned up — longer
+  strokes, deeper relief, bolder chroma — with one real addition: the chroma
+  boost has to happen in a hue-preserving space, because per-channel clipping in
+  sRGB rotates a blue chain toward magenta at the top end and the picture would
+  then be lying about protean's own colour coding.
 
 ### 2. Decide whether a third treatment is worth building
 

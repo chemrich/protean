@@ -1404,25 +1404,35 @@ def _frame(views: list[tuple[str, Render]], name: str) -> Render:
 
 
 # Measured on 1UBQ rather than guessed, and the tolerance is the point. The
-# painting ground is #efe9dc, which covers 0.918 of the frame under it and
-# 0.0025 of the white-ground frames — but at tolerance 40 plain white *also*
-# matches it, at 0.969, because white is within 40 of buff on every channel. A
-# looser tolerance would have made this test pass for every view in the
-# catalogue while appearing to check the one thing that is different.
-PAPER = (0xEF, 0xE9, 0xDC, 255)
-PAPER_TOLERANCE = 20
+# painting ground is #4a3b2c — the warm brown a seventeenth-century panel was
+# primed with — and it is nothing like the white the plain load carries, so a
+# tolerance of 20 separates them with room to spare while still refusing a
+# ground that merely landed in the same quadrant of the colour cube.
+#
+# It was #efe9dc until 2026-08-26, when `painting` became an oil painting. The
+# tolerance argument from then is worth keeping: at 40, plain white *also*
+# matched buff on every channel at 0.969, and the test would have passed for
+# every view in the catalogue while appearing to check the one thing different.
+GROUND = (0x4A, 0x3B, 0x2C, 255)
+GROUND_TOLERANCE = 20
 
 
 async def test_painting_lays_down_the_ground_it_names(views):
-    """A view whose ground is nine tenths of the frame has to have that ground.
+    """A view whose ground is most of the frame has to have that ground.
 
-    The cheapest thing to get wrong here is the order: the recipe recolours the
-    molecule after drawing it, and a `background()` that never landed would
-    leave the previous view's white behind a correctly repainted structure —
-    which reads as "nearly right" rather than as a failure.
+    The cheapest thing to get wrong here is the order: `brushwork()` is the last
+    step and paints whatever the frame holds, so a `background()` that never
+    landed would leave the previous view's white behind a correctly painted
+    ribbon — which reads as "nearly right" rather than as a failure.
+
+    The painterly pass leaves bare ground the colour it was given rather than
+    relighting it, which is what keeps this measurable at all: an impasto
+    relight over a flat surface still multiplies it, and a ground coming back
+    7% darker than the one the caller asked for is a small lie nothing else
+    here could see.
     """
-    painted = color_fraction(_frame(views, "painting"), PAPER, PAPER_TOLERANCE)
-    plain = color_fraction(_frame(views, "plain"), PAPER, PAPER_TOLERANCE)
+    painted = color_fraction(_frame(views, "painting"), GROUND, GROUND_TOLERANCE)
+    plain = color_fraction(_frame(views, "plain"), GROUND, GROUND_TOLERANCE)
     assert painted > 0.5 and plain < 0.01, (
         f"painting covers {painted:.4f} of the frame in its own ground against "
         f"{plain:.4f} for the plain load"
