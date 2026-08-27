@@ -1991,14 +1991,19 @@ async def test_a_preset_reports_the_calls_it_made(wired_bridge, tmp_path):
 
 
 async def test_felt_draws_a_halo_under_its_own_handle(wired_bridge, tmp_path):
-    """The halo is the part of `felt` that can vanish without anyone noticing.
+    """The halo is drawn, and under a handle of its own.
 
-    It is a second spacefill at 1.12x and alpha 0.2, and at that opacity a
-    reader cannot tell from the picture whether it drew at all. So the claim is
-    made here, against the calls and the handle table, rather than in pixels —
-    a differential test for this was written first and could not work, because
-    the browser fixture restores the handle table on teardown and the assertion
-    ran after it.
+    It is a second spacefill at 1.12x and alpha 0.2. This test checks the calls
+    and the handle table; `test_felts_halo_is_visible_in_the_picture` in the
+    differential suite checks the pixels.
+
+    That split used to be justified by a claim this docstring made — that at
+    alpha 0.2 a reader could not tell from the picture whether it drew, so
+    measuring was pointless. The real reason was a fixture: a differential test
+    was written first and could not work, because the browser fixture restores
+    the handle table on teardown and the assertion ran after it. Measured since,
+    the halo moves 0.0970 of the frame past protean's 8/255 tolerance. It was
+    always visible; the instrument was in the wrong place.
 
     Its own handle for the same reason `ghost-heart` uses one: `show()` rebuilds
     a component under an existing name, so a halo drawn through the wool's

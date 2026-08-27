@@ -1060,10 +1060,27 @@ already makes about B-factor, applied to the surface itself.
   no speculars to begin with, so all it did was flatten the form. `three-point`,
   picked by looking at both.
 
-**The halo is the part that can vanish unnoticed.** A second spacefill at
-1.12x and alpha 0.2, under its own handle for the reason `ghost-heart` uses
-one. At that opacity nobody can tell from the picture whether it drew, so the
-test asserts the handle exists rather than pretending to measure it.
+**The halo is a second spacefill at 1.12x and alpha 0.2**, under its own handle
+for the reason `ghost-heart` uses one.
+
+This paragraph used to say that at that opacity nobody could tell from the
+picture whether it drew, and that the test therefore asserted the handle
+existed "rather than pretending to measure it". **Measured on 2026-08-26, that
+is false.** Hiding the halo inside a live session moves 0.1608 of the frame at
+all and **0.0970 past protean's own 8/255 tolerance**, with a worst
+single-channel delta of 202 — one of the larger single-layer effects in the
+whole view set.
+
+The reason it went unmeasured is recorded in the unit test that replaced the
+pixel one: a differential test "was written first and could not work, because
+the browser fixture restores the handle table on teardown and the assertion ran
+after it". A fixture problem became a claim about a picture, and the claim then
+became the reason not to test it. `test_felts_halo_is_visible_in_the_picture`
+now does, by hiding the handle inside the session while it is still live.
+
+Worth keeping in mind before optimising `felt`: the halo is the obvious thing
+to drop for speed, and it is doing visible work. Dropping it saved 0.47 s of a
+1.78 s apply and changed a tenth of the frame.
 
 ---
 
