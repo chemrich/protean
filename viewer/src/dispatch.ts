@@ -932,7 +932,10 @@ const STRUCTURE_PALETTES: Record<string, Record<string, number>> = {
     piHelix: 0xb8423c,
     betaStrand: 0x3d95bd,
     betaTurn: 0x5fa88c,
-    coil: 0xe6dfcd,
+    // Toned down twice: on a cream ground the first coil was so close to the
+    // paper that the loops vanished, which is what a reader sees first on a
+    // ribbon diagram. A connective passage should recede, not disappear.
+    coil: 0xb9b09b,
     bend: 0x77b195,
     turn: 0x6aa8c8,
     dna: 0xa98cc4,

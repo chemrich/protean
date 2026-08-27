@@ -62,19 +62,39 @@ export interface Look {
   eccentricity: number;
   /** Depth of the canvas weave, 0 for a smooth ground. */
   weave: number;
-  /** Half-length of a brush stroke, as a fraction of the frame diagonal.
+  /** Length of a brush stroke, as a fraction of the frame diagonal.
    *
    * The number that decides whether this reads as painting or as a novelty
    * filter. Past about a twentieth of the diagonal the strokes run further than
    * the thing they are describing, which is the classic failure of every "Van
-   * Gogh filter" ever shipped. */
+   * Gogh filter" ever shipped. Against `grain`, which is the width, it also
+   * sets how much a mark reads as a *stroke* rather than a dab: four or five to
+   * one is a brush. */
   stroke: number;
-  /** Scale of the noise the stroke drags, as a fraction of the diagonal. This
-   * is the width of a bristle. */
+  /** Width of one stroke, as a fraction of the frame diagonal. */
   grain: number;
+  /** How much of its cell a stroke actually fills, along its length.
+   *
+   * Below 1 the marks have ends and the ground shows between them, which is
+   * most of what makes a passage read as *painted* rather than *filled*. */
+  strokeFill: number;
+  /** How sharply the paint crests across a stroke's width. At 0 the section is
+   *  a plain wedge; at 1 it is an eased ridge with the paint thinning to
+   *  nothing at both edges, which is the section a bristle leaves. */
+  ridge: number;
   /** How strongly the bristle modulates colour. */
   bristle: number;
   /** How thick the paint stands off the canvas, for the raking light.
+   *
+   * **Zero for every bright look, and that is the finding rather than a
+   * setting.** Charlie, on the first bright plates: *"the ribbons look like
+   * crumpled foil or mylar."* They did, and it was this — a relit height field
+   * reads as a *metal* surface, because relighting is what tells an eye it is
+   * looking at something with a surface normal. Real oil paint on a ribbon
+   * reads as paint through its *tone* varying mark to mark, not through
+   * catching a light. Taking the relight to zero removed the metal outright.
+   * `chiaroscuro` keeps a little because a Dutch Master genuinely is a lit
+   * impasto; nothing else should.
    *
    * It reads as a swing about unity, mean-neutral by construction. Quoted as an
    * absolute range it took **14.3%** off the mean painted pixel — not the 7.3% a
@@ -125,11 +145,13 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     weave: 0.13,
     // A twelfth of a Van Gogh. Dutch Master brushwork is *there* — you can see
     // where the brush went — but it describes the form rather than performing.
-    stroke: 1 / 150,
-    grain: 1 / 340,
-    bristle: 0.13,
-    relief: 14,
-    specular: 0.16,
+    stroke: 1 / 26,
+    grain: 1 / 150,
+    strokeFill: 0.8,
+    ridge: 0.55,
+    bristle: 0.2,
+    relief: 6,
+    specular: 0.04,
     chroma: 1.0,
     groundPaint: 0.0,
   },
@@ -157,11 +179,13 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     varRef: 0.028,
     eccentricity: 1,
     weave: 0.05,
-    stroke: 1 / 150,
-    grain: 1 / 340,
-    bristle: 0.11,
-    relief: 7,
-    specular: 0.03,
+    stroke: 1 / 30,
+    grain: 1 / 170,
+    strokeFill: 0.78,
+    ridge: 0.7,
+    bristle: 0.3,
+    relief: 0,
+    specular: 0.0,
     chroma: 1.5,
     groundPaint: 0.0,
   },
@@ -180,11 +204,13 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     varRef: 0.02,
     eccentricity: 1,
     weave: 0.04,
-    stroke: 1 / 170,
-    grain: 1 / 300,
-    bristle: 0.08,
-    relief: 5,
-    specular: 0.02,
+    stroke: 1 / 34,
+    grain: 1 / 190,
+    strokeFill: 0.72,
+    ridge: 0.8,
+    bristle: 0.32,
+    relief: 0,
+    specular: 0.0,
     chroma: 1.55,
     groundPaint: 0.0,
   },
@@ -202,11 +228,13 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     varRef: 0.03,
     eccentricity: 1,
     weave: 0.06,
-    stroke: 1 / 150,
-    grain: 1 / 330,
-    bristle: 0.13,
-    relief: 8,
-    specular: 0.05,
+    stroke: 1 / 28,
+    grain: 1 / 160,
+    strokeFill: 0.76,
+    ridge: 0.65,
+    bristle: 0.3,
+    relief: 0,
+    specular: 0.0,
     chroma: 1.4,
     groundPaint: 0.0,
   },

@@ -211,8 +211,10 @@ const BrushSchema = {
   uHardness: UniformSpec('f'),
   uVarRef: UniformSpec('f'),
   uDepthFalloff: UniformSpec('f'),
-  uStroke: UniformSpec('f'),
-  uGrain: UniformSpec('f'),
+  uStrokeLen: UniformSpec('f'),
+  uStrokeWidth: UniformSpec('f'),
+  uStrokeFill: UniformSpec('f'),
+  uRidge: UniformSpec('f'),
   uBristle: UniformSpec('f'),
   uRelief: UniformSpec('f'),
   uSpecular: UniformSpec('f'),
@@ -231,7 +233,6 @@ const BrushSchema = {
   uWeaveDepth: UniformSpec('f'),
   uWeavePitch: UniformSpec('f'),
   dSamples: DefineSpec('number'),
-  dStroke: DefineSpec('number'),
 };
 
 const TensorShader = ShaderCode('painterly-tensor', quad_vert, painterly_tensor_frag);
@@ -323,8 +324,10 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uHardness: ValueCell.create(8),
     uVarRef: ValueCell.create(0.03),
     uDepthFalloff: ValueCell.create(1),
-    uStroke: ValueCell.create(1),
-    uGrain: ValueCell.create(1),
+    uStrokeLen: ValueCell.create(1),
+    uStrokeWidth: ValueCell.create(1),
+    uStrokeFill: ValueCell.create(0.8),
+    uRidge: ValueCell.create(0),
     uBristle: ValueCell.create(0),
     uRelief: ValueCell.create(0),
     uSpecular: ValueCell.create(0),
@@ -343,7 +346,6 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uWeaveDepth: ValueCell.create(0),
     uWeavePitch: ValueCell.create(4),
     dSamples: ValueCell.create(samples),
-    dStroke: ValueCell.create(1),
   };
   const brush = createComputeRenderable(
     createComputeRenderItem(webgl, 'triangles', BrushShader, { ...BrushSchema }, brushValues),
@@ -502,14 +504,11 @@ function paint(
   const lengths = resolveBrush(width, height, look, settings.brushSize);
   const strokePx = lengths.stroke;
   const samples = samplesFor(radius);
-  const strokeSteps = Math.max(2, Math.min(48, Math.round(strokePx)));
-  if (samples !== state.samples || strokeSteps !== state.stroke) {
-    // Defines, so this recompiles the program. They change only when the brush
-    // size, the look or the frame size changes — a tool call or a resize.
+  if (samples !== state.samples) {
+    // A define, so this recompiles the program. It changes only when the brush
+    // size or the frame size changes — a tool call or a resize.
     ValueCell.update(state.brush.values.dSamples, samples);
-    ValueCell.update(state.brush.values.dStroke, strokeSteps);
     state.samples = samples;
-    state.stroke = strokeSteps;
   }
   ValueCell.update(state.brush.values.tColor, source.texture);
   ValueCell.update(state.brush.values.tFlow, state.tensorB.texture);
@@ -522,8 +521,10 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uHardness, look.hardness);
   ValueCell.updateIfChanged(state.brush.values.uVarRef, look.varRef);
   ValueCell.updateIfChanged(state.brush.values.uDepthFalloff, falloff);
-  ValueCell.updateIfChanged(state.brush.values.uStroke, strokePx);
-  ValueCell.updateIfChanged(state.brush.values.uGrain, Math.max(1, lengths.grain));
+  ValueCell.updateIfChanged(state.brush.values.uStrokeLen, Math.max(4, strokePx));
+  ValueCell.updateIfChanged(state.brush.values.uStrokeWidth, Math.max(2, lengths.grain));
+  ValueCell.updateIfChanged(state.brush.values.uStrokeFill, look.strokeFill);
+  ValueCell.updateIfChanged(state.brush.values.uRidge, look.ridge);
   ValueCell.updateIfChanged(state.brush.values.uBristle, look.bristle);
   // Scaled with the grain, not fixed. The relief reads `dFdx` of the streak
   // field, whose slope goes as 1/grain — so a fixed number gives a thin bristle

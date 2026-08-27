@@ -235,8 +235,9 @@ void main(void) {
  *
  * ## What each loop costs
  *
- * The disc walk is `(2*dSamples+1)^2` positions with about pi/4 of them inside,
- * and the stroke walk is `2*dStroke` steps. Both bounds are `#define`s resolved
+ * The disc walk is (2*dSamples+1)^2 positions with about pi/4 of them inside,
+ * and it is the only loop left: laying a stroke is a lattice lookup, where
+ * dragging noise along the flow was a march. The bound is a define resolved
  * from the frame, so the cost is set by the size of the picture and not by how
  * broadly it is being painted.
  */
@@ -252,9 +253,11 @@ uniform float uAlpha;
 uniform float uHardness;
 uniform float uVarRef;
 uniform float uDepthFalloff;
-uniform float uStroke;
-uniform float uGrain;
+uniform float uStrokeLen;
+uniform float uStrokeWidth;
+uniform float uStrokeFill;
 uniform float uBristle;
+uniform float uRidge;
 uniform float uRelief;
 uniform float uSpecular;
 uniform float uFar;
@@ -432,44 +435,84 @@ vec4 flowAt(const in vec2 pixel) {
     return vec4(f.xy * 2.0 - 1.0, f.z, f.w);
 }
 
-/** One half of a streak: walk the flow field and gather noise along it.
+/** The strokes over this pixel: marks laid down, not a texture sampled.
  *
- * maxw counts the weight a *complete* walk would have carried, whether or not
- * this one got there. The ratio is the confidence in the streak, and it is what
- * keeps the silhouette clean: a walk that starts on the ground beside the
- * molecule stops after two steps, and two samples of noise average to whatever
- * those two samples happened to be — an extreme value, relit into a bright ring
- * hugging the subject. The first render of this had that ring and it read as a
- * halo, which is the one artefact that says "filter" out loud.
+ * **A stroke is a shape, and it has to be placed rather than derived.** Three
+ * versions preceded this and each failed in its own way for one reason — they
+ * all asked a *field* what the paint was doing at a pixel, and a field has no
+ * beginnings, ends or edges:
+ *
+ *   1. isotropic noise dragged a little way along the flow and relit — came
+ *      back as crumpled foil;
+ *   2. noise stretched along the flow before dragging — came back as sandpaper;
+ *   3. a lattice in the flow's own frame, from dot(P, tangent) — which looks right
+ *      and is not. P is an absolute screen coordinate of order a thousand, so a
+ *      tangent rotation of a hundredth of a radian moves the coordinate by a
+ *      whole stroke width. The lattice dissolves into noise before it can be a
+ *      mark, and the picture is sandpaper again for a completely different
+ *      reason.
+ *
+ * So the marks are *splatted*. An isotropic jittered lattice at the stroke's
+ * own spacing; each cell carries one stroke, centred at its jittered point and
+ * oriented by the flow **at that centre** rather than at the pixel — which is
+ * what makes the orientation a property of the mark instead of a field the mark
+ * is read out of. Nine cells are tested and the nearest paint wins.
+ *
+ * Returns (tone, height, coverage): the stroke's own tone, so the paint varies
+ * mark to mark rather than pixel to pixel; a ridged height for the raking light
+ * to find an edge on; and how much paint is actually here, so the ground shows
+ * between the marks.
  */
-void march(const in vec2 P0, const in float sgn, const in float z0,
-           inout float acc, inout float wsum, inout float maxw) {
-    vec2 P = P0;
-    vec2 prev = flowAt(P0).xy * sgn;
-    bool stopped = false;
-    for (int i = 1; i <= dStroke; ++i) {
-        if (float(i) > uStroke) break;
-        // Fuller than triangular: a stroke has a body, not only a peak.
-        float w = pow(1.0 - float(i) / uStroke, 0.5);
-        maxw += w;
-        if (stopped) continue;
-        vec4 f = flowAt(P);
-        vec2 t = f.xy;
-        // The field is a direction, not a vector: its sign comes back
-        // arbitrarily from texel to texel. March without this and every
-        // streamline folds back on itself after a few steps, giving short
-        // hooked marks — the signature failure of every naive oil filter, and
-        // the reason they all look like worms.
-        if (dot(t, prev) < 0.0) t = -t;
-        prev = t;
-        P += t;
-        if (abs(flowAt(P).w - z0) > uDepthFalloff * 3.0) {
-            stopped = true;
-            continue;
+vec3 strokeAt(const in vec2 P) {
+    // The lattice is spaced by the stroke's *width*, not its length, or the
+    // marks never tile across a ribbon and the paint reads as scattered dashes
+    // on bare colour. Length then overlaps its neighbours along the flow, which
+    // is what a passage of brushwork actually is.
+    //
+    // Nine cells are searched, so a mark may reach one cell out and no further.
+    // The length is clamped to that rather than trusted: a longer one would be
+    // dropped wherever its centre fell outside the window, which shows up as
+    // marks that vanish at their own ends.
+    float spacing = max(2.0, uStrokeWidth * 1.5);
+    float reach = 1.35 * spacing;
+    vec2 home = floor(P / spacing);
+    vec3 best = vec3(0.5, 0.0, 0.0);
+
+    for (int j = -1; j <= 1; ++j) {
+        for (int i = -1; i <= 1; ++i) {
+            vec2 c = home + vec2(float(i), float(j));
+            float k = dot(c, vec2(1.0, 57.31));
+            vec2 jitter = vec2(threadHash(k), threadHash(k + 19.7)) - 0.5;
+            vec2 centre = (c + 0.5 + 0.9 * jitter) * spacing;
+
+            // The flow where the brush was put down, not where we are looking.
+            vec2 t = texture2D(tFlow, (floor(centre) + 0.5) / uTexSize).xy * 2.0 - 1.0;
+            if (dot(t, t) < 1e-6) t = vec2(1.0, 0.0);
+            t = normalize(t);
+
+            vec2 d = P - centre;
+            // Length and width vary mark to mark: a hand does not repeat.
+            float half_len = min(0.5 * uStrokeLen, reach) * uStrokeFill
+                * (0.72 + 0.56 * threadHash(k + 3.3));
+            float half_wid = 0.5 * uStrokeWidth * (0.78 + 0.44 * threadHash(k + 7.9));
+            float along = dot(d, t) / max(half_len, 1.0);
+            float across = dot(d, vec2(-t.y, t.x)) / max(half_wid, 0.75);
+
+            // Elliptical, and squared along so the mark keeps its body and
+            // tapers only near the ends — a brush does not fade from its middle.
+            float r = along * along * along * along + across * across;
+            if (r >= 1.0) continue;
+
+            float cover = 1.0 - r;
+            if (cover <= best.z) continue;
+            // Across the width: a crest with the paint thinning to nothing at
+            // both edges, which is the section a bristle leaves behind it.
+            float w = clamp(1.0 - abs(across), 0.0, 1.0);
+            float crest = mix(w, w * w * (3.0 - 2.0 * w), uRidge);
+            best = vec3(threadHash(k + 41.5), crest * smoothstep(0.0, 0.35, cover), cover);
         }
-        acc += valueNoise(P / uGrain) * w;
-        wsum += w;
     }
+    return best;
 }
 
 void main(void) {
@@ -607,18 +650,11 @@ void main(void) {
     float alpha = clamp(painted.a, 0.0, 1.0);
 
     // -- the mark of the brush ------------------------------------------------
-    float acc = valueNoise(gl_FragCoord.xy / uGrain);
-    float wsum = 1.0;
-    float maxw = 1.0;
-    march(gl_FragCoord.xy, 1.0, z0, acc, wsum, maxw);
-    march(gl_FragCoord.xy, -1.0, z0, acc, wsum, maxw);
-    // Centred on zero and stretched: line-integral convolution of uniform noise
-    // regresses hard toward its mean, so the raw result is a flat grey with a
-    // whisper of streak in it.
-    float streak = clamp((acc / wsum - 0.5) * 3.2, -1.0, 1.0);
-    // Faded out where the walk was cut short, so a two-sample average never
-    // arrives as a full-strength mark.
-    streak *= smoothstep(0.30, 0.80, wsum / maxw);
+    vec3 mark = strokeAt(gl_FragCoord.xy);
+    // The height field the raking light reads. It keeps its old name because
+    // everything downstream — the relight, the weave burial — asks the same
+    // question of it: how much paint is standing here.
+    float streak = mark.y;
 
     // The ground is a ground. It is primed and blocked in, not worked — and the
     // first render of this pass put full impasto across the whole frame, which
@@ -627,7 +663,9 @@ void main(void) {
     // not a threshold anybody has to tune.
     float onPaint = z0 > -2.0 * uFar ? 1.0 : uGroundPaint;
 
-    col *= 1.0 + uBristle * onPaint * streak;
+    // Tone varies *by stroke*, not by pixel. That is the whole difference
+    // between a loaded brush and a layer of grain.
+    col *= 1.0 + uBristle * onPaint * (mark.x - 0.5) * 2.0 * mark.z;
 
     // -- the thickness of the paint -------------------------------------------
     // A height field from the same streaks, relit. Applied to luminance rather
