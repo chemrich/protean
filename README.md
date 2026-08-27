@@ -221,8 +221,9 @@ documentation. [`docs/README.md`](docs/README.md) says which is which.
 ## Tools
 
 `capabilities()` reports the live lists — representations, colour themes,
-lighting rigs, shading styles, material finishes, gradients, presets,
-path-trace quality, and whether ffmpeg is installed.
+size themes, lighting rigs, shading styles, material finishes, gradients,
+camera projections, presets, path-trace quality, and whether ffmpeg is
+installed.
 
 <!-- BEGIN GENERATED TOOL TABLE -->
 | Area | Tools |

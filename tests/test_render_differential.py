@@ -819,6 +819,69 @@ async def test_an_orthographic_lens_draws_a_different_picture():
     )
 
 
+async def test_the_projections_are_reported_where_lens_says_to_look():
+    """`lens()` used to refuse an empty call by pointing at `capabilities()`,
+    and `capabilities()` carried no projections at all — a one-sentence lie,
+    and the mechanism behind "it's not clear how to switch between the
+    perspectives".
+
+    Asserted against `_PROJECTIONS` rather than against a literal, because the
+    Python side gates on that tuple and the viewer gates on its own list. Two
+    hardcoded copies of a two-item list agree until someone edits one of them,
+    and nothing else in the suite compares them.
+    """
+    async with viewer_session(FIXTURE) as session:
+        caps = await session.request("capabilities", {})
+
+    assert list(caps["projections"]) == list(server_mod._PROJECTIONS), (
+        f"the viewer offers {caps['projections']} and Python gates on "
+        f"{list(server_mod._PROJECTIONS)}"
+    )
+
+
+#: The phrase the README uses for each key `capabilities()` answers with. A key
+#: with no phrase here fails rather than going quietly unmentioned, which is
+#: what happened to `size_themes` and to `projections`.
+_README_PHRASES = {
+    "representations": "representations",
+    "color_themes": "colour themes",
+    "size_themes": "size themes",
+    "lighting_rigs": "lighting rigs",
+    "shading_styles": "shading styles",
+    "gradients": "gradients",
+    "material_finishes": "material finishes",
+    "path_trace_quality": "path-trace quality",
+    "projections": "camera projections",
+    "presets": "presets",
+    "ffmpeg": "ffmpeg",
+}
+
+
+async def test_the_readme_names_every_capability_the_viewer_reports():
+    """The README's one-sentence summary of `capabilities()` is a hand-kept
+    list of its keys, and it had drifted twice over: no size themes and no
+    projections, both of which a caller can pass.
+
+    Driven off a live reply rather than a fixture, because the point is that a
+    key added to the viewer and left out of the sentence fails here.
+    """
+    async with viewer_session(FIXTURE) as session:
+        caps = await session.request("capabilities", {})
+    reported = set(caps) | {"presets", "ffmpeg"}  # composed on the Python side
+
+    assert reported == set(_README_PHRASES), (
+        "capabilities() and this table disagree about what it answers with: "
+        f"unnamed {sorted(reported - set(_README_PHRASES))}, "
+        f"stale {sorted(set(_README_PHRASES) - reported)}"
+    )
+
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    summary = readme.split("`capabilities()` reports the live lists")[1]
+    paragraph = summary.split("\n\n")[0]
+    for key, phrase in sorted(_README_PHRASES.items()):
+        assert phrase in paragraph, f"the README never names {key} ({phrase!r})"
+
+
 # -- background and opacity ----------------------------------------------------
 
 
