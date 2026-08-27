@@ -4822,7 +4822,11 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # same look, only the rig changed: subject luminance 112 -> 162 and
         # saturation 112 -> 146. The renderer was the biggest lever of the
         # several this look has, and none of the others is close.
-        await _run(lighting, rig="ring", ambient=0.72),
+        # Open, but not flat. At 0.72 the ribbon lost most of its modelling —
+        # which brightened the picture and took the contrast with it, and took
+        # the flow field's own signal with that. 0.55 keeps a light picture with
+        # a light and a shadow side, which is what makes a form read.
+        await _run(lighting, rig="ring", ambient=0.55),
         # Occlusion stays because the pass reads the shading to find the form —
         # a flat-lit ribbon has no gradient, so no flow, and the brush would
         # have nothing to follow. The cast shadow goes.

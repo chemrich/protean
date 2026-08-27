@@ -36,6 +36,7 @@ uniform vec2 uTexSize;
 uniform float uNear;
 uniform float uFar;
 uniform float uIsOrtho;
+uniform float uFormWeight;
 
 #include common
 
@@ -57,6 +58,17 @@ vec3 fetch(const in vec2 coords) {
     return c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
 }
 
+/** Linear depth over the scene's own range, in [0,1], and flat on background.
+ *  The background is left flat on purpose: a silhouette is a real edge and the
+ *  depth-aware smoothing already refuses to cross it, so letting the step
+ *  through here would only shout over the form it is meant to describe. */
+float normalisedDepth(const in vec2 coords) {
+    float raw = getDepth(coords);
+    if (raw >= 0.99999994) return 1.0;
+    float viewZ = depthToViewZ(uIsOrtho, raw, uNear, uFar);
+    return clamp((-viewZ - uNear) / max(uFar - uNear, 1e-4), 0.0, 1.0);
+}
+
 void main(void) {
     vec2 coords = gl_FragCoord.xy / uTexSize;
     vec2 d = 1.0 / uTexSize;
@@ -73,13 +85,39 @@ void main(void) {
     vec3 gx = (3.0 * (cpm + cpp) + 10.0 * cp0 - 3.0 * (cmm + cmp) - 10.0 * cm0) / 32.0;
     vec3 gy = (3.0 * (cmp + cpp) + 10.0 * c0p - 3.0 * (cmm + cpm) - 10.0 * c0m) / 32.0;
 
+    // The same gradient again, on *depth*, and this is what keeps the brush
+    // following the form.
+    //
+    // The flow is the direction of least change, which on a shaded ribbon runs
+    // along the band — because the shading gradient runs across it. That works
+    // exactly as long as there *is* a shading gradient. Opening the lighting up
+    // to brighten the picture flattened the ribbon, the gradient went with it,
+    // and the marks fell through to an arbitrary fallback direction: the paint
+    // stopped following the form for the same reason the picture got brighter.
+    //
+    // Depth does not care how the scene is lit. A ribbon curves away from the
+    // camera across its width whatever the rig is doing, so its depth isolines
+    // run along the band — which is the answer the colour was supposed to give.
+    // Normalised over the scene's own range so it is commensurate with a colour
+    // gradient rather than swamping it.
+    float zm = normalisedDepth(coords + vec2(-d.x, 0.0));
+    float zp = normalisedDepth(coords + vec2(d.x, 0.0));
+    float zbm = normalisedDepth(coords + vec2(0.0, -d.y));
+    float zbp = normalisedDepth(coords + vec2(0.0, d.y));
+    vec2 gz = vec2(zp - zm, zbp - zbm) * uFormWeight;
+
     float depth = getDepth(coords);
     // The background sits at a depth of exactly 1. Pushing it far past uFar
     // rather than leaving it at uFar is what makes the bilateral weight below
     // treat the silhouette as a break rather than as a steep slope.
     float viewZ = depth >= 0.99999994 ? -4.0 * uFar : depthToViewZ(uIsOrtho, depth, uNear, uFar);
 
-    gl_FragColor = vec4(dot(gx, gx), dot(gx, gy), dot(gy, gy), viewZ);
+    gl_FragColor = vec4(
+        dot(gx, gx) + gz.x * gz.x,
+        dot(gx, gy) + gz.x * gz.y,
+        dot(gy, gy) + gz.y * gz.y,
+        viewZ
+    );
 }
 `;
 
@@ -475,12 +513,16 @@ vec3 strokeAt(const in vec2 P) {
     // dropped wherever its centre fell outside the window, which shows up as
     // marks that vanish at their own ends.
     float spacing = max(2.0, uStrokeWidth * 1.5);
-    float reach = 1.35 * spacing;
+    // Five cells each way rather than three. A mark may reach to the edge of the
+    // window and no further, so the window is what caps how long a stroke can
+    // be — and at three the cap was four times its own width, which is a dash.
+    // A stroke that runs lengthwise along a strand wants six or seven.
+    float reach = 2.35 * spacing;
     vec2 home = floor(P / spacing);
     vec3 best = vec3(0.5, 0.0, 0.0);
 
-    for (int j = -1; j <= 1; ++j) {
-        for (int i = -1; i <= 1; ++i) {
+    for (int j = -2; j <= 2; ++j) {
+        for (int i = -2; i <= 2; ++i) {
             vec2 c = home + vec2(float(i), float(j));
             float k = dot(c, vec2(1.0, 57.31));
             vec2 jitter = vec2(threadHash(k), threadHash(k + 19.7)) - 0.5;

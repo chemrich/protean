@@ -90,6 +90,15 @@ const FLOW_SIGMA_PX = 2.0;
  * on 1UBQ the empty ground reads under 0.02 and the ribbon reads 0.3 upwards. */
 const FLOW_FLOOR = 0.08;
 
+/** How loudly the depth gradient speaks in the structure tensor, against a
+ * colour gradient of the same size.
+ *
+ * Depth is normalised over the scene, so its gradient across a ribbon is a few
+ * thousandths per pixel where a shading gradient is a few hundredths. This
+ * brings them into the same range, so the form is heard under flat light
+ * without drowning the colour under raking light. */
+const FORM_WEIGHT = 14.0;
+
 /** How slowly the ground's block-in direction wanders, as a fraction of the
  * diagonal. A twentieth means the sweep turns about five times across the
  * frame, which reads as a hand rather than as a ruled fill. */
@@ -181,6 +190,7 @@ const TensorSchema = {
   uNear: UniformSpec('f'),
   uFar: UniformSpec('f'),
   uIsOrtho: UniformSpec('f'),
+  uFormWeight: UniformSpec('f'),
 };
 
 const BlurSchema = {
@@ -283,6 +293,7 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uNear: ValueCell.create(1),
     uFar: ValueCell.create(100),
     uIsOrtho: ValueCell.create(0),
+    uFormWeight: ValueCell.create(0),
   };
   const tensor = createComputeRenderable(
     createComputeRenderItem(webgl, 'triangles', TensorShader, { ...TensorSchema }, tensorValues),
@@ -464,6 +475,7 @@ function paint(
     state.tensor.values.uIsOrtho,
     camera.state.mode === 'orthographic' ? 1 : 0
   );
+  ValueCell.updateIfChanged(state.tensor.values.uFormWeight, FORM_WEIGHT);
   state.tensor.update();
   state.tensorA.bind();
   beginQuad(webgl, viewport);
