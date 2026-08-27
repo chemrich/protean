@@ -22,6 +22,8 @@ Requires a real browser and is opt-in:
 
 from __future__ import annotations
 
+import asyncio
+import math
 from typing import Any
 
 import pytest
@@ -77,6 +79,48 @@ async def _canvas(session) -> Render:
     )
 
 
+#: The brush is a fraction of the frame diagonal, and `fine` is 1/380 of it —
+#: so a frame under about 1140 px across the diagonal cannot draw one, and
+#: `brushwork()` refuses rather than drawing a different look. That is the
+#: designed behaviour and it is unit-tested; it is also why this file cannot
+#: take the frame it is given.
+#:
+#: **CI's headless canvas is 746x335.** Not the window — the canvas, after
+#: Mol\*'s own furniture has taken its share. Every pixel threshold in
+#: `test_render_differential.py` was calibrated at that size, which is worth
+#: knowing before anyone reads one of them as a statement about a plate.
+MIN_DIAGONAL = 1140
+
+
+async def _widen(session) -> tuple[int, int]:
+    """Give the canvas a frame big enough for the smallest brush to be a brush.
+
+    The container is sized directly rather than the window, because the window
+    is the runner's to decide and this suite has to mean the same thing on a
+    laptop and on a CI box. Mol\\* follows its container on the next resize.
+    """
+    await session.evaluate(
+        """JSON.stringify((() => {
+          const app = document.getElementById('app');
+          app.style.position = 'fixed';
+          app.style.left = '0';
+          app.style.top = '0';
+          app.style.width = '1200px';
+          app.style.height = '900px';
+          window.dispatchEvent(new Event('resize'));
+          return true;
+        })())"""
+    )
+    read = "JSON.stringify(window.__protean.plugin.canvas3d.webgl.getDrawingBufferSize())"
+    frame = {"width": 0, "height": 0}
+    for _ in range(40):
+        frame = await session.evaluate(read)
+        if math.hypot(frame["width"], frame["height"]) >= MIN_DIAGONAL:
+            break
+        await asyncio.sleep(0.25)
+    return frame["width"], frame["height"]
+
+
 async def _ribbon(session) -> None:
     """A plain painted-subject scene: a ribbon in earth pigments, studio lit."""
     # Mol*'s own load preset is hidden first, or its waters sit under the
@@ -116,6 +160,7 @@ async def painted() -> dict[str, Any]:
     """
     frames: dict[str, Any] = {}
     async with viewer_session(FIXTURE) as session:
+        frames["frame"] = await _widen(session)
         await _ribbon(session)
 
         frames["plain"] = await _capture(session)
@@ -127,7 +172,8 @@ async def painted() -> dict[str, Any]:
         frames["painted"] = await _capture(session)
         frames["painted_canvas"] = await _canvas(session)
 
-        for size in ("fine", "broad"):
+        frames["sizes"] = (await session.request("capabilities", {}))["brush_sizes"]
+        for size in frames["sizes"]:
             frames[f"{size}_reply"] = await session.request(
                 "brushwork", {"brush_size": size}
             )
@@ -197,6 +243,23 @@ async def test_the_finish_survives_multisampling_being_switched_off(painted):
     )
 
 
+async def test_the_suite_has_a_frame_the_smallest_brush_can_be_drawn_in(painted):
+    """Stated rather than assumed, because everything below depends on it.
+
+    `fine` is 1/380 of the frame diagonal, so under about 1140 px it is below
+    the 3 px floor and `brushwork()` refuses — correctly. CI's headless canvas
+    is 746x335, which is where this suite first failed and where the number
+    above comes from. Without this assertion the fixture would refuse and every
+    test in the file would error with the same message, which is a great deal
+    of noise for one fact.
+    """
+    width, height = painted["frame"]
+    assert math.hypot(width, height) >= MIN_DIAGONAL, (
+        f"the canvas came back {width}x{height}; the smallest brush needs a "
+        f"diagonal of {MIN_DIAGONAL} and the container resize did not take"
+    )
+
+
 async def test_the_finish_reaches_the_capture(painted):
     """The file has to carry the look, and this is the arm that can pass alone.
 
@@ -255,16 +318,23 @@ async def test_the_brush_size_changes_the_mark_and_not_only_the_number(painted):
     render has almost no texture for an abstraction to work on. So both halves
     are asserted: the numbers move, *and* the pixels move with them.
     """
-    fine_px = painted["fine_reply"]["brush_px"]
-    broad_px = painted["broad_reply"]["brush_px"]
-    assert broad_px > fine_px, f"broad resolved to {broad_px}, fine to {fine_px}"
-    assert painted["broad_reply"]["stroke_px"] > painted["fine_reply"]["stroke_px"]
+    # Every size the viewer offers, walked in the order it offers them. Naming
+    # two here would have let a third arrive untested; asking `capabilities()`
+    # is the same rule the rest of protean follows.
+    sizes = painted["sizes"]
+    assert len(sizes) >= 2, sizes
+    brush = [painted[f"{size}_reply"]["brush_px"] for size in sizes]
+    stroke = [painted[f"{size}_reply"]["stroke_px"] for size in sizes]
+    assert brush == sorted(brush), dict(zip(sizes, brush, strict=True))
+    assert stroke == sorted(stroke), dict(zip(sizes, stroke, strict=True))
+    assert len(set(brush)) == len(sizes) and len(set(stroke)) == len(sizes)
 
-    marked = difference(painted["fine"], painted["broad"])
+    marked = difference(painted[sizes[0]], painted[sizes[-1]])
     drawn = coverage(painted["plain"])
     assert marked > MARKED_FRACTION_OF_SUBJECT * drawn, (
-        f"fine and broad differ on {marked:.4f} of the frame against a subject "
-        f"covering {drawn:.4f}, so the size is reported and the mark is not drawn"
+        f"{sizes[0]} and {sizes[-1]} differ on {marked:.4f} of the frame against "
+        f"a subject covering {drawn:.4f}, so the size is reported and the mark "
+        "is not drawn"
     )
 
 
