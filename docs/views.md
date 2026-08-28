@@ -349,6 +349,30 @@ One thing the stub did not anticipate, found by watching someone use it: a run
 of views leaves no way back, because each hides `auto` and replaces the shared
 handle. `default` is the first entry now.
 
+**"Refuses and says so on the control" was not true, and it took a year of
+being wrong to notice.** The reason went into a `title` attribute on the Views
+*button* — a tooltip on a control the person has already moved away from — and
+the button's text changed to "Views — refused". So what a click on Scaffold
+looked like, on any crystal structure, was a click that did nothing. Charlie's
+report of it was *"Scaffold doesn't show anything."*
+
+It shows something: it refuses, and the paragraph it refuses with is one of the
+more useful things protean writes. That pLDDT and the B-factor are the same
+mmCIF column read with opposite polarity; that there is nothing to cover here
+because every atom was observed; that `putty` answers the question actually
+being asked. **A refusal is only a report if it is legible where it was asked
+for**, so it now renders in the menu, under the item, and clears when another
+view is asked for or a fresh catalogue arrives.
+
+The menu moved to `viewer/src/view-menu.ts` to make that testable: `main.ts`
+boots Mol\* at import time, so nothing in it is reachable from a suite running
+in jsdom, and this is the piece most worth testing.
+
+**Still open, and the same family:** a view that *succeeds* while doing nothing
+visible says so only in its reply. `scaffold` on a model that is confident
+everywhere draws no cover, correctly, and the page has nowhere to put "nothing
+to cover" — which is §5.8's problem rather than this one's.
+
 ### 5.3 The rest of the catalogue — planned 2026-08-18
 
 Seven MCPymol views remain. Re-read against their implementations rather than

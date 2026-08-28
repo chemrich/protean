@@ -45,7 +45,7 @@
          that grew downward would run off the edge. */
       #view-menu {
         position: fixed; left: 40px; bottom: 136px; z-index: 95;
-        min-width: 150px; padding: 4px; border-radius: 6px;
+        min-width: 150px; max-width: 330px; padding: 4px; border-radius: 6px;
         background: rgba(16, 16, 18, 0.92); color: #fff;
         font: 13px/1.5 sans-serif;
         box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
@@ -63,6 +63,20 @@
       }
       .view-menu-item:hover { background: rgba(255, 255, 255, 0.12); }
       .view-menu-item:disabled { cursor: default; opacity: 0.5; }
+      /* A refused view says why, in the menu, under the thing that was asked
+         for. It used to say it in a `title` attribute on the Views button —
+         which is a tooltip on a control the person has already moved away
+         from, so what they saw was a click that did nothing. Several of these
+         refusals are the most useful sentences protean writes: `scaffold`
+         explains that pLDDT and the B-factor are the same mmCIF column with
+         opposite polarity, and names `putty` as the thing to reach for
+         instead. */
+      .view-menu-why {
+        margin: 2px 4px 6px; padding: 6px 8px; border-radius: 4px;
+        background: rgba(180, 90, 60, 0.22);
+        border-left: 2px solid rgba(226, 122, 86, 0.9);
+        font-size: 12px; line-height: 1.45;
+      }
     </style>
   </head>
   <body>
