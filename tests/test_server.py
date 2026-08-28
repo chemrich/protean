@@ -233,6 +233,27 @@ async def test_save_session_writes_a_gzipped_document(wired_bridge, tmp_path):
 
 
 async def test_session_round_trip(wired_bridge, tmp_path):
+    """A round trip is three viewer calls, and the third is the palette.
+
+    It was served two. `load_session()` calls `define_elements()` inside a
+    `contextlib.suppress(ViewerError)` — the element palette is protean's own,
+    registered by the page rather than shipped by Mol*, so a restored snapshot
+    that names it finds nothing unless it is put back. Unserved, that third
+    call waited out `ViewerBridge.request`'s 60 s default and the timeout was
+    swallowed by the suppress.
+
+    So this test took **60.00 s** and passed with `element_palette_restored`
+    False on every run since it was written. Serving the call takes it to
+    0.20 s, and takes `tests/test_server.py` as a whole from about 65 s to 5 s.
+
+    The restore itself was never unguarded — `test_session_analysis_state.py`'s
+    `test_restoring_puts_proteans_own_element_palette_back` asserts both the
+    call and the flag, and is the test that owns that claim. This one was
+    simply waiting out a timeout for nothing. The last assertion below is here
+    so the served handler is load-bearing rather than decorative: without it,
+    removing the handler again would restore the hang and nothing in this test
+    would object.
+    """
     wired_bridge.handlers["save_session"] = lambda args: {
         "snapshot": {"id": "snap"},
         "handles": {"prot": ["ref-1"]},
@@ -244,8 +265,9 @@ async def test_session_round_trip(wired_bridge, tmp_path):
         return {"restored": ["prot"], "dropped": [], "atom_count": 4779}
 
     wired_bridge.handlers["load_session"] = on_load
+    wired_bridge.handlers["define_elements"] = lambda args: {"name": args["name"]}
 
-    task = wired_bridge.serve(2)
+    task = wired_bridge.serve(3)
     saved = await save_session(str(tmp_path / "s.protean"))
     result = await load_session(saved["path"])
     await task
@@ -254,6 +276,7 @@ async def test_session_round_trip(wired_bridge, tmp_path):
     assert sent["handles"] == {"prot": ["ref-1"]}
     assert result["restored"] == ["prot"]
     assert result["atom_count"] == 4779
+    assert result["element_palette_restored"] is True
 
 
 async def test_load_session_missing_file(wired_bridge, tmp_path):
