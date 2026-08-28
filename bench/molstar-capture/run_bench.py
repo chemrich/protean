@@ -88,10 +88,12 @@ class ResultServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, port: int, directory: Path) -> None:
+    def __init__(self, port: int, directory: Path, label: str) -> None:
         self.directory = directory
+        self.label = label
         self.result: dict | None = None
         self.arrived = threading.Event()
+        self.started = time.monotonic()
         super().__init__(("127.0.0.1", port), _Handler)
 
 
@@ -106,16 +108,29 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
     # Named for what http.server dispatches on, not for PEP 8.
     def do_POST(self) -> None:
-        if self.path != "/__bench_result":
+        if self.path not in ("/__bench_result", "/__bench_progress"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
+        server: ResultServer = self.server  # type: ignore[assignment]
+        if self.path == "/__bench_progress":
+            # Printed as it arrives, with the elapsed time, so a phase that is
+            # slow and one that is stuck can be told apart while the job is
+            # still running rather than afterwards from a timeout.
+            try:
+                note = json.loads(raw.decode("utf-8")).get("note", "")
+            except Exception as exc:
+                note = f"unparseable progress: {exc}"
+            elapsed = time.monotonic() - server.started
+            print(f"  {elapsed:6.1f}s  {server.label}: {note}", flush=True)
+            self.send_response(204)
+            self.end_headers()
+            return
         try:
             payload = json.loads(raw.decode("utf-8"))
         except Exception as exc:
             payload = {"ok": False, "error": f"unparseable result: {exc}"}
-        server: ResultServer = self.server  # type: ignore[assignment]
         # First result wins. A page that somehow reported twice would otherwise
         # let a later error overwrite a good measurement.
         if server.result is None:
@@ -177,7 +192,7 @@ def main() -> int:
         shutil.copy2(molstar_dir / name, serve_dir / name)
 
     port = free_port()
-    server = ResultServer(port, serve_dir)
+    server = ResultServer(port, serve_dir, args.label or "unknown")
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     query = (

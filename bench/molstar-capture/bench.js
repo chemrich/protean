@@ -57,6 +57,20 @@
   function note(m) {
     log.push(m);
     console.log('[bench] ' + m);
+    // Also down the wire, unawaited. A run of nineteen releases is most of an
+    // hour, and a page that reports only at the end is a black box for all of
+    // it — worse, a version that hangs and one that is merely slow look
+    // identical until the timeout fires. Losing a progress line costs nothing;
+    // the result comes back on its own channel.
+    try {
+      fetch('/__bench_progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: LABEL, note: m }),
+      }).catch(function () {});
+    } catch (e) {
+      /* a progress line is never worth failing a measurement over */
+    }
   }
 
   // See the header: the illumination branch is the only user of `runtime`.
