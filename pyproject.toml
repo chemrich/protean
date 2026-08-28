@@ -104,6 +104,16 @@ ignore = [
 ]
 # A generator that prints what it wrote and imports nothing at runtime.
 "docs/generate/*" = ["T201", "INP001"]
+# The Mol* capture benchmark is a standalone harness, stdlib only, with no
+# protean import anywhere in it — see bench/molstar-capture/README.md, and the
+# reason it is standalone: it has to run against Mol* 4.18, which protean's own
+# viewer cannot compile against. So it drives a browser and a socket the way
+# tests/ does, prints its table to stdout because stdout is what a CI step
+# summary reads, and turns a broken result file into a row rather than a
+# traceback.
+"bench/*" = [
+    "PLW1510", "BLE001", "T201", "INP001", "PLR0912", "PLR0915", "PLR2004",
+]
 # The differential harness deliberately drives a real browser: blocking
 # subprocess calls and broad excepts are the point, not an oversight.
 "tests/*" = [

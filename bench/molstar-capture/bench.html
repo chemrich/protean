@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mol* capture benchmark</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #fff; }
+      /* The capture size is set on the screenshot helper, not taken from this
+         element, so the page's own layout does not enter the measurement. The
+         canvas still has to exist and be non-degenerate for Mol* to build a
+         GL context at all. */
+      #app { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+    </style>
+    <link rel="stylesheet" type="text/css" href="./molstar.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- Before molstar.js, and classic scripts run in order: Mol* captures a
+         reference to window.requestAnimationFrame at module-eval time. -->
+    <script type="text/javascript" src="./raf-pump.js"></script>
+    <script type="text/javascript" src="./molstar.js"></script>
+    <script type="text/javascript" src="./bench.js"></script>
+  </body>
+</html>
