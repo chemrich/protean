@@ -174,6 +174,12 @@ def main() -> int:
         help="turn a postprocessing pass off, to test which one got expensive",
     )
     ap.add_argument(
+        "--structure",
+        default="./1ubq.pdb",
+        help="./1ubq.pdb, whose waters give the scene a transparent half, or "
+        "./1ubq-apo.pdb, the same protein with none",
+    )
+    ap.add_argument(
         "--occlusion-samples",
         type=int,
         default=0,
@@ -211,7 +217,13 @@ def main() -> int:
     # Copied rather than symlinked so a bundle cannot be swapped underneath a
     # run that is already in flight — nineteen of these run back to back.
     serve_dir = Path(tempfile.mkdtemp(prefix="molstar-bench-"))
-    for name in ("bench.html", "bench.js", "raf-pump.js", "1ubq.pdb"):
+    for name in (
+        "bench.html",
+        "bench.js",
+        "raf-pump.js",
+        "1ubq.pdb",
+        "1ubq-apo.pdb",
+    ):
         shutil.copy2(HERE / name, serve_dir / name)
     for name in ("molstar.js", "molstar.css"):
         shutil.copy2(molstar_dir / name, serve_dir / name)
@@ -227,6 +239,7 @@ def main() -> int:
         f"&zoom={args.zoom}"
         f"&occlusionSamples={args.occlusion_samples}"
         f"&occlusionBlur={args.occlusion_blur}"
+        f"&structure={args.structure}"
     )
     url = f"http://127.0.0.1:{port}/bench.html{query}"
 
