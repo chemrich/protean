@@ -8,15 +8,22 @@ it earns is a property rather than a measurement.
 from __future__ import annotations
 
 import itertools
+import re
 from dataclasses import replace
+from unittest import mock
 
 import numpy as np
 import pytest
 from PIL import Image
 
 from protean_mcp.analysis.hatching import (
+    _PAPER,
     FINISHES,
+    _blur,
+    _Engraving,
+    _Lozenge,
     _multiply,
+    _Style,
     _Survey,
     apply_finish,
     ink_fraction,
@@ -451,10 +458,14 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
     """`ValueError`, not `KeyError`: `str(KeyError(msg))` is `repr(msg)`, so a
     caller has to strip the quotes back off and a name containing one arrives
     mangled — measured, a finish named `a'b` reached the model with a literal
-    backslash in it."""
-    with pytest.raises(
-        ValueError, match="cross-hatch, cyanotype, engraving, hedcut, spot-ink-plates"
-    ):
+    backslash in it.
+
+    The expected list is **derived**, not written out. It was written out, and
+    adding a finish then failed three tests that have nothing to do with the
+    new finish and everything to do with the list having been copied — which is
+    this repo's most-repeated defect in its smallest form.
+    """
+    with pytest.raises(ValueError, match=re.escape(", ".join(FINISH_NAMES))):
         call(_flat(128), "woodblock")
 
 
@@ -573,4 +584,240 @@ def test_no_two_finishes_share_a_grain_lattice_at_the_test_size():
     assert len({round(v, 2) for v in steps.values()}) == len(steps), (
         f"two finishes resolve to the same grain step: "
         f"{ {n: round(v, 2) for n, v in steps.items()} }"
+    )
+
+
+# -- the hatch that follows the form -------------------------------------------
+#
+# Everything above draws at 240 or 480 px. `_Engraving`'s interval resolves as
+# `max(4.0, longest * spacing)` and `_Lozenge`'s as `max(least, ...)`, so at
+# those sizes EVERY hatching finish clamps to its own floor and the suite has
+# only ever seen the finest mark each one can draw. The product draws a 1890 px
+# plate, where `hedcut` is 5 px and `cross-hatch` 4 — and where the old
+# `cross-hatch` was 17 px against a 40 px atom, which is how "the hatches are
+# way too coarse" shipped with every test in this file green.
+#
+# So these three draw at plate size, on a subject shaped like the one the
+# product actually draws: many small overlapping spheres, not one large one.
+# They are the only tests here that do, and together they cost about a second.
+
+#: The plate the product draws: 160 mm at 300 dpi, which is what `snapshot()`
+#: returns for a double-column figure. Not a round number chosen for the test —
+#: the point is to draw exactly what ships.
+_A_PLATE = (1890, 956)
+
+#: A van der Waals sphere is about a fortieth of the plate's long side.
+#: Measured off a real 1890 px spacefill capture of 1UBQ, where an atom is
+#: about 40 px across, rather than assumed.
+_FEATURE = _A_PLATE[0] / 40
+
+#: The tone a real element-coloured spacefill sits at: the median luma over its
+#: subject. Measured on that same capture. The fixture is built to match,
+#: because it is the thing the first version of it got wrong — spheres lit to a
+#: median of 0.72 gave a coverage of 0.04, and every finish then scored at
+#: chance for want of any ink to land anywhere.
+_A_REAL_TONE = 0.32
+
+
+def _spheres(size: tuple[int, int] = _A_PLATE) -> Image.Image:
+    """A field of small overlapping spheres: the shape of a spacefill capture.
+
+    `_dome` is one sphere filling a third of the frame, which is the wrong
+    fixture for anything about mark size — at 240 px it is a 173 px feature
+    against a 4 px interval, 43 marks per feature, where the product draws a
+    40 px feature against 17, 2.35 per feature. Eighteen times better sampled,
+    and that gap is exactly where "too coarse" hid for the finish's whole life.
+
+    Laid on a jittered lattice rather than at random, so the picture is
+    repeatable and never resolves into a grid. Overlapping on purpose, and
+    depth-sorted rather than blended: the rim where one sphere passes in front
+    of another is the line a draughtsman would draw, and a max-blend has no
+    such edges in it at all.
+
+    Written per bounding box rather than over the whole array. The first
+    version touched a two-megapixel array once per sphere and took over two
+    minutes; this takes 0.1 s and draws the same picture.
+    """
+    width, height = size
+    field = np.ones((height, width))
+    depth = np.full((height, width), -np.inf)
+    radius = _FEATURE / 2
+    step = radius * 1.35
+    for row in range(int(height / step) + 2):
+        for column in range(int(width / step) + 2):
+            # A repeatable jitter, so the same fixture comes back the same way
+            # twice — a finish drawn twice must give the same pixels.
+            wobble = ((row * 73856093) ^ (column * 19349663)) % 1000 / 1000.0
+            cx = column * step + (wobble - 0.5) * step * 0.7
+            cy = row * step + (((wobble * 7919) % 1000) / 1000.0 - 0.5) * step * 0.7
+            left, right = max(0, int(cx - radius) - 1), min(width, int(cx + radius) + 2)
+            top, bottom = max(0, int(cy - radius) - 1), min(height, int(cy + radius) + 2)
+            if left >= right or top >= bottom:
+                continue
+            y, x = np.ogrid[top:bottom, left:right]
+            r2 = ((x - cx) ** 2 + (y - cy) ** 2) / radius**2
+            inside = r2 <= 1.0
+            if not inside.any():
+                continue
+            z = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+            # Lambert from up and to the left, where the viewer's default light
+            # sits, over a base and span that put the median at _A_REAL_TONE.
+            lit = np.clip(
+                -0.45 * (x - cx) / radius - 0.45 * (y - cy) / radius + z, 0, None
+            )
+            tone = np.clip(0.03 + 0.35 * lit, 0.0, 1.0)
+            nearer = inside & (z > depth[top:bottom, left:right])
+            patch = field[top:bottom, left:right]
+            field[top:bottom, left:right] = np.where(nearer, tone, patch)
+            depth[top:bottom, left:right] = np.where(
+                nearer, z, depth[top:bottom, left:right]
+            )
+    grey = (field * 255).astype(np.uint8)
+    rgb = np.repeat(grey[:, :, None], 3, axis=2)
+    return Image.fromarray(
+        np.dstack([rgb, np.full((height, width, 1), 255, dtype=np.uint8)]), "RGBA"
+    )
+
+
+def _lozenges() -> list[str]:
+    """The finishes built on the warped carrier, derived rather than named."""
+    return [name for name, style in FINISHES.items() if isinstance(style, _Lozenge)]
+
+
+def _subject_and_rims(source: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    """Where the drawing is, and where its form has an edge.
+
+    A rim is the steepest decile of the shading: where one sphere passes in
+    front of another, which is the line a draughtsman would draw.
+    """
+    grey = np.asarray(source.convert("L"), dtype=np.float64) / 255.0
+    subject = grey < _PAPER
+    gradient_y, gradient_x = np.gradient(_blur(grey, max(source.size) / 500.0))
+    steep = np.hypot(gradient_x, gradient_y)
+    return subject, subject & (steep > np.percentile(steep[subject], 90.0))
+
+
+def test_the_fixture_is_the_picture_the_product_draws():
+    """A guard on the two guards below, aimed at the fixture rather than a finish.
+
+    Both of them measure how ink falls across a form, and both are meaningless
+    if the fixture has no ink or no form. The first version of `_spheres` was
+    lit far too brightly — median subject luma 0.72 against a real capture's
+    0.32 — so coverage came out at 0.04, and every finish scored at chance for
+    want of anything on the page. That failure looked exactly like a broken
+    finish and was a broken fixture, which is the confusion this asserts away.
+    """
+    source = _spheres()
+    subject, _ = _subject_and_rims(source)
+    grey = np.asarray(source.convert("L"), dtype=np.float64) / 255.0
+    tone = float(np.median(grey[subject]))
+    assert abs(tone - _A_REAL_TONE) < 0.06, (
+        f"the fixture sits at a median tone of {tone:.3f} where a real capture "
+        f"is {_A_REAL_TONE} — it is no longer the picture the product draws, "
+        f"and the tests below will report a finish's failure instead of this one"
+    )
+    # And it must be many small features, not one large one: that is the whole
+    # difference from `_dome` and the reason these tests exist.
+    assert max(_A_PLATE) / 20 > _FEATURE, "the fixture's spheres are not small"
+
+
+def test_the_suite_can_see_the_interval_a_finish_actually_ships():
+    """A finish's declared interval must be the one it draws at plate size.
+
+    The cheap half of the lesson, and it needs no render. Every other test in
+    this file draws at 240 or 480 px, where `max(floor, longest * spacing)`
+    returns the *floor* for every finish here — so a finish could declare any
+    interval at all, ship it, and nothing else in this file would change. That
+    is what happened: `cross-hatch` shipped a 17 px mark for its whole life
+    while the suite drew it at 4.
+    """
+    assert _lozenges(), "no _Lozenge finishes: this file is testing nothing"
+    for name in (*_lozenges(), "hedcut"):
+        style = FINISHES[name]
+        # Only the two stroke-ruling families declare an interval; `_Survey`
+        # and `_Plates` size their marks with `pitch` instead.
+        assert isinstance(style, _Lozenge | _Engraving), name
+        assert style.spacing is not None, (
+            f"{name} declares no interval of its own, so it draws "
+            f"apply_finish's — which is 17 px on the plate it ships at"
+        )
+        floor = style.least if isinstance(style, _Lozenge) else 4.0
+        declared = max(_A_PLATE) * style.spacing
+        assert declared > floor, (
+            f"{name} declares an interval of {declared:.2f} px on the plate it "
+            f"ships at, which is under its own {floor} px floor — so the number "
+            f"in FINISHES is decorative and the finish draws the floor instead"
+        )
+        # And the sizes the rest of the file uses genuinely cannot see it,
+        # which is the reason these tests carry the cost of a whole plate.
+        assert 480 * style.spacing < floor, (
+            f"{name} no longer clamps at the 480 px fixture, so the cheap tests "
+            f"above can see its interval and this comment is stale"
+        )
+
+
+@pytest.mark.parametrize("finish", _lozenges())
+def test_a_hatch_lands_its_ink_on_the_form(finish):
+    """The marks must go where the form has an edge, not merely where it is dark.
+
+    This is the whole difference between the hatching and what it replaced.
+    Chance-corrected, so a finish cannot pass by laying down more ink: the
+    number is how much more likely a rim pixel is to be inked than any other
+    pixel of the subject, and 0 is a mark field laid without reference to what
+    is underneath.
+
+    Measured on a real 1890 px spacefill capture, the old `cross-hatch` scored
+    +0.014 and `hedcut` +0.004 — and **drawing them finer never moved it**.
+    Swept from a 17 px interval down to 2, the best either managed was +0.026.
+
+    On this fixture the two hatches score about +0.18. The control is `hedcut`,
+    which is deliberately not in this list and scores **+0.086**: it rules one
+    direction and thickens it regardless of what is underneath, and that is its
+    style rather than a defect. So the bar sits between the two, and a hatch
+    that regressed to ruling a screen would fail here rather than pass.
+    """
+    source = _spheres()
+    subject, rim = _subject_and_rims(source)
+    inked = ink_mask(apply_finish(source, finish), finish)
+
+    lift = float(inked[rim].mean() - inked[subject].mean())
+    assert lift > 0.12, (
+        f"{finish} put ink on the form's edges no more often than anywhere "
+        f"else (lift {lift:+.4f}); it is ruling a screen over a silhouette"
+    )
+
+
+@pytest.mark.parametrize("finish", _lozenges())
+def test_the_warp_is_what_draws_the_form(finish):
+    """Take the warp out and the picture must change, a lot.
+
+    **No aggregate number over the frame can see this**, and that is why the
+    guard is a differential. Setting `relief` to 0 leaves straight ruled lines
+    with the rim-swelling still on, and that mutant scores every scalar the
+    shipped finish does: on a real capture, ink 0.506 against 0.507, the rim
+    lift above +0.259 against +0.259, tone fidelity 0.934 against 0.936. The
+    pictures are not remotely alike — one is a flat ruling with dark blobs
+    where atoms meet, the other has strokes that bend over every dome.
+
+    So this compares the finish against **itself with the mechanism removed**,
+    which is the arm `test_shuffle_differential.py` uses for the same reason.
+    On real captures the warp moves 0.42 of a spacefill subject and 0.32 of a
+    cartoon.
+    """
+    source = _spheres()
+    subject, _ = _subject_and_rims(source)
+
+    style = FINISHES[finish]
+    assert isinstance(style, _Lozenge), finish
+    live = ink_mask(apply_finish(source, finish), finish)
+    flattened: dict[str, _Style] = dict(FINISHES)
+    flattened[finish] = replace(style, relief=0.0)
+    with mock.patch.dict(FINISHES, flattened):
+        flat = ink_mask(apply_finish(source, finish), finish)
+
+    moved = float((live ^ flat)[subject].mean())
+    assert moved > 0.15, (
+        f"{finish} draws the same picture with its warp switched off "
+        f"(moved {moved:.4f} of the subject) — the strokes are not following "
+        f"anything, and every other number in this file would still pass"
     )

@@ -331,12 +331,14 @@ is showing. The reply says so outright.
 snapshot(path="plate.png", finish="spot-ink-plates")
 ```
 
-![The same spacefill render with no finish, cross-hatch, hedcut, cyanotype and spot-ink-plates](images/print-finishes.png)
+![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
 
 | Finish | What it is |
 |---|---|
-| `cross-hatch` | an engraving: tone becomes line, banded by brightness, each band filled with strokes at its own angle |
-| `hedcut` | the other engraving — one angle, six bands, the stipple-portrait look |
+| `linear-hatch` | the hatching, in one direction: strokes that bend around a form rather than being ruled across it, swelling where one form passes in front of another. The bolder mark of the two |
+| `cross-hatch` | the same hatching with a second family laid across the first, into lozenges that shear as they pass over a curve. Finer than the linear |
+| `hedcut` | one angle, six bands, the stroke thickening with the tone and never turning with the form — the stipple-portrait look rather than a drawing of the surface |
+| `engraving` | the survey's contours in black on white, at fourteen levels: it traces the recovered lighting like a relief map, so every atom becomes a contoured hill |
 | `cyanotype` | a survey print in Prussian blue and paper white. Contours the shading rather than hatching it, so every atom becomes nested rings |
 | `spot-ink-plates` | a two-colour press: the frame is sorted into colour families, each screened onto its own plate at its own angle, printed slightly out of register |
 

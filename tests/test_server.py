@@ -1826,11 +1826,13 @@ async def test_an_empty_lens_call_is_answered_rather_than_only_refused():
 
 
 def test_every_finish_is_named_where_a_caller_can_find_it():
-    """`snapshot`'s docstring is the only place a finish is discoverable.
+    """A finish must be *described* where a caller reads, not merely listed.
 
-    `capabilities()` does not report them, so a finish absent from the
-    docstring exists for anyone reading the source and for nobody calling the
-    tool. Making the suite fail is the whole mechanism: it forces adding one to
+    `capabilities()` now reports the names, which it did not when this was
+    written — so a caller can no longer be left guessing that a finish exists.
+    That is discovery and it is not the same as knowing what the thing draws:
+    a name in a list tells nobody whether `cyanotype` is blue. Making the suite
+    fail is still the whole mechanism, and it still forces adding a finish to
     be a thing a person wrote a sentence about.
 
     Here rather than beside the finish tests, because it is an assertion about
@@ -2459,6 +2461,25 @@ async def test_capabilities_reports_the_presets(wired_bridge):
 
     assert "ghost-heart" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
+
+
+async def test_capabilities_reports_the_finishes(wired_bridge):
+    """The print finishes are composed in Python, so the viewer cannot report
+    them — the same reason the presets are added here, and they were left out.
+
+    Until this, the only ways to learn the list were to read `snapshot`'s
+    docstring or to guess a name and read the error. That is discovery by
+    exception, offered to a caller who cannot see the file it is asking for.
+
+    Derived from FINISHES rather than named, so adding a finish cannot leave
+    this passing while the answer goes stale.
+    """
+    wired_bridge.handlers["capabilities"] = lambda args: {"representations": ["cartoon"]}
+    task = wired_bridge.serve(1)
+    out = await capabilities()
+    await task
+
+    assert out["finishes"] == sorted(FINISHES)
 
 
 # -- image and skybox backgrounds ----------------------------------------------

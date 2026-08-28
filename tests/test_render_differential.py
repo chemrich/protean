@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from PIL import Image as PILImage
 
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.encode import ffmpeg_binary
+from protean_mcp.analysis.hatching import FINISHES as PRINT_FINISHES
 from protean_mcp.connection import ViewerError
 from protean_mcp.fetch import fetch_structure_data
 from protean_mcp.selections import parse as parse_selection
@@ -279,6 +281,9 @@ async def test_returning_to_standard_restores_the_original_lighting(lit):
 # satin differed by 0.0001 — a named finish that changed nothing.
 DISTINCT = 0.008
 
+#: Material finishes — a surface's gloss. Not the print finishes, which are
+#: imported above as PRINT_FINISHES; the two words collide and the names
+#: must not.
 FINISHES = ("matte", "satin", "glossy", "metallic", "chrome")
 
 
@@ -3135,12 +3140,16 @@ async def test_a_plate_print_colours_for_its_capture_and_puts_the_scene_back(
 
 
 async def test_an_unknown_finish_is_refused_before_anything_is_written(tmp_path):
-    """A file half-written in a style nobody asked for is worse than an error."""
+    """A file half-written in a style nobody asked for is worse than an error.
+
+    The expected list is derived. Written out, adding a finish failed this test
+    for a reason that had nothing to do with what it guards.
+    """
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         out = tmp_path / "nope.png"
         with pytest.raises(
             ViewerError,
-            match="cross-hatch, cyanotype, engraving, hedcut, spot-ink-plates",
+            match=re.escape(", ".join(sorted(PRINT_FINISHES))),
         ):
             await server_mod.snapshot(str(out), width_mm=60, finish="woodblock")
 

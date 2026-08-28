@@ -83,6 +83,22 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   press keeps 0.485 of the difference the render carries against 0.183 for the
   same finish with its separation removed.
 
+- **`linear-hatch` and `cross-hatch`** — the hatching, rebuilt 2026-08-27 on a
+  ruled plane warped by the recovered light, so the strokes bend around a form
+  instead of being ruled across it. `linear-hatch` is new and `cross-hatch`
+  keeps its name; the old mechanism is gone rather than kept beside its
+  successor.
+
+  Two findings worth keeping. **Fineness and form-blindness are independent**:
+  swept from a 17 px interval down to 2, the old finish's rim-landing never
+  left chance, while its tone fidelity improved the whole way. And **no test
+  could see the interval the product shipped** — every guard draws where
+  `max(4.0, longest / 110)` returns its floor, so the suite drew a 4 px mark
+  for a finish that shipped at 17. See `docs/views.md`.
+
+  6 px for the linear and 4 for the crossed, bracketed at plate size. `hedcut`
+  keeps its mechanism and takes only the size half of the complaint, at 5.
+
 - **`engraving`** — the fifth finish, added #136 on 2026-08-26, and the one
   that answers "the hatching should be fine and depth cued". **No new rendering
   code.** It is `_Survey` — the engine behind `cyanotype` — with the paper set

@@ -2535,10 +2535,23 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
-    finish: redraw the capture as a print. "cross-hatch" and "hedcut" are
-      engravings — tone becomes line, the image banded by brightness and each
-      band filled with strokes, more of them where it is darker, the way an
-      engraving carries shading without any greys.
+    finish: redraw the capture as a print. capabilities() reports the live
+      list; what each one is, is below.
+
+      "linear-hatch" and "cross-hatch" are the hatching, in two treatments.
+      Both draw strokes that are level sets of a ruled plane warped by the
+      light the render already carries, so the lines bend around a form
+      instead of being ruled across it, and both swell where one form passes
+      in front of another — which is what draws the seam between two atoms.
+      "linear-hatch" keeps one direction and splits its whites in the deep
+      shadows; "cross-hatch" lays a second family across the first, into
+      lozenges that shear as they pass over a curve. The linear draws the
+      bolder mark of the two.
+
+      "hedcut" is the third and works differently on purpose: one direction,
+      six bands, the stroke thickening with the tone and never turning with
+      the form. That is the stipple-portrait look rather than a drawing of the
+      surface.
 
       "spot-ink-plates" is a two-colour press: the frame is sorted into colour
       families, each family screened onto its own plate at its own angle, and
@@ -4115,12 +4128,24 @@ async def capabilities() -> dict[str, Any]:
     `projections` is here because it was the thing `lens()` told callers to
     look up and the one key this reply did not carry. Fog is not a list and so
     is not one of these; its range is in `lens()`'s own signature.
+
+    `finishes` is the **print** finishes `snapshot()` accepts — a redrawing of
+    the whole capture in ink — and not the `material()` gloss of the same name
+    a few words above. Two different things called a finish, and the reply
+    keys them apart: `material_finishes` for the surface, `finishes` for the
+    press.
     """
     reported = await _call("capabilities", {})
     # Presets are composed here rather than in the viewer, so the viewer cannot
     # report them. They belong in the same answer as everything else a caller
     # can choose from.
     reported["presets"] = sorted(_PRESETS)
+    # And the print finishes, for exactly the same reason: they are applied to
+    # the capture in Python and the viewer has never heard of them. Until now
+    # the only ways to learn the list were to read `snapshot()`'s docstring or
+    # to guess a name and read the error — which is discovery by exception,
+    # for a caller that cannot see the file it is asking for.
+    reported["finishes"] = sorted(FINISHES)
     # Whether a movie can actually be written, rather than finding out at
     # the end of a long capture.
     reported["ffmpeg"] = _ffmpeg_binary() is not None

@@ -440,11 +440,19 @@ loaded structure, rather than laying the wrong coordinates onto it.
 > Make it look like an engraving.
 
 ```python
-snapshot(path="plate.png", finish="cross-hatch")
+snapshot(path="plate.png", finish="linear-hatch")
+snapshot(path="crossed.png", finish="cross-hatch")
+snapshot(path="contoured.png", finish="engraving")
 snapshot(path="plates.png", finish="spot-ink-plates")
 ```
 
-![The same render as no finish, cross-hatch, hedcut, cyanotype and spot-ink-plates](images/print-finishes.png)
+Three of those are engravings and they differ in what the marks follow.
+`linear-hatch` and `cross-hatch` are the hatching: strokes that bend around a
+form rather than being ruled across it, one direction or two. `engraving`
+contours the shading instead, like a relief map, so every atom becomes a
+contoured hill. `capabilities()` reports the whole list.
+
+![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
 
 The finish is applied **after the capture, in Python** — the viewer does not
 show it, and the reply says so outright, because protean's claim is that the
