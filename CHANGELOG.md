@@ -821,6 +821,11 @@ nothing is released yet, so everything below is unreleased.
   by one unit. Occlusion over empty background comes out as approximately no
   occlusion, so the cost bought nothing.
 
+  **On the browser CI job, measured as an A/B of the same tree: 3393.88s
+  becoming 1968.39s — 56:33 to 32:48, 1.72x.** Identical test counts either
+  side (1457 passed, 31 skipped), so it is not faster because less ran, and
+  every differential threshold passed against the patched renderer.
+
   It is a find-and-replace against someone else's source, so it is guarded in
   both directions it can fail. The build errors if it matched nothing, and a
   test asserts the exact list of shaders still needing it — which is what makes

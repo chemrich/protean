@@ -1697,6 +1697,29 @@ changes how the occlusion term antialiases, which is the same shape of trade as
 the sample level, **rejected on 2026-08-22**. Left on the table deliberately;
 it would have to be measured against the picture, not asserted.
 
+### What it did to the job, measured
+
+The two pull requests are the A/B: #145 is this tree without the patch, #146 is
+the same tree with it, both as `pull_request` runs, so the journal-figure gate
+and every other condition match.
+
+```
+                pytest's own total   tests
+without the patch   3393.88s (56:33)  1457 passed, 31 skipped
+with the patch      1968.39s (32:48)  1457 passed, 31 skipped
+                    1.72x, 23.7 minutes
+```
+
+**The counts are identical**, which is the claim that matters second: it is not
+faster because less of it ran. And every test passed, at thresholds calibrated
+to three decimals against the unpatched renderer — which is the losslessness
+claim at full scale, rather than three pixels on a thumbnail.
+
+The estimate this item carried before the run was "~58 minutes becoming ~34".
+It came out at 32:48. That is a good outcome for an extrapolation this document
+was right to distrust, and it does not retire the rule: it was checked, which is
+the only reason it can be quoted.
+
 **A finding from writing the patch, and it is the kind that recurs.** The first
 version matched the predicate on LF line endings. Mol\* ships the GLSL inside
 all nine of those modules with **CRLF**, so it would have rewritten nothing at
