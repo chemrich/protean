@@ -444,7 +444,7 @@ snapshot(path="plate.png", finish="cross-hatch")
 snapshot(path="plates.png", finish="spot-ink-plates")
 ```
 
-![The same render as no finish, cross-hatch, hedcut, cyanotype and spot-ink-plates](images/print-finishes.png)
+![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
 
 The finish is applied **after the capture, in Python** — the viewer does not
 show it, and the reply says so outright, because protean's claim is that the

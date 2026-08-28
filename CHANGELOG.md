@@ -86,6 +86,88 @@ nothing is released yet, so everything below is unreleased.
 
 ### Print finishes
 
+- **The hatching now follows the form, in two treatments.** `linear-hatch` is
+  new; `cross-hatch` keeps its name and is rebuilt on the same mechanism.
+  Answering "the hatching should have separate linear and cross treatments.
+  Hedcut is also way too coarse", which turned out to be two independent
+  defects rather than one.
+
+  **Coarseness was only a number, and no test could see it.** An atom is about
+  40 px on a 1890 px plate, and `apply_finish`'s `max(4.0, longest / 110)` is
+  17 px there and 34 at 600 dpi — two or three lines per sphere, so every
+  sphere vanished into a grid. Every guard in `tests/test_hatching.py` draws at
+  240 or 480 px, where that expression returns its own 4 px floor: the suite
+  had only ever drawn the finish at its finest while the product shipped its
+  coarsest. Stated as strokes per feature, the `_dome` fixture is a 173 px
+  sphere at a 4 px interval, 43 to 1, against the product's 2.35 to 1 —
+  eighteen times better sampled. A finish can now declare its own interval, the
+  way `_Survey` already declares `pitch` and `line`.
+
+  **Form-blindness was the mechanism, and fineness does not touch it.**
+  Re-drawn at 17, 12, 8, 6, 4, 3 and 2 px, the old `cross-hatch`'s ink landed
+  on the form's edges no more often than chance every single time: +0.014,
+  +0.001, +0.011, +0.010, +0.011, +0.012, +0.003, against `engraving`'s +0.202.
+  It ruled three fixed angles over the frame regardless of what was underneath,
+  at every scale.
+
+  `_Lozenge` draws marks that are level sets of a ruled plane warped by the
+  recovered light — flat frame, straight rules; a sphere bows them around it,
+  the way ruled lines on a rubber sheet bend when a ball is pushed through from
+  behind. At constant *duty* rather than constant width, because the warp
+  changes the local interval and a constant-width stroke would then change its
+  coverage wherever lines bunch. And the stroke swells where the lighting turns
+  over — the burin's burr, and what draws the seam where one atom passes in
+  front of another. **That swell is the entire rim mechanism**: the assumption
+  that a tone-driven width would find the rims by itself is false, because mean
+  darkness over the steepest decile is 0.625 against the whole subject's 0.622.
+  The rim is not darker. It is only steeper. Measured, the pair scores +0.259.
+
+  The two treatments differ past `hold`: the linear opens a second thread half
+  an interval over at the same angle, so the whites split rather than the
+  blacks closing; the crossed one lays a second family at -41 degrees, into
+  lozenges that shear as they pass over a dome. **They are not one drawing at
+  two strengths.** An earlier version shared a carrier angle, which made them
+  bit-identical below `hold` and left them disagreeing on 0.064 of a real
+  cartoon subject; with their own angles they disagree on 0.433 / 0.401, where
+  the old `cross-hatch` against `hedcut` is 0.466 / 0.426.
+
+  6 px for the linear and 4 for the crossed, chosen by looking at a 6/4/3
+  bracket at plate size rather than from print convention. The floor is about
+  3: at 2 px the lattice beats against the pixel grid and ink jumps from 0.42
+  to 0.64 of the subject with no change in tone at all. `hedcut` keeps its
+  mechanism, which is its style rather than a defect, and takes only the half
+  of the complaint that was about size: 5 px.
+
+- **A guard the numbers could not provide.** Setting `relief` to 0 leaves
+  straight ruled lines with the swelling still on, and that mutant scores
+  **every scalar the real finish does** — ink 0.506 against 0.507, rim lift
+  +0.259 against +0.259, tone fidelity 0.934 against 0.936 — while the picture
+  goes from strokes that bend over each dome to a flat ruling with dark blobs
+  at the seams. A scalar over a whole frame cannot see a local geometric
+  property.
+
+  So the guard is a differential against the finish with its own mechanism
+  removed, which is the arm `test_shuffle_differential.py` uses for the same
+  reason. Sabotaged, it reports 0.0000; the warp moves 0.42 of a real spacefill
+  subject and 0.32 of a cartoon.
+
+  The three new tests draw at 1890x956 on a field of small overlapping spheres
+  rather than on `_dome`, and the fixture carries a guard of its own. Lit as it
+  was first written its median tone was 0.72 against a real capture's 0.32,
+  coverage came out at 0.04, and every finish scored at chance for want of any
+  ink on the page — which reads as a broken finish and was a broken fixture.
+
+- **`engraving` was missing from its own figure.** It shipped and never reached
+  `print-finishes.png`, the gallery's finish table, the cookbook or the README,
+  all of which showed four finishes and named four while the product offered
+  five. The figure now derives its list from `FINISHES`, and captures at 900 px
+  rather than 520 — at 520 a hatch resolves to about 2 px and every finish
+  turns into the same grey, which is the figure claiming the finishes are
+  indistinguishable when they are not.
+
+  Two hardcoded finish lists in the suite are now derived as well. Adding a
+  finish failed four tests that had nothing to do with it.
+
 - **`engraving` — depth-cued line work, in ink on paper.** A fifth finish, and
   no new rendering code: it is the engine that already draws `cyanotype`, with
   the paper set white and the ink black.

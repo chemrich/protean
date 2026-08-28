@@ -859,6 +859,56 @@ Three routes, and the middle one is chosen:
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
 
+#### The hatching follows the form — 2026-08-27
+
+The section above chose to draw a hatch in Pillow rather than in a render pass,
+and that was right. What it got wrong was smaller and lived for the finish's
+whole life: **the marks were ruled without reference to what was underneath**,
+and they were far too big.
+
+Both halves came back as one complaint — "the hatches and halftones are way too
+coarse. They read like bad modern art" — and they are independent.
+
+**Size.** `apply_finish` spaces strokes at `max(4.0, longest / 110)`. On a
+1890 px plate that is 17 px against a 40 px atom, so a sphere got two or three
+lines and disappeared. **No test could see it.** Every guard draws at 240 or
+480 px, where the expression returns its own floor, so the suite had only ever
+drawn the mark at its finest. The general lesson is the sharpest form of this
+project's oldest defect: *does the fixture reach the regime the product runs
+in?* A clamp or a floor is exactly where a fixture and a product part company
+without saying so, and every size-derived constant should be resolved at both
+sizes and compared.
+
+**Direction.** Fineness was assumed to be the whole of it, and measuring said
+otherwise. Re-drawn at seven intervals from 17 px down to 2, the old
+`cross-hatch`'s ink landed on the form's edges no more often than chance at
+every single one — +0.014, +0.001, +0.011, +0.010, +0.011, +0.012, +0.003 —
+while tone reproduction quietly *improved* the whole way down. A tone measure
+scores that a success, which is why the measure that decided this one asks
+where the ink lands rather than how dark it is, and is chance-corrected so a
+finish cannot win by inking more.
+
+The mechanism is the one `_Survey` had all along, turned from contours into a
+hatch. A contour is a level set of the recovered lighting; a hatch is a level
+set of a *ruled plane warped by* it. Flat frame, straight rules; a sphere bows
+them around it. Two things then have to change from the survey's habits: hold
+constant **duty** rather than constant width, since the warp changes the local
+interval and a constant-width stroke would change its coverage wherever lines
+bunch; and swell the stroke where the lighting turns over, which is the burin's
+burr and is what actually draws the seam between two atoms. That last is worth
+stating plainly, because the obvious assumption is false: **the rim is not
+darker than the rest of the subject, only steeper** — 0.625 against 0.622 — so
+nothing driven by tone will ever find it.
+
+**And the bow cannot be defended by any number over the frame.** Switching the
+warp off leaves straight rules with the swelling still on and scores every
+scalar the real finish does: ink 0.506 against 0.507, rim-landing +0.259
+against +0.259, tone fidelity 0.934 against 0.936. The pictures are plainly
+different. A scalar over a whole frame cannot see a local geometric property,
+and the guard that can is a differential against the same finish with its own
+mechanism removed — which is the arm `test_shuffle_differential.py` had already
+used, for exactly this reason.
+
 #### The lens — projection and fog, 2026-08-25
 
 Two Canvas3D parameters protean never exposed, and between them most of the

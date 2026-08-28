@@ -46,6 +46,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 import protean_mcp.server as server  # noqa: E402
+from protean_mcp.analysis.hatching import FINISHES  # noqa: E402
 from protean_mcp.connection import ViewerBridge  # noqa: E402
 
 # The Chrome hunt and the teardown are accumulated scar tissue — an exact-URL
@@ -582,7 +583,19 @@ async def materials() -> list[Path]:
 
 @figure("print-finishes")
 async def print_finishes() -> list[Path]:
-    """The four print finishes, beside the render they were made from."""
+    """Every print finish, beside the render they were made from.
+
+    The list is **derived from FINISHES**, not written out here. Written out,
+    it went stale silently: `engraving` shipped and never reached this figure,
+    so the gallery, the cookbook and the README all showed four finishes and a
+    caption naming four while the product offered five.
+
+    Captured at 900 px rather than the 520 the rest of the sheets use. A hatch
+    is a mark a few pixels wide and its interval scales with the plate, so at
+    520 the two hatchings resolve to about 2 px and every one of them turns
+    into the same grey — which is the figure telling the reader the finishes
+    are indistinguishable when they are not.
+    """
     await load("1ubq")
     await server.hide(SCENE)
     await server.show(
@@ -593,12 +606,14 @@ async def print_finishes() -> list[Path]:
     )
     await server.background(color="#ffffff")
     with scratch() as tmp:
-        tiles = [("no finish", await capture(tmp / "plain.png", pixels=520))]
-        for finish in ["cross-hatch", "hedcut", "cyanotype", "spot-ink-plates"]:
+        tiles = [("no finish", await capture(tmp / "plain.png", pixels=900))]
+        for finish in sorted(FINISHES):
             tiles.append(
-                (finish, await capture(tmp / f"{finish}.png", pixels=520, finish=finish))
+                (finish, await capture(tmp / f"{finish}.png", pixels=900, finish=finish))
             )
-        return [contact_sheet(IMAGES / "print-finishes.png", tiles, columns=5)]
+        return [
+            contact_sheet(IMAGES / "print-finishes.png", tiles, columns=4, tile_width=520)
+        ]
 
 
 @figure("zinc-site")
