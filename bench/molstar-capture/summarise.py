@@ -17,6 +17,7 @@ drift across a long job is visible rather than averaged away.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -40,6 +41,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("results", type=Path)
     ap.add_argument("--baseline", default="", help="label to express ratios against")
+    ap.add_argument(
+        "--thumbs",
+        type=Path,
+        help="write each result's own capture here as a PNG, named for its file",
+    )
     args = ap.parse_args()
 
     runs = load(args.results)
@@ -80,6 +86,12 @@ def main() -> int:
     head = ["#", "version"]
     for level in levels:
         head += [f"L{level} median ms", f"L{level} p25-p75", f"L{level} vs base"]
+    # The column that names a release. Everything else says how expensive a
+    # version is; this says which version made it expensive — the step is where
+    # the cost arrived, and a sweep in release order turns finding it into
+    # reading down one column.
+    if levels:
+        head += [f"L{levels[0]} step"]
     head += [
         "full path ms",
         "coverage",
@@ -92,6 +104,7 @@ def main() -> int:
     print("| " + " | ".join(head) + " |")
     print("|" + "|".join(["---"] * len(head)) + "|")
 
+    previous: float | None = None
     for index, run in enumerate(runs, start=1):
         if not run.get("ok"):
             error = str(run.get("error", "failed")).replace("|", "\\|")[:160]
@@ -113,6 +126,17 @@ def main() -> int:
             base = median_at(baseline, level) if baseline else None
             ratio = f"{value / base:.2f}x" if (value and base) else "-"
             row += [fmt(value), spread, ratio]
+        if levels:
+            top = median_at(run, levels[0])
+            step = f"{top / previous:.2f}x" if (top and previous) else "-"
+            # Bold the ones worth looking at twice. A threshold is not a verdict:
+            # the identical-code rows in the sweep are what say how big a step
+            # has to be before it means anything on this runner.
+            if top and previous and (top / previous >= 1.25 or top / previous <= 0.8):
+                step = f"**{step}**"
+            row += [step]
+            if top:
+                previous = top
         full = run.get("fullPath", {}).get("stats")
         work = run.get("work", {})
         stats = work.get("stats") or {}
@@ -120,6 +144,11 @@ def main() -> int:
         camera = run.get("camera") or {}
         coverage = picture.get("coverage")
         distance = camera.get("distanceToTarget")
+        if args.thumbs and picture.get("thumbnail"):
+            args.thumbs.mkdir(parents=True, exist_ok=True)
+            uri = picture["thumbnail"]
+            out = args.thumbs / (Path(run["file"]).stem + ".png")
+            out.write_bytes(base64.b64decode(uri.split(",", 1)[1]))
         row += [
             fmt(full["median"]) if full else "-",
             "-" if coverage is None else f"{coverage * 100:.2f}%",
