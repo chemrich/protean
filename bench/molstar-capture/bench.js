@@ -52,6 +52,20 @@
   var FULL_PATH_REPEATS = num('fullPath', 2);
   var STRUCTURE = params.get('structure') || './1ubq.pdb';
   var LABEL = params.get('label') || 'unknown';
+  // A named postprocessing override, so a hypothesis about which pass got
+  // expensive can be tested by turning that pass off rather than argued about.
+  // 'default' leaves the canvas's own props alone, which is what CI runs.
+  var POSTPROCESSING = params.get('postprocessing') || 'default';
+  // Pulls the camera toward its target by this factor after the fit, so the
+  // molecule covers more of the frame. The point is not a prettier picture: it
+  // is the one knob that changes how much BACKGROUND a capture contains while
+  // leaving the scene, the passes and the sample count alone.
+  var ZOOM = num('zoom', 1);
+  // Overrides for the occlusion pass's own two loops, so which of them got
+  // expensive can be measured rather than argued: the main kernel is `samples`,
+  // the separable blur is `blurKernelSize`.
+  var OCCLUSION_SAMPLES = num('occlusionSamples', 0);
+  var OCCLUSION_BLUR = num('occlusionBlur', 0);
 
   var log = [];
   function note(m) {
@@ -203,6 +217,15 @@
    * at all. Recording the fit is what lets that be ruled in or out instead of
    * assumed.
    */
+  function distanceToTarget(state) {
+    var sum = 0;
+    for (var i = 0; i < 3; i++) {
+      var d = state.position[i] - state.target[i];
+      sum += d * d;
+    }
+    return Math.sqrt(sum);
+  }
+
   function cameraState(plugin) {
     var cam = safe(function () { return plugin.canvas3d.camera.state; });
     if (!cam) return null;
@@ -347,6 +370,49 @@
     var settleMs = await settle(plugin, 20000, 700);
     note('structure loaded in ' + Math.round(loadMs) + ' ms, settled in ' + settleMs + ' ms');
 
+    if (ZOOM !== 1) {
+      // Checked, and retried, and fatal if it does not take. The structure
+      // preset schedules its own camera reset, and on a slower Mol* that reset
+      // can land AFTER this one — which is exactly what happened the first time
+      // this knob was used: 5.4.1 zoomed, 5.4.2 silently did not, and the two
+      // were about to be compared as if they had. A knob that fails quietly is
+      // worse than no knob, because the run still produces a number.
+      var cam = plugin.canvas3d.camera;
+      var fitted = distanceToTarget(cam.state);
+      var want = fitted * ZOOM;
+      var got = fitted;
+      for (var attempt = 0; attempt < 6; attempt++) {
+        var st = cam.state;
+        var here = distanceToTarget(st);
+        var scale = want / here;
+        // durationMs 0: a tween would still be running when the first capture
+        // is taken, and every frame of it would be a different picture.
+        cam.setState(
+          {
+            position: [
+              st.target[0] + (st.position[0] - st.target[0]) * scale,
+              st.target[1] + (st.position[1] - st.target[1]) * scale,
+              st.target[2] + (st.position[2] - st.target[2]) * scale,
+            ],
+          },
+          0
+        );
+        plugin.canvas3d.requestDraw();
+        await settle(plugin, 10000, 500);
+        got = distanceToTarget(cam.state);
+        if (Math.abs(got - want) / want < 0.01) break;
+        note('zoom did not take (' + got.toFixed(1) + ' vs ' + want.toFixed(1) + '), retrying');
+      }
+      if (Math.abs(got - want) / want >= 0.01) {
+        throw new Error(
+          'camera would not hold the zoom: wanted ' + want.toFixed(1) +
+            ' from the target, settled at ' + got.toFixed(1) +
+            '. Refusing to report a timing that is not at the requested framing.'
+        );
+      }
+      note('zoomed to ' + ZOOM + ' of the fitted distance (' + got.toFixed(1) + ')');
+    }
+
     var env = environment(plugin);
 
     var helper = plugin.helpers.viewportScreenshot;
@@ -373,6 +439,47 @@
     // finding.
     var helperChoice = JSON.parse(JSON.stringify(pass.props.multiSample));
     note('helper chose sampleLevel ' + helperChoice.sampleLevel + ' mode ' + helperChoice.mode);
+
+    // Applied to the pass we are holding, not to the canvas. The getter would
+    // put the canvas's postprocessing back on the next access, so this survives
+    // the direct timings and deliberately does NOT survive getImageDataUri —
+    // run the full-path arm at 0 when using this.
+    if (POSTPROCESSING !== 'default') {
+      var pp = JSON.parse(JSON.stringify(pass.props.postprocessing));
+      var off = { name: 'off', params: {} };
+      if (POSTPROCESSING === 'no-occlusion') {
+        pp.occlusion = off;
+      } else if (POSTPROCESSING === 'no-antialiasing') {
+        pp.antialiasing = off;
+      } else if (POSTPROCESSING === 'none') {
+        pp.occlusion = off;
+        pp.antialiasing = off;
+        pp.bloom = off;
+        pp.shadow = off;
+        pp.outline = off;
+        pp.dof = off;
+        pp.sharpening = off;
+      } else {
+        throw new Error('unknown postprocessing override: ' + POSTPROCESSING);
+      }
+      pass.setProps({ postprocessing: pp });
+      note('postprocessing override: ' + POSTPROCESSING);
+    }
+
+    if (OCCLUSION_SAMPLES || OCCLUSION_BLUR) {
+      var pp2 = JSON.parse(JSON.stringify(pass.props.postprocessing));
+      if (pp2.occlusion && pp2.occlusion.name === 'on') {
+        if (OCCLUSION_SAMPLES) pp2.occlusion.params.samples = OCCLUSION_SAMPLES;
+        if (OCCLUSION_BLUR) pp2.occlusion.params.blurKernelSize = OCCLUSION_BLUR;
+        pass.setProps({ postprocessing: pp2 });
+        note(
+          'occlusion samples=' + pp2.occlusion.params.samples +
+            ' blurKernelSize=' + pp2.occlusion.params.blurKernelSize
+        );
+      } else {
+        throw new Error('occlusion is not on, so its parameters cannot be overridden');
+      }
+    }
 
     var levels = [];
     for (var i = 0; i < LEVELS.length; i++) {
@@ -411,7 +518,12 @@
       params: {
         width: WIDTH, height: HEIGHT, repeats: REPEATS, warmup: WARMUP,
         levels: LEVELS, fullPathRepeats: FULL_PATH_REPEATS, structure: STRUCTURE,
+        postprocessing: POSTPROCESSING,
+        zoom: ZOOM,
       },
+      appliedPostprocessing: safe(function () {
+        return JSON.parse(JSON.stringify(pass.props.postprocessing));
+      }),
       environment: env,
       helperChosenMultiSample: helperChoice,
       camera: cameraState(plugin),

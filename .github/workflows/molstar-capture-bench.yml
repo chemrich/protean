@@ -48,6 +48,18 @@ on:
         description: 'Repeats through helper.getImageDataUri (0 to skip protean''s real path)'
         required: false
         default: '2'
+      postprocessing:
+        description: 'default | no-occlusion | no-antialiasing | none — turn a pass off to find which one got expensive'
+        required: false
+        default: 'default'
+      occlusionsamples:
+        description: 'Override the SSAO main kernel size (0 leaves it alone)'
+        required: false
+        default: '0'
+      occlusionblur:
+        description: 'Override the SSAO blur kernel size (0 leaves it alone)'
+        required: false
+        default: '0'
       baseline:
         description: 'Version the ratio column is expressed against'
         required: false
@@ -95,8 +107,7 @@ jobs:
 
       # Inputs when dispatched; run.conf when pushed. Resolved in one place and
       # echoed, because a benchmark whose settings are not in its own log is a
-      # table nobody can reproduce.
-      # Inputs when dispatched; run.conf when pushed. Every input reaches the
+      # table nobody can reproduce. Every input reaches the
       # shell through `env`, never through `${{ }}` inside the script: this repo
       # is public, and a `${{ }}` in a `run:` block is textual substitution into
       # the script itself. Nobody without write access can dispatch this, but the
@@ -112,6 +123,9 @@ jobs:
           IN_SIZE: ${{ inputs.size }}
           IN_FULLPATH: ${{ inputs.fullpath }}
           IN_BASELINE: ${{ inputs.baseline }}
+          IN_POSTPROCESSING: ${{ inputs.postprocessing }}
+          IN_OCCLUSIONSAMPLES: ${{ inputs.occlusionsamples }}
+          IN_OCCLUSIONBLUR: ${{ inputs.occlusionblur }}
         run: |
           set -euo pipefail
           conf=bench/molstar-capture/run.conf
@@ -129,6 +143,9 @@ jobs:
           size="${IN_SIZE:-}";          [ -n "$size" ]     || size=$(get size '800x600')
           fullpath="${IN_FULLPATH:-}";  [ -n "$fullpath" ] || fullpath=$(get fullpath '2')
           baseline="${IN_BASELINE:-}";  [ -n "$baseline" ] || baseline=$(get baseline '4.18.0')
+          pp="${IN_POSTPROCESSING:-}";  [ -n "$pp" ]       || pp=$(get postprocessing 'default')
+          osamples="${IN_OCCLUSIONSAMPLES:-}"; [ -n "$osamples" ] || osamples=$(get occlusionsamples '0')
+          oblur="${IN_OCCLUSIONBLUR:-}";       [ -n "$oblur" ]    || oblur=$(get occlusionblur '0')
 
           # Refuse rather than pass junk to the harness. A version list with a
           # shell metacharacter in it, or a size that is not a size, should stop
@@ -141,6 +158,9 @@ jobs:
           echo "$fullpath" | grep -Eq '^[0-9]+$'           || { echo "::error::bad fullpath: $fullpath"; exit 1; }
           echo "$size"     | grep -Eq '^[0-9]+x[0-9]+$'    || { echo "::error::bad size: $size"; exit 1; }
           echo "$baseline" | grep -Eq '^[0-9A-Za-z.+-]*$'  || { echo "::error::bad baseline: $baseline"; exit 1; }
+          case "$pp" in default|no-occlusion|no-antialiasing|none) ;; *) echo "::error::bad postprocessing: $pp"; exit 1 ;; esac
+          echo "$osamples" | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionsamples: $osamples"; exit 1; }
+          echo "$oblur"    | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionblur: $oblur"; exit 1; }
 
           {
             echo "versions=$versions"
@@ -150,6 +170,9 @@ jobs:
             echo "width=${size%x*}"
             echo "height=${size#*x}"
             echo "fullpath=$fullpath"
+            echo "postprocessing=$pp"
+            echo "occlusionsamples=$osamples"
+            echo "occlusionblur=$oblur"
             echo "baseline=$baseline"
           } | tee -a "$GITHUB_OUTPUT"
 
@@ -171,6 +194,9 @@ jobs:
           CFG_WIDTH: ${{ steps.cfg.outputs.width }}
           CFG_HEIGHT: ${{ steps.cfg.outputs.height }}
           CFG_FULLPATH: ${{ steps.cfg.outputs.fullpath }}
+          CFG_POSTPROCESSING: ${{ steps.cfg.outputs.postprocessing }}
+          CFG_OCCLUSIONSAMPLES: ${{ steps.cfg.outputs.occlusionsamples }}
+          CFG_OCCLUSIONBLUR: ${{ steps.cfg.outputs.occlusionblur }}
         run: |
           # No `set -e` around the loop on purpose: one release failing to boot
           # is a row in the table, not a reason to throw away the eighteen that
@@ -213,6 +239,9 @@ jobs:
               --warmup "$CFG_WARMUP" \
               --levels "$CFG_LEVELS" \
               --full-path "$CFG_FULLPATH" \
+              --postprocessing "$CFG_POSTPROCESSING" \
+              --occlusion-samples "$CFG_OCCLUSIONSAMPLES" \
+              --occlusion-blur "$CFG_OCCLUSIONBLUR" \
               && ok=$((ok + 1))
             echo "::endgroup::"
           done

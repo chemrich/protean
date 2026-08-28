@@ -167,6 +167,31 @@ def main() -> int:
         help="repeats through helper.getImageDataUri, protean's real path",
     )
     ap.add_argument("--timeout", type=float, default=900.0)
+    ap.add_argument(
+        "--postprocessing",
+        default="default",
+        choices=["default", "no-occlusion", "no-antialiasing", "none"],
+        help="turn a postprocessing pass off, to test which one got expensive",
+    )
+    ap.add_argument(
+        "--occlusion-samples",
+        type=int,
+        default=0,
+        help="override the SSAO main kernel size (0 leaves it alone)",
+    )
+    ap.add_argument(
+        "--occlusion-blur",
+        type=int,
+        default=0,
+        help="override the SSAO blur kernel size (0 leaves it alone)",
+    )
+    ap.add_argument(
+        "--zoom",
+        type=float,
+        default=1.0,
+        help="pull the camera to this fraction of the fitted distance, to vary "
+        "how much of the frame is background",
+    )
     ap.add_argument("--window-size", default="1000,800")
     ap.add_argument("--keep-profile", action="store_true")
     args = ap.parse_args()
@@ -198,7 +223,10 @@ def main() -> int:
     query = (
         f"?width={args.width}&height={args.height}&repeats={args.repeats}"
         f"&warmup={args.warmup}&levels={args.levels}&fullPath={args.full_path}"
-        f"&label={args.label or 'unknown'}"
+        f"&label={args.label or 'unknown'}&postprocessing={args.postprocessing}"
+        f"&zoom={args.zoom}"
+        f"&occlusionSamples={args.occlusion_samples}"
+        f"&occlusionBlur={args.occlusion_blur}"
     )
     url = f"http://127.0.0.1:{port}/bench.html{query}"
 
