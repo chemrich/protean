@@ -4128,6 +4128,12 @@ async def capabilities() -> dict[str, Any]:
     `projections` is here because it was the thing `lens()` told callers to
     look up and the one key this reply did not carry. Fog is not a list and so
     is not one of these; its range is in `lens()`'s own signature.
+
+    `finishes` is the **print** finishes `snapshot()` accepts — a redrawing of
+    the whole capture in ink — and not the `material()` gloss of the same name
+    a few words above. Two different things called a finish, and the reply
+    keys them apart: `material_finishes` for the surface, `finishes` for the
+    press.
     """
     reported = await _call("capabilities", {})
     # Presets are composed here rather than in the viewer, so the viewer cannot
