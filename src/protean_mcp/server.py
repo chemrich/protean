@@ -4124,6 +4124,12 @@ async def capabilities() -> dict[str, Any]:
     # report them. They belong in the same answer as everything else a caller
     # can choose from.
     reported["presets"] = sorted(_PRESETS)
+    # And the print finishes, for exactly the same reason: they are applied to
+    # the capture in Python and the viewer has never heard of them. Until now
+    # the only ways to learn the list were to read `snapshot()`'s docstring or
+    # to guess a name and read the error — which is discovery by exception,
+    # for a caller that cannot see the file it is asking for.
+    reported["finishes"] = sorted(FINISHES)
     # Whether a movie can actually be written, rather than finding out at
     # the end of a long capture.
     reported["ffmpeg"] = _ffmpeg_binary() is not None

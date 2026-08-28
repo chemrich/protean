@@ -157,6 +157,14 @@ nothing is released yet, so everything below is unreleased.
   coverage came out at 0.04, and every finish scored at chance for want of any
   ink on the page — which reads as a broken finish and was a broken fixture.
 
+- **`capabilities()` now reports the print finishes.** It already reported
+  `presets` for exactly this reason — composed in Python, so the viewer cannot
+  report them — and the finishes were left out. The only ways to learn the list
+  were to read `snapshot()`'s docstring or to guess a name and read the error,
+  which is discovery by exception offered to a caller who cannot see the file
+  it is asking for. The docstring guard stays, because a name in a list tells
+  nobody whether `cyanotype` is blue.
+
 - **`engraving` was missing from its own figure.** It shipped and never reached
   `print-finishes.png`, the gallery's finish table, the cookbook or the README,
   all of which showed four finishes and named four while the product offered
