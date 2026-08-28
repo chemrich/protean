@@ -53,6 +53,24 @@ nothing is released yet, so everything below is unreleased.
 
 ### The viewer
 
+- **A refused view says why, on the page.** Charlie, clicking Scaffold on a
+  crystal structure: *"Scaffold doesn't show anything."* It shows a refusal —
+  and the menu was putting that refusal in a `title` attribute on the Views
+  button, a tooltip on a control the person had already moved away from, so
+  what the click looked like was a click that did nothing.
+
+  The reason now renders in the menu, under the item that was asked for, and
+  clears when another view is asked for or a fresh catalogue arrives. Several
+  of these are the most useful sentences protean writes: `scaffold` explains
+  that pLDDT and the B-factor are the same mmCIF column with opposite polarity,
+  that there is nothing to cover because every atom here was observed, and that
+  `putty` answers the question actually being asked.
+
+  The menu moved to `viewer/src/view-menu.ts` so it could be tested at all —
+  `main.ts` boots Mol\* at import time, which put protean's one human-facing
+  control out of reach of a suite running in jsdom. Nine unit tests, and one
+  that drives a real page.
+
 - **Mol\* is bundled from source rather than loaded as a prebuilt global.**
   `viewer/src/main.ts` had said since the first commit that bundling "needs
   >4 GB RAM, the prebuilt bundle needs none", and a great deal followed from
