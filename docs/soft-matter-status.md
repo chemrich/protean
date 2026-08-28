@@ -160,6 +160,30 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   saturation 112 to 146. **A treatment that reads the shading is downstream of
   the lighting rig, and the rig is the first thing to look at.**
 
+  **And then the rig bit from the other side**, which is the finding to carry
+  into any treatment with an internal direction field. Opening the light cost
+  the *flow field* its signal: the flow runs along a ribbon only because the
+  shading gradient runs across it, so flattening the light flattened the thing
+  the marks steer by. The strokes went haphazard for the same reason the picture
+  got brighter, and the two complaints looked unrelated. Fixed by putting a
+  depth gradient into the structure tensor beside the colour one.
+
+  Three more, from three more rounds of Charlie looking at plates:
+
+  - **A relit height field reads as metal, always.** A fake impasto on a curved
+    ribbon is crumpled foil however the bumps are shaped, because relighting is
+    what tells an eye it is looking at a surface with a normal.
+  - **Random brightness per mark is the same illusion with no lighting at all.**
+    Move the variation into chroma, and make the marks *tile* — a mark covering
+    part of a surface is a fleck on it; a surface made of marks is paint.
+  - **A stroke is a shape and has to be placed**, not sampled out of a field.
+    Three field-based attempts each failed differently and all read as noise.
+
+  **The method that ended it: render the field rather than reasoning about it.**
+  One debug build settled a question three rounds of inference had got wrong.
+  Any treatment with an internal vector field should have a debug output before
+  it has a second parameter.
+
   The finding worth carrying: **abstraction alone is not a painting.** The first
   version was anisotropic Kuwahara and nothing else, which is what the
   literature says a painterly filter is, and it gave back a clean render with a

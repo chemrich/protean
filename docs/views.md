@@ -1253,6 +1253,56 @@ said they liked — sits on a ground at luminance 237 with its subject at 114 an
 saturation 41. `painting` sat on 54 with its subject at 82. All three bright
 candidates now sit at or above felt's numbers.
 
+#### Four rounds of taste, and each one was a defect
+
+Charlie looked at every set of plates and sent four back. None of the four was a
+preference: each named something the pass was doing wrong, and the wrong thing
+was never where the words pointed.
+
+**"Crumpled foil or mylar."** The fake impasto. **A relit height field reads as
+metal, always** — relighting is what tells an eye it is looking at a surface
+with a normal, so a raking light over a bumped ribbon is foil however the bumps
+are shaped. `relief` is zero on every bright look now. `chiaroscuro` keeps a
+little, because a Dutch Master genuinely *is* a lit impasto, and that is exactly
+why nothing else should be.
+
+**"Still like crumpled mylar."** The relight was already gone, so this was the
+same illusion arriving without any lighting: each mark took a random shift of up
+to 30% in *value*, and the marks covered only part of the ribbon — isolated
+bright and dark dashes on a smooth curve. **Random brightness is light catching
+facets at random angles**, whether or not anything was lit. Two fixes, one idea:
+the marks **tile** (a mark covering part of a surface is a fleck sitting on it; a
+surface made of marks is paint), and their variation moved from value into
+**chroma**, because a loaded brush carries more or less pigment far more than it
+carries more or less light.
+
+**"The strokes aren't obvious, and their direction is haphazard."** The
+direction was **caused by brightening the picture**, which is why it looked like
+two unrelated complaints. The flow is the direction of least change, which runs
+along a ribbon *because* the shading gradient runs across it — so opening the
+light up flattened the ribbon and flattened the signal the marks steer by. One
+change had made both problems. The structure tensor takes a second gradient on
+**depth**, normalised over the scene's range: depth does not care how a scene is
+lit, and a ribbon curves away from the camera across its width whatever the rig
+is doing.
+
+**And a stroke is a shape that has to be placed.** Three field-based attempts
+failed before that landed — isotropic noise dragged along the flow (foil), noise
+stretched then dragged (sandpaper), and a lattice from `dot(P, tangent)`, which
+*looks* right and is not: screen coordinates are of order a thousand, so a
+tangent rotation of a hundredth of a radian moves the coordinate by a whole
+stroke width and the lattice dissolves into noise before it can be a mark. The
+marks are splatted now, each oriented by the flow **at its own centre**, on a
+lattice spaced by the stroke's *width* — spacing it by the length leaves
+scattered dashes on bare colour, and the search window caps how long a mark can
+be, so the window is what decides whether you get a stroke or a dash.
+
+**The method that ended it: render the field rather than reasoning about it.**
+Direction as red and green, confidence as blue, straight out of the brush
+shader. One build, and it settled a question three rounds of inference had got
+wrong. Any pass with an internal vector field should have a debug output before
+it has a second parameter.
+
 #### Three palettes, and the one that ships
 
 `spring` is the default: coral against sky rather than the obvious coral against
@@ -1267,6 +1317,10 @@ palette and raising the chroma took its subject saturation from 35 to 62.
 
 A look and a palette are separate — `brushwork(look=…)` and `color(…)` — so any
 pairing is available; the preset picks a pair.
+
+The three also differ in **how much brush you see**, which is the one thing left
+open: `spring` at `load` 0.55, `orchard` 0.85, `poster` 1.2, deliberately
+bracketing rather than converging, so the answer sits inside the range.
 
 #### What is not built
 

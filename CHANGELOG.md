@@ -199,8 +199,27 @@ nothing is released yet, so everything below is unreleased.
   `felt` is untouched, as asked. It shares no code path with the pass, and its
   numbers were the target: ground 237, subject 114, saturation 41.
 
+  **Then four more rounds, and each was a defect rather than a preference.**
+  *"Crumpled foil or mylar"* was the fake impasto: a relit height field reads as
+  metal, always, because relighting is what tells an eye it is looking at a
+  surface with a normal. *"Still like crumpled mylar"* was the same illusion
+  without any lighting — random brightness per mark, on marks that covered only
+  part of the ribbon, which is light catching facets at random angles. The marks
+  tile now and their variation lives in chroma. *"The strokes aren't obvious and
+  the direction is haphazard"* was **caused by brightening the picture**: the
+  flow field reads the shading gradient, so opening the light up flattened the
+  very signal the marks steer by, and one change had made both problems. The
+  structure tensor takes a second gradient on depth, which does not care how a
+  scene is lit.
+
+  The method worth keeping: **render the field rather than reasoning about it.**
+  Direction as red and green, confidence as blue, straight out of the shader.
+  One build settled a question three rounds of inference had got wrong.
+
   What is not built: `divisionist` (Seurat) and `impasto` (Van Gogh), the other
-  two Charlie named. The engine is shared and waiting.
+  two Charlie named. The engine is shared and waiting. And `painting`'s brush
+  volume is still open — `spring`, `orchard` and `poster` bracket it at 0.55,
+  0.85 and 1.2 rather than converging on a guess.
 
 - **`cinematic` is withdrawn.** Nineteen presets, not twenty. It was a
   near-black ground and a rim light, and the only thing it did that nothing
