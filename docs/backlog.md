@@ -1667,22 +1667,42 @@ close to the 23 the job cost before the upgrade. **That is an extrapolation
 from a benchmark to a job, and this repo has been wrong extrapolating in both
 directions.** The way to know is to apply a fix and re-run the job.
 
-Three ways to get there, and they are not equivalent:
+**Taken 2026-08-28: patch the constant in protean's Vite build**, and queue the
+upstream report. `viewer/src/molstar-patches.ts` applies upstream's own repair —
+`depth >= 0.99999994`, with their comment — to the six shaders they have not
+reached yet, and `viewer/vite.config.ts` fails the build if it matched none of
+them. The report is written and waiting at
+`docs/upstream/molstar-ssao-background-test.md`.
 
-1. **Patch the constant in protean's Vite build.** The only lossless one: the
-   picture does not change, because the early-out is what upstream intended and
-   still uses in `postprocessing.frag`. The cost is a vendored one-line GLSL
-   patch to keep.
-2. **`reuseOcclusion: true` on the capture's ImagePass.** Version-independent,
-   and large — it drops SSAO from sixteen evaluations per capture to one, and
-   `samples` from the helper's forced 128 back to 32. But it changes how the
-   occlusion term antialiases, which is the same shape of trade as the sample
-   level, **rejected on 2026-08-22**. It would have to be measured against the
-   picture, not asserted.
-3. **Report it upstream.** A clean report: the predicate, the unpack
-   arithmetic, and upstream's own `0.99999994` fix in the neighbouring shader.
-   Blocked only on whose account files it — see the note above about the two
-   drafts already waiting.
+Measured with the same substitution applied to the prebuilt 5.11.0 bundle, same
+scene, same machine, same session:
+
+```
+                      sampleLevel 4    sampleLevel 1
+5.11.0 as shipped          9,829 ms         1,292 ms
+5.11.0 with the fix        3,619 ms           441 ms      2.72x faster
+5.4.1, before the bug      3,136 ms           370 ms
+```
+
+It returns 5.11.0 to within 15% of the last release predating the bug, and that
+15% is the gradual cost the other releases add. **And the picture does not
+change**: comparing the two captures pixel by pixel, three pixels of 43,200
+differ, by one unit in one channel. Occlusion computed over empty background
+comes out as approximately no occlusion, so the cost was being paid for nothing.
+
+**Not taken: `reuseOcclusion: true` on the capture's ImagePass.** It is
+version-independent and larger — sixteen occlusion evaluations per capture
+become one, and `samples` drops from the helper's forced 128 back to 32 — but it
+changes how the occlusion term antialiases, which is the same shape of trade as
+the sample level, **rejected on 2026-08-22**. Left on the table deliberately;
+it would have to be measured against the picture, not asserted.
+
+**A finding from writing the patch, and it is the kind that recurs.** The first
+version matched the predicate on LF line endings. Mol\* ships the GLSL inside
+all nine of those modules with **CRLF**, so it would have rewritten nothing at
+all, in a build that stayed green, producing a viewer that looked exactly right
+and captured three times slower than it needed to. The test caught it; the build
+assertion caught it second. See [[guards-that-cannot-see]].
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 
 ### 36. A structure will not load into a hidden tab — open
