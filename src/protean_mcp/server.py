@@ -2535,10 +2535,23 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
-    finish: redraw the capture as a print. "cross-hatch" and "hedcut" are
-      engravings — tone becomes line, the image banded by brightness and each
-      band filled with strokes, more of them where it is darker, the way an
-      engraving carries shading without any greys.
+    finish: redraw the capture as a print. capabilities() reports the live
+      list; what each one is, is below.
+
+      "linear-hatch" and "cross-hatch" are the hatching, in two treatments.
+      Both draw strokes that are level sets of a ruled plane warped by the
+      light the render already carries, so the lines bend around a form
+      instead of being ruled across it, and both swell where one form passes
+      in front of another — which is what draws the seam between two atoms.
+      "linear-hatch" keeps one direction and splits its whites in the deep
+      shadows; "cross-hatch" lays a second family across the first, into
+      lozenges that shear as they pass over a curve. The linear draws the
+      bolder mark of the two.
+
+      "hedcut" is the third and works differently on purpose: one direction,
+      six bands, the stroke thickening with the tone and never turning with
+      the form. That is the stipple-portrait look rather than a drawing of the
+      surface.
 
       "spot-ink-plates" is a two-colour press: the frame is sorted into colour
       families, each family screened onto its own plate at its own angle, and
