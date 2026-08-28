@@ -1,0 +1,265 @@
+name: Mol* capture benchmark
+
+# Backlog 40. Upgrading Mol* 4.18.0 -> 5.11.0 took the browser job from 23m12s
+# to 48m18s with one *fewer* test, and nobody has recovered it. This job times
+# ONE Mol* capture on each release between those two, so the release that did it
+# can be named.
+#
+# Every version runs in ONE job on ONE runner, back to back, on purpose. Runner
+# variance on this repo is about 40% — the same tree ran 50 minutes as a PR and
+# 70 as a push on 2026-08-22 — so a table built from nineteen separate jobs would
+# be nineteen samples of the runners and one of Mol*. Ratios measured back to
+# back in one process are the only comparison that survives contention, which is
+# also how `docs/backlog.md` item 40 measured its sample-level table.
+#
+# It does NOT build protean's viewer. `viewer/src` imports Mol* 5 internals, so
+# it would not compile against 4.18 — the point being that a benchmark which
+# cannot run on the *pre*-upgrade version measures nothing. `bench/molstar-capture`
+# is a standalone page against the prebuilt UMD bundle every release ships, and
+# `npm pack` fetches that bundle without resolving a dependency tree.
+#
+# Manual only. It costs the better part of an hour of a free standard runner and
+# answers a question nobody asks on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Comma-separated Mol* versions, in run order. Repeat one to measure drift.'
+        required: false
+        default: '4.18.0,5.11.0,4.18.0,5.11.0'
+      levels:
+        description: 'Comma-separated multiSample levels to time at each version'
+        required: false
+        default: '4,1'
+      repeats:
+        description: 'Timed captures per level (excluding warmup)'
+        required: false
+        default: '8'
+      warmup:
+        description: 'Discarded captures before timing starts'
+        required: false
+        default: '2'
+      size:
+        description: 'Capture size, WIDTHxHEIGHT'
+        required: false
+        default: '800x600'
+      fullpath:
+        description: 'Repeats through helper.getImageDataUri (0 to skip protean''s real path)'
+        required: false
+        default: '2'
+      postprocessing:
+        description: 'default | no-occlusion | no-antialiasing | none — turn a pass off to find which one got expensive'
+        required: false
+        default: 'default'
+      occlusionsamples:
+        description: 'Override the SSAO main kernel size (0 leaves it alone)'
+        required: false
+        default: '0'
+      occlusionblur:
+        description: 'Override the SSAO blur kernel size (0 leaves it alone)'
+        required: false
+        default: '0'
+      baseline:
+        description: 'Version the ratio column is expressed against'
+        required: false
+        default: '4.18.0'
+
+  # `workflow_dispatch` only becomes dispatchable once the file is on the default
+  # branch, which this one is not yet. Pushing a branch under this prefix is how
+  # it is driven until then; the settings come from `run.conf` beside the page,
+  # so each run is a commit that records what was measured and why.
+  push:
+    branches:
+      - 'molstar-bench/**'
+
+# Not `cancel-in-progress`. Each run of this is a deliberate manual measurement
+# that takes most of an hour, and having a second one silently kill the first is
+# the wrong default for a job whose whole output is a table you waited for.
+concurrency:
+  group: molstar-capture-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: capture cost by Mol* release
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+
+      - name: chrome and renderer sanity check
+        run: |
+          echo "path: ${{ steps.chrome.outputs.chrome-path }}"
+          "${{ steps.chrome.outputs.chrome-path }}" --version
+
+      # Inputs when dispatched; run.conf when pushed. Resolved in one place and
+      # echoed, because a benchmark whose settings are not in its own log is a
+      # table nobody can reproduce. Every input reaches the
+      # shell through `env`, never through `${{ }}` inside the script: this repo
+      # is public, and a `${{ }}` in a `run:` block is textual substitution into
+      # the script itself. Nobody without write access can dispatch this, but the
+      # habit is the point — the same shape is how the tj-actions incident got
+      # into people's logs.
+      - name: settle the run configuration
+        id: cfg
+        env:
+          IN_VERSIONS: ${{ inputs.versions }}
+          IN_LEVELS: ${{ inputs.levels }}
+          IN_REPEATS: ${{ inputs.repeats }}
+          IN_WARMUP: ${{ inputs.warmup }}
+          IN_SIZE: ${{ inputs.size }}
+          IN_FULLPATH: ${{ inputs.fullpath }}
+          IN_BASELINE: ${{ inputs.baseline }}
+          IN_POSTPROCESSING: ${{ inputs.postprocessing }}
+          IN_OCCLUSIONSAMPLES: ${{ inputs.occlusionsamples }}
+          IN_OCCLUSIONBLUR: ${{ inputs.occlusionblur }}
+        run: |
+          set -euo pipefail
+          conf=bench/molstar-capture/run.conf
+          get() { # get KEY DEFAULT
+            if [ -f "$conf" ]; then
+              v=$(grep -E "^$1=" "$conf" | tail -1 | cut -d= -f2- || true)
+              [ -n "$v" ] && { echo "$v"; return; }
+            fi
+            echo "$2"
+          }
+          versions="${IN_VERSIONS:-}";  [ -n "$versions" ] || versions=$(get versions '4.18.0,5.11.0,4.18.0,5.11.0')
+          levels="${IN_LEVELS:-}";      [ -n "$levels" ]   || levels=$(get levels '4,1')
+          repeats="${IN_REPEATS:-}";    [ -n "$repeats" ]  || repeats=$(get repeats '8')
+          warmup="${IN_WARMUP:-}";      [ -n "$warmup" ]   || warmup=$(get warmup '2')
+          size="${IN_SIZE:-}";          [ -n "$size" ]     || size=$(get size '800x600')
+          fullpath="${IN_FULLPATH:-}";  [ -n "$fullpath" ] || fullpath=$(get fullpath '2')
+          baseline="${IN_BASELINE:-}";  [ -n "$baseline" ] || baseline=$(get baseline '4.18.0')
+          pp="${IN_POSTPROCESSING:-}";  [ -n "$pp" ]       || pp=$(get postprocessing 'default')
+          osamples="${IN_OCCLUSIONSAMPLES:-}"; [ -n "$osamples" ] || osamples=$(get occlusionsamples '0')
+          oblur="${IN_OCCLUSIONBLUR:-}";       [ -n "$oblur" ]    || oblur=$(get occlusionblur '0')
+
+          # Refuse rather than pass junk to the harness. A version list with a
+          # shell metacharacter in it, or a size that is not a size, should stop
+          # the job here and say so — not fail nineteen runs one at a time with
+          # an error about a directory that does not exist.
+          echo "$versions" | grep -Eq '^[0-9A-Za-z.,+-]+$' || { echo "::error::bad versions: $versions"; exit 1; }
+          echo "$levels"   | grep -Eq '^[0-9,]+$'          || { echo "::error::bad levels: $levels"; exit 1; }
+          echo "$repeats"  | grep -Eq '^[0-9]+$'           || { echo "::error::bad repeats: $repeats"; exit 1; }
+          echo "$warmup"   | grep -Eq '^[0-9]+$'           || { echo "::error::bad warmup: $warmup"; exit 1; }
+          echo "$fullpath" | grep -Eq '^[0-9]+$'           || { echo "::error::bad fullpath: $fullpath"; exit 1; }
+          echo "$size"     | grep -Eq '^[0-9]+x[0-9]+$'    || { echo "::error::bad size: $size"; exit 1; }
+          echo "$baseline" | grep -Eq '^[0-9A-Za-z.+-]*$'  || { echo "::error::bad baseline: $baseline"; exit 1; }
+          case "$pp" in default|no-occlusion|no-antialiasing|none) ;; *) echo "::error::bad postprocessing: $pp"; exit 1 ;; esac
+          echo "$osamples" | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionsamples: $osamples"; exit 1; }
+          echo "$oblur"    | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionblur: $oblur"; exit 1; }
+
+          {
+            echo "versions=$versions"
+            echo "levels=$levels"
+            echo "repeats=$repeats"
+            echo "warmup=$warmup"
+            echo "width=${size%x*}"
+            echo "height=${size#*x}"
+            echo "fullpath=$fullpath"
+            echo "postprocessing=$pp"
+            echo "occlusionsamples=$osamples"
+            echo "occlusionblur=$oblur"
+            echo "baseline=$baseline"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: time a capture on each release
+        env:
+          PROTEAN_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          # The browser job's flags, verbatim. Headless Chrome has no GPU and
+          # Mol* will not build a representation without a GL context, so
+          # SwiftShader is not a detail of this benchmark — it is the renderer
+          # whose behaviour changed, and measuring on anything else would answer
+          # a different question.
+          PROTEAN_CHROME_FLAGS: >-
+            --headless=new --no-sandbox --disable-dev-shm-usage
+            --use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
+          CFG_VERSIONS: ${{ steps.cfg.outputs.versions }}
+          CFG_LEVELS: ${{ steps.cfg.outputs.levels }}
+          CFG_REPEATS: ${{ steps.cfg.outputs.repeats }}
+          CFG_WARMUP: ${{ steps.cfg.outputs.warmup }}
+          CFG_WIDTH: ${{ steps.cfg.outputs.width }}
+          CFG_HEIGHT: ${{ steps.cfg.outputs.height }}
+          CFG_FULLPATH: ${{ steps.cfg.outputs.fullpath }}
+          CFG_POSTPROCESSING: ${{ steps.cfg.outputs.postprocessing }}
+          CFG_OCCLUSIONSAMPLES: ${{ steps.cfg.outputs.occlusionsamples }}
+          CFG_OCCLUSIONBLUR: ${{ steps.cfg.outputs.occlusionblur }}
+        run: |
+          # No `set -e` around the loop on purpose: one release failing to boot
+          # is a row in the table, not a reason to throw away the eighteen that
+          # worked. The step still fails at the end if nothing succeeded.
+          set -uo pipefail
+          mkdir -p results bundles
+          index=0
+          ok=0
+          IFS=',' read -ra VERSIONS <<< "$CFG_VERSIONS"
+          for v in "${VERSIONS[@]}"; do
+            v=$(echo "$v" | tr -d '[:space:]')
+            [ -n "$v" ] || continue
+            index=$((index + 1))
+            slot=$(printf '%02d' "$index")
+            dir="bundles/$v"
+            if [ ! -f "$dir/build/viewer/molstar.js" ]; then
+              echo "::group::fetch molstar@$v"
+              rm -rf "$dir" && mkdir -p "$dir"
+              # `npm pack`, not `npm install`: only the prebuilt UMD bundle is
+              # wanted and it is self-contained, so resolving Mol*'s dependency
+              # tree nineteen times would be a minute each for nothing.
+              if ! (cd "$dir" && npm pack "molstar@$v" --silent >/dev/null 2>&1); then
+                echo "could not fetch molstar@$v"
+                printf '{"label":"%s","ok":false,"error":"npm pack failed"}\n' "$v" \
+                  > "results/$slot-$v.json"
+                echo "::endgroup::"
+                continue
+              fi
+              tar xzf "$dir"/molstar-*.tgz -C "$dir" --strip-components=1
+              echo "::endgroup::"
+            fi
+            echo "::group::bench molstar@$v (run $slot)"
+            python3 bench/molstar-capture/run_bench.py \
+              --molstar-dir "$dir/build/viewer" \
+              --label "$v" \
+              --out "results/$slot-$v.json" \
+              --width "$CFG_WIDTH" \
+              --height "$CFG_HEIGHT" \
+              --repeats "$CFG_REPEATS" \
+              --warmup "$CFG_WARMUP" \
+              --levels "$CFG_LEVELS" \
+              --full-path "$CFG_FULLPATH" \
+              --postprocessing "$CFG_POSTPROCESSING" \
+              --occlusion-samples "$CFG_OCCLUSIONSAMPLES" \
+              --occlusion-blur "$CFG_OCCLUSIONBLUR" \
+              && ok=$((ok + 1))
+            echo "::endgroup::"
+          done
+          echo "$ok of $index runs produced a measurement"
+          [ "$ok" -gt 0 ]
+
+      - name: summary
+        if: always()
+        env:
+          CFG_BASELINE: ${{ steps.cfg.outputs.baseline }}
+        run: |
+          set -euo pipefail
+          python3 bench/molstar-capture/summarise.py results \
+            --baseline "$CFG_BASELINE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: molstar-capture-bench
+          path: results/
+          if-no-files-found: error

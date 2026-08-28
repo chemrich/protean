@@ -1418,7 +1418,7 @@ previously failed outright. **Backlog 18 is untouched** — this does not settle
 what "the structure" means when the two halves disagree, it stops one specific
 file type from losing its analysis half.
 
-### 40. Mol\* 5.11 doubled the browser job — open
+### 40. Mol\* 5.11 doubled the browser job — **answered, and it is 5.4.2**
 
 Found on 2026-08-22 while auditing a plan that blamed something else. Read from
 the run history rather than inferred:
@@ -1543,6 +1543,146 @@ ships in the job.
 27 s here. **CI is the faster of the two per session**, which is the opposite of
 what anyone assumed. A local ratio applied to CI has been wrong in this repo
 twice now, in both directions.
+
+## Answered 2026-08-28: it is **Mol\* 5.4.2**, and it is a one-line shader bug
+
+Bisected on CI with a purpose-built capture benchmark, `bench/molstar-capture`
+— a standalone page against the prebuilt UMD bundle every release ships, which
+is what lets it run on 4.18 at all. protean's own viewer imports Mol\* 5
+internals and would not compile there, and **a benchmark that cannot run on the
+pre-upgrade version measures nothing.**
+
+Not a binary search. All nineteen releases, in order, in one job on one runner,
+because ratios measured back to back are the only ones that survive this repo's
+40% runner variance — and the whole curve says more than the one release a
+bisection would return.
+
+### The curve
+
+```
+release   sampleLevel 4   vs 4.18.0   step
+4.18.0          8,596 ms      1.00x      -
+5.0.0           8,880         1.03x    1.03x
+5.1.0/1/2       8,804/8,986/8,824       ~1.00x each
+5.2.0           8,870         1.03x    1.01x
+5.3.0           8,845         1.03x    1.00x
+5.4.0           8,621         1.00x    0.97x
+5.4.1           8,605         1.00x    1.00x
+5.4.2          25,027         2.91x    2.91x   <-- here
+5.5.0          25,316         2.95x    1.01x
+5.6.0          29,174         3.39x    1.15x
+5.6.1 .. 5.10.1  ~28,600-29,300        ~1.00x each
+5.11.0         29,509         3.43x    1.03x
+4.18.0 again    8,658         1.01x
+```
+
+**Nine releases cost nothing. One costs 2.91x. The remaining nine add 18%
+between them.** Run 33189810118.
+
+**The controls, which are why the table can be believed.** 4.18.0 ran first and
+last and differs by **1%** across a fifty-minute job. 5.1.0, 5.1.1 and 5.1.2
+have byte-identical render paths, and read within **2%** of each other — so the
+noise floor was measured on the same runner in the same job as the signal, and
+the step is 145x it. Draw and instance counts are identical down the table, and
+5.11 covers *less* of the frame than 4.18 (5.70% against 6.43%): it got slower
+while drawing less.
+
+### The mechanism
+
+5.4.2 changed one line, in `ssao.frag`, `ssao-blur.frag` and `outlines.frag`:
+
+```glsl
+- return depth > 0.999; // handle precision issues with packed depth
++ return depth == 1.0;
+```
+
+That is `isBackground()`, and it guards the early `return` in front of the
+occlusion sample loop. The comment that went with it was the load-bearing part.
+
+The **opaque** path is unaffected: it reads a real depth texture, where the
+background is exactly 1.0 and the early-out still fires. The **transparent**
+path reads through `unpackRGBAToDepthWithAlpha` on a uint8 RGBA target that
+`renderer.clearDepth` fills with (1,1,1,1) — and that unpacks to
+
+```
+(255/256) * (1 + 1/256 + 1/65536) = 16777215/16777216 = 0.99999994 = 1 - 2^-24
+```
+
+which is **the largest value the encoding can produce, and is not 1.0**. So
+from 5.4.2 the test is false for every texel of that texture, background or
+not, and the full loop runs over the entire framebuffer. The screenshot helper
+forces `samples: 128` and `reuseOcclusion: false`
+(`mol-plugin/util/viewport-screenshot.js`), so a level-4 capture pays sixteen
+full-screen 128-sample evaluations.
+
+**Upstream has already met this bug and fixed one of the three shaders.** At
+5.11.0 `postprocessing.frag` reads `depth >= 0.99999994` — the same constant,
+derived independently. `ssao.frag`, `ssao-blur.frag` and `outlines.frag` still
+carry `== 1.0`.
+
+### Four measurements, each of which could have refuted it
+
+| what was changed | 5.4.1 -> 5.4.2 |
+|---|---|
+| nothing (as shipped) | **2.91x** on CI, 3.04x locally |
+| occlusion pass off | **0.87x** on CI — the step is gone |
+| blur kernel 15 -> 1 | 3.13x — unchanged, so not the blur |
+| main kernel 32 -> 1 | 1.20x — collapses, so it is this loop |
+| waters removed, scene fully opaque | **0.96x** — gone |
+
+The last one is the decisive one, and it is a *fixture*, not a flag:
+`bench/molstar-capture/1ubq-apo.pdb` is 1UBQ with its 58 waters removed and
+nothing else changed. The regression needs something transparent in the scene
+to evaluate; with nothing transparent, 5.4.1 and 5.4.2 are the same speed.
+
+Occlusion is **91% of a 5.11.0 capture** and was 73% at 4.18.0 (run
+33194071793, the same four versions with the pass switched off).
+
+### Two things that were wrong on the way, recorded so they are not repeated
+
+**A static diff over `mol-canvas3d` and `mol-gl` said 5.0.0**, because it is by
+far the largest diff in the range — every file in the capture path changed
+there and nowhere else. It is 1.03x. An independent read of that release's
+source reached the same 1.00x the measurement did. **The size of a diff carries
+no information about its cost**, and this one is a whole major version of
+import rewrites, a `getByteCount()` on every GL resource, and an XR feature
+that is inert at its defaults.
+
+**The same trace mis-attributed `ssao.frag` to 5.6.0 and 5.10.0** by conflating
+it with `ssao.js`. `ssao.frag` changed at 5.4.2 and 5.6.0 and never at 5.10.0.
+That single error is why five source readers were pointed at four windows, none
+of which contained the answer.
+
+And the first mechanism proposed — *background pixels stop taking the early-out*
+— was refuted by measurement before it could be believed: taking the background
+from 94% of the frame to 55% left the extra cost flat, 733 ms against 811. Flat
+is exactly what the real mechanism predicts, because the affected population is
+not the background but **every pixel of the transparent pass**.
+
+### What is left, and what it is worth
+
+Restoring the early-out should make a capture about **2.7x** cheaper. Captures
+are roughly two thirds of the browser job, which would put ~58 minutes at ~34 —
+close to the 23 the job cost before the upgrade. **That is an extrapolation
+from a benchmark to a job, and this repo has been wrong extrapolating in both
+directions.** The way to know is to apply a fix and re-run the job.
+
+Three ways to get there, and they are not equivalent:
+
+1. **Patch the constant in protean's Vite build.** The only lossless one: the
+   picture does not change, because the early-out is what upstream intended and
+   still uses in `postprocessing.frag`. The cost is a vendored one-line GLSL
+   patch to keep.
+2. **`reuseOcclusion: true` on the capture's ImagePass.** Version-independent,
+   and large — it drops SSAO from sixteen evaluations per capture to one, and
+   `samples` from the helper's forced 128 back to 32. But it changes how the
+   occlusion term antialiases, which is the same shape of trade as the sample
+   level, **rejected on 2026-08-22**. It would have to be measured against the
+   picture, not asserted.
+3. **Report it upstream.** A clean report: the predicate, the unpack
+   arithmetic, and upstream's own `0.99999994` fix in the neighbouring shader.
+   Blocked only on whose account files it — see the note above about the two
+   drafts already waiting.
 ## Three findings from building the view catalogue, 2026-08-19 to 21
 
 ### 36. A structure will not load into a hidden tab — open

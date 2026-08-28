@@ -788,6 +788,30 @@ nothing is released yet, so everything below is unreleased.
 
 ### Mol\* 5
 
+- **The Mol\* upgrade that doubled the browser CI job has a cause, and it is
+  Mol\* 5.4.2.** A standalone capture benchmark (`bench/molstar-capture`,
+  driven by `molstar-capture-bench.yml`) timed one image-pass capture on each
+  of the nineteen releases between 4.18.0 and 5.11.0, all in one job on one
+  runner. Nine of them cost nothing; **5.4.2 costs 2.91x**; the remaining nine
+  add 18% between them.
+
+  The cause is one line of GLSL. `ssao.frag`'s `isBackground()` became
+  `depth == 1.0` where it had read `depth > 0.999`, taking with it the comment
+  saying the tolerance was there for precision. On the *transparent* occlusion
+  path depth comes from `unpackRGBAToDepthWithAlpha` over a uint8 target that
+  `clearDepth` fills with (1,1,1,1), and that unpacks to
+  `16777215/16777216 = 1 - 2^-24`, the largest value the encoding can produce
+  and not 1.0. The early-out in front of the sample loop is therefore dead for
+  every texel, and a level-4 capture pays sixteen full-screen 128-sample
+  occlusion evaluations over the whole framebuffer.
+
+  **Occlusion is 91% of a 5.11 capture and was 73% at 4.18.** Nothing is fixed
+  yet; see `docs/backlog.md` item 40 for the three ways to fix it and what each
+  one costs. Upstream has already met this bug and fixed one of the three
+  shaders it landed in — 5.11.0's `postprocessing.frag` reads
+  `depth >= 0.99999994`, the same constant — but `ssao.frag`, `ssao-blur.frag`
+  and `outlines.frag` still carry `== 1.0`.
+
 - **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
   releases behind, which was making every "can Mol\* do this?" answer
   unreliable. Nothing protean uses went away: the live registries gained a
