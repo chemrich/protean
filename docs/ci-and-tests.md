@@ -95,11 +95,21 @@ range is wide (3.2x to 22x), so it is a median rather than a rule.
    128-sample evaluations over the whole framebuffer instead of over the few
    percent that transparent geometry covers.
 
-   **Occlusion is 91% of a 5.11.0 capture** and was 73% at 4.18.0. Restoring
-   the early-out should make a capture about 2.7x cheaper, which on a job that
-   is roughly two thirds captures would be ~58 minutes becoming ~34. That last
-   step is an extrapolation, and this document's own closing rule says what to
-   do about extrapolations: apply a fix and re-run the job.
+   **Occlusion is 91% of a 5.11.0 capture** and was 73% at 4.18.0.
+
+   **Fixed, and the job is 1.72x faster.** `viewer/src/molstar-patches.ts`
+   applies upstream's own repair to the six shaders they have not reached. The
+   same tree with and without it, both as `pull_request` runs:
+
+   ```
+   without   3393.88s (56:33)   1457 passed, 31 skipped
+   with      1968.39s (32:48)   1457 passed, 31 skipped
+   ```
+
+   Identical counts, so it is not faster because less ran; every threshold
+   passed, so the picture did not move. This page's estimate beforehand was
+   "~58 becoming ~34" — it came out at 32:48, which is a good outcome for an
+   extrapolation and *not* a reason to trust the next one. It was checked.
 
    The instrument is `bench/molstar-capture` and the workflow is
    `molstar-capture-bench.yml`. It is worth knowing how it was measured,

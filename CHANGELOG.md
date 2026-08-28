@@ -805,12 +805,31 @@ nothing is released yet, so everything below is unreleased.
   every texel, and a level-4 capture pays sixteen full-screen 128-sample
   occlusion evaluations over the whole framebuffer.
 
-  **Occlusion is 91% of a 5.11 capture and was 73% at 4.18.** Nothing is fixed
-  yet; see `docs/backlog.md` item 40 for the three ways to fix it and what each
-  one costs. Upstream has already met this bug and fixed one of the three
-  shaders it landed in — 5.11.0's `postprocessing.frag` reads
-  `depth >= 0.99999994`, the same constant — but `ssao.frag`, `ssao-blur.frag`
-  and `outlines.frag` still carry `== 1.0`.
+  **Occlusion is 91% of a 5.11 capture and was 73% at 4.18.**
+
+- **Captures are 2.72x cheaper, and look the same.** The Vite build now applies
+  upstream's own repair — `depth >= 0.99999994`, with their comment — to the six
+  shaders they have not reached yet. Mol\* met this bug and fixed three of the
+  nine it landed in; `postprocessing.frag`, `illumination/compose.frag` and
+  `bloom/luminosity.frag` already read the corrected constant at 5.11.0, and
+  `ssao.frag`, `ssao-blur.frag`, `outlines.frag`, `dof.frag`, `shadows.frag` and
+  `illumination/trace.frag` do not.
+
+  Measured on the prebuilt 5.11.0 bundle, same scene and session: a capture goes
+  from 9,829 ms to 3,619 ms, against 3,136 ms for 5.4.1 — the last release
+  before the bug. **The picture does not change**: three pixels of 43,200 differ
+  by one unit. Occlusion over empty background comes out as approximately no
+  occlusion, so the cost bought nothing.
+
+  **On the browser CI job, measured as an A/B of the same tree: 3393.88s
+  becoming 1968.39s — 56:33 to 32:48, 1.72x.** Identical test counts either
+  side (1457 passed, 31 skipped), so it is not faster because less ran, and
+  every differential threshold passed against the patched renderer.
+
+  It is a find-and-replace against someone else's source, so it is guarded in
+  both directions it can fail. The build errors if it matched nothing, and a
+  test asserts the exact list of shaders still needing it — which is what makes
+  the patch get *deleted* when Mol\* ships the fix, rather than remembered.
 
 - **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
   releases behind, which was making every "can Mol\* do this?" answer
