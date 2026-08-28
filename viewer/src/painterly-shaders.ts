@@ -301,6 +301,7 @@ uniform float uRelief;
 uniform float uSpecular;
 uniform float uFar;
 uniform float uGroundPaint;
+uniform float uEdgeBreak;
 uniform float uGlaze;
 uniform vec3 uShadowColor;
 uniform float uShadowFrom;
@@ -502,7 +503,7 @@ vec4 flowAt(const in vec2 pixel) {
  * to find an edge on; and how much paint is actually here, so the ground shows
  * between the marks.
  */
-vec3 strokeAt(const in vec2 P) {
+vec3 strokeAt(const in vec2 P, out vec2 markCentre) {
     // The lattice is spaced by the stroke's *width*, not its length, or the
     // marks never tile across a ribbon and the paint reads as scattered dashes
     // on bare colour. Length then overlaps its neighbours along the flow, which
@@ -520,6 +521,11 @@ vec3 strokeAt(const in vec2 P) {
     float reach = 2.35 * spacing;
     vec2 home = floor(P / spacing);
     vec3 best = vec3(0.5, 0.0, 0.0);
+    // Where the winning mark was laid from. A brush picks its colour up at
+    // one place and carries it across the whole stroke, so this is the pixel
+    // the paint came from — including for the pixels the stroke reaches that
+    // are not on the molecule at all.
+    markCentre = P;
 
     for (int j = -2; j <= 2; ++j) {
         for (int i = -2; i <= 2; ++i) {
@@ -558,6 +564,7 @@ vec3 strokeAt(const in vec2 P) {
             float w = clamp(1.0 - abs(across), 0.0, 1.0);
             float crest = mix(w, w * w * (3.0 - 2.0 * w), uRidge);
             best = vec3(threadHash(k + 41.5), crest * smoothstep(0.0, 0.35, cover), cover);
+            markCentre = centre;
         }
     }
     return best;
@@ -698,7 +705,8 @@ void main(void) {
     float alpha = clamp(painted.a, 0.0, 1.0);
 
     // -- the mark of the brush ------------------------------------------------
-    vec3 mark = strokeAt(gl_FragCoord.xy);
+    vec2 markCentre;
+    vec3 mark = strokeAt(gl_FragCoord.xy, markCentre);
     // The height field the raking light reads. It keeps its old name because
     // everything downstream — the relight, the weave burial — asks the same
     // question of it: how much paint is standing here.
@@ -710,6 +718,36 @@ void main(void) {
     // background beyond four times the far plane, so this is a clean test and
     // not a threshold anybody has to tune.
     float onPaint = z0 > -2.0 * uFar ? 1.0 : uGroundPaint;
+
+    // -- the stroke crosses the drawing's edge --------------------------------
+    //
+    // Everything above this line is confined to the molecule's silhouette, and
+    // that silhouette is a machine-perfect antialiased vector boundary. It is
+    // the thing that says "render" no matter how the interior is worked: a
+    // painted edge is not a boundary the paint respects, it is a boundary the
+    // paint *makes*, and it overshoots and falls short by a stroke.
+    //
+    // So the mark, not the pixel, decides. A stroke laid from a point on the
+    // molecule carries the molecule's colour over its whole length, past the
+    // silhouette; a stroke laid from the ground leaves ground inside it. Only
+    // the pixels where the two disagree change at all, which is a band one
+    // mark wide around the drawing and nowhere else.
+    float centreOn = flowAt(markCentre).w > -2.0 * uFar ? 1.0 : 0.0;
+    float pixelOn = z0 > -2.0 * uFar ? 1.0 : 0.0;
+    // Weighted by how much of the mark is standing here, so the swap fades out
+    // along the stroke rather than ending on a hard line of its own — which
+    // would simply move the vector edge rather than break it.
+    float crossing = abs(centreOn - pixelOn)
+        * smoothstep(0.0, 0.5, mark.z) * uEdgeBreak;
+    if (crossing > 0.0) {
+        vec4 loaded = fetchAt(markCentre);
+        col = mix(col, loaded.rgb, crossing);
+        alpha = mix(alpha, clamp(loaded.a, 0.0, 1.0), crossing);
+        // The paint is where the paint went. Everything downstream — the
+        // pigment, the relief, the glaze — asks this, and it has to follow the
+        // stroke or a mark that crossed would be tinted as though it had not.
+        onPaint = mix(onPaint, centreOn > 0.5 ? 1.0 : uGroundPaint, crossing);
+    }
 
     // Tone varies by stroke, and mostly in *chroma* rather than in value.
     //

@@ -131,6 +131,21 @@ export interface Look {
    * the background was full impasto and shouted the molecule down, and at 0.15
    * it still read as fur. */
   groundPaint: number;
+  /** How far a stroke is allowed off the drawing, 0 to 1.
+   *
+   * At 0 the paint stops exactly at the molecule's silhouette, which is a
+   * machine-perfect antialiased vector boundary and the single loudest thing
+   * saying "render" in a picture that is otherwise worked all over. At 1 the
+   * mark decides: a stroke laid from a point on the molecule carries its colour
+   * out past the edge, and one laid from the ground bites in. Only the band one
+   * mark wide around the drawing is touched.
+   *
+   * This is the term that has to be watched. A stroke is about a quarter the
+   * width of a loop, so at 1 a loop can lose or gain a stroke's worth of itself,
+   * and the paint must not be allowed to close a gap between two chains or to
+   * carry a helix's colour into a strand. There is no guard for that yet,
+   * and this term must not ship without one. */
+  edgeBreak: number;
 }
 
 export const PAINTERLY_LOOKS: Record<string, Look> = {
@@ -164,6 +179,7 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     specular: 0.04,
     chroma: 1.0,
     groundPaint: 0.0,
+    edgeBreak: 1.0,
   },
 
   // -- the bright ones --------------------------------------------------------
@@ -204,6 +220,7 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     specular: 0.0,
     chroma: 1.5,
     groundPaint: 0.0,
+    edgeBreak: 1.0,
   },
 
   // Flat and graphic. A harder brush so the colour goes down in patches rather
@@ -230,6 +247,7 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     specular: 0.0,
     chroma: 1.55,
     groundPaint: 0.0,
+    edgeBreak: 1.0,
   },
 
   // A painting rather than a print: visible brush, real impasto, bright.
@@ -255,6 +273,7 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     specular: 0.0,
     chroma: 1.4,
     groundPaint: 0.0,
+    edgeBreak: 1.0,
   },
 };
 

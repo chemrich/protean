@@ -231,6 +231,7 @@ const BrushSchema = {
   uSpecular: UniformSpec('f'),
   uFar: UniformSpec('f'),
   uGroundPaint: UniformSpec('f'),
+  uEdgeBreak: UniformSpec('f'),
   uGlaze: UniformSpec('f'),
   uShadowColor: UniformSpec('v3'),
   uShadowFrom: UniformSpec('f'),
@@ -346,6 +347,7 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uSpecular: ValueCell.create(0),
     uFar: ValueCell.create(100),
     uGroundPaint: ValueCell.create(0.3),
+    uEdgeBreak: ValueCell.create(1.0),
     uGlaze: ValueCell.create(0),
     uShadowColor: ValueCell.create(Vec3.create(0, 0, 0)),
     uShadowFrom: ValueCell.create(0.38),
@@ -554,6 +556,7 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uSpecular, look.specular);
   ValueCell.updateIfChanged(state.brush.values.uFar, camera.far);
   ValueCell.updateIfChanged(state.brush.values.uGroundPaint, look.groundPaint);
+  ValueCell.updateIfChanged(state.brush.values.uEdgeBreak, look.edgeBreak);
   ValueCell.updateIfChanged(state.brush.values.uGlaze, look.glaze);
   ValueCell.update(
     state.brush.values.uShadowColor,
