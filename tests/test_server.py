@@ -1808,6 +1808,23 @@ async def test_a_lens_that_cannot_be_set_is_refused(kwargs, message):
         await lens(**kwargs)
 
 
+async def test_an_empty_lens_call_is_answered_rather_than_only_refused():
+    """The refusal for `lens()` with no arguments is the one place a caller who
+    does not know the projections is standing, so it has to name them.
+
+    It used to say `capabilities()` answered the question, and `capabilities()`
+    reported no projections at all. Driven off `_PROJECTIONS` so that adding a
+    third one and leaving the sentence alone fails here.
+    """
+    with pytest.raises(ViewerError) as raised:
+        await lens()
+
+    said = str(raised.value)
+    for projection in server_mod._PROJECTIONS:
+        assert projection in said, f"the refusal never names {projection!r}: {said}"
+    assert "fog" in said
+
+
 def test_every_finish_is_named_where_a_caller_can_find_it():
     """`snapshot`'s docstring is the only place a finish is discoverable.
 

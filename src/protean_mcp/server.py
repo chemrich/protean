@@ -3893,8 +3893,10 @@ async def lens(
         args["fog"] = float(fog)
     if not args:
         raise ViewerError(
-            "Nothing to change. Pass projection, fog, or both — `lens()` with "
-            "no arguments would be a question, and `capabilities()` answers it."
+            "Nothing to change. Pass projection — "
+            f"{' or '.join(_PROJECTIONS)} — or fog, 0 to turn it off and 1 to "
+            f"{_MAX_FOG:g} for how heavily the distance fades, or both. "
+            "`capabilities()` reports the projections too."
         )
     return await _call("lens", args)
 
@@ -4101,10 +4103,18 @@ async def measure(kind: str, names: list[str]) -> dict[str, Any]:
 
 @_tool()
 async def capabilities() -> dict[str, Any]:
-    """List the representation and colour-theme names this viewer accepts.
+    """List every value a display tool will accept, off the running viewer.
 
-    Read from Mol*'s live registries, so the list matches the bundled version
-    rather than a hardcoded guess.
+    Representations, colour themes and size themes are read from Mol\\*'s live
+    registries, so they match the bundled version rather than a hardcoded
+    guess. The named sets protean composes — lighting rigs, shading styles,
+    background gradients, material finishes, path-trace qualities, camera
+    projections — come from the one list the matching tool checks against, so
+    what is reported and what is accepted cannot drift apart.
+
+    `projections` is here because it was the thing `lens()` told callers to
+    look up and the one key this reply did not carry. Fog is not a list and so
+    is not one of these; its range is in `lens()`'s own signature.
     """
     reported = await _call("capabilities", {})
     # Presets are composed here rather than in the viewer, so the viewer cannot
