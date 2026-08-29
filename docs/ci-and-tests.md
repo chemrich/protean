@@ -97,19 +97,31 @@ range is wide (3.2x to 22x), so it is a median rather than a rule.
 
    **Occlusion is 91% of a 5.11.0 capture** and was 73% at 4.18.0.
 
-   **Fixed, and the job is 1.72x faster.** `viewer/src/molstar-patches.ts`
-   applies upstream's own repair to the six shaders they have not reached. The
-   same tree with and without it, both as `pull_request` runs:
+   **Fixed. The job is faster; by exactly how much, three runs cannot say.**
+   `viewer/src/molstar-patches.ts` applies upstream's own repair to the six
+   shaders they have not reached. The same tree with and without it, all as
+   `pull_request` runs:
 
    ```
    without   3393.88s (56:33)   1457 passed, 31 skipped
    with      1968.39s (32:48)   1457 passed, 31 skipped
+   with      2587.77s (43:07)   1457 passed, 31 skipped
    ```
 
-   Identical counts, so it is not faster because less ran; every threshold
-   passed, so the picture did not move. This page's estimate beforehand was
-   "~58 becoming ~34" — it came out at 32:48, which is a good outcome for an
-   extrapolation and *not* a reason to trust the next one. It was checked.
+   Identical counts, so it is not faster because less ran. **But job wall time
+   cannot carry this ratio.** A fourth run exists that was missed when this was
+   first written — 33168369704, an *unpatched* tree, at **45:39** — so unpatched
+   trees alone span 45:39 to 56:33 and one unpatched run beats one patched run.
+   Normalised against per-test durations the job is about **1.3x-1.45x** faster,
+   and on the render-heavy fixtures 2.0x-2.6x.
+
+   **And "every threshold passed" is not evidence the picture held.** Of 493
+   assertions in the browser suites, 120 read pixels and **none compares against
+   a stored baseline**; `tests/pixels.py` has `TOLERANCE = 8` while the patch's
+   largest change under default postprocessing is 2, so `difference()` returns
+   exactly 0.000000 — below the instrument's floor, not inside its threshold.
+   The suite is blind to this class of change. `docs/backlog.md` item 40 has the
+   full-resolution comparison that was done instead.
 
    The instrument is `bench/molstar-capture` and the workflow is
    `molstar-capture-bench.yml`. It is worth knowing how it was measured,

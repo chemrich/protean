@@ -1576,14 +1576,32 @@ release   sampleLevel 4   vs 4.18.0   step
 4.18.0 again    8,658         1.01x
 ```
 
-**Nine releases cost nothing. One costs 2.91x. The remaining nine add 18%
-between them.** Run 33189810118.
+**Nine releases cost nothing. One costs 2.91x.** Run 33189810118.
+
+**And the nine after it are not drift — there is a SECOND step.** This item
+first said they "add 18% between them", which is arithmetically true and
+materially misleading: **5.6.0 alone is 1.15x**, and the other eight add about
+2.3% between them. 5.6.0 reworked `ssao.frag`'s per-sample loop, turning the
+bounds clamp into an `isOutsideBounds()` test with a `continue`. It is a second,
+smaller, *unfixed* regression in the same shader.
+
+Corroborated twice, independently: the sweep's 5.5.0 -> 5.6.0 step is 15.2%, and
+the residual left after the patch below — patched 5.11.0 at 3,619 ms against
+5.4.1's 3,136 ms — is 15.4%. Those agree to 0.2 points, which is what says the
+patch removes the whole of the 5.4.2 regression and none of the 5.6.0 one.
+
+**One caveat on the "vs 4.18.0" column**: the scene is not identical down it.
+At **5.4.0** the camera fit changed — distance 64.89 -> 68.99, coverage 6.43% ->
+5.70% — so rows above and below that line are framed slightly differently. It
+cuts in favour of the finding (5.11 is slower while covering *less*), and the
+headline 5.4.1 -> 5.4.2 comparison is within one framing, but it should have
+been stated the first time.
 
 **The controls, which are why the table can be believed.** 4.18.0 ran first and
 last and differs by **1%** across a fifty-minute job. 5.1.0, 5.1.1 and 5.1.2
 have byte-identical render paths, and read within **2%** of each other — so the
 noise floor was measured on the same runner in the same job as the signal, and
-the step is 145x it. Draw and instance counts are identical down the table, and
+the step is 92x it. Draw and instance counts are identical down the table, and
 5.11 covers *less* of the frame than 4.18 (5.70% against 6.43%): it got slower
 while drawing less.
 
@@ -1684,11 +1702,37 @@ scene, same machine, same session:
 5.4.1, before the bug      3,136 ms           370 ms
 ```
 
-It returns 5.11.0 to within 15% of the last release predating the bug, and that
-15% is the gradual cost the other releases add. **And the picture does not
-change**: comparing the two captures pixel by pixel, three pixels of 43,200
-differ, by one unit in one channel. Occlusion computed over empty background
-comes out as approximately no occlusion, so the cost was being paid for nothing.
+It returns 5.11.0 to within 15% of the last release predating the bug — and that
+15% is not "the gradual cost the other releases add", as this item first said.
+It is the single 5.6.0 step above, still unfixed.
+
+**Two corrections to how those numbers were first reported here**, both found by
+setting adversaries on this item's own claims:
+
+*The 2.72x is a laptop number with no drift control.* It was written up as
+"measured back to back in one process on one runner, where drift over a
+fifty-minute job was 1%". That provenance is false: it was three separate Chrome
+launches on the author's laptop, n=1 per condition with four repeats each. The
+1% belongs to the CI sweep, a different machine and a different experiment. The
+band the data supports is **2.2x-2.9x**.
+
+*The picture does change, and "lossless" was too strong.* The three-pixels
+figure was measured on the 240x180 **thumbnail** the benchmark embeds in its
+result, not on the 800x600 capture — a downscale by 11x in area, which averages
+exactly the kind of scattered single-unit difference it was meant to detect. At
+full resolution:
+
+- **56 of 480,000 pixels differ, by at most 2/255**, none of them background,
+  80% within two pixels of the silhouette. Both builds are bit-reproducible
+  across browser processes, so 56 is the whole difference rather than a sample.
+- That is with *default* postprocessing, which exercises only two of the six
+  patched shaders. **With the outline pass on** — which `preset('illustrative')`
+  uses — the patch changes **2,425 pixels by up to 161/255**, painting a solid
+  black outline where the unpatched build paints grey.
+- That larger change is a *correction*: the patched outline coverage (0.06669)
+  matches 5.4.1's to five decimals, against stock 5.11.0's 0.06625, and is 3.7x
+  closer to the pre-bug renderer overall. But it is a change, and calling the
+  patch lossless was wrong.
 
 **Not taken: `reuseOcclusion: true` on the capture's ImagePass.** It is
 version-independent and larger — sixteen occlusion evaluations per capture
@@ -1697,28 +1741,63 @@ changes how the occlusion term antialiases, which is the same shape of trade as
 the sample level, **rejected on 2026-08-22**. Left on the table deliberately;
 it would have to be measured against the picture, not asserted.
 
-### What it did to the job, measured
+### What it did to the job — and what that number is worth
 
-The two pull requests are the A/B: #145 is this tree without the patch, #146 is
-the same tree with it, both as `pull_request` runs, so the journal-figure gate
-and every other condition match.
+The two pull requests were meant to be a clean A/B: #145 is this tree without the
+patch, #146 the same tree with it, both as `pull_request` runs, so the
+journal-figure gate and every other condition match.
 
 ```
-                pytest's own total   tests
-without the patch   3393.88s (56:33)  1457 passed, 31 skipped
-with the patch      1968.39s (32:48)  1457 passed, 31 skipped
-                    1.72x, 23.7 minutes
+                    pytest's own total   tests
+without the patch    3393.88s (56:33)    1457 passed, 31 skipped
+with the patch       1968.39s (32:48)    1457 passed, 31 skipped
+with the patch       2587.77s (43:07)    1457 passed, 31 skipped   <- same tree, again
 ```
 
-**The counts are identical**, which is the claim that matters second: it is not
-faster because less of it ran. And every test passed, at thresholds calibrated
-to three decimals against the unpatched renderer — which is the losslessness
-claim at full scale, rather than three pixels on a thumbnail.
+**The counts are identical across all three**, which is the claim that matters
+second: it is not faster because less of it ran.
 
-The estimate this item carried before the run was "~58 minutes becoming ~34".
-It came out at 32:48. That is a good outcome for an extrapolation this document
-was right to distrust, and it does not retire the rule: it was checked, which is
-the only reason it can be quoted.
+**But "every test passed, so the picture did not move" is close to vacuous, and
+was reported here as though it were strong.** The browser suites carry 493
+assertions, 120 of which read pixels, and **none compares a capture against a
+stored baseline image** — `tests/snapshots/` is a write-only directory for human
+inspection that no test reads. Of the 120, 78 are lower bounds ("something
+changed"), and the equality assertions are `difference(a, b) == 0.0` between two
+captures taken *in the same session*, where `tests/pixels.py` uses
+`TOLERANCE = 8`. The patch's largest per-channel change under default
+postprocessing is **2**. So `difference(stock, patched)` returns exactly
+0.000000 — not "inside the threshold", but below the measuring function's floor.
+The suite could not have seen this change, and its passing is evidence about
+almost nothing here. See [[guards-that-cannot-see]].
+
+**The ratio, though, is one draw from a noisy distribution, and this item said
+1.72x before the second patched run existed.** The same patched tree came back
+at 32:48 and 43:07 — **1.31x apart, on identical code.** So:
+
+```
+unpatched / patched run 1   1.72x
+unpatched / patched run 2   1.31x
+unpatched / mean of the two 1.49x
+```
+
+The honest statement is that the job got faster by **roughly 1.3x to 1.7x**, and
+three runs cannot pin it tighter. `docs/ci-and-tests.md` has said all along that
+"any improvement smaller than about 2x is unfalsifiable from a single run", and
+this is that rule collecting its debt from a change that was measured *while
+quoting it*. Left in rather than tidied, because the page is more useful as a
+record of the rule biting than as a table of clean numbers.
+
+**And the job-level band is worse than "1.3x to 1.7x" suggested**, because a
+fourth run was missed when that was written: run 33168369704, an *unpatched*
+tree, came in at **45:39** with the same 1457/31. So unpatched trees alone span
+45:39 to 56:33, and one unpatched run is faster than one patched run. Raw job
+totals cannot carry this ratio at all. Normalised against per-test durations the
+answer is about **1.3x-1.45x**, and on the render-heavy fixtures specifically
+it is 2.0x-2.6x — which is where the lab number actually shows up.
+
+The pre-run estimate here was "~58 minutes becoming ~34". Run 1 landed at 32:48
+and run 2 at 43:07, so the estimate was inside the spread rather than confirmed
+by it. That is a weaker result than it first looked, and worth saying so.
 
 **A finding from writing the patch, and it is the kind that recurs.** The first
 version matched the predicate on LF line endings. Mol\* ships the GLSL inside
@@ -1894,3 +1973,32 @@ alone: that path overwrites the column with the caller's own scalar before
 anything ramps over it, so there is no pLDDT left in it to misread. Which is
 the same fact as the paragraph above, arriving through a different door — and
 noticing that only in review is worth recording on its own.
+
+### 42. A Mol\* bug is written up and waiting on an account — open
+
+Backlog 40 above ends in an upstream bug: `isBackground()` cannot fire on Mol\*'s
+packed transparent depth, so ambient occlusion evaluates over the whole
+framebuffer. protean patches it in its own build, so **nothing here is waiting
+on it**; what is waiting is telling the people who own the code.
+
+The report is written and sitting at
+[`docs/upstream/molstar-ssao-background-test.md`](upstream/molstar-ssao-background-test.md).
+**Charlie parked filing it on 2026-08-28** — "I'll get to it in a future
+context" — so this is open on a person, not on more work. The one question it
+needs answered is *whose account files it*.
+
+Two things to know before picking it up, both in that file already:
+
+- **Re-check the six shaders at HEAD first.** The report is pinned to 5.11.0.
+  Upstream has been fixing these one at a time — three of nine by 5.11.0 — so by
+  the time anyone reads this, some may be done and the report may be a much
+  smaller thing, or nothing.
+- **It probably wants to be a pull request, not an issue.** One line in six
+  files, and upstream has already made the identical change elsewhere.
+
+Item 40 claims two *other* Mol\* drafts are also unfiled. When
+`docs/upstream/` was created to hold this one, **neither of those two was
+anywhere in the repository** — written in a session, counted in a note, and
+lost. They are recorded as missing in that directory's README rather than
+quietly dropped from the count. The lesson is cheap: anything worth filing is
+worth committing first.
