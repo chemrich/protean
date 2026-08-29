@@ -400,6 +400,44 @@ function syncSize(webgl: any, state: PassState, width: number, height: number): 
   state.scratch.setSize(width, height);
 }
 
+/** Point the blit at the scratch texture, at this frame's size.
+ *
+ * Both values are refreshed every frame rather than only when the texture
+ * object changes, and the difference is the whole reason this is a function.
+ *
+ * `RenderTarget.setSize` **redefines the existing texture** rather than
+ * replacing it — `targetTexture.define(width, height)`, in
+ * `mol-gl/webgl/render-target.js`. So after a resize the object identity is
+ * unchanged, and a refresh guarded on that identity never fires. The blit is
+ * Mol\*'s own `copy_frag`, which is
+ *
+ *     vec2 coords = gl_FragCoord.xy / uTexSize;
+ *
+ * so a `uTexSize` left at the size the pass was built with samples the new
+ * texture through the old resolution: the frame still renders, at the wrong
+ * scale. That is the failure `syncSize`'s comment already names as the worst
+ * available one, and this is where it was.
+ *
+ * The four renderables above already update their `uTexSize` unconditionally
+ * every frame. This one did not, and the asymmetry was the bug.
+ *
+ * Exported only so it can be tested. A stale scale is not something a green
+ * suite would notice.
+ */
+export function refreshCopy(
+  copy: any,
+  texture: any,
+  width: number,
+  height: number
+): void {
+  ValueCell.update(copy.values.tColor, texture);
+  ValueCell.update(
+    copy.values.uTexSize,
+    Vec2.set(copy.values.uTexSize.ref.value, width, height)
+  );
+  copy.update();
+}
+
 function beginQuad(
   webgl: any,
   viewport: { x: number; y: number; width: number; height: number },
@@ -590,14 +628,7 @@ function paint(
     // The consumer holds the identity of the target it asked for —
     // `ImagePass.getImageData` binds it and reads pixels off it — so the
     // painted frame has to end up in that object and not merely somewhere.
-    if (state.copy.values.tColor.ref.value !== state.scratch.texture) {
-      ValueCell.update(state.copy.values.tColor, state.scratch.texture);
-      ValueCell.update(
-        state.copy.values.uTexSize,
-        Vec2.set(state.copy.values.uTexSize.ref.value, width, height)
-      );
-      state.copy.update();
-    }
+    refreshCopy(state.copy, state.scratch.texture, width, height);
     destination.bind();
     beginQuad(webgl, viewport);
     state.copy.render();
