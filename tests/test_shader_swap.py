@@ -237,10 +237,36 @@ def test_the_candidate_shaders_are_all_present():
     assert names == [
         "ssao-5.5.0-bgfix.frag",
         "ssao-5.6.0-bgfix.frag",
+        "ssao-5.6.0-branchless.frag",
         "ssao-5.6.0-no-bg-guard.frag",
         "ssao-5.6.0-no-bounds-skip.frag",
+        "ssao-5.6.0-pre-1741.frag",
         "ssao-blur-bgfix.frag",
     ]
+
+
+def test_the_branchless_variant_keeps_5_6_0_behaviour_and_loses_the_branch():
+    # It is a proposed repair, not a revert, so the thing to hold is that it
+    # still does what upstream added the skip to do: an out-of-bounds sample
+    # contributes nothing and still leaves the divisor. If it only dropped the
+    # branch it would restore the artefact #1740 was fixing, and its row would
+    # be a speed-up nobody could ship.
+    glsl = (CANDIDATES / "ssao-5.6.0-branchless.frag").read_text()
+    assert "continue;" not in glsl.split("#else")[-1]
+    assert "float inBounds = isOutsideBounds(offset.xy) ? 0.0 : 1.0;" in glsl
+    assert glsl.count("nSamples -= 1.0 - inBounds;") == 2
+    assert glsl.count("offset.xy = clamp(offset.xy, uBounds.xy, uBounds.zw);") == 2
+    # Weighted, in both loops, or an out-of-bounds sample would contribute.
+    assert "occlusion += sampleOcc * inBounds;" in glsl
+    assert "levelOcclusion += sampleOcc * inBounds;" in glsl
+
+
+def test_the_pre_1741_variant_keeps_the_skip_and_drops_only_the_divisor():
+    glsl = (CANDIDATES / "ssao-5.6.0-pre-1741.frag").read_text()
+    assert "isOutsideBounds(offset.xy)" in glsl
+    assert "continue;" in glsl
+    assert "nSamples" not in glsl
+    assert glsl.count("/= float(dNSamples);") == 2
 
 
 def test_each_single_commit_revert_reverts_exactly_its_own_commit():

@@ -283,6 +283,110 @@ def revert_background_guard(glsl: str) -> str:
     return out
 
 
+def revert_renormalisation(glsl: str) -> str:
+    """5.6.0's ssao.frag with PR #1741 alone backed out, keeping #1740's skip.
+
+    This is the state Mol* shipped between bb4c04f3b and ade027911:
+    out-of-bounds samples are skipped, but the divisor is still the compile-time
+    constant. It exists because the split measurement raised a question the
+    two-commit revert could not answer — the branch that skips MORE work costs
+    more than the branch that skips less, which is not what a branch-cost story
+    predicts. The other thing those commits introduced is a second loop-carried
+    float, mutated under a condition, where 5.5.0's loop carried only the
+    accumulator and divided by a constant the compiler could fold.
+
+    So this row prices the divisor apart from the skip. Derived from 5.6.0 by
+    removing exactly what ade027911 added, rather than taken from the
+    intermediate tree, which npm never published.
+    """
+    out = glsl
+    for indent in ("                    ", "                "):
+        line = f"{indent}nSamples -= 1.0;\n"
+        if out.count(line) != 1:
+            raise shader_swap.SwapError(
+                f"expected one nSamples decrement at indent {len(indent)}, "
+                f"found {out.count(line)}"
+            )
+        out = out.replace(line, "")
+    for indent in ("            ", "        "):
+        decl = f"{indent}float nSamples = float(dNSamples);\n"
+        if out.count(decl) != 1:
+            raise shader_swap.SwapError(
+                f"expected one nSamples declaration at indent {len(indent)}, "
+                f"found {out.count(decl)}"
+            )
+        out = out.replace(decl, "")
+    for before, after in (
+        ("levelOcclusion /= nSamples;", "levelOcclusion /= float(dNSamples);"),
+        ("occlusion /= nSamples;", "occlusion /= float(dNSamples);"),
+    ):
+        if out.count(before) != 1:
+            raise shader_swap.SwapError(f"normalisation not found: {before}")
+        out = out.replace(before, after)
+    if "nSamples" in out:
+        raise shader_swap.SwapError("an nSamples reference survived the revert")
+    return out
+
+
+def branchless_bounds(glsl: str) -> str:
+    """5.6.0's ssao.frag with the same semantics and no per-sample branch.
+
+    A candidate repair rather than a revert. The skip is what upstream added to
+    stop a clamped off-screen sample being read as an occluder, and reverting it
+    restores that artefact — so a repair has to keep the behaviour and lose the
+    cost.
+
+    Out-of-bounds samples contribute nothing and still leave the divisor, which
+    is exactly what the skip does; they reach that answer by being multiplied by
+    zero instead of by jumping. The coordinate is clamped so the fetch stays in
+    the texture, which also bounds the case the skip covered incidentally, a
+    sample projected through a near-zero w.
+
+    Identical output, so it can be measured against stock 5.6.0 as a pure cost
+    question.
+    """
+    out = glsl
+    sites = [
+        (
+            "                ",
+            "                    ",
+            "                levelOcclusion += sampleOcc;",
+            "                levelOcclusion += sampleOcc * inBounds;",
+        ),
+        (
+            "            ",
+            "                ",
+            "            occlusion += sampleOcc;",
+            "            occlusion += sampleOcc * inBounds;",
+        ),
+    ]
+    for indent, inner, accumulate, weighted in sites:
+        skip = (
+            f"{indent}if (isOutsideBounds(offset.xy)) {{\n"
+            f"{inner}nSamples -= 1.0;\n"
+            f"{inner}continue;\n"
+            f"{indent}}}\n"
+        )
+        if out.count(skip) != 1:
+            raise shader_swap.SwapError(
+                f"expected one bounds skip at indent {len(indent)}, "
+                f"found {out.count(skip)}"
+            )
+        out = out.replace(
+            skip,
+            f"{indent}float inBounds = isOutsideBounds(offset.xy) ? 0.0 : 1.0;\n"
+            f"{indent}nSamples -= 1.0 - inBounds;\n"
+            f"{indent}offset.xy = clamp(offset.xy, uBounds.xy, uBounds.zw);\n",
+            1,
+        )
+        if out.count(accumulate) != 1:
+            raise shader_swap.SwapError(f"accumulator not found: {accumulate}")
+        out = out.replace(accumulate, weighted, 1)
+    if "continue;" in out.split("#else")[-1]:
+        raise shader_swap.SwapError("a continue survived in the executed loop")
+    return out
+
+
 VARIANTS = [
     (
         "ssao-5.6.0-no-bounds-skip.frag",
@@ -293,6 +397,16 @@ VARIANTS = [
         "ssao-5.6.0-no-bg-guard.frag",
         revert_background_guard,
         "PR #1737's shader half, the opaque isBackground guard",
+    ),
+    (
+        "ssao-5.6.0-pre-1741.frag",
+        revert_renormalisation,
+        "PR #1741 alone, so the skip is priced apart from its divisor",
+    ),
+    (
+        "ssao-5.6.0-branchless.frag",
+        branchless_bounds,
+        "nothing -- it keeps 5.6.0's behaviour and drops the per-sample branch",
     ),
 ]
 
