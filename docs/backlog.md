@@ -1585,10 +1585,26 @@ materially misleading: **5.6.0 alone is 1.15x**, and the other eight add about
 bounds clamp into an `isOutsideBounds()` test with a `continue`. It is a second,
 smaller, *unfixed* regression in the same shader.
 
+That last sentence was written from reading the diff, without an instrument that
+could contradict it. **Item 43 measured it**: the file is right — four files
+change in that release and this is the one — and the sentence is right about
+which lines. It was reached the hard way, through three wrong explanations of
+*why*, and the honest reading of it here is that it was a good guess rather than
+a finding.
+
 Corroborated twice, independently: the sweep's 5.5.0 -> 5.6.0 step is 15.2%, and
 the residual left after the patch below — patched 5.11.0 at 3,619 ms against
-5.4.1's 3,136 ms — is 15.4%. Those agree to 0.2 points, which is what says the
-patch removes the whole of the 5.4.2 regression and none of the 5.6.0 one.
+5.4.1's 3,136 ms — is 15.4%.
+
+**Those two agreeing to 0.2 points was read here as confirmation, and it is a
+coincidence.** They come from two different regimes. Unpatched, `isBackground`
+cannot fire on the transparent path, so the sample loop runs over every texel of
+the frame; patched, the early return works and it runs only where it must. A
+per-sample overhead is not the same share of a capture in both, and after the
+patch it plainly is not, or the patch would have bought far more than the 2.72x
+it did. Measured directly in item 43 — one bundle, the repair applied in both
+rows, only the loop body differing — the 5.6.0 shader costs protean **6.3%**,
+not 15.4%.
 
 **One caveat on the "vs 4.18.0" column**: the scene is not identical down it.
 At **5.4.0** the camera fit changed — distance 64.89 -> 68.99, coverage 6.43% ->
@@ -1704,7 +1720,9 @@ scene, same machine, same session:
 
 It returns 5.11.0 to within 15% of the last release predating the bug — and that
 15% is not "the gradual cost the other releases add", as this item first said.
-It is the single 5.6.0 step above, still unfixed.
+The 5.6.0 step above is most of what remains, but **not 15% of it**: measured in
+the patched regime rather than inferred across regimes, that shader costs 6.3%.
+See item 43, which answers it.
 
 **Two corrections to how those numbers were first reported here**, both found by
 setting adversaries on this item's own claims:
@@ -1981,6 +1999,14 @@ packed transparent depth, so ambient occlusion evaluates over the whole
 framebuffer. protean patches it in its own build, so **nothing here is waiting
 on it**; what is waiting is telling the people who own the code.
 
+**Item 43 has since added a second half to that report**, and it is the more
+interesting one: the 5.6.0 step is diagnosed, with an intervention rather than
+an argument, and it tells upstream something they cannot easily see — a
+correctness fix everyone would wave through costs 18% of an occlusion pass under
+software rendering, and the cheap-looking rewrites of it do not help. No change
+is proposed there; it is offered as information, so it does not change whose
+account has to file anything.
+
 The report is written and sitting at
 [`docs/upstream/molstar-ssao-background-test.md`](upstream/molstar-ssao-background-test.md).
 **Charlie parked filing it on 2026-08-28** — "I'll get to it in a future
@@ -2002,3 +2028,339 @@ anywhere in the repository** — written in a session, counted in a note, and
 lost. They are recorded as missing in that directory's README rather than
 quietly dropped from the count. The lesson is cheap: anything worth filing is
 worth committing first.
+
+### 43. The second Mol\* regression — answered, and it is one predicate
+
+Item 40 above ends with a loose end it named but never measured: **5.6.0 costs a
+further 1.15x**, in the same shader, unfixed. That attribution was a *reading* of
+a diff — "5.6.0 reworked `ssao.frag`'s per-sample loop, turning the bounds clamp
+into an `isOutsideBounds()` test with a `continue`" — written without an
+instrument that could have contradicted it. Item 40's own closing lesson says
+what that is worth.
+
+It turns out to be right about the file and, for a while, wrong about why.
+
+**Four files change in the capture path between 5.5.0 and 5.6.0, not one**:
+`ssao.frag`, `ssao.js` (the SSAO kernel became blue-noise distributed),
+`outlines.frag` (a new curvature veto) and `canvas3d.js` (the draw loop's
+fence-sync throttle removed). `ssao-blur.frag` is byte-identical. Only the first
+had been named.
+
+### How it was measured
+
+Every release ships `build/viewer/molstar.js` with its shaders as plain backtick
+template literals — the JavaScript is minified, the GLSL is not, because it is
+data. So one shader can be spliced out of one release's bundle and into
+another's with no build and no npm resolution, and
+`bench/molstar-capture/shader_swap.py` does exactly that. `5.6.0:ssao.frag=5.5.0`
+in the version list is 5.6.0 carrying its predecessor's occlusion shader, with
+the release's other three changed files still in place.
+
+Run in both directions it is a double dissociation rather than an elimination.
+Every run below is one CI job on one runner, each condition measured **twice in
+mirrored positions**, so that a runner drifting over the job cannot put its drift
+on whichever condition ran late. `read_pairs.py` reads them that way and prints
+each condition's own two-row spread beside the ratio, which is the run's noise
+floor measured on the same runner in the same job as the signal.
+
+That mirroring is not a nicety. The occlusion-off control read every *adjacent*
+step at about 0.89x regardless of which version followed which — 5.5.0 to 5.6.0
+at 0.890x and 5.6.0 to 5.5.0 at 0.894x, two steps of the same size pointing at
+opposite versions. Either one alone is a version effect that is not there.
+
+### It is `ssao.frag`, and nothing else in the release
+
+Run 33253540188, twelve rows. The two stock 5.5.0 rows agree to **0.02%**.
+
+```
+condition                             L4 pair mean   vs 5.5.0   own spread
+5.5.0                                     13,847       1.000x      0.02%
+5.6.0                                     16,061       1.160x      2.32%
+5.6.0 carrying 5.5.0's ssao.frag          14,546       1.050x      3.73%
+5.5.0 carrying 5.6.0's ssao.frag          16,243       1.173x      1.49%
+```
+
+The forward transplant reproduces **108%** of the step; the backward revert
+recovers 68%. Run 33254381944, on a different runner, put the backward revert at
+**1.004x** — parity — so across the two the shader carries 68% to 98% of it, and
+the residual is not consistently present.
+
+**That one row is what rules out the other three files.** It is the 5.6.0
+bundle — 5.6.0's blue-noise kernel, 5.6.0's fenceless draw loop, 5.6.0's
+`outlines.frag` — with only the shader reverted, and it reads at 5.5.0's speed.
+No elimination by argument was needed.
+
+The ratio is the same at sampleLevel 1 (1.152x) as at 4 (1.160x), so it is a
+**per-sample** cost, not fixed per-capture work.
+
+### The blue-noise kernel is an interaction term, not a cause
+
+`ssao.js` replaced 256 `Math.random()` hemisphere vectors with best-candidate
+blue noise. That selection is **not radially neutral** — maximising the minimum
+distance to the samples already chosen is easier to satisfy further out — and
+over 60 trials at n=128, with the identical scale ramp both releases apply:
+
+```
+5.5.0 Math.random hemisphere      mean |v| 0.2030   mean |v.xy| 0.1608
+5.6.0 best-candidate blue noise   mean |v| 0.2858   mean |v.xy| 0.1859
+```
+
++41% in view-space radius. Reading only the *base* generator says the opposite —
+its raw distribution is tighter than 5.5.0's, in-plane 0.594x, because it doubles
+z before normalising — so the whole outward bias is the selection on top, and a
+first pass at this got the sign wrong by leaving the selection out.
+
+Measured rather than argued: `bundle_tweak.py` sets `candidateCount` to 1, which
+turns best-candidate selection into plain sampling with the same generator, the
+same PCG and one token changed. Run 33254381944:
+
+```
+with 5.6.0's shader   candidateCount 12 -> 1 saves 3.2% (L4), 3.5% (L1)
+with 5.5.0's shader   candidateCount 12 -> 1 saves -0.4%, -0.2%   -- nothing
+```
+
+So the kernel costs something only when 5.6.0's shader is there to make it cost
+something. It is an interaction, not a main effect, and it is small.
+
+### Which commit, inside the shader
+
+The file changed three times upstream, in three commits with three intentions
+([provenance below](#where-it-came-from)). Two of them are one repair. Each
+variant here is stock 5.6.0 with exactly one backed out, generated from the real
+bundle by `make_candidates.py`, whose assertions fail the build rather than
+producing a half-reverted shader. Run 33254959165, the tightest job of the set —
+noise floor **0.37% to 1.22%**:
+
+```
+condition                                  L4 pair mean   vs 5.5.0
+5.5.0                                          29,895       1.000x
+5.6.0                                          35,957       1.203x
+5.6.0 minus PR #1740 + #1741 (the skip)        30,510       1.021x
+5.6.0 minus PR #1737 (the isBackground guard)  34,982       1.170x
+```
+
+**Reverting the bounds skip recovers 90% of the step.** As two factors the skip
+is 1.179x and the guard 1.028x, whose product is 1.212x against the 1.203x
+measured — an interaction under 1%, so they are independent and additive.
+
+Note the guard's sign. `if (!isBackground(sampleDepth))` was added as an
+early-out, and **removing it makes 5.6.0 2.7% faster**. It costs.
+
+### Three explanations that were wrong, and how each died
+
+This is the part worth keeping, because the surviving explanation is only
+believable given what it had to survive.
+
+**Counting operations said 5.6.0's loop should be cheaper.** Per sample it
+*removes* eight `clamp` ops and adds a seven-op comparison; the new
+`isBackground` guard skips a `screenSpaceToViewSpace` plus a `step` and a
+`smootherstep`, about 53 ops, on every sample whose opaque depth is 1.0 — which
+on a real depth texture it genuinely is. Two independent readings reached
+"neutral to cheaper". The measurement says 1.20x. **An operation count is not a
+cost model**, and this is the second time in this backlog that reading a diff
+has pointed the wrong way.
+
+**The loop-carried divisor was not it.** PR #1741 turned `occlusion /
+float(dNSamples)` — a `#define` the compiler folds — into a second loop-carried
+float, mutated under a condition. `pre-1741` keeps the skip and restores the
+constant: **1.164x against stock 5.6.0's 1.150x in the same job**, noise floor
+1.1%. Nothing.
+
+**Nor was it the jump.** The skip steps over the *whole* sample body and costs
+1.18x; the guard steps over about a quarter of it and costs 1.03x. If the jump
+were the cost, the bigger jump would be the cheaper one. And replacing the jump
+with a mask while keeping the predicate is **slower still, 1.204x**, because it
+pays the texture fetches the jump was skipping.
+
+### Where it came from
+
+Read the upstream history before proposing anything, because **the change is a
+correctness fix and a straight revert is not available.**
+
+| commit | PR | what |
+|---|---|---|
+| `a20e7bb40` | [#1737](https://github.com/molstar/molstar/pull/1737) | wrap the opaque sample in `if (!isBackground(sampleDepth))` |
+| `bb4c04f3b` | [#1740](https://github.com/molstar/molstar/pull/1740) | stop clamping out-of-bounds sample coordinates; skip those samples |
+| `008bed023` | [#1740](https://github.com/molstar/molstar/pull/1740) | repair what the bare `continue` broke in the transparent path |
+| `ade027911` | [#1741](https://github.com/molstar/molstar/pull/1741) | decrement `nSamples` on the skip path and renormalise by it |
+
+**There is no GitHub issue.** It was reported by *giagitom* in comments on PR
+#1737 — "when using huge ssao radius (> 12) I would expect to not see any
+occlusion at all but instead I am seeing it in different places where it
+shouldn't", then "occlusion is dependent on camera zoom in this conditions",
+with screenshots and a `.molj` repro. `bb4c04f3b`'s commit body is the diagnosis
+in one line: a sample projecting outside `uBounds` was **clamped to the border
+texel**, so a border texel containing geometry acted as an occluder for every
+off-screen sample. `ade027911` then stopped the skip from lightening edges.
+
+So the artefact is real, the fix is right, and anything protean or upstream does
+here has to keep the behaviour. That also corrects the briefing this
+investigation started from: the `isBackground` guard is **not** part of the
+bounds rework. It shipped two days earlier, inside the PCG/blue-noise PR.
+
+`outlines.frag`'s curvature veto is not exercised by this benchmark —
+`postprocessing.outline` defaults to `off`, checked in that release's parameters
+rather than assumed. **It is exercised by protean**, whose `illustrative` and
+`richardson` presets both turn the outline on, so that change is a cost this
+instrument structurally cannot see and no claim here covers it.
+
+### What it costs protean, which is not what item 40 says
+
+Item 40 reads the sweep's 15.2% step and the patched build's 15.4% residual
+agreeing "to 0.2 points" as confirmation that the patch removes none of the
+5.6.0 cost. **Those two numbers come from two different regimes.** Unpatched,
+`isBackground` cannot fire on the transparent path, so the 128-sample loop runs
+over every texel of the frame; patched, the early return works and the loop runs
+only where it must. A per-sample overhead is not the same share of a capture in
+both, and after the patch it plainly is not, or the patch would have bought far
+more than the 2.72x it did.
+
+So measure it instead. One bundle, one release, `isBackground` repaired in both
+rows by exactly the substitution `viewer/src/molstar-patches.ts` performs, the
+two rows differing only in whose loop body they carry (run 33253540188):
+
+```
+5.6.0 bundle, repaired, carrying 5.6.0's loop     5,168 ms       spread 2.50%
+5.6.0 bundle, repaired, carrying 5.5.0's loop     4,863 ms       spread 0.40%
+                                                  ------
+                                                  1.063x
+```
+
+**6.3% at sampleLevel 4, 4.4% at level 1 — not 15.4%.** The pairs do not
+overlap. Item 40's agreement was a coincidence across two regimes, and the
+sentence "It is the single 5.6.0 step above, still unfixed" overstates protean's
+exposure by about two and a half times.
+
+Two caveats on that number, both against it:
+
+- An independent estimate, from measuring the SSAO loop's *share* of a capture
+  in each regime and scaling the sweep's 15.2% by the ratio, comes out at
+  **~2%**. It disagrees with the direct measurement by 3x. It was taken on a
+  laptop carrying 51 Chrome processes at a load average between 7 and 15, and it
+  is a scaling argument rather than an A/B, so the 6.3% is the number to use —
+  but the disagreement is recorded rather than dropped.
+- The same capture is also **3.11x faster with the repair than without it** on
+  this scene, which sits at the top of item 40's 2.2x-2.9x band.
+
+### What this cost protean's actual job: nothing yet, and here is the honest bound
+
+Captures are somewhere between a quarter and two thirds of the browser job, so
+6.3% of a capture is **1.6% to 4.2% of the job** — smaller than a single run's
+variance on it, which `docs/ci-and-tests.md` puts at about 40%. Nothing in this
+item is worth acting on for job time alone. **It is worth acting on because it
+is a real cost in somebody else's code, found with an instrument that can
+demonstrate it.**
+
+### The instrument, and one thing it got wrong on the way
+
+Added to `bench/molstar-capture` for this, all of it reusable:
+
+| file | what |
+|---|---|
+| `shader_swap.py` | splices one release's GLSL into another's prebuilt bundle |
+| `bundle_tweak.py` | named one-line changes to the bundle's minified JavaScript |
+| `make_candidates.py` | generates the variant shaders from real bundles, with assertions |
+| `resolve_conf.py` | settles a run's parameters and says where each one came from |
+| `read_pairs.py` | reads a mirrored run as pair means, and prints its own noise floor |
+| `kernel_stats.mjs` | what the SSAO kernel actually is, in each release |
+
+**A run.conf block used to inherit settings from older blocks.** Run 33252777716
+asked for twelve rows with the occlusion pass on, to measure a regression that
+lives inside the occlusion pass, and ran every one of them with the pass off:
+the block does not set `postprocessing`, and the resolution read the last
+matching line in the *file* rather than in the block, picking up
+`no-occlusion` from an experiment three blocks older.
+
+It did not fail. It produced twelve rows within 10% of each other with no
+pattern by condition — which reads exactly like a null result and was a null
+instrument. It was caught because the job echoes what it settled on and the
+numbers were ten times smaller than the sweep's. Resolution is now tested Python
+where a block is self-contained, and every value is logged with the line it came
+from. Those rows became the occlusion-off control instead of being discarded.
+
+**Every guard here was checked by deleting it and watching a test go red**, and
+six could not see their own subject:
+
+- `pytest.raises(match="malformed")` was being satisfied by pytest's own
+  `tmp_path`, which pytest names after the test. It passed with the guard gone.
+- The drift test recomputed the pair mean itself instead of reading the printed
+  table, so making the table print the first row of each pair left it green —
+  on the one thing that tool exists to do.
+- The noise-floor test asserted only on the summary line, which is computed
+  separately from the per-row spread column.
+- `read_shader`'s name check, `resolve_source`'s file check, and the validation
+  inside `resolve_conf.main` had no test at all.
+
+And one guard caught a real defect the moment it was written: a test asserting
+the candidate shaders carry no backtick failed on a backtick in the header
+comment the generator emits. That would have been a syntax error three megabytes
+into a bundle, in a job costing half an hour.
+
+**A transplanted shader that failed to compile would not say so.** In the
+prebuilt bundle `isDebugMode` is false, so `mol-gl/webgl/shader.js` never reads
+`COMPILE_STATUS` and `program.js` checks `LINK_STATUS` only under that flag: a
+dead shader leaves an unlinked program and produces a fast, wrong row. Ruled out
+by picture rather than by hope — the same build with the occlusion pass switched
+off differs from stock by 5.51% of pixels at up to 38/255, while every
+transplanted variant differs by 0.00% to 0.15% at up to 1. The passes ran.
+
+### What survives: evaluating the test at all, and there is no cheap way out
+
+Two axes, crossed, in one job (run 33257901713) — the predicate written with
+GLSL's short-circuiting `||` or with vector builtins, against the sample skipped
+by a `continue` or weighted by a mask. All four produce output **bit-identical
+to stock 5.6.0** at the thumbnail, so this is a pure cost question:
+
+```
+                        short-circuiting ||     any(bvec4(lessThan..))
+  continue (as shipped)        1.165x                  1.110x
+  mask                         1.226x                  1.099x
+```
+
+```
+the step                                              16.5%
+flattening the predicate recovers                       33% of it
+flattening AND masking recovers                         40%
+masking with the || chain left in                      -37%   (worse than stock)
+not evaluating the test at all (run 33254959165)        90%
+```
+
+**So the cost is the per-sample bounds test itself, in every form tried.** The
+short-circuit chain — `||` is sequential in GLSL ES 1.00, so four comparisons are
+up to four conditional evaluations — is about a third of it. The rest is the
+test's own evaluation: even the flat form, four comparisons reduced through a
+`bvec4`, costs more than the eight `clamp` operations it replaced, which is why
+*restoring the clamps and dropping the test* is the only thing that recovers the
+step.
+
+And the obvious repair is a trap. Replacing the jump with a mask while leaving
+the predicate alone is **5% slower than stock**, because it pays the two texture
+fetches the jump was skipping and keeps every branch that was costing anything.
+
+There is no version of this that is both cheap and correct, at Mol\*'s defaults.
+Hoisting was the one remaining idea and it is dead on arithmetic: `uRadius` is
+`2^radius * camera.scale` = 32 world units against a fitted camera distance of
+68.99, so the sample ball projects to an NDC half-extent of about 2.09 — twice
+the whole frame. There is no per-fragment "no sample of this kernel can leave
+`uBounds`" test worth having when the kernel is bigger than the viewport.
+
+### What to do about it — Charlie's call
+
+**Nothing is broken and nothing is waiting on this.** protean pays 6.3% of a
+capture, 1.6% to 4.2% of the browser job, which is inside a single run's
+variance on that job.
+
+- **A protean-side patch is not recommended.** The best formulation measured
+  recovers 40% of a 6.3% cost — about 2.5% of a capture — for a second carried
+  Mol\* patch and its maintenance. The one worth having, dropping the test, is
+  the one that restores the artefact upstream fixed.
+- **This belongs in the upstream conversation that is already written and
+  parked** (item 42, `docs/upstream/molstar-ssao-background-test.md`). It is a
+  better report than the one already there in one way: it comes with an
+  intervention, a 2x2 and four independent reproductions, and it tells upstream
+  something they cannot easily see — that a correctness fix everyone would wave
+  through costs 18% of an occlusion pass under software rendering, and that the
+  cheap-looking rewrites do not help.
+- **The `outlines.frag` blind spot stands.** `illustrative` and `richardson`
+  turn the outline on and this benchmark never does, so 5.6.0's curvature veto
+  is unpriced. That is a known gap, not a claim.
