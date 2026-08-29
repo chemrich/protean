@@ -215,3 +215,87 @@ def test_a_malformed_swap_spec_is_refused(tmp_path):
     # *directory*, and went on passing with the guard deleted. Found by removing
     # the guard and watching the test not notice.
     assert str(raised.value).startswith("malformed --shader-swap")
+
+
+# --- the candidate shaders the 5.6.0 experiment measures --------------------
+#
+# `make_candidates.py` writes these from the real bundles, which a unit test
+# cannot fetch. What it can do is assert the committed files are what they claim
+# to be — because they are what CI splices into a 4.8 MB bundle, and a stale or
+# hand-edited one would produce a row that is confidently mislabelled rather
+# than an error.
+
+CANDIDATES = REPO / "bench" / "molstar-capture" / "candidates"
+
+FIXED_PREDICATE_24BIT = "return depth >= 0.99999994;"
+FIXED_PREDICATE_16BIT = "return depth >= 0.999;"
+BROKEN_PREDICATE = "return depth == 1.0;"
+
+
+def test_the_candidate_shaders_are_all_present():
+    names = sorted(p.name for p in CANDIDATES.glob("*.frag"))
+    assert names == [
+        "ssao-5.5.0-bgfix.frag",
+        "ssao-5.6.0-bgfix.frag",
+        "ssao-blur-bgfix.frag",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "predicate"),
+    [
+        ("ssao-5.5.0-bgfix.frag", FIXED_PREDICATE_24BIT),
+        ("ssao-5.6.0-bgfix.frag", FIXED_PREDICATE_24BIT),
+        # The blur reads packUnitIntervalToRG's 16-bit encoding, where a
+        # background texel round-trips to 0.99998468 and the 24-bit constant
+        # cannot fire. Giving it the wrong one is not a compile error — it is a
+        # silent no-op, and it shipped once.
+        ("ssao-blur-bgfix.frag", FIXED_PREDICATE_16BIT),
+    ],
+)
+def test_each_candidate_carries_the_repair_and_not_the_bug(name, predicate):
+    text = (CANDIDATES / name).read_text()
+    assert predicate in text, name
+    assert BROKEN_PREDICATE not in text, name
+
+
+def test_the_candidate_shaders_have_no_backtick():
+    # They are spliced into a JavaScript template literal. One backtick anywhere
+    # in one of them is a syntax error 3 MB from its cause, in a job that costs
+    # half an hour.
+    for path in CANDIDATES.glob("*.frag"):
+        assert "`" not in path.read_text(), path.name
+
+
+def test_the_two_ssao_candidates_differ_only_below_the_predicate():
+    # The whole point of the pair is that one variable changes. If they differed
+    # anywhere else, the ratio between their two rows would not be the cost of
+    # 5.6.0's loop rework — and nothing downstream would notice.
+    a = (CANDIDATES / "ssao-5.5.0-bgfix.frag").read_text()
+    b = (CANDIDATES / "ssao-5.6.0-bgfix.frag").read_text()
+    assert a != b
+    cut = "// StarCraft II Ambient Occlusion"
+    assert a[: a.index(cut)] != b[: b.index(cut)], (
+        "5.6.0 added isOutsideBounds() and dropped the clamps from the depth "
+        "getters, both of which are above main()"
+    )
+    # Same interface, or the transplant is not comparing like with like.
+    assert shader_swap.uniform_lines(a) == shader_swap.uniform_lines(b)
+
+
+def test_run_conf_only_names_candidate_files_that_exist():
+    # The version list is a string in a config file; a typo in a path there
+    # fails eight rows into a job, after twenty minutes of runner time.
+    conf = (REPO / "bench" / "molstar-capture" / "run.conf").read_text()
+    referenced = set()
+    for line in conf.splitlines():
+        if not line.startswith("versions="):
+            continue
+        for entry in line.split("=", 1)[1].split(","):
+            for part in entry.split(":"):
+                _, _, source = part.partition("=")
+                if source.startswith("@"):
+                    referenced.add(source[1:])
+    assert referenced, "no candidate file is referenced; this test would pass blind"
+    for path in sorted(referenced):
+        assert (REPO / path).is_file(), path

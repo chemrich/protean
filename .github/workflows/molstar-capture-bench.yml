@@ -65,10 +65,13 @@ on:
         required: false
         default: '4.18.0'
 
-  # `workflow_dispatch` only becomes dispatchable once the file is on the default
-  # branch, which this one is not yet. Pushing a branch under this prefix is how
-  # it is driven until then; the settings come from `run.conf` beside the page,
-  # so each run is a commit that records what was measured and why.
+  # This file reached `main` with #145, so `workflow_dispatch` works now and is
+  # the normal way to drive it — including `--ref <branch>`, which runs the
+  # branch's copy of this file and its `run.conf`. The push trigger predates
+  # that and is kept because it is still the cheapest way to make a measurement
+  # be a commit: pushing under this prefix runs whatever `run.conf` says, so the
+  # settings that produced a table are recorded next to it rather than in an
+  # Actions form nobody can read afterwards.
   push:
     branches:
       - 'molstar-bench/**'
@@ -256,22 +259,27 @@ jobs:
               esac
             done
 
-            # `:` and `=` are legal in a filename here but make the artifact
-            # awkward to read; the label keeps the exact entry, the file name is
-            # a slug of it, and summarise.py orders on the file name.
-            slug=$(echo "$entry" | tr ':=@/' '____')
+            # An entry naming candidate shader files is long enough to make both
+            # the file name and the summary table unreadable. The file name is a
+            # truncated slug — the `NN-` prefix already makes it unique and
+            # summarise.py orders on it — and the label keeps the whole entry
+            # with the directories dropped from any file source, which is the
+            # part that carries no information. The full path survives in the
+            # result's `harness.shaderSwaps`, with a digest of the bytes served.
+            slug=$(echo "$entry" | tr ':=@/' '____' | cut -c1-60)
+            label=$(echo "$entry" | sed 's#=@[^:]*/#=@#g')
             if ! fetch_bundle "$v" || [ -n "$fetch_failed" ]; then
               printf '{"label":"%s","ok":false,"error":"npm pack failed for %s"}\n' \
-                "$entry" "${fetch_failed:-$v}" > "results/$slot-$slug.json"
+                "$label" "${fetch_failed:-$v}" > "results/$slot-$slug.json"
               continue
             fi
             dir="bundles/$v"
-            echo "::group::bench $entry (run $slot)"
+            echo "::group::bench $label (run $slot)"
             python3 bench/molstar-capture/run_bench.py \
               --molstar-dir "$dir/build/viewer" \
               --bundles-root bundles \
               "${swap_args[@]+"${swap_args[@]}"}" \
-              --label "$entry" \
+              --label "$label" \
               --out "results/$slot-$slug.json" \
               --width "$CFG_WIDTH" \
               --height "$CFG_HEIGHT" \
