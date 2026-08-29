@@ -68,6 +68,52 @@ draw pass's transparency mode, and the entire `canvas3d.props` tree. That last
 one is the direct test of item 40's second candidate — *a default that changed
 on our side* — and it costs one `JSON.stringify`.
 
+## Transplanting one shader into another release's bundle
+
+A release changes several files. Naming one of them as the cost is a reading,
+and this project has a rule about readings: *the size of a diff carries no
+information about its cost*. A static diff already put the 4.18→5.11 regression
+at 5.0.0 once, on the strength of being the largest in the range. It is 1.03x.
+
+So a shader can be lifted out of one release and dropped into another:
+
+```
+--shader-swap ssao.frag=5.5.0        # take it from another unpacked bundle
+--shader-swap ssao.frag=@cand.frag   # or from a file, to price a proposed fix
+```
+
+and in the version list, as `VERSION:SHADER=SOURCE`:
+
+```
+gh workflow run molstar-capture-bench.yml \
+  -f versions=5.5.0,5.6.0,5.6.0:ssao.frag=5.5.0,5.5.0:ssao.frag=5.6.0,5.5.0
+```
+
+That reads: 5.6.0 carrying its predecessor's occlusion shader, and 5.5.0
+carrying its successor's. Run in both directions it is a double dissociation
+rather than an elimination — the first says nothing *else* in the release
+contributes, the second says that shader is sufficient on its own — and every
+other file the release touched stays where it is in both.
+
+It works because Mol\* ships `build/viewer/molstar.js` with its shaders as plain
+backtick template literals: the JavaScript is minified, the GLSL is not, because
+it is data. A splice needs no build and no npm resolution, so a patched row and
+a stock row differ by exactly the bytes named in the label.
+
+It is only meaningful while the shader's *interface* is unchanged — the same
+uniforms and `#define`s, set by the same JavaScript. That is not decidable from
+the GLSL, so `shader_swap.py` reports `interfaceUnchanged` beside the timings
+instead of judging it, and the caller is expected to look.
+
+**Nothing here fails quietly**, because the failure would be a *number* rather
+than an error: two identical rows that read as "this shader is not the cause".
+The anchor must be found and every occurrence of it must land in the same
+literal; that literal must look like a shader; the replacement must differ from
+what it replaces. `tests/test_shader_swap.py` holds each of those guards, and
+each was checked by deleting it and watching a test go red — which is how the
+one that could not see its own subject was found. (`match="malformed"` was being
+satisfied by pytest's `tmp_path`, because pytest names it after the test.)
+
 ## Running it
 
 On CI, which is where the numbers count:
@@ -106,6 +152,7 @@ one CI prints.
 | `summarise.py` | a directory of results becomes one markdown table |
 | `raf-pump.js` | copied from `viewer/public`; Mol\* needs a live rAF to build a representation |
 | `1ubq.pdb` | the subject, committed so no run touches the network |
+| `shader_swap.py` | splices one release's GLSL into another's bundle, and refuses every way of doing it quietly |
 | `run.conf` | what the next push measures |
 
 `1UBQ` because it is what item 40's own sample-level table was measured on, so

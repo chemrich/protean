@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       versions:
-        description: 'Comma-separated Mol* versions, in run order. Repeat one to measure drift.'
+        description: 'Comma-separated Mol* versions in run order; repeat one to measure drift. Append `:SHADER=VERSION` to transplant one shader from another release (5.6.0:ssao.frag=5.5.0), or `:SHADER=@path.frag` to test a candidate repair.'
         required: false
         default: '4.18.0,5.11.0,4.18.0,5.11.0'
       levels:
@@ -151,7 +151,12 @@ jobs:
           # shell metacharacter in it, or a size that is not a size, should stop
           # the job here and say so — not fail nineteen runs one at a time with
           # an error about a directory that does not exist.
-          echo "$versions" | grep -Eq '^[0-9A-Za-z.,+-]+$' || { echo "::error::bad versions: $versions"; exit 1; }
+          # `:`, `=`, `@` and `/` are here for the transplant form
+          # `5.6.0:ssao.frag=5.5.0` and its file variant `...=@path/to.frag`.
+          # Still no shell metacharacter, no space, no quote: every one of these
+          # reaches the shell only inside a quoted expansion, and the charset is
+          # what makes that true rather than merely intended.
+          echo "$versions" | grep -Eq '^[0-9A-Za-z.,:=@/_+-]+$' || { echo "::error::bad versions: $versions"; exit 1; }
           echo "$levels"   | grep -Eq '^[0-9,]+$'          || { echo "::error::bad levels: $levels"; exit 1; }
           echo "$repeats"  | grep -Eq '^[0-9]+$'           || { echo "::error::bad repeats: $repeats"; exit 1; }
           echo "$warmup"   | grep -Eq '^[0-9]+$'           || { echo "::error::bad warmup: $warmup"; exit 1; }
@@ -203,36 +208,71 @@ jobs:
           # worked. The step still fails at the end if nothing succeeded.
           set -uo pipefail
           mkdir -p results bundles
+
+          # `npm pack`, not `npm install`: only the prebuilt UMD bundle is
+          # wanted and it is self-contained, so resolving Mol*'s dependency tree
+          # nineteen times would be a minute each for nothing. Idempotent, so a
+          # release named both as a row and as a transplant source is fetched
+          # once.
+          fetch_bundle() { # fetch_bundle VERSION -> 0 on success
+            local v="$1" dir="bundles/$1"
+            [ -f "$dir/build/viewer/molstar.js" ] && return 0
+            echo "::group::fetch molstar@$v"
+            rm -rf "$dir" && mkdir -p "$dir"
+            if ! (cd "$dir" && npm pack "molstar@$v" --silent >/dev/null 2>&1); then
+              echo "could not fetch molstar@$v"
+              echo "::endgroup::"
+              return 1
+            fi
+            tar xzf "$dir"/molstar-*.tgz -C "$dir" --strip-components=1
+            echo "::endgroup::"
+          }
+
           index=0
           ok=0
           IFS=',' read -ra VERSIONS <<< "$CFG_VERSIONS"
-          for v in "${VERSIONS[@]}"; do
-            v=$(echo "$v" | tr -d '[:space:]')
-            [ -n "$v" ] || continue
+          for entry in "${VERSIONS[@]}"; do
+            entry=$(echo "$entry" | tr -d '[:space:]')
+            [ -n "$entry" ] || continue
             index=$((index + 1))
             slot=$(printf '%02d' "$index")
-            dir="bundles/$v"
-            if [ ! -f "$dir/build/viewer/molstar.js" ]; then
-              echo "::group::fetch molstar@$v"
-              rm -rf "$dir" && mkdir -p "$dir"
-              # `npm pack`, not `npm install`: only the prebuilt UMD bundle is
-              # wanted and it is self-contained, so resolving Mol*'s dependency
-              # tree nineteen times would be a minute each for nothing.
-              if ! (cd "$dir" && npm pack "molstar@$v" --silent >/dev/null 2>&1); then
-                echo "could not fetch molstar@$v"
-                printf '{"label":"%s","ok":false,"error":"npm pack failed"}\n' "$v" \
-                  > "results/$slot-$v.json"
-                echo "::endgroup::"
-                continue
-              fi
-              tar xzf "$dir"/molstar-*.tgz -C "$dir" --strip-components=1
-              echo "::endgroup::"
+
+            # An entry is a version, optionally followed by `:SHADER=SOURCE`
+            # transplants — `5.6.0:ssao.frag=5.5.0` measures 5.6.0 carrying its
+            # predecessor's occlusion shader. That is what turns "four files
+            # changed in this release" into one file's cost, and it is the
+            # intervention backlog 40 reached only after the fact.
+            IFS=':' read -ra PARTS <<< "$entry"
+            v="${PARTS[0]}"
+            swap_args=()
+            fetch_failed=""
+            for spec in "${PARTS[@]:1}"; do
+              swap_args+=(--shader-swap "$spec")
+              src="${spec#*=}"
+              # A source starting with @ is a file in the checkout, not a release.
+              case "$src" in
+                @*) ;;
+                *) fetch_bundle "$src" || fetch_failed="$src" ;;
+              esac
+            done
+
+            # `:` and `=` are legal in a filename here but make the artifact
+            # awkward to read; the label keeps the exact entry, the file name is
+            # a slug of it, and summarise.py orders on the file name.
+            slug=$(echo "$entry" | tr ':=@/' '____')
+            if ! fetch_bundle "$v" || [ -n "$fetch_failed" ]; then
+              printf '{"label":"%s","ok":false,"error":"npm pack failed for %s"}\n' \
+                "$entry" "${fetch_failed:-$v}" > "results/$slot-$slug.json"
+              continue
             fi
-            echo "::group::bench molstar@$v (run $slot)"
+            dir="bundles/$v"
+            echo "::group::bench $entry (run $slot)"
             python3 bench/molstar-capture/run_bench.py \
               --molstar-dir "$dir/build/viewer" \
-              --label "$v" \
-              --out "results/$slot-$v.json" \
+              --bundles-root bundles \
+              "${swap_args[@]+"${swap_args[@]}"}" \
+              --label "$entry" \
+              --out "results/$slot-$slug.json" \
               --width "$CFG_WIDTH" \
               --height "$CFG_HEIGHT" \
               --repeats "$CFG_REPEATS" \

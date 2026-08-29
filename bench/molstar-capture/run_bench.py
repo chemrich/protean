@@ -35,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 
+import shader_swap
+
 HERE = Path(__file__).resolve().parent
 
 # The same flags the browser job uses. Headless Chrome has no GPU, and Mol* will
@@ -198,6 +200,21 @@ def main() -> int:
         help="pull the camera to this fraction of the fitted distance, to vary "
         "how much of the frame is background",
     )
+    ap.add_argument(
+        "--shader-swap",
+        action="append",
+        default=[],
+        metavar="SHADER=SOURCE",
+        help="splice one shader from another release (SOURCE=5.5.0) or from a "
+        "file (SOURCE=@path.frag) into the bundle under test, so one file's "
+        "contribution to a step can be measured instead of inferred. Repeatable",
+    )
+    ap.add_argument(
+        "--bundles-root",
+        type=Path,
+        default=Path("bundles"),
+        help="where --shader-swap looks for other releases' unpacked bundles",
+    )
     ap.add_argument("--window-size", default="1000,800")
     ap.add_argument("--keep-profile", action="store_true")
     args = ap.parse_args()
@@ -227,6 +244,24 @@ def main() -> int:
         shutil.copy2(HERE / name, serve_dir / name)
     for name in ("molstar.js", "molstar.css"):
         shutil.copy2(molstar_dir / name, serve_dir / name)
+
+    # The transplant happens on the *copy*, never on the unpacked bundle, so a
+    # patched row cannot leave a patched bundle behind for the next row in the
+    # sweep to measure by accident. `apply_swaps` raises rather than warns, and
+    # the raise is not caught: a run that silently measured the unswapped bundle
+    # would produce a row saying "no effect" for the wrong reason, which is the
+    # exact failure this benchmark exists to avoid making.
+    swaps = shader_swap.apply_swaps(
+        serve_dir / "molstar.js", args.shader_swap, args.bundles_root.resolve()
+    )
+    for record in swaps:
+        print(
+            f"  swapped {record['shader']} from {record['source']}: "
+            f"{record['fromDigest']} -> {record['toDigest']} "
+            f"({record['fromLength']} -> {record['toLength']} bytes, "
+            f"interface {'unchanged' if record['interfaceUnchanged'] else 'CHANGED'})",
+            flush=True,
+        )
 
     port = free_port()
     server = ResultServer(port, serve_dir, args.label or "unknown")
@@ -285,6 +320,7 @@ def main() -> int:
                 "chromeLogTail": tail,
             }
         result["harness"] = {
+            "shaderSwaps": swaps,
             "molstarDir": str(molstar_dir),
             "chrome": chrome,
             "chromeFlags": chrome_flags,
