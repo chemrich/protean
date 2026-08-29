@@ -805,7 +805,14 @@ nothing is released yet, so everything below is unreleased.
   every texel, and a level-4 capture pays sixteen full-screen 128-sample
   occlusion evaluations over the whole framebuffer.
 
-  **Occlusion is 91% of a 5.11 capture and was 73% at 4.18.**
+  **Occlusion is about 91% of a 5.11 capture and about 73% at 4.18** — those two
+  come from different jobs on different runners, so read them as +/-2 rather
+  than as exact.
+
+  The nine releases after 5.4.2 are not drift either: **5.6.0 is a second,
+  smaller step of 1.15x in the same shader**, and it is *not* fixed by the patch
+  below. It is the whole of the 15% that separates the patched build from
+  5.4.1.
 
 - **Captures are 2.72x cheaper, and look the same.** The Vite build now applies
   upstream's own repair — `depth >= 0.99999994`, with their comment — to the six
@@ -815,21 +822,37 @@ nothing is released yet, so everything below is unreleased.
   `ssao.frag`, `ssao-blur.frag`, `outlines.frag`, `dof.frag`, `shadows.frag` and
   `illumination/trace.frag` do not.
 
-  Measured on the prebuilt 5.11.0 bundle, same scene and session: a capture goes
-  from 9,829 ms to 3,619 ms, against 3,136 ms for 5.4.1 — the last release
-  before the bug. **The picture does not change**: three pixels of 43,200 differ
-  by one unit. Occlusion over empty background comes out as approximately no
-  occlusion, so the cost bought nothing.
+  Measured on the prebuilt 5.11.0 bundle: a capture goes from 9,829 ms to
+  3,619 ms, against 3,136 ms for 5.4.1 — the last release before the bug. That
+  is a laptop measurement with n=1 per condition, so the band it supports is
+  **2.2x-2.9x**, not a point.
 
-  **On the browser CI job, measured as an A/B of the same tree: 3393.88s
-  becoming 1968.39s — 56:33 to 32:48, 1.72x.** Identical test counts either
-  side (1457 passed, 31 skipped), so it is not faster because less ran, and
-  every differential threshold passed against the patched renderer.
+  **The picture changes slightly, and an earlier version of this entry said it
+  did not.** At full resolution 56 of 480,000 pixels differ by at most 2/255,
+  none on the background, most at the silhouette. With the outline pass on —
+  `preset('illustrative')` — 2,425 pixels change by up to 161/255, and *that* is
+  a correction: patched outline coverage matches 5.4.1's to five decimals, where
+  stock 5.11.0 does not.
+
+  **On the browser CI job: 56:33 and 45:39 without the patch, 32:48 and 43:07
+  with it.** Identical test counts across all four (1457 passed, 31 skipped), so
+  it is not faster because less ran. Job wall time cannot carry the ratio — the
+  two unpatched runs are 1.24x apart and one of them beats a patched run — so
+  the figure is taken from per-test durations instead: about **1.3x-1.45x**
+  overall, 2.0x-2.6x on the render-heavy fixtures.
+
+  **Not one constant, and assuming it was is a bug this shipped with.**
+  `ssao-blur.frag` reads a 16-bit `packUnitIntervalToRG` encoding rather than the
+  24-bit depth texture, so a background texel reaches it as 0.99998468 and
+  `>= 0.99999994` can never fire there. It gets `>= 0.999` instead — what Mol\*
+  itself had in that file at 5.4.1. `shadows.frag` and `illumination/trace.frag`
+  read only opaque depth, where the patch is a no-op today.
 
   It is a find-and-replace against someone else's source, so it is guarded in
   both directions it can fail. The build errors if it matched nothing, and a
-  test asserts the exact list of shaders still needing it — which is what makes
-  the patch get *deleted* when Mol\* ships the fix, rather than remembered.
+  test asserts the exact list of shaders still needing it — and now computes the
+  16-bit round trip from Mol\*'s own pack/unpack, so the wrong-constant bug
+  cannot come back.
 
 - **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
   releases behind, which was making every "can Mol\* do this?" answer

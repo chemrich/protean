@@ -23,8 +23,10 @@ import { describe, expect, it } from 'vitest';
 import {
   BROKEN_BACKGROUND_TEST,
   FIXED_BACKGROUND_TEST,
+  FIXED_BACKGROUND_TEST_16BIT,
   MOLSTAR_SHADERS_ALREADY_FIXED,
   MOLSTAR_SHADERS_NEEDING_THE_FIX,
+  SHADER_NEEDING_16BIT_FIX,
   patchBackgroundTest,
 } from './molstar-patches';
 
@@ -57,7 +59,10 @@ describe('the Mol* background-test patch', () => {
 
     const patched = patchBackgroundTest(source, `/x/mol-gl/shader/${relative}`);
     expect(patched).not.toBeNull();
-    expect(lf(patched as string)).toContain(FIXED_BACKGROUND_TEST);
+    const expected = relative.includes(SHADER_NEEDING_16BIT_FIX)
+      ? FIXED_BACKGROUND_TEST_16BIT
+      : FIXED_BACKGROUND_TEST;
+    expect(lf(patched as string)).toContain(expected);
     expect(lf(patched as string)).not.toContain(BROKEN_BACKGROUND_TEST);
     // The line endings the file arrived with are the ones it leaves with.
     expect((patched as string).includes('\r\n')).toBe(source.includes('\r\n'));
@@ -74,6 +79,38 @@ describe('the Mol* background-test patch', () => {
     // source, or in a test fixture, or in this file.
     const source = read('ssao.frag.js');
     expect(patchBackgroundTest(source, '/x/src/painterly.ts')).toBeNull();
+  });
+
+  it('gives ssao-blur the 16-bit constant, because the 24-bit one cannot fire', () => {
+    // This is the defect the first version of the patch shipped: one constant
+    // for six shaders, when ssao-blur reads a different encoding. The assertion
+    // is not "we chose a different number" but "the number we chose is the only
+    // one of the two that can ever be true for that encoding" — computed here
+    // from Mol*'s own packUnitIntervalToRG / unpackRGToUnitInterval rather than
+    // quoted, so a change to either of them fails this test.
+    const packThenUnpack = (v: number): number => {
+      // packUnitIntervalToRG: c = fract(vec2(1.0, 256.0) * v); c.x -= c.y / 256.0
+      const fract = (x: number): number => x - Math.floor(x);
+      let x = fract(v);
+      const y = fract(v * 256);
+      x -= y / 256;
+      // the render target is uint8 rgba, so both channels quantise
+      const q = (c: number): number => Math.min(255, Math.max(0, Math.round(c * 255))) / 255;
+      // unpackRGToUnitInterval: dot(v, vec2(1.0, 1.0 / 256.0))
+      return Math.fround(q(x) + q(y) / 256);
+    };
+    // What a transparent-background texel becomes by the time the blur reads it.
+    const seen = packThenUnpack(Math.fround(16777215 / 16777216));
+    expect(seen).toBeCloseTo(0.99998468, 8);
+    expect(seen >= 0.99999994).toBe(false); // the 24-bit constant: never fires
+    expect(seen >= 0.999).toBe(true); // the 16-bit constant: fires
+
+    const patched = patchBackgroundTest(
+      read('ssao-blur.frag.js'),
+      '/x/mol-gl/shader/ssao-blur.frag.js'
+    );
+    expect(lf(patched as string)).toContain(FIXED_BACKGROUND_TEST_16BIT);
+    expect(lf(patched as string)).not.toContain(FIXED_BACKGROUND_TEST);
   });
 
   it('is a no-op on a shader that never had the predicate', () => {

@@ -23,6 +23,19 @@ could find, so they will have to be rewritten from whatever notes survive, or
 abandoned. Recorded here so the count in `docs/backlog.md` is not read as
 "three reports exist somewhere".
 
+## Parked deliberately, not forgotten
+
+**Charlie parked the Mol\* report on 2026-08-28**, in these words: *"park the
+Mol\* issue for now. I'll get to it in a future context. make sure it's written
+up in detail so it doesn't get lost."* So it is waiting on a person, not on more
+work — the open question is whose account files it.
+
+That report was then set against four adversarial readers before being left
+here, one of whom was allowed to read only the report itself and asked whether
+they could file it cold. They could not, and the rewrite is what came of that.
+It now carries its own before-filing checklist, because the thing most likely to
+go wrong is filing a bug upstream has since fixed.
+
 ## Filing
 
 These are written to be pasted into an issue tracker as-is, so each one states
