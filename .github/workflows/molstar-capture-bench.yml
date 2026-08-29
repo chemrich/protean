@@ -204,17 +204,31 @@ jobs:
             # predecessor's occlusion shader. That is what turns "four files
             # changed in this release" into one file's cost, and it is the
             # intervention backlog 40 reached only after the fact.
+            # A part containing `=` is a shader swap; one without is a named
+            # change to the bundle's minified JavaScript (bundle_tweak.py). The
+            # second exists because the leading candidate for the 5.6.0 step is
+            # in JavaScript, and without it the only thing that could be said
+            # about it is "the shader was transplanted and the step survived" —
+            # an elimination, which is the shape of argument this benchmark was
+            # built to stop making.
             IFS=':' read -ra PARTS <<< "$entry"
             v="${PARTS[0]}"
             swap_args=()
             fetch_failed=""
             for spec in "${PARTS[@]:1}"; do
-              swap_args+=(--shader-swap "$spec")
-              src="${spec#*=}"
-              # A source starting with @ is a file in the checkout, not a release.
-              case "$src" in
-                @*) ;;
-                *) fetch_bundle "$src" || fetch_failed="$src" ;;
+              case "$spec" in
+                *=*)
+                  swap_args+=(--shader-swap "$spec")
+                  src="${spec#*=}"
+                  # A source starting with @ is a file in the checkout, not a release.
+                  case "$src" in
+                    @*) ;;
+                    *) fetch_bundle "$src" || fetch_failed="$src" ;;
+                  esac
+                  ;;
+                *)
+                  swap_args+=(--bundle-tweak "$spec")
+                  ;;
               esac
             done
 

@@ -35,6 +35,7 @@ import threading
 import time
 from pathlib import Path
 
+import bundle_tweak
 import shader_swap
 
 HERE = Path(__file__).resolve().parent
@@ -210,6 +211,15 @@ def main() -> int:
         "contribution to a step can be measured instead of inferred. Repeatable",
     )
     ap.add_argument(
+        "--bundle-tweak",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="apply a named one-line change to the bundle's JavaScript "
+        "(see bundle_tweak.py), so a candidate outside the GLSL can be "
+        "intervened on rather than eliminated. Repeatable",
+    )
+    ap.add_argument(
         "--bundles-root",
         type=Path,
         default=Path("bundles"),
@@ -254,6 +264,16 @@ def main() -> int:
     swaps = shader_swap.apply_swaps(
         serve_dir / "molstar.js", args.shader_swap, args.bundles_root.resolve()
     )
+    # Same rule as the swaps: raises rather than warns, and the raise is not
+    # caught. A tweak that matched nothing would produce a row labelled as an
+    # intervention that is really a duplicate of the stock row beside it.
+    tweaks = bundle_tweak.apply_tweaks(serve_dir / "molstar.js", args.bundle_tweak)
+    for record in tweaks:
+        print(
+            f"  tweaked {record['tweak']} at offset {record['atOffset']}: "
+            f"{record['matched']} -> {record['replacedWith']}  ({record['what']})",
+            flush=True,
+        )
     for record in swaps:
         print(
             f"  swapped {record['shader']} from {record['source']}: "
@@ -321,6 +341,7 @@ def main() -> int:
             }
         result["harness"] = {
             "shaderSwaps": swaps,
+            "bundleTweaks": tweaks,
             "molstarDir": str(molstar_dir),
             "chrome": chrome,
             "chromeFlags": chrome_flags,
