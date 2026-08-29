@@ -186,13 +186,60 @@ With the outline pass enabled, 2,425 pixels differ by up to 161/255 — and that
 one is a *correction*: the fixed build's outline matches 5.4.1's coverage to
 five decimals, where 5.11.0 stock does not.
 
-## The second regression, at 5.6.0
+## The second regression, at 5.6.0 — diagnosed
 
-Separate from the above and **not fixed by the constant**: 5.6.0 costs a further
-**1.15x**, also in `ssao.frag`, where the per-sample bounds clamp became an
-`isOutsideBounds()` test with a `continue`. The eight releases either side of it
-add about 2.3% between them, so this is a discrete step and not drift. Worth
-looking at alongside; we have not diagnosed it.
+Separate from the above and **not fixed by the constant**. 5.6.0 costs a further
+**1.16x to 1.20x**, reproduced in five independent CI jobs, each condition
+measured twice in mirrored positions so that runner drift cancels.
+
+It is `ssao.frag`, and nothing else in the release: transplanting 5.5.0's
+`ssao.frag` into a stock 5.6.0 bundle — leaving 5.6.0's blue-noise SSAO kernel,
+its fenceless draw loop and its new outline curvature veto in place — returns
+the capture to 5.5.0's speed (1.004x). Transplanting 5.6.0's shader into 5.5.0
+reproduces the step (1.173x).
+
+Inside the shader it is the per-sample bounds test from
+[#1740](https://github.com/molstar/molstar/pull/1740) and
+[#1741](https://github.com/molstar/molstar/pull/1741):
+
+```
+5.6.0 with the isOutsideBounds skip reverted (clamps restored)   1.021x
+5.6.0 with PR #1737's opaque isBackground guard reverted         1.170x
+5.6.0 as shipped                                                 1.203x
+```
+
+As two independent factors, the bounds skip is **1.179x** and the `isBackground`
+guard **1.028x** — note the guard's sign, it was added as an early-out and it
+costs. Their product is 1.212x against 1.203x measured.
+
+**The cost is evaluating the test, not the jump.** Four formulations, all
+producing bit-identical output:
+
+```
+                        short-circuiting ||     any(bvec4(lessThan(..), ..))
+  continue (as shipped)        1.165x                    1.110x
+  mask instead of continue     1.226x                    1.099x
+```
+
+`||` is sequential in GLSL ES 1.00, so the four-term chain is up to four
+conditional evaluations per sample; flattening it recovers about a third of the
+step. Replacing the `continue` with a mask while leaving the chain in is
+*slower* than shipping, because it pays the texture fetches the jump was
+skipping. Nothing tried recovers more than 40%; only not evaluating the test at
+all recovers 90%, and that restores the artefact the test was added to fix.
+
+Two things that are **not** the cause, both measured rather than argued: the
+loop-carried `nSamples` divisor PR #1741 introduced (reverting it alone changes
+nothing, 1.164x against 1.150x in the same job), and the blue-noise kernel from
+[#1737](https://github.com/molstar/molstar/pull/1737) (setting its
+`candidateCount` to 1 saves 3.2% with 5.6.0's shader and nothing at all with
+5.5.0's — an interaction, not a cause).
+
+We are not proposing a change here. The behaviour is right and we could not find
+a formulation that keeps it and recovers the cost. This is offered as
+information: under ANGLE/SwiftShader a per-sample bounds test inside a
+128-iteration loop, evaluated over the whole framebuffer, is worth about 18% of
+an occlusion pass, and the obvious rewrites do not help.
 
 ## The fix
 
