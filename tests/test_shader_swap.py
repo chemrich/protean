@@ -238,6 +238,8 @@ def test_the_candidate_shaders_are_all_present():
         "ssao-5.5.0-bgfix.frag",
         "ssao-5.6.0-bgfix.frag",
         "ssao-5.6.0-branchless.frag",
+        "ssao-5.6.0-flat-and-masked.frag",
+        "ssao-5.6.0-flat-predicate.frag",
         "ssao-5.6.0-no-bg-guard.frag",
         "ssao-5.6.0-no-bounds-skip.frag",
         "ssao-5.6.0-pre-1741.frag",
@@ -350,3 +352,46 @@ def test_run_conf_only_names_candidate_files_that_exist():
     assert referenced, "no candidate file is referenced; this test would pass blind"
     for path in sorted(referenced):
         assert (REPO / path).is_file(), path
+
+
+def test_the_flat_predicate_keeps_the_skip_and_loses_the_short_circuit():
+    # It changes the predicate only. If it also touched the loop it would be
+    # measuring two things, and the row that separates "the branch" from "the
+    # short-circuit chain" would separate nothing.
+    glsl = (CANDIDATES / "ssao-5.6.0-flat-predicate.frag").read_text()
+    # The predicate's own return statement, not the function's text: the
+    # replacement carries a comment explaining what `||` does, and a naive
+    # substring check reads that comment as the thing it is warning about.
+    body = glsl.split("bool isOutsideBounds(const in vec2 coords) {", 1)[1]
+    returned = next(
+        line for line in body.splitlines() if line.strip().startswith("return")
+    )
+    assert "||" not in returned, returned
+    assert "any(bvec4(lessThan(coords, uBounds.xy)" in returned
+    # The skip itself is untouched, exactly as upstream wrote it.
+    assert glsl.count("if (isOutsideBounds(offset.xy)) {") == 2
+    assert glsl.count("nSamples -= 1.0;") == 2
+    assert "occlusion /= nSamples;" in glsl
+
+
+def test_the_two_repair_axes_are_separable():
+    # The four variants make a 2x2 -- {short-circuiting ||, flat} against
+    # {continue, mask} -- and the grid only means something if each file moves
+    # exactly one axis. `branchless` and `flat-and-masked` must differ by the
+    # predicate alone; `flat-predicate` and `flat-and-masked` by the control
+    # flow alone.
+    flat_masked = (CANDIDATES / "ssao-5.6.0-flat-and-masked.frag").read_text()
+    branchless = (CANDIDATES / "ssao-5.6.0-branchless.frag").read_text()
+    flat = (CANDIDATES / "ssao-5.6.0-flat-predicate.frag").read_text()
+
+    def loop(glsl: str) -> str:
+        return glsl.split("void main")[1]
+
+    def predicate(glsl: str) -> str:
+        body = glsl.split("bool isOutsideBounds(const in vec2 coords) {", 1)[1]
+        return next(x for x in body.splitlines() if x.strip().startswith("return"))
+
+    assert loop(flat_masked) == loop(branchless)
+    assert predicate(flat_masked) != predicate(branchless)
+    assert predicate(flat_masked) == predicate(flat)
+    assert loop(flat_masked) != loop(flat)
