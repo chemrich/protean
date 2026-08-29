@@ -109,13 +109,22 @@ jobs:
           "${{ steps.chrome.outputs.chrome-path }}" --version
 
       # Inputs when dispatched; run.conf when pushed. Resolved in one place and
-      # echoed, because a benchmark whose settings are not in its own log is a
-      # table nobody can reproduce. Every input reaches the
-      # shell through `env`, never through `${{ }}` inside the script: this repo
-      # is public, and a `${{ }}` in a `run:` block is textual substitution into
-      # the script itself. Nobody without write access can dispatch this, but the
-      # habit is the point — the same shape is how the tj-actions incident got
-      # into people's logs.
+      # echoed with its provenance, because a benchmark whose settings are not in
+      # its own log is a table nobody can reproduce — and because a setting that
+      # came from somewhere unexpected is invisible unless the log says where.
+      #
+      # This was bash until run 33252777716 asked for twelve rows with the
+      # occlusion pass on and got `postprocessing=no-occlusion` out of a run.conf
+      # block three experiments older, because the bash read the last matching
+      # line in the FILE rather than in the block. Four minutes of runner time
+      # and a clean table answering a question nobody had asked. It is Python now
+      # so that it can be tested; tests/test_resolve_conf.py holds that case.
+      #
+      # Every input still reaches the script through `env`, never through `${{ }}`
+      # inside a `run:` block: this repo is public, and a `${{ }}` there is
+      # textual substitution into the script itself. Nobody without write access
+      # can dispatch this, but the habit is the point — the same shape is how the
+      # tj-actions incident got into people's logs.
       - name: settle the run configuration
         id: cfg
         env:
@@ -131,58 +140,8 @@ jobs:
           IN_OCCLUSIONBLUR: ${{ inputs.occlusionblur }}
         run: |
           set -euo pipefail
-          conf=bench/molstar-capture/run.conf
-          get() { # get KEY DEFAULT
-            if [ -f "$conf" ]; then
-              v=$(grep -E "^$1=" "$conf" | tail -1 | cut -d= -f2- || true)
-              [ -n "$v" ] && { echo "$v"; return; }
-            fi
-            echo "$2"
-          }
-          versions="${IN_VERSIONS:-}";  [ -n "$versions" ] || versions=$(get versions '4.18.0,5.11.0,4.18.0,5.11.0')
-          levels="${IN_LEVELS:-}";      [ -n "$levels" ]   || levels=$(get levels '4,1')
-          repeats="${IN_REPEATS:-}";    [ -n "$repeats" ]  || repeats=$(get repeats '8')
-          warmup="${IN_WARMUP:-}";      [ -n "$warmup" ]   || warmup=$(get warmup '2')
-          size="${IN_SIZE:-}";          [ -n "$size" ]     || size=$(get size '800x600')
-          fullpath="${IN_FULLPATH:-}";  [ -n "$fullpath" ] || fullpath=$(get fullpath '2')
-          baseline="${IN_BASELINE:-}";  [ -n "$baseline" ] || baseline=$(get baseline '4.18.0')
-          pp="${IN_POSTPROCESSING:-}";  [ -n "$pp" ]       || pp=$(get postprocessing 'default')
-          osamples="${IN_OCCLUSIONSAMPLES:-}"; [ -n "$osamples" ] || osamples=$(get occlusionsamples '0')
-          oblur="${IN_OCCLUSIONBLUR:-}";       [ -n "$oblur" ]    || oblur=$(get occlusionblur '0')
-
-          # Refuse rather than pass junk to the harness. A version list with a
-          # shell metacharacter in it, or a size that is not a size, should stop
-          # the job here and say so — not fail nineteen runs one at a time with
-          # an error about a directory that does not exist.
-          # `:`, `=`, `@` and `/` are here for the transplant form
-          # `5.6.0:ssao.frag=5.5.0` and its file variant `...=@path/to.frag`.
-          # Still no shell metacharacter, no space, no quote: every one of these
-          # reaches the shell only inside a quoted expansion, and the charset is
-          # what makes that true rather than merely intended.
-          echo "$versions" | grep -Eq '^[0-9A-Za-z.,:=@/_+-]+$' || { echo "::error::bad versions: $versions"; exit 1; }
-          echo "$levels"   | grep -Eq '^[0-9,]+$'          || { echo "::error::bad levels: $levels"; exit 1; }
-          echo "$repeats"  | grep -Eq '^[0-9]+$'           || { echo "::error::bad repeats: $repeats"; exit 1; }
-          echo "$warmup"   | grep -Eq '^[0-9]+$'           || { echo "::error::bad warmup: $warmup"; exit 1; }
-          echo "$fullpath" | grep -Eq '^[0-9]+$'           || { echo "::error::bad fullpath: $fullpath"; exit 1; }
-          echo "$size"     | grep -Eq '^[0-9]+x[0-9]+$'    || { echo "::error::bad size: $size"; exit 1; }
-          echo "$baseline" | grep -Eq '^[0-9A-Za-z.+-]*$'  || { echo "::error::bad baseline: $baseline"; exit 1; }
-          case "$pp" in default|no-occlusion|no-antialiasing|none) ;; *) echo "::error::bad postprocessing: $pp"; exit 1 ;; esac
-          echo "$osamples" | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionsamples: $osamples"; exit 1; }
-          echo "$oblur"    | grep -Eq '^[0-9]+$'           || { echo "::error::bad occlusionblur: $oblur"; exit 1; }
-
-          {
-            echo "versions=$versions"
-            echo "levels=$levels"
-            echo "repeats=$repeats"
-            echo "warmup=$warmup"
-            echo "width=${size%x*}"
-            echo "height=${size#*x}"
-            echo "fullpath=$fullpath"
-            echo "postprocessing=$pp"
-            echo "occlusionsamples=$osamples"
-            echo "occlusionblur=$oblur"
-            echo "baseline=$baseline"
-          } | tee -a "$GITHUB_OUTPUT"
+          python3 bench/molstar-capture/resolve_conf.py \
+            --conf bench/molstar-capture/run.conf | tee -a "$GITHUB_OUTPUT"
 
       - name: time a capture on each release
         env:
