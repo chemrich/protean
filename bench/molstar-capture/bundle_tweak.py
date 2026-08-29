@@ -29,10 +29,13 @@ n=128, with the identical `scale` ramp both releases apply:
     5.5.0 Math.random hemisphere   mean |v| 0.2030   mean |v.xy| 0.1608
     5.6.0 best-candidate blue noise mean |v| 0.2858  mean |v.xy| 0.1859
 
-+41% in view-space radius, **+16% in screen-space radius**, so the 128 depth
-fetches per fragment scatter over about 1.34x the area. Under a CPU rasteriser
-with a small texture cache that is a cost, and it is inside the occlusion pass,
-which is where the step has been shown to live.
+Those are the algorithm's *expectation*, and they overstate it. 5.6.0's
+generator is a PCG with a fixed seed, so Mol* uploads one kernel every time, and
+that kernel's actual figures are **+34% radius and +7% in-plane** — see
+`kernel_stats.mjs`. In-plane is the part that moves a texture fetch, and +7% is
+small. 5.5.0's table, by contrast, is built with `Math.random()` at module load,
+so it really is a distribution: a different kernel per page load, +/-6% on mean
+|s|, which is run-to-run variance 5.6.0 does not have and 5.5.0 rows do.
 
 `candidates-1` sets `candidateCount` to 1. Best-candidate selection with one
 candidate is plain sampling from the base distribution — same generator, same
