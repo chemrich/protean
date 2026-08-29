@@ -237,8 +237,33 @@ def test_the_candidate_shaders_are_all_present():
     assert names == [
         "ssao-5.5.0-bgfix.frag",
         "ssao-5.6.0-bgfix.frag",
+        "ssao-5.6.0-no-bg-guard.frag",
+        "ssao-5.6.0-no-bounds-skip.frag",
         "ssao-blur-bgfix.frag",
     ]
+
+
+def test_each_single_commit_revert_reverts_exactly_its_own_commit():
+    # The two variants exist to price one upstream commit each. If either one
+    # also carried the other's change, its row would be labelled for a commit it
+    # does not isolate, and the split would be arithmetic over the wrong things.
+    skip = (CANDIDATES / "ssao-5.6.0-no-bounds-skip.frag").read_text()
+    guard = (CANDIDATES / "ssao-5.6.0-no-bg-guard.frag").read_text()
+
+    # PR #1740 + #1741: the skip is gone from the one, present in the other.
+    assert "isOutsideBounds(offset.xy)" not in skip
+    assert "nSamples -= 1.0" not in skip
+    assert "occlusion /= float(dNSamples);" in skip
+    assert "isOutsideBounds(offset.xy)" in guard
+    assert "nSamples -= 1.0" in guard
+
+    # PR #1737's shader half: the opaque guard is gone from the one, kept in the
+    # other. Only the opaque one — the transparent guard predates both releases
+    # and must survive in both files.
+    assert "if (!isBackground(sampleDepth))" not in guard
+    assert "if (!isBackground(sampleDepth))" in skip
+    assert "isBackground(sampleDepthWithAlpha.x)" in skip
+    assert "isBackground(sampleDepthWithAlpha.x)" in guard
 
 
 @pytest.mark.parametrize(
