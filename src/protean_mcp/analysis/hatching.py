@@ -1272,6 +1272,16 @@ FINISHES: dict[str, _Style] = {
     # have always been considered distinct actually have.
     "linear-hatch": _Lozenge(angle=58.0, cross=None, hold=0.55, spacing=1 / 315),
     "cross-hatch": _Lozenge(angle=32.0, cross=-41.0, hold=0.45, spacing=1 / 470),
+    # The four below are captured at twice the width and averaged back down.
+    # `_Style.supersample` says why an antialiased edge cannot be drawn by this
+    # engine and has to be averaged out of a bigger plate — and the reason it is
+    # these four is measured rather than assumed. A mark whose size is a
+    # fraction of the frame comes back at the same size from a bigger capture
+    # with only its edges changed: `hedcut`, `dotty` and `dotty-mixed` all read
+    # an identical ink fraction at 1x and 2x on the same subject, 2 grey levels
+    # becoming 256. `engraving` does not — it moves 0.062 to 0.041, so
+    # supersampling would change its picture and not merely resolve it, which
+    # is a separate round from this one.
     # A hedcut rules one direction and thickens it, and that is the style
     # rather than a defect. What it did not do was turn: the rules ran straight
     # through every form. `_Bowed` keeps the mechanism and pushes the ruled
@@ -1287,10 +1297,16 @@ FINISHES: dict[str, _Style] = {
     # `_Bowed.marks` reads it; it is the number the suite requires the finish
     # to beat in distinguishable ink levels, and a continuous duty clears six
     # bands by drawing 245 of them.
-    "hedcut": _Bowed(angles=(75.0,), cumulative=False, bands=6, spacing=_HEDCUT_SPACING),
+    "hedcut": _Bowed(
+        angles=(75.0,),
+        cumulative=False,
+        bands=6,
+        spacing=_HEDCUT_SPACING,
+        supersample=2,
+    ),
     # The same idea in dots rather than rules. Charlie asked for the dots-only
     # treatment as its own style rather than as a hedcut variant, and named it.
-    "dotty": _Stipple(),
+    "dotty": _Stipple(supersample=2),
     # `dotty`'s one dot field, inked — not a second field laid over it. The two
     # differ only in how many cells go chromatic, which is the one parameter
     # separating them: about a fifth of the drawn pixels against about half.
@@ -1303,8 +1319,8 @@ FINISHES: dict[str, _Style] = {
     # the key, which draws exactly `dotty` — so `snapshot` reports the
     # chromatic share, and that is what keeps the silence from passing for a
     # result.
-    "dotty-mixed": _Intermixed(rate=0.26),
-    "dotty-confetti": _Intermixed(rate=0.70),
+    "dotty-mixed": _Intermixed(rate=0.26, supersample=2),
+    "dotty-confetti": _Intermixed(rate=0.70, supersample=2),
     # Prussian blue and the white of unexposed paper — never pure 255, because
     # a cyanotype's highlight is paper rather than light.
     "cyanotype": _Survey(bands=5, paper=(17, 48, 92), inks=((238, 245, 252),)),
