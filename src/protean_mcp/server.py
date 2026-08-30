@@ -2588,9 +2588,35 @@ async def snapshot(
       bolder mark of the two.
 
       "hedcut" is the third and works differently on purpose: one direction,
-      six bands, the stroke thickening with the tone and never turning with
-      the form. That is the stipple-portrait look rather than a drawing of the
-      surface.
+      the stroke thickening with the tone, and the ruled plane pushed aside by
+      the light the render already carries — so the rules bow around each form
+      instead of running straight through it. That is the stipple-portrait
+      look rather than a drawing of the surface. The bow is texture and not
+      depth cueing: unlike the hatchings it puts no more ink on a rim than
+      anywhere else, which is what keeps it reading as engraved.
+
+      "dotty" is the same idea in dots rather than rules. A jittered lattice
+      where each cell takes a disc that grows with the tone, so the shading is
+      carried by how much paper the dots have closed rather than by any line.
+      Like the hatchings it swells its marks where one form passes in front of
+      another, so the seams between atoms are drawn rather than shaded.
+
+      "dotty-mixed" and "dotty-confetti" are that one dot field, inked. Each
+      cell takes either the near-black key or one of three print colours, on
+      the same lattice at the same pitch and the same dot size — so a coloured
+      dot is not a dot laid over the grain, it is a grain dot that happens to
+      be poppy. The two differ only in how many cells go chromatic: about a
+      fifth of the drawn pixels for "dotty-mixed", about half for
+      "dotty-confetti". Colour can only be as fine as the grain, which is the
+      design rather than a limit.
+
+      **They colour by what is already on screen and claim nothing about it.**
+      Colour by conservation and the dots are the conservation ramp; by chain
+      and they are chains. On a greyscale render there is no hue to sort, every
+      cell takes the key, and the result is exactly "dotty" — so the reply
+      reports what share of the ink actually came out chromatic, because that
+      is the one number that separates "mixed" from "drew your black finish
+      and called it mixed".
 
       "spot-ink-plates" is a two-colour press: the frame is sorted into colour
       families, each family screened onto its own plate at its own angle, and

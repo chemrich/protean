@@ -926,6 +926,331 @@ class _Plates(_Style):
         return covered
 
 
+@dataclass(frozen=True, kw_only=True)
+class _Bowed(_Engraving):
+    """C — the incumbent mechanism, surviving, with the form added under it.
+
+    `_Debanded` plus `_Lozenge`'s warped carrier: the ruled plane is pushed
+    aside by the recovered light, so one direction still thickens with tone but
+    the rules bow around each atom rather than running straight through it.
+
+    This is the answer that keeps the most of what ships. Its rim lift says it
+    does not answer the rim half — included because "keep the mechanism, add the
+    bow" is the reasonable first idea and it should be looked at, not argued
+    about.
+    """
+
+    relief: float = 2.5
+    smooth: float = 1 / 380
+    achromatic: float = 0.12
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        shade = _blur(_shade(frame.rgb, self.achromatic), frame.diagonal * self.smooth)
+        darkness = np.power(np.clip(1.0 - frame.luma, 0.0, 1.0), _TONE_CURVE)
+        step = self._step(frame)
+        height, width = frame.shape
+        y, x = np.ogrid[0:height, 0:width]
+        radians = np.deg2rad(self.angles[0])
+        phase = np.asarray(
+            (x * np.cos(radians) + y * np.sin(radians)) / step + self.relief * shade
+        )
+        residual = np.abs(phase - np.rint(phase))
+        return np.asarray((residual < 0.5 * darkness) & ~frame.is_paper)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Stipple(_Style):
+    """`dotty` — a dot field, with the parameters a dot field actually has.
+
+    Split out of `_AllDots` rather than kept as one. That was hedcut's
+    overshoot: a `_Lozenge` with its burin branch switched off, so it carried
+    an `angle`, a `cross`, a `hold`, a `relief` and a `split_lo`/`split_hi`
+    ramp it never read, and took its dot pitch from `cross-hatch`'s 1/470 by
+    inheritance rather than by choice. A finish whose defaults arrived by
+    accident is a finish nobody can tune.
+
+    What a stipple has instead:
+
+    `pitch` is the lattice interval, the only size in the finish. `jitter` is
+    how far a dot may wander from its cell — 0 is a mechanical halftone screen,
+    0.5 is a dot that can reach its neighbour's seat, and the point of a hedcut
+    dot field is that it is hand-placed rather than screened.
+
+    `dot` is the radius at the lightest inked tone as a fraction of the pitch,
+    and `growth` is how much it swells toward black. Both, because a stipple
+    carries tone two ways at once — bigger dots and more of them — and a field
+    that only has density cannot reach solid: measured, one caps at 0.283
+    coverage at black and fails the suite's bar.
+
+    The burr stays. It is what puts ink on the rim of an atom rather than
+    spreading it evenly, and it is the reason a dot field reads as modelling a
+    form rather than as a grey wash.
+    """
+
+    pitch: float = 1 / 470
+    """Lattice interval as a fraction of the frame diagonal — 2.9 px on an
+    1890 px plate.
+
+    A fine grain rather than countable dots, which is Charlie's call: shown
+    1/280, where a dot is round and plainly a dot, they said *"too coarse"*.
+    So the pitch stays where it was and the fineness is now a decision rather
+    than an inheritance from `cross-hatch`.
+
+    **No test can see this.** `_step` clamps to a 2 px floor, and every guard
+    in `tests/test_hatching.py` runs at 240 or 480 px where 1/470 and 1/220
+    both clamp to the same 2 px — so all four pitches I swept scored byte
+    identical bars. The same trap `_Engraving.spacing` documents. The numbers
+    below were taken at 700 and 1200 px instead.
+    """
+
+    jitter: float = 0.30
+    """How far a dot may wander from its cell, in cells.
+
+    0 is a mechanical halftone screen; 0.5 lets a dot reach its neighbour's
+    seat. It costs almost nothing in tone — measured, ink over the drawn region
+    moves 0.508 to 0.517 across the whole range — so it is a choice about
+    character rather than density, and 0.30 is a hand that is placing dots
+    rather than a machine ruling them.
+    """
+
+    dot: float = 0.40
+    """Dot radius at the lightest inked tone, as a fraction of the pitch.
+
+    0.40 rather than the 0.34 inherited from the overshoot, because **0.34
+    cannot close.** A stipple has to reach solid at black or it fails the
+    suite's `coverage[-1] > 0.9` bar, and a circle needs a radius near 0.71 of
+    its cell to cover the corners.
+
+    This is a fraction of the pitch, so it is **independent of the pitch** —
+    which is what lets the grain stay fine while the darks still close. That
+    was not obvious: the first attempt coarsened the pitch to fix closure and
+    changed the one thing that did not need changing. Measured at 1200 px with
+    the pitch held at 1/470:
+
+        0.34  black 0.792   fails
+        0.38        0.891   fails
+        0.40        0.928   closes, and is the least that does
+        0.44        0.974
+
+    `growth` cannot substitute: the swell is clipped at 1.6, so 0.34 tops out
+    at 0.792 whatever growth is set to.
+    """
+
+    growth: float = 1.1
+    """How much the dot swells from the lightest inked tone toward black.
+
+    A stipple carries tone two ways at once, more dots and bigger ones. Density
+    alone caps at 0.283 coverage at black — the reason the pure-density variant
+    was dropped before it was ever plated.
+    """
+    lattice_angle: float = 33.0
+    burr: float = 0.75
+    turn_lo: float = 20.0
+    turn_hi: float = 28.0
+    smooth: float = 1 / 380
+    achromatic: float = 0.12
+    tone_curve: float = 2.4
+    weight: float = 1.04
+    bands: int = 8
+
+    def _chroma(self, frame: _Frame) -> np.ndarray:
+        """Whether a pixel has a hue at all.
+
+        Computed here rather than read off `_families`, because `_families`
+        sends an achromatic pixel to family 0 — which is the key plate in
+        `_Plates` and is a *colour* here, so the two cases have to be told
+        apart or every grey pixel would print in the first ink.
+        """
+        unit = frame.rgb / 255.0
+        value = unit.max(axis=2)
+        low = unit.min(axis=2)
+        saturation = np.where(value > 0.0, (value - low) / np.maximum(value, 1e-6), 0.0)
+        return np.asarray(saturation >= self.achromatic)
+
+    def _coverage(self, frame: _Frame) -> np.ndarray:
+        """How much ink this tone asks for, with the burr applied.
+
+        Split out of `marks` so the colour variants can lay their own plates
+        against the *same* field. They must: the whole design is that black
+        carries the form and colour carries the hue, and that only holds if the
+        black is bit-for-bit the field `dotty` already draws rather than a
+        second implementation that agrees by inspection.
+        """
+        shade = _blur(_shade(frame.rgb, self.achromatic), frame.diagonal * self.smooth)
+        gradient_y, gradient_x = np.gradient(shade)
+        slope = np.hypot(gradient_x, gradient_y) * frame.diagonal
+        turn = np.clip((slope - self.turn_lo) / (self.turn_hi - self.turn_lo), 0.0, 1.0)
+        return np.asarray(
+            np.clip(
+                np.clip(1.0 - frame.luma, 0.0, 1.0) ** self.tone_curve
+                * self.weight
+                * (1.0 + self.burr * turn),
+                0.0,
+                1.0,
+            )
+        )
+
+    def _dots(self, frame: _Frame, coverage: np.ndarray) -> np.ndarray:
+        """One jittered dot lattice, lit and sized by `coverage`.
+
+        Split out of `marks` alongside `_coverage`, for the same reason: the
+        colour variants lay several of these — one per ink — and a second
+        implementation of a dot lattice would drift from this one silently.
+        """
+        height, width = frame.shape
+        pitch = max(2.0, frame.diagonal * self.pitch)
+        radians = np.deg2rad(self.lattice_angle)
+        y, x = np.ogrid[0:height, 0:width]
+        u = (x * np.cos(radians) + y * np.sin(radians)) / pitch
+        v = (-x * np.sin(radians) + y * np.cos(radians)) / pitch
+        cell_u = np.floor(u).astype(np.int64)
+        cell_v = np.floor(v).astype(np.int64)
+
+        dots = np.zeros((height, width), dtype=bool)
+        # Three by three, so a dot jittered out of a neighbouring cell still
+        # lands here. At jitter 0.5 a dot reaches the next seat exactly, so one
+        # ring is enough and two would only cost time.
+        for du in (-1, 0, 1):
+            for dv in (-1, 0, 1):
+                au, av = cell_u + du, cell_v + dv
+                ju = au + 0.5 + (_hash01(au, av, 1) - 0.5) * 2 * self.jitter
+                jv = av + 0.5 + (_hash01(au, av, 2) - 0.5) * 2 * self.jitter
+                radius = self.dot * np.clip(0.6 + self.growth * coverage, 0.0, 1.6)
+                dots |= (np.hypot(u - ju, v - jv) < radius) & (
+                    _hash01(au, av, 3) < np.sqrt(coverage)
+                )
+        return dots
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        return np.asarray(self._dots(frame, self._coverage(frame)) & ~frame.is_paper)
+
+
+_KEY = (26, 22, 34)
+
+#: Poppy, marigold, cornflower. Bright enough to read as a dot on white at
+#: seven pixels, which a process yellow is not: (252, 222, 26) sits 0.18 of
+#: luma from the paper and vanishes. These sit 0.477, 0.325 and 0.520 away.
+#: Marigold is the weakest and is the one to watch.
+#:
+#: Which family wears which is decided by hue prevalence rather than by
+#: chemistry, so all three have to work as the dominant colour.
+_POPPY = (230, 87, 118)
+_MARIGOLD = (238, 165, 36)
+_CORNFLOWER = (58, 140, 200)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Intermixed(_Stipple):
+    """Colour in the same dot field as the black, not on a layer above it.
+
+    Charlie, on `dotty-sprinkles`: *"they look like they're on top of the
+    protein, and I'd like them to appear intermixed with the black dots."*
+
+    That is a symptom, and two mechanisms were producing it.
+
+    **The sprinkle lattice was four times coarser** — 1/120 against the key's
+    1/470 — so a coloured dot was four times the diameter of a grain dot, and a
+    bigger mark reads as a nearer one. **And the sprinkles knocked out of the
+    key**: `dots & ~disc` removed the black wherever a colour landed, which is
+    exactly what something lying on top of something else does.
+
+    So this does not overlay a second field. It **inks the one field**: the
+    same lattice, the same pitch, the same jitter, the same dot size that
+    `dotty` draws — and each cell takes either the key or one of the colours.
+    A coloured dot is not a dot placed over the grain, it is a grain dot that
+    happens to be poppy. Nothing is knocked out because nothing overlaps: the
+    plates *partition* one mask rather than competing for it.
+
+    A consequence worth stating, because it is the design and not a
+    limitation: colour can only be as fine as the grain. There is no way to
+    make a sprinkle bigger than a black dot here without reintroducing the
+    layer Charlie is objecting to.
+    """
+
+    inks: tuple[tuple[int, int, int], ...] = (_KEY, _POPPY, _MARIGOLD, _CORNFLOWER)
+    """Key first, then the colours. The key is a blue-black rather than black
+    for the reason `_Sprinkles` records: `_multiply` collapses every crossing a
+    pure black takes part in, and `palette()` then holds nine colours where the
+    suite asserts sixteen. It applies here even though these plates never
+    actually cross, because `palette()` enumerates the combinations rather than
+    observing them."""
+
+    rate: float = 0.42
+    """Share of chromatic cells that take a colour rather than the key.
+
+    Sits above the fraction of the *plate* that ends up coloured, because a
+    cell only becomes a candidate where there is hue to carry. Tuned to land
+    near the 21.7% chromatic share of the plate Charlie liked, so the change
+    is about where the colour sits rather than how much of it there is.
+    """
+
+    lift: float = 0.12
+    """Coverage below which a cell keeps the key.
+
+    Colour is held off the lights. A bright dot alone on near-paper reads as a
+    speck of dirt rather than as modelling, and the same reasoning kept the
+    old sprinkles off the highlights.
+    """
+
+    def _inked(
+        self, frame: _Frame, coverage: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The dot field, and which ink each pixel's cell takes.
+
+        The lattice arithmetic is `_Stipple._dots`' exactly — same pitch, angle,
+        jitter, radius and lighting test — with a second array carried
+        alongside saying which plate the cell belongs to. It is duplicated
+        rather than shared because `_dots` returns a union and this needs the
+        cell identity that the union throws away; if the two ever disagree the
+        colour would drift off the grain, which is the whole thing being fixed.
+        """
+        colours = len(self.inks) - 1
+        family = _families(frame.rgb, colours, self.achromatic)
+        chroma = self._chroma(frame)
+        seat = np.clip(coverage / self.lift, 0.0, 1.0) * self.rate
+
+        height, width = frame.shape
+        pitch = max(2.0, frame.diagonal * self.pitch)
+        radians = np.deg2rad(self.lattice_angle)
+        y, x = np.ogrid[0:height, 0:width]
+        u = (x * np.cos(radians) + y * np.sin(radians)) / pitch
+        v = (-x * np.sin(radians) + y * np.cos(radians)) / pitch
+        cell_u = np.floor(u).astype(np.int64)
+        cell_v = np.floor(v).astype(np.int64)
+
+        dots = np.zeros((height, width), dtype=bool)
+        which = np.zeros((height, width), dtype=np.int64)
+        for du in (-1, 0, 1):
+            for dv in (-1, 0, 1):
+                au, av = cell_u + du, cell_v + dv
+                ju = au + 0.5 + (_hash01(au, av, 1) - 0.5) * 2 * self.jitter
+                jv = av + 0.5 + (_hash01(au, av, 2) - 0.5) * 2 * self.jitter
+                radius = self.dot * np.clip(0.6 + self.growth * coverage, 0.0, 1.6)
+                here = (np.hypot(u - ju, v - jv) < radius) & (
+                    _hash01(au, av, 3) < np.sqrt(coverage)
+                )
+                # A cell goes chromatic on its own hash, so the choice is
+                # stable per dot rather than flickering within one.
+                takes = here & chroma & (_hash01(au, av, 21) < seat)
+                which = np.where(takes & ~dots, family + 1, which)
+                dots |= here
+        return dots, which
+
+    def plates(self, frame: _Frame) -> tuple[np.ndarray, ...]:
+        coverage = self._coverage(frame)
+        dots, which = self._inked(frame, coverage)
+        dots &= ~frame.is_paper
+        # A partition, not an overlay: every drawn pixel belongs to exactly one
+        # plate, so no two ever cross and `_multiply` is never reached.
+        return tuple(dots & (which == index) for index in range(len(self.inks)))
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        covered = np.zeros(frame.shape, dtype=bool)
+        for plate in self.plates(frame):
+            covered |= plate
+        return covered
+
+
 FINISHES: dict[str, _Style] = {
     # The hatching, in two treatments — which is the whole of the ask, and the
     # reason `_Lozenge` exists. The old `cross-hatch` ruled three fixed angles
@@ -948,12 +1273,38 @@ FINISHES: dict[str, _Style] = {
     "linear-hatch": _Lozenge(angle=58.0, cross=None, hold=0.55, spacing=1 / 315),
     "cross-hatch": _Lozenge(angle=32.0, cross=-41.0, hold=0.45, spacing=1 / 470),
     # A hedcut rules one direction and thickens it, and that is the style
-    # rather than a defect — so this keeps its mechanism and answers only the
-    # half of the complaint that was about size. See `_Engraving.spacing` for
-    # why no test could see the old interval.
-    "hedcut": _Engraving(
-        angles=(75.0,), cumulative=False, bands=6, spacing=_HEDCUT_SPACING
-    ),
+    # rather than a defect. What it did not do was turn: the rules ran straight
+    # through every form. `_Bowed` keeps the mechanism and pushes the ruled
+    # plane aside with the light the render already carries, so the rules bow
+    # around each atom. Chosen from a bracket of five plates.
+    #
+    # It stays a *control* for the rim guard, and that is not an oversight. The
+    # bow is a texture, not a rim-landing mechanism: measured on `_spheres()`
+    # at 1890x956 the bowed finish lifts +0.0694 and the same finish with
+    # `relief` at 0 lifts +0.0714 — the warp does not move the rim at all.
+    #
+    # `bands` survives as a floor claim rather than as a count. Nothing in
+    # `_Bowed.marks` reads it; it is the number the suite requires the finish
+    # to beat in distinguishable ink levels, and a continuous duty clears six
+    # bands by drawing 245 of them.
+    "hedcut": _Bowed(angles=(75.0,), cumulative=False, bands=6, spacing=_HEDCUT_SPACING),
+    # The same idea in dots rather than rules. Charlie asked for the dots-only
+    # treatment as its own style rather than as a hedcut variant, and named it.
+    "dotty": _Stipple(),
+    # `dotty`'s one dot field, inked — not a second field laid over it. The two
+    # differ only in how many cells go chromatic, which is the one parameter
+    # separating them: about a fifth of the drawn pixels against about half.
+    #
+    # Neither declares `needs_colour`, deliberately. `spot-ink-plates` demands
+    # an element theme because its plates *mean* something; these claim nothing
+    # about what a hue is, so forcing one would override a colouring the caller
+    # chose on purpose in order to sprinkle three arbitrary print inks. The
+    # cost is that a greyscale render has no hue to sort and every cell takes
+    # the key, which draws exactly `dotty` — so `snapshot` reports the
+    # chromatic share, and that is what keeps the silence from passing for a
+    # result.
+    "dotty-mixed": _Intermixed(rate=0.26),
+    "dotty-confetti": _Intermixed(rate=0.70),
     # Prussian blue and the white of unexposed paper — never pure 255, because
     # a cyanotype's highlight is paper rather than light.
     "cyanotype": _Survey(bands=5, paper=(17, 48, 92), inks=((238, 245, 252),)),
