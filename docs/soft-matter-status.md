@@ -107,9 +107,11 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   The finding is that `_Survey` was always a depth-cued renderer and had only
   ever been drawn in blue. It contours the *recovered lighting field* and holds
   constant line width by dividing the residual by the local slope, so the marks
-  follow the form because they **are** isolines of it. `cross-hatch` and
-  `hedcut` rule strokes at a fixed angle regardless of what is underneath,
-  which is why neither reads as having depth.
+  follow the form because they **are** isolines of it. `cross-hatch` rules strokes at a
+  fixed angle regardless of what is underneath, which is why it does not read
+  as having depth. `hedcut` was the same until its rules were bowed by the
+  recovered light; that changed how it reads without changing where its ink
+  lands, which is measured — the warp moves the rim lift by 0.002.
 
   Its numbers were chosen by rendering 5 / 9 / 14 / 20 / 28 at plate size and
   looking, not from print convention. `brightest` is raised to 0.9975 because

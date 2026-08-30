@@ -104,6 +104,50 @@ nothing is released yet, so everything below is unreleased.
 
 ### Print finishes
 
+- **`hedcut` bows around the form, and three dot finishes are new.** Answering
+  the second half of "Hedcut is also way too coarse. They read like bad modern
+  art" — the size half shipped in #143, the mechanism half is this. `hedcut`
+  keeps its one direction and its swelling stroke and pushes the ruled plane
+  aside with the light the render already carries, so the rules bend around
+  each atom instead of running through it. Chosen from a bracket of five
+  plates. It stays a *control* for the rim guard, measured: the bow moves the
+  rim lift by 0.002, so it is a texture rather than a depth cue.
+
+- **`dotty`, `dotty-mixed` and `dotty-confetti`.** A jittered dot lattice
+  where each disc grows with the tone. The two colour variants ink that one
+  field rather than laying a second over it — same lattice, same pitch, same
+  dot size, each cell taking either the near-black key or one of three print
+  colours — so the plates partition one mask and never cross. They differ only
+  in how much colour: about a fifth of the ink against about half.
+
+  They sort by the hue already on screen and claim nothing about it, so they
+  follow whatever you coloured by and a greyscale render gives them nothing to
+  sort. The reply now carries `chromatic`, the share of ink that came off a
+  plate other than the key, because otherwise that case returns a path, a
+  success and a sensible ink fraction describing a picture with no colour in
+  it.
+
+- **A finish can ask for its capture to be taken larger.** A plate has exactly
+  two grey levels — `ink_mask` recovers the mask bit for bit *because* of it —
+  so an antialiased edge cannot be drawn, only averaged out of a bigger plate.
+  The four new finishes are captured at 2x and averaged down; the other five
+  are unchanged, and `spot-ink-plates` must stay hard-edged because its
+  boundaries are a category rather than a shade. The size ceiling is
+  re-checked against the pixels actually captured, refusing above 5477 px
+  rather than letting a `DecompressionBombError` escape as a tool failure.
+
+- **Three guards could not see what they checked.** The mark-size guard
+  resolved the frame diagonal as `hypot(w, h)` where the product uses
+  `sqrt(w * h)`, so it reported `engraving` clear of the grain floor by 6%
+  while the finish drew the floor exactly — and it checked `pitch` only, so
+  the stroke finishes were never checked at the comparison size at all. With
+  both fixed, four of the six shipped finishes turned out to be pinned there:
+  the pairwise comparison had never seen the marks the product draws. The rim
+  guard named `hedcut` in prose as its control, with a number (+0.086) that no
+  longer matched the code (+0.0668) and a finish that was not even the highest
+  control (`engraving`, +0.0922). Both are now derived from the field carrying
+  the mechanism, and the rim bar is two-sided so it cannot drift.
+
 - **The hatching now follows the form, in two treatments.** `linear-hatch` is
   new; `cross-hatch` keeps its name and is rebuilt on the same mechanism.
   Answering "the hatching should have separate linear and cross treatments.

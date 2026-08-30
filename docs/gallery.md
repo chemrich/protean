@@ -331,13 +331,16 @@ is showing. The reply says so outright.
 snapshot(path="plate.png", finish="spot-ink-plates")
 ```
 
-![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
+![The same spacefill render with no finish and each of the nine print finishes: cross-hatch, cyanotype, dotty, dotty-confetti, dotty-mixed, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
 
 | Finish | What it is |
 |---|---|
 | `linear-hatch` | the hatching, in one direction: strokes that bend around a form rather than being ruled across it, swelling where one form passes in front of another. The bolder mark of the two |
 | `cross-hatch` | the same hatching with a second family laid across the first, into lozenges that shear as they pass over a curve. Finer than the linear |
-| `hedcut` | one angle, six bands, the stroke thickening with the tone and never turning with the form — the stipple-portrait look rather than a drawing of the surface |
+| `hedcut` | one angle, the stroke thickening with the tone, and the ruled plane pushed aside by the light so the rules bow around each form. The stipple-portrait look rather than a drawing of the surface — the bow is texture, not depth cueing, and it lands no more ink on a rim than anywhere else |
+| `dotty` | the same idea in dots rather than rules: a jittered lattice where each cell takes a disc that grows with the tone, so the shading is carried by how much paper the dots have closed |
+| `dotty-mixed` | `dotty`'s one dot field, inked. Each cell takes either the near-black key or one of three print colours, on the same lattice at the same size — a coloured dot is a grain dot that happens to be poppy, not a dot laid over the grain. About a fifth of the ink chromatic |
+| `dotty-confetti` | the same at about half, where colour carries the picture and the black is the minority |
 | `engraving` | the survey's contours in black on white, at fourteen levels: it traces the recovered lighting like a relief map, so every atom becomes a contoured hill |
 | `cyanotype` | a survey print in Prussian blue and paper white. Contours the shading rather than hatching it, so every atom becomes nested rings |
 | `spot-ink-plates` | a two-colour press: the frame is sorted into colour families, each screened onto its own plate at its own angle, printed slightly out of register |

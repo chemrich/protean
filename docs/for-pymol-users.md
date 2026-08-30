@@ -108,7 +108,7 @@ derives the pixel count from a millimetre width rather than making you.
 list. In PyMOL a mistyped selection frequently returns an empty set and a
 successful-looking command.
 
-**Print finishes and the boil.** Four raster finishes applied after the capture,
+**Print finishes and the boil.** Nine raster finishes applied after the capture,
 and a stop-motion wobble whose amplitude follows how sure the data is about each
 atom. Nothing in PyMOL does this. See [the gallery](gallery.md#print-finishes).
 

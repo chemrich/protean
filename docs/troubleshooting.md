@@ -251,7 +251,10 @@ with a GPU.
 
 Read off the pixels, not guessed. There is also a hard ceiling — a frame beyond
 120 megapixels is refused before the render is paid for, as is a mistyped
-`finish` name.
+`finish` name. Some finishes are captured at twice the width and averaged back
+down, so that ceiling reaches them at half the width: the refusal names the
+finish, the width that would work, and the fact that a different finish would
+not have this limit.
 
 ### JPEG with transparency
 
