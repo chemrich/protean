@@ -3071,12 +3071,28 @@ async def test_a_domain_with_no_width_is_refused():
 
 async def test_a_snapshot_can_be_engraved_on_the_way_out(tmp_path):
     """The finish runs on the file, not in the viewer, so this is the only
-    place the whole path is exercised: capture, engrave, save, reopen."""
+    place the whole path is exercised: capture, engrave, save, reopen.
+
+    Two finishes, because they now leave the file in genuinely different states
+    and only one of them is still two-toned. `engraving` writes a plate: every
+    pixel is the paper or the ink and nothing between, which is the property
+    `ink_mask` recovers its answer from. `hedcut` asks for its capture at twice
+    the width and is averaged back down, so **its file has soft edges by
+    design** — the plate is still two-valued where `apply_finish` made it, and
+    the file is not.
+
+    That distinction is why this test is worth its browser: it reads the saved
+    PNG rather than `apply_finish`'s return value, and it is the only test that
+    does. When supersampling landed it was the one guard anywhere that noticed.
+    """
     async with viewer_session(FIXTURE) as session, _as_server(session, load=True):
         await server_mod.preset("publication-cartoon")
         plain = await server_mod.snapshot(str(tmp_path / "plain.png"), width_mm=60)
         inked = await server_mod.snapshot(
             str(tmp_path / "inked.png"), width_mm=60, finish="hedcut"
+        )
+        plated = await server_mod.snapshot(
+            str(tmp_path / "plate.png"), width_mm=60, finish="engraving"
         )
 
         assert inked["finish"] == "hedcut"
@@ -3084,9 +3100,30 @@ async def test_a_snapshot_can_be_engraved_on_the_way_out(tmp_path):
         assert 0.0 < inked["ink"] < 0.9, "a cartoon on white should not fill in"
         assert inked["pixels"] == plain["pixels"], "the finish changed the size"
 
-        # Two tones and nothing between, which is what makes it an engraving.
-        engraved = decode((tmp_path / "inked.png").read_bytes())
+        # Two tones and nothing between, which is what makes a plate a plate.
+        # `engraving` is not supersampled, so this is still exactly true of the
+        # file it writes.
+        engraved = decode((tmp_path / "plate.png").read_bytes())
         assert set(np.unique(engraved.pixels[:, :, :3]).tolist()) <= {0, 255}
+        assert "supersampled" not in plated, "engraving is not a supersampled finish"
+
+        # And hedcut's file is the same drawing with its edges resolved: many
+        # levels, both extremes still present, and nothing outside the two the
+        # plate was made from. Asserting the range as well as the count,
+        # because "more than two greys" alone would pass for a file that had
+        # picked up colour or been washed out.
+        soft = decode((tmp_path / "inked.png").read_bytes()).pixels[:, :, :3]
+        levels = np.unique(soft)
+        assert len(levels) > 2, (
+            "hedcut is captured at 2x and averaged down, so its file should "
+            "have resolved edges — two levels means the downsample did not run"
+        )
+        assert levels.min() == 0 and levels.max() == 255, (
+            f"the extremes moved: {levels.min()}..{levels.max()} rather than "
+            f"0..255, so the file is not the plate's own ink on its own paper"
+        )
+        assert inked["supersampled"] == 2
+        assert inked["captured_pixels"] == 2 * inked["pixels"][0]
 
 
 async def test_a_plate_print_colours_for_its_capture_and_puts_the_scene_back(
