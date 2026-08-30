@@ -7,6 +7,7 @@ it earns is a property rather than a measurement.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import re
 from dataclasses import replace
@@ -20,7 +21,6 @@ from protean_mcp.analysis.hatching import (
     _PAPER,
     FINISHES,
     _blur,
-    _Engraving,
     _Lozenge,
     _multiply,
     _Style,
@@ -36,21 +36,42 @@ FINISH_NAMES = sorted(FINISHES)
 #: The size the finish-comparison test draws at. Big enough that no two
 #: finishes' grain lattices collapse onto the same floor.
 #:
-#: `_grain` resolves its step as `max(2.0, diagonal * pitch)`, so below a
-#: certain size every fine finish clamps to 2 px and draws an identical
-#: lattice. Measured across all ten finish pairs: at 240 and 360 px the worst
-#: pair scores **0.0000** — indistinguishable — and at 480 it jumps to 0.4800.
-#: The cliff is where `engraving`'s 1/320 pitch clears the floor.
+#: `_grain` resolves its step as `max(2.0, diagonal * pitch)` and the stroke
+#: families as `max(floor, longest * spacing)`, so below a certain size every
+#: finish clamps to its own floor and draws the finest mark it can rather than
+#: the one it declares. Two finishes pinned that way can draw an identical
+#: lattice, and the comparison then scores a perfect 0.0000 while reporting a
+#: failure whose cause looks like the finishes rather than the fixture.
 #:
-#: Only the comparison uses it. The rest of the suite stays at 240, because
-#: raising the fixture everywhere took the file from 26 s to 113 s.
-_ENGRAVABLE = 480
+#: Plate-shaped, not square: `spacing` scales off the longer side and `pitch`
+#: off `sqrt(area)`, so 1660x830 clears every floor at 1.38 megapixels where
+#: the square that does the same needs 1520x1520 and 1.67x the pixels.
+#: `test_the_comparison_size_can_see_every_finishs_marks` is what says so.
+#:
+#: It was 480x480, where **four** of the shipped finishes sat on their floor —
+#: cross-hatch, hedcut and linear-hatch at 3, 4 and 3 px, and engraving at 2 —
+#: so the comparison has never once seen the marks the product draws. The
+#: guard that existed to catch this compared `hypot(w, h)` against a frame
+#: built on `sqrt(w * h)`, cleared engraving by 6%, and checked `pitch` only.
+#:
+#: Only the comparison uses it. The rest of the suite stays at 240. Raising it
+#: costs nothing here because the maps are now built once per finish rather
+#: than once per pair: 36 pairs at 1660x830 build in 19 s, which is what 10
+#: pairs at 480x480 cost uncached.
+_ENGRAVABLE = (1660, 830)
 
 
-def _flat(value: int, size: int = 240, alpha: int = 255) -> Image.Image:
-    """A square of one tone, which is the cleanest thing to engrave."""
+def _flat(value: int, size: int | tuple[int, int] = 240, alpha: int = 255) -> Image.Image:
+    """One tone, which is the cleanest thing to engrave.
+
+    Square by default. A width-and-height pair where a finish's mark size has
+    to be visible: `spacing` scales off the longer side and `pitch` off the
+    square root of the area, so a plate-shaped frame clears both floors for
+    fewer pixels than the square that does the same.
+    """
+    width, height = (size, size) if isinstance(size, int) else size
     return Image.fromarray(
-        np.full((size, size, 4), (value, value, value, alpha), dtype=np.uint8),
+        np.full((height, width, 4), (value, value, value, alpha), dtype=np.uint8),
         mode="RGBA",
     )
 
@@ -167,6 +188,29 @@ def test_colour_is_weighted_the_way_an_eye_weighs_it():
     )
 
 
+#: The tones the pairwise comparison is made at. Light enough that both
+#: finishes leave the paper bare would compare two blank frames and pass for
+#: any pair, including a duplicate.
+_COMPARED_TONES = (60, 100, 140)
+
+
+@functools.cache
+def _engraved(finish: str, tone: int) -> np.ndarray:
+    """One finish's ink mask on the comparison fixture, built once.
+
+    Every pair used to render both its sides, so a frame was engraved once per
+    pair it appeared in rather than once: 90 calls where 18 are needed. That
+    is what pays for `_ENGRAVABLE` being large enough for the comparison to
+    see the marks the product actually draws — the cached build at 1660x830
+    costs what the uncached one cost at 480x480.
+
+    Cached on the name rather than on the style so that a finish rebound in
+    `FINISHES` between tests would be a stale hit; nothing does that, and this
+    note is here so nothing starts.
+    """
+    return ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), finish), finish)
+
+
 @pytest.mark.parametrize(("left", "right"), list(itertools.combinations(FINISH_NAMES, 2)))
 def test_no_two_finishes_draw_the_same_picture(left, right):
     """Cross-hatching crosses and a hedcut does not, so the same tone has to
@@ -188,13 +232,8 @@ def test_no_two_finishes_draw_the_same_picture(left, right):
     # Tones light enough that both finishes leave the paper bare would compare
     # two blank frames and pass for any pair, including a duplicate.
     disagreement = max(
-        float(
-            (
-                ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), left), left)
-                ^ ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), right), right)
-            ).mean()
-        )
-        for tone in (60, 100, 140)
+        float((_engraved(left, tone) ^ _engraved(right, tone)).mean())
+        for tone in _COMPARED_TONES
     )
 
     assert disagreement > 0.1, (
@@ -553,37 +592,84 @@ def test_ink_fraction_ignores_what_was_never_drawn():
     assert ink_fraction(apply_finish(_flat(128, alpha=0), "hedcut"), "hedcut") == 0.0
 
 
-def test_no_two_finishes_share_a_grain_lattice_at_the_test_size():
-    """A guard on the guard above, aimed at the mechanism rather than the number.
+def _resolved(style, shape: tuple[int, int]) -> tuple[str, float, float]:
+    """The mark size a finish actually draws on a frame, and its own floor.
 
-    `test_no_two_finishes_draw_the_same_picture` compares ink masks, so it can
-    only see a difference the fixture is large enough to render. `_grain`
-    resolves its step as `max(2.0, diagonal * pitch)`: below a certain size
-    every fine finish clamps to the same 2 px floor and draws the same lattice,
-    and the comparison scores a perfect 0.0000 while reporting a failure whose
-    cause looks like the finishes rather than the fixture. That is what
-    happened when `engraving` was added — cyanotype and engraving disagreed on
-    nothing at 240 px and on 0.4811 of the frame at 1200.
+    The two expressions `apply_finish` builds `_Frame` from, not a second copy
+    written from the same idea. A stroke field runs one way, so `spacing`
+    scales off the longer side; a lattice does not, so `pitch` scales off
+    `sqrt(width * height)`.
 
-    This asserts the fixture can still tell them apart, so shrinking `_flat`
-    or adding a finer finish fails *here*, naming the real reason.
+    An earlier guard used `hypot(width, height)` here, which is 1.41x the
+    diagonal `_Frame` carries. It therefore reported `engraving` drawing a
+    2.12 px grain at the comparison size while the finish was drawing the
+    2.00 px floor, and cleared it by 6% — a guard that could not see the one
+    thing it existed to check.
     """
-    diagonal = float(np.hypot(_ENGRAVABLE, _ENGRAVABLE))
-    steps = {
-        name: max(2.0, diagonal * style.pitch)
-        for name, style in FINISHES.items()
-        if hasattr(style, "pitch")
-    }
-    assert len(steps) >= 2, f"expected at least two grained finishes, got {steps}"
-    collided = [name for name, step in steps.items() if step <= 2.0]
-    assert not collided, (
-        f"at {_ENGRAVABLE}px these finishes are pinned to the 2px grain floor "
-        f"and cannot be told apart: {sorted(collided)}. Raise _ENGRAVABLE. "
-        f"Resolved steps: { {n: round(v, 2) for n, v in steps.items()} }"
-    )
-    assert len({round(v, 2) for v in steps.values()}) == len(steps), (
-        f"two finishes resolve to the same grain step: "
-        f"{ {n: round(v, 2) for n, v in steps.items()} }"
+    if getattr(style, "spacing", None) is not None:
+        floor = style.least if isinstance(style, _Lozenge) else 4.0
+        return "spacing", max(floor, float(max(shape)) * style.spacing), floor
+    if getattr(style, "pitch", None) is not None:
+        diagonal = float(np.sqrt(shape[0] * shape[1]))
+        return "pitch", max(2.0, diagonal * style.pitch), 2.0
+    return "", 0.0, 0.0
+
+
+def _sized() -> list[str]:
+    """The finishes that declare a mark size, derived rather than named."""
+    return [n for n, style in FINISHES.items() if _resolved(style, _A_PLATE)[0]]
+
+
+def test_every_finish_draws_the_mark_size_it_declares():
+    """A finish's declared size must be the one it draws on the plate it ships at.
+
+    The cheap half of the lesson, and it needs no render. `max(floor, ...)`
+    means a finish can declare any number at all and draw the floor instead,
+    and every small fixture in this file is below the point where the
+    difference shows: `cross-hatch` shipped a 17 px mark for its whole life
+    while the suite drew it at 4.
+
+    Over both families and derived from the field each declares, because the
+    version that named `(*_lozenges(), "hedcut")` checked `spacing` only —
+    so `pitch`, which four finishes size their marks with, was never checked
+    at all.
+    """
+    assert _sized(), "no finish declares a mark size: this test is testing nothing"
+    for name in sorted(_sized()):
+        kind, step, floor = _resolved(FINISHES[name], _A_PLATE)
+        assert step > floor, (
+            f"{name} declares a {kind} of {step:.2f} px on the plate it ships "
+            f"at, which is at or under its own {floor} px floor — so the number "
+            f"in FINISHES is decorative and the finish draws the floor instead"
+        )
+
+
+def test_the_comparison_size_can_see_every_finishs_marks():
+    """A guard on `test_no_two_finishes_draw_the_same_picture`, aimed at the
+    fixture rather than at any finish.
+
+    That test can only see a difference the fixture is large enough to render.
+    Below a certain size every fine finish clamps to its floor and draws the
+    same lattice, and the comparison scores a perfect 0.0000 while reporting a
+    failure whose cause looks like the finishes rather than the fixture. That
+    is what happened when `engraving` was added — it and `cyanotype` disagreed
+    on nothing at 240 px and on 0.4811 of the frame at 1200.
+
+    So adding a finer finish, or shrinking `_ENGRAVABLE`, fails *here*, naming
+    the real reason. `_ENGRAVABLE` is plate-shaped rather than square because
+    `spacing` scales off the longer side and `pitch` off the square root of the
+    area: a 1660x830 frame clears every floor at 1.38 megapixels, where the
+    square that does the same needs 1520x1520 and 1.67x the pixels.
+    """
+    pinned = {}
+    for name in sorted(_sized()):
+        kind, step, floor = _resolved(FINISHES[name], _ENGRAVABLE)
+        if step <= floor:
+            pinned[name] = f"{kind} {step:.2f} at its {floor} floor"
+    assert not pinned, (
+        f"at {_ENGRAVABLE[0]}x{_ENGRAVABLE[1]} these finishes are pinned to "
+        f"their own floor and draw the finest mark they can rather than the "
+        f"one they declare: {pinned}. Raise _ENGRAVABLE."
     )
 
 
@@ -719,41 +805,6 @@ def test_the_fixture_is_the_picture_the_product_draws():
     # And it must be many small features, not one large one: that is the whole
     # difference from `_dome` and the reason these tests exist.
     assert max(_A_PLATE) / 20 > _FEATURE, "the fixture's spheres are not small"
-
-
-def test_the_suite_can_see_the_interval_a_finish_actually_ships():
-    """A finish's declared interval must be the one it draws at plate size.
-
-    The cheap half of the lesson, and it needs no render. Every other test in
-    this file draws at 240 or 480 px, where `max(floor, longest * spacing)`
-    returns the *floor* for every finish here — so a finish could declare any
-    interval at all, ship it, and nothing else in this file would change. That
-    is what happened: `cross-hatch` shipped a 17 px mark for its whole life
-    while the suite drew it at 4.
-    """
-    assert _lozenges(), "no _Lozenge finishes: this file is testing nothing"
-    for name in (*_lozenges(), "hedcut"):
-        style = FINISHES[name]
-        # Only the two stroke-ruling families declare an interval; `_Survey`
-        # and `_Plates` size their marks with `pitch` instead.
-        assert isinstance(style, _Lozenge | _Engraving), name
-        assert style.spacing is not None, (
-            f"{name} declares no interval of its own, so it draws "
-            f"apply_finish's — which is 17 px on the plate it ships at"
-        )
-        floor = style.least if isinstance(style, _Lozenge) else 4.0
-        declared = max(_A_PLATE) * style.spacing
-        assert declared > floor, (
-            f"{name} declares an interval of {declared:.2f} px on the plate it "
-            f"ships at, which is under its own {floor} px floor — so the number "
-            f"in FINISHES is decorative and the finish draws the floor instead"
-        )
-        # And the sizes the rest of the file uses genuinely cannot see it,
-        # which is the reason these tests carry the cost of a whole plate.
-        assert 480 * style.spacing < floor, (
-            f"{name} no longer clamps at the 480 px fixture, so the cheap tests "
-            f"above can see its interval and this comment is stale"
-        )
 
 
 @pytest.mark.parametrize("finish", _lozenges())
