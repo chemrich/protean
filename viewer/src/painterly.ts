@@ -371,6 +371,32 @@ function syncSize(webgl: any, state: PassState, width: number, height: number): 
   state.scratch.setSize(width, height);
 }
 
+/** Point the blit at the scratch texture, at this frame's size.
+ *
+ * Exported so the suite can reach it: this is a four-line function whose whole
+ * content is *that it runs unconditionally*, and there is no way to observe
+ * that through the pass without a GL context.
+ *
+ * It used to be guarded on `tColor.ref.value !== scratch.texture`, which never
+ * fires — `RenderTarget.setSize` calls `targetTexture.define()` and keeps the
+ * same object (`mol-gl/webgl/render-target.js:44`). So after a resize the blit
+ * went on dividing `gl_FragCoord.xy` by the size the pass was built at. Mol*'s
+ * own `getSharedCopyRenderable` updates both unconditionally, for this reason.
+ */
+export function refreshCopy(
+  copy: any,
+  texture: any,
+  width: number,
+  height: number
+): void {
+  ValueCell.update(copy.values.tColor, texture);
+  ValueCell.update(
+    copy.values.uTexSize,
+    Vec2.set(copy.values.uTexSize.ref.value, width, height)
+  );
+  copy.update();
+}
+
 function beginQuad(
   webgl: any,
   viewport: { x: number; y: number; width: number; height: number },
@@ -566,12 +592,7 @@ function paint(
     // persistent ImagePass, and the second came back a single flat colour —
     // 0.0000 inked, caught only because `capture()` carries a floor. Mol*'s own
     // `getSharedCopyRenderable` updates it unconditionally for the same reason.
-    ValueCell.update(state.copy.values.tColor, state.scratch.texture);
-    ValueCell.update(
-      state.copy.values.uTexSize,
-      Vec2.set(state.copy.values.uTexSize.ref.value, width, height)
-    );
-    state.copy.update();
+    refreshCopy(state.copy, state.scratch.texture, width, height);
     destination.bind();
     beginQuad(webgl, viewport);
     state.copy.render();
