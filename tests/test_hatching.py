@@ -11,6 +11,7 @@ import functools
 import itertools
 import re
 from dataclasses import replace
+from typing import Any
 from unittest import mock
 
 import numpy as np
@@ -765,9 +766,34 @@ def _spheres(size: tuple[int, int] = _A_PLATE) -> Image.Image:
     )
 
 
-def _lozenges() -> list[str]:
-    """The finishes built on the warped carrier, derived rather than named."""
-    return [name for name, style in FINISHES.items() if isinstance(style, _Lozenge)]
+def _without_its_warp(style: _Style) -> _Style:
+    """The same finish with its carrier straightened.
+
+    `_warped()` selects on the field that carries the mechanism rather than on
+    a class, so there is no one type here for `replace` to check its keyword
+    against: the group is `_Lozenge` today and gains an `_Engraving` when
+    `hedcut` bows. Widened in one named place rather than at the call site, so
+    the reason is written down once.
+    """
+    straightened: dict[str, Any] = {"relief": 0.0}
+    return replace(style, **straightened)
+
+
+def _burred() -> list[str]:
+    """The finishes that thicken their marks on a rim, derived from the field.
+
+    `_Lozenge.burr` calls itself "the entire rim-landing mechanism", so this is
+    the mechanism the rim guard separates. Derived rather than named because a
+    control named in prose stops being one the moment a finish changes class:
+    the guard below used to name `hedcut`, and `hedcut` is now an
+    `_Engraving` that bows.
+    """
+    return [n for n, style in FINISHES.items() if getattr(style, "burr", 0.0) > 0.0]
+
+
+def _warped() -> list[str]:
+    """The finishes whose carrier is pushed aside by the recovered light."""
+    return [n for n, style in FINISHES.items() if getattr(style, "relief", 0.0) != 0.0]
 
 
 def _subject_and_rims(source: Image.Image) -> tuple[np.ndarray, np.ndarray]:
@@ -807,38 +833,64 @@ def test_the_fixture_is_the_picture_the_product_draws():
     assert max(_A_PLATE) / 20 > _FEATURE, "the fixture's spheres are not small"
 
 
-@pytest.mark.parametrize("finish", _lozenges())
-def test_a_hatch_lands_its_ink_on_the_form(finish):
-    """The marks must go where the form has an edge, not merely where it is dark.
+#: How much likelier a rim pixel must be to take ink than any other subject
+#: pixel, for a finish whose marks swell on a rim. Measured on `_spheres()` at
+#: 1890x956: the burred finishes score +0.1545 to +0.1558 and the unburred ones
+#: +0.0275 to +0.0922, so the bar sits in a gap 0.06 wide.
+_A_RIM_IS_FOUND = 0.12
 
-    This is the whole difference between the hatching and what it replaced.
-    Chance-corrected, so a finish cannot pass by laying down more ink: the
-    number is how much more likely a rim pixel is to be inked than any other
-    pixel of the subject, and 0 is a mark field laid without reference to what
-    is underneath.
 
-    Measured on a real 1890 px spacefill capture, the old `cross-hatch` scored
-    +0.014 and `hedcut` +0.004 — and **drawing them finer never moved it**.
-    Swept from a 17 px interval down to 2, the best either managed was +0.026.
-
-    On this fixture the two hatches score about +0.18. The control is `hedcut`,
-    which is deliberately not in this list and scores **+0.086**: it rules one
-    direction and thickens it regardless of what is underneath, and that is its
-    style rather than a defect. So the bar sits between the two, and a hatch
-    that regressed to ruling a screen would fail here rather than pass.
-    """
+def _rim_lift(finish: str) -> float:
+    """How much more likely a rim pixel is to be inked than any other pixel of
+    the subject. Chance-corrected, so a finish cannot pass by laying down more
+    ink, and 0 is a mark field laid without reference to what is underneath."""
     source = _spheres()
     subject, rim = _subject_and_rims(source)
     inked = ink_mask(apply_finish(source, finish), finish)
+    return float(inked[rim].mean() - inked[subject].mean())
 
-    lift = float(inked[rim].mean() - inked[subject].mean())
-    assert lift > 0.12, (
+
+@pytest.mark.parametrize("finish", sorted(_burred()))
+def test_a_burred_finish_lands_its_ink_on_the_form(finish):
+    """The marks must go where the form has an edge, not merely where it is dark.
+
+    This is the whole difference between the hatching and what it replaced.
+    Measured on a real 1890 px spacefill capture, the old `cross-hatch` scored
+    +0.014 and `hedcut` +0.004 — and **drawing them finer never moved it**.
+    Swept from a 17 px interval down to 2, the best either managed was +0.026.
+    """
+    lift = _rim_lift(finish)
+    assert lift > _A_RIM_IS_FOUND, (
         f"{finish} put ink on the form's edges no more often than anywhere "
         f"else (lift {lift:+.4f}); it is ruling a screen over a silhouette"
     )
 
 
-@pytest.mark.parametrize("finish", _lozenges())
+@pytest.mark.parametrize("finish", sorted(set(FINISHES) - set(_burred())))
+def test_an_unburred_finish_is_still_a_control(finish):
+    """The other arm, and the reason the bar means anything.
+
+    A one-sided bar drifts: raise it until everything passes and the test still
+    reports green while separating nothing. So every finish *without* the burr
+    must sit under the same number every finish with it clears.
+
+    This replaces a control named in a docstring. That prose said `hedcut`
+    scored +0.086 and the hatches "about +0.18"; measured on today's fixture
+    they are +0.0668 and +0.155, and `engraving` — which nobody had measured —
+    sits highest of the controls at +0.0922. Naming one finish as the control
+    was therefore already naming the wrong one, before `hedcut` acquired a bow
+    and stopped being what the sentence described. A computed set cannot go
+    stale that way, and it grows when a finish is added.
+    """
+    lift = _rim_lift(finish)
+    assert lift < _A_RIM_IS_FOUND, (
+        f"{finish} declares no burr but lands ink on rims like a finish that "
+        f"does (lift {lift:+.4f}) — either it grew the mechanism without "
+        f"declaring it, or the bar has drifted up over a control"
+    )
+
+
+@pytest.mark.parametrize("finish", sorted(_warped()))
 def test_the_warp_is_what_draws_the_form(finish):
     """Take the warp out and the picture must change, a lot.
 
@@ -859,10 +911,9 @@ def test_the_warp_is_what_draws_the_form(finish):
     subject, _ = _subject_and_rims(source)
 
     style = FINISHES[finish]
-    assert isinstance(style, _Lozenge), finish
     live = ink_mask(apply_finish(source, finish), finish)
     flattened: dict[str, _Style] = dict(FINISHES)
-    flattened[finish] = replace(style, relief=0.0)
+    flattened[finish] = _without_its_warp(style)
     with mock.patch.dict(FINISHES, flattened):
         flat = ink_mask(apply_finish(source, finish), finish)
 
