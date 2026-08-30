@@ -1827,6 +1827,54 @@ async def test_a_supersampled_capture_reports_the_plates_ink_not_the_downsampled
     )
 
 
+async def test_a_colour_finish_reports_how_much_colour_reached_the_page(
+    wired_bridge, tmp_path
+):
+    """A greyscale scene gives `dotty-mixed` nothing to sort, and it draws the
+    black finish and returns a success.
+
+    That is the honest picture and there is nothing to raise — the finish reads
+    the colours already on screen and claims nothing about them, so a scene
+    with no colour in it has no colour to print. But the reply is otherwise
+    indistinguishable from one where it worked: same path, same pixel count,
+    same ink fraction, no error. `chromatic` is the only thing in it that can
+    tell a caller which of the two happened, and the caller cannot look.
+
+    The ramp handler is grey, so this is the failing case by construction.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _shaded_handler(sent, 400)
+    task = wired_bridge.serve(1)
+    reply = await snapshot(
+        str(tmp_path / "fig"), width_mm=60.0, dpi=300, finish="dotty-mixed"
+    )
+    await task
+
+    assert reply["ink"] > 0.0, "nothing was drawn; this test would pass on a blank page"
+    assert reply["chromatic"] == 0.0, (
+        "a grey capture reported colour on the page, so the number is not "
+        "measuring what it says"
+    )
+
+
+async def test_a_one_ink_finish_does_not_claim_a_colour_share(wired_bridge, tmp_path):
+    """`chromatic` appears only where it means something.
+
+    A finish with one ink prints all of it off that ink, so the number would be
+    0.0 for ever — a constant in every reply, which reads to a caller as a
+    finish that failed to print any colour rather than as one that has none to
+    print.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _shaded_handler(sent, 400)
+    task = wired_bridge.serve(1)
+    reply = await snapshot(str(tmp_path / "fig"), width_mm=60.0, dpi=300, finish="hedcut")
+    await task
+
+    assert "ink" in reply
+    assert "chromatic" not in reply
+
+
 async def test_a_supersampled_finish_is_refused_at_the_size_it_would_not_survive():
     """The ceiling is re-checked against the pixels captured, not the pixels asked
     for.

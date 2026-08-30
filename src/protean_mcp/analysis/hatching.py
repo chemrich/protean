@@ -1716,6 +1716,36 @@ def ink_mask(engraved: Image.Image, finish: str) -> np.ndarray:
     return off_paper & (pixels[:, :, 3] > 0)
 
 
+def chromatic_fraction(engraved: Image.Image, finish: str) -> float:
+    """How much of the ink came off a plate other than the first.
+
+    Reported for the reason `ink_fraction` is: the caller cannot look, and the
+    failure this catches is silent. `dotty-mixed` sorts its dots by the hue
+    already in the render and claims nothing about what a hue means — which is
+    what makes it useful over any colouring, and what makes it draw **exactly**
+    `dotty` over a greyscale one. There is no hue to sort, every cell takes the
+    key, and the plate that comes back is byte-identical to the mono finish's.
+    Without this number the reply carries a path, a success and an ink fraction
+    with nothing anywhere saying the colour never arrived.
+
+    A share of the *ink*, not of the frame, so it does not move when the
+    subject grows or the tone deepens — it answers "how much of what was drawn
+    came out coloured", which is the question, rather than "how much of the
+    page is coloured", which confounds it with coverage.
+
+    0.0 for a finish with one ink is the truth rather than a special case:
+    every mark it makes is its only ink.
+    """
+    validate_finish(finish)
+    inked = ink_mask(engraved, finish)
+    if not inked.any():
+        return 0.0
+    key = np.array(FINISHES[finish].inks[0], dtype=np.uint8)
+    pixels = np.asarray(_rgba(engraved))[:, :, :3]
+    off_key: np.ndarray = (pixels != key).any(axis=2)
+    return round(float(off_key[inked].mean()), 3)
+
+
 def ink_fraction(engraved: Image.Image, finish: str) -> float:
     """How much of the drawn area came back inked rather than bare paper.
 

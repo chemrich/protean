@@ -27,6 +27,7 @@ from protean_mcp.analysis.hatching import (
     _Style,
     _Survey,
     apply_finish,
+    chromatic_fraction,
     ink_fraction,
     ink_mask,
 )
@@ -905,6 +906,11 @@ def _without_its_warp(style: _Style) -> _Style:
     return replace(style, **straightened)
 
 
+def _inked_in_more_than_one_colour() -> list[str]:
+    """The finishes that separate a frame onto more than one plate."""
+    return [n for n, style in FINISHES.items() if len(style.inks) > 1]
+
+
 def _burred() -> list[str]:
     """The finishes that thicken their marks on a rim, derived from the field.
 
@@ -1049,3 +1055,72 @@ def test_the_warp_is_what_draws_the_form(finish):
         f"(moved {moved:.4f} of the subject) — the strokes are not following "
         f"anything, and every other number in this file would still pass"
     )
+
+
+@pytest.mark.parametrize("finish", sorted(_inked_in_more_than_one_colour()))
+def test_a_multi_ink_finish_says_how_much_colour_it_actually_printed(finish):
+    """The number that separates "mixed" from "drew the black one and said so".
+
+    These finishes sort their marks by the hue already in the render and claim
+    nothing about what a hue means, which is what makes them work over any
+    colouring — and what makes them draw nothing but the key over a colouring
+    that has no hue in it. That is not an error and there is no exception to
+    raise: it is the honest picture of a greyscale scene. But it comes back as
+    a path, a success and a perfectly sensible ink fraction describing a
+    picture with no colour in it, which is this codebase's signature failure.
+
+    Both arms, because either alone is satisfiable by a constant.
+    """
+    coloured = chromatic_fraction(
+        apply_finish(_flat_in_hues(100, _A_SMALL_PLATE), finish), finish
+    )
+    grey = chromatic_fraction(apply_finish(_flat(100, _A_SMALL_PLATE), finish), finish)
+
+    assert coloured > 0.05, (
+        f"{finish} printed {coloured:.3f} of its ink off the key plate on a "
+        f"frame with three hues in it — it is not separating anything"
+    )
+    assert grey == 0.0, (
+        f"{finish} reported {grey:.3f} of its ink as chromatic on a frame with "
+        f"no hue in it at all, so the number is not measuring what it says"
+    )
+
+
+@pytest.mark.parametrize(
+    "finish", sorted(set(FINISHES) - set(_inked_in_more_than_one_colour()))
+)
+def test_a_one_ink_finish_prints_no_colour_by_definition(finish):
+    """0.0 is the truth here rather than a special case: every mark a one-ink
+    finish makes is its only ink. Asserted so that a change to the measure
+    cannot start reporting a fraction of a mono plate as coloured."""
+    printed = chromatic_fraction(
+        apply_finish(_flat_in_hues(100, _A_SMALL_PLATE), finish), finish
+    )
+    assert printed == 0.0, f"{finish} has one ink but printed {printed:.3f} off it"
+
+
+def test_a_mixed_dotty_draws_plain_dotty_when_there_is_no_hue_to_sort():
+    """The design claim, stated as a test rather than left in a docstring.
+
+    `dotty-mixed` partitions the field `dotty` draws — it does not add to it,
+    thin it, or lay anything over it — so on a frame with no hue to sort, every
+    cell takes the key and the two plates are the same plate. Byte for byte,
+    not nearly.
+
+    This is what `dotty-sprinkles` failed. It knocked the key out where a
+    colour landed (`dots & ~disc`), so its greyscale plate was `dotty` with
+    holes in it, and Charlie could see the layer that made. Nothing else in
+    this file can tell the two mechanisms apart, because both look right in
+    colour — the difference only shows where the colour goes away.
+    """
+    grey = _flat(100, _A_SMALL_PLATE)
+    plain = ink_mask(apply_finish(grey, "dotty"), "dotty")
+    for finish in ("dotty-mixed", "dotty-confetti"):
+        mixed = ink_mask(apply_finish(grey, finish), finish)
+        moved = float((plain ^ mixed).mean())
+        assert moved == 0.0, (
+            f"{finish} drew {moved:.4f} of the frame differently from `dotty` "
+            f"on a frame with no hue in it — it is not partitioning dotty's "
+            f"field, it is drawing a different one"
+        )
+    assert plain.mean() > 0.05, "the fixture is blank; the comparison above is vacuous"

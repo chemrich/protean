@@ -57,6 +57,7 @@ from .analysis.exposure import (
 from .analysis.hatching import (
     FINISHES,
     apply_finish,
+    chromatic_fraction,
     ink_fraction,
     validate_finish,
 )
@@ -2546,6 +2547,41 @@ def _supersample(finish: str | None, width: int, millimetres: float, dpi: int) -
     return factor
 
 
+def _printed(
+    image: PILImage.Image, finish: str, factor: int
+) -> tuple[PILImage.Image, float, float, int]:
+    """Redraw a capture as a print, and measure it *before* averaging it down.
+
+    The order is load-bearing, which is why it is one function rather than four
+    lines at the call site. Both numbers are defined against a plate, which has
+    exactly two values: `ink_fraction` counts every pixel that is not the paper
+    and `chromatic_fraction` every inked pixel that is not the key. Averaged
+    edges are neither — an edge pixel that is a third of a mark counts as a
+    whole one, and an edge between the key and a colour is a blend belonging to
+    neither. Measured on one subject at 1890 px, taking the ink fraction after
+    the downsample instead reported hedcut's 0.046 as 0.101 and cross-hatch's
+    0.052 as 0.276.
+
+    Returns the plate's width as well, taken from what came back rather than
+    from what was asked for: `crop` narrows a capture, so a reply that quoted
+    the requested width would describe a downsample that did not happen.
+    """
+    plate = apply_finish(image, finish)
+    inked = ink_fraction(plate, finish)
+    chromatic = chromatic_fraction(plate, finish)
+    width = plate.width
+    if factor > 1:
+        # Lanczos rather than a box average: it is what the plates Charlie
+        # chose from were made with, and a box average of the same plate is a
+        # visibly softer mark. Shipping the other filter would ship a picture
+        # nobody approved.
+        plate = plate.resize(
+            (plate.width // factor, plate.height // factor),
+            PILImage.Resampling.LANCZOS,
+        )
+    return plate, inked, chromatic, width
+
+
 @_tool()
 async def snapshot(
     path: str,
@@ -2749,6 +2785,8 @@ async def snapshot(
             "or capture on a machine with a GPU."
         )
     inked: float | None = None
+    chromatic: float | None = None
+    plate: int | None = None
     if finish is not None:
         # Checked above too, before the render was paid for. Repeated here
         # rather than trusted, because `FINISHES` is a plain dict and the
@@ -2756,33 +2794,7 @@ async def snapshot(
         # an invariant nobody at this line can see. A raw exception escaping a
         # tool reads to a caller as protean breaking, not as a bad argument.
         try:
-            image = apply_finish(image, finish)
-            # Measured on the plate, before it is averaged down, and the order
-            # is load-bearing. `ink_fraction` counts every pixel that is not the
-            # paper, which is exact on a two-valued plate and wrong the moment
-            # the edges go grey — an antialiased edge pixel is a fraction of a
-            # mark and counts as a whole one. Measured on one subject at 1890
-            # px, taking it after the downsample instead reported hedcut's 0.046
-            # as 0.101 and cross-hatch's 0.052 as 0.276. This is the one number
-            # in the reply whose whole job is to say whether the tone had
-            # anywhere to go, and the plate is where it is true.
-            inked = ink_fraction(image, finish)
-            # What came back, not what was asked for. `crop` narrows the
-            # capture to the subject, so the viewer may hand back something
-            # other than `captured` — and a note that reported the width it
-            # requested would describe a downsample that did not happen. It
-            # cannot be exercised today because `crop=True` is a no-op, which
-            # is exactly why it is derived here rather than assumed.
-            plate = image.width
-            if factor > 1:
-                # Lanczos rather than a box average: it is what the plates
-                # Charlie chose from were made with, and a box average of the
-                # same plate is a visibly softer mark. Shipping the other filter
-                # would ship a picture nobody approved.
-                image = image.resize(
-                    (image.width // factor, image.height // factor),
-                    PILImage.Resampling.LANCZOS,
-                )
+            image, inked, chromatic, plate = _printed(image, finish, factor)
         except ValueError as exc:
             raise ViewerError(str(exc)) from exc
 
@@ -2856,6 +2868,16 @@ async def snapshot(
                 # filled rectangle with the molecule showing through as a few
                 # light strokes.
                 "ink": inked,
+                # Which plates the ink actually came off, for the finishes that
+                # have more than one. `dotty-mixed` and `dotty-confetti` sort
+                # their dots by the hue already on screen and claim nothing
+                # about it, so a greyscale render gives them nothing to sort:
+                # every cell takes the key and they draw exactly `dotty`, down
+                # to the byte. That is a success, a file and a sensible ink
+                # fraction describing a picture with no colour in it, which is
+                # this codebase's signature failure and the reason for the one
+                # number that can see it.
+                **({"chromatic": chromatic} if len(FINISHES[finish].inks) > 1 else {}),
             }
             if finish is not None
             else {}
