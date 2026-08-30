@@ -1438,7 +1438,18 @@ shader. One build, and it settled a question three rounds of inference had got
 wrong. Any pass with an internal vector field should have a debug output before
 it has a second parameter.
 
-#### Three palettes, and the one that ships
+#### Three palettes, and the one that shipped — superseded 2026-08-30
+
+> **The bright looks are gone.** All four plates were rendered on one scene and
+> compared, and Charlie chose the first: *"original is still the best. Keep it,
+> remove all the rest."* `chiaroscuro` is the only look now, on the dark ground
+> and studio rig it was built for. This subsection is kept as written because
+> the reasoning in it is still true of the palettes — which **are** still
+> registered, reachable by `color()`, and separable under deuteranopia — and
+> because the round that produced them is what turned four silent defects up.
+> See "The rounds ended where they started" below.
+
+#### Three palettes, as they were built
 
 `spring` is the default: coral against sky rather than the obvious coral against
 leaf green, because red-against-green is the one axis deuteranopia collapses and
@@ -1456,6 +1467,52 @@ pairing is available; the preset picks a pair.
 The three also differ in **how much brush you see**, which is the one thing left
 open: `spring` at `load` 0.55, `orchard` 0.85, `poster` 1.2, deliberately
 bracketing rather than converging, so the answer sits inside the range.
+
+#### The rounds ended where they started — 2026-08-30
+
+Five plates of the same scene, differing only in mark length, then a straight
+comparison against the first commit's render. Charlie picked the first.
+
+**What that decided, and what it did not.** It decided the look. It did not
+decide that the four brightening rounds were wrong to run: the largest lever on
+this pass is the *lighting rig*, not the pass — subject luminance 112 to 162
+from the rig alone — and that is a measurement, not an opinion, made only
+because the rounds happened. Three of the four defects they turned up were real
+and stay fixed in kind.
+
+**Two of them, though, were only defects against an intent nobody held.** The
+impasto relight took 14.3% off the mean painted pixel and the weave was a
+one-sided tax of 4.3%; both were replaced with mean-neutral forms, and both are
+back, because the darkness they removed is the darkness that was chosen. The
+glaze is the sharpest case: `mix(col, col * glazeColour, g)` is a multiply and
+can only darken, which made a bright look arithmetically impossible;
+`mix(col, shadowColour, g)` is a tint and puts a *floor* under the darks at
+0.2. The tint was the right fix for a bright palette and is the wrong one here,
+and the fix stopped being a fix the moment the bright palettes left.
+
+**One was a real defect and is kept, without changing the picture.** The
+Kuwahara sector weight is `1/(1 + σ^q)` — a formula published for 0-255 values.
+On the [0,1] the shader carries, its entire range at hardness 8 is 1.0000000 to
+0.9999847, so the pass was an anisotropic Gaussian blur wearing a Kuwahara's
+name. Rather than restore that arithmetic, the reference variance is now a
+uniform and `chiaroscuro` sets it to **1.0**, which is the ungoverned form
+*bit for bit* — verified at every sample, and then verified on the plate:
+identical MD5 against the render that was approved, on a render path measured
+to be deterministic by rendering the same build twice.
+
+That distinction is the whole method here. A look's softness is taste and
+belongs in the look table; whether the filter is *capable* of abstraction is
+correctness and belongs in a test. `painterly-looks.test.ts` now asserts the
+second at a governing reference, and asserts separately that `chiaroscuro`
+declines it — so a later reader who finds the ratio at 1.0000000 and calls it
+broken has to change that line and read why first.
+
+**And one term was shipped that had never rendered.** `edgeBreak` was committed
+with a message saying plainly *"This has never produced a picture. It
+typechecks and nothing more"* — and shipped at 1.0 on all four looks, wired to
+the shader every frame. It is removed. The lesson is not about this term: a
+commit message is a claim about *intent*, and the default is the claim about
+*state*.
 
 #### What is not built
 

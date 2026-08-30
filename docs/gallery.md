@@ -369,15 +369,20 @@ renderer. This is the other thing entirely: **protean's own render pass, on the
 GPU, running every frame.** The viewer shows the painting, and `snapshot()`
 returns what the viewer is showing.
 
-`brushwork(look="spring")` reaches it directly, on whatever is on screen.
-`preset("painting")` is the whole scene set up for it — a ribbon in coral and
-sky, an open ring light, a cream ground.
+`brushwork(look="chiaroscuro")` reaches it directly, on whatever is on screen.
+`preset("painting")` is the whole scene set up for it — a ribbon in earth
+pigments, a studio rig with a cast shadow, a dark umber ground.
 
-Four looks: **`spring`** is the default, **`poster`** is flatter and more
-whimsical, **`orchard`** is vermilion against deep teal, and **`chiaroscuro`**
-is the Dutch Master this started as. A look sets how the paint behaves; the
-ribbon's colours are a colour theme of the same name, so `color("poster")` and
-`brushwork(look="spring")` is a pairing you can ask for.
+**One look**, and it is the one this started as: a Dutch Master, with a brown
+glaze in the darks and lead white in the lights. Three bright looks were built
+over four rounds against *"brighten the mood, make it joyful"*, and then all
+four were compared side by side and the first was chosen. They are in the
+history if the question reopens; what they found on the way is below, and it
+is worth more than the palettes were.
+
+A look sets how the paint behaves; the ribbon's colours are a separate colour
+theme, so `color("poster")` with `brushwork(look="chiaroscuro")` is still a
+pairing you can ask for — the three bright palettes stay registered.
 
 **The light matters more than any of it.** A studio rig with a cast shadow is a
 rig for a dark ground: it models hard and takes the colour out of a palette

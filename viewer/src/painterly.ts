@@ -553,14 +553,25 @@ function paint(
     // The consumer holds the identity of the target it asked for —
     // `ImagePass.getImageData` binds it and reads pixels off it — so the
     // painted frame has to end up in that object and not merely somewhere.
-    if (state.copy.values.tColor.ref.value !== state.scratch.texture) {
-      ValueCell.update(state.copy.values.tColor, state.scratch.texture);
-      ValueCell.update(
-        state.copy.values.uTexSize,
-        Vec2.set(state.copy.values.uTexSize.ref.value, width, height)
-      );
-      state.copy.update();
-    }
+    // Unconditionally, and the guard that used to stand here is the reason.
+    // It asked whether the texture *object* had changed — but
+    // `RenderTarget.setSize` calls `targetTexture.define()` and keeps the same
+    // object (`mol-gl/webgl/render-target.js:44`), so after a resize the
+    // condition is false and `uTexSize` keeps the size the pass was built at.
+    // The copy shader then divides `gl_FragCoord` by the old size and samples
+    // off the end of the frame.
+    //
+    // Reachable from an ordinary figure run, not a hostile one: the brushwork
+    // figure captures at 1400 px and the presets figure at 420 through the same
+    // persistent ImagePass, and the second came back a single flat colour —
+    // 0.0000 inked, caught only because `capture()` carries a floor. Mol*'s own
+    // `getSharedCopyRenderable` updates it unconditionally for the same reason.
+    ValueCell.update(state.copy.values.tColor, state.scratch.texture);
+    ValueCell.update(
+      state.copy.values.uTexSize,
+      Vec2.set(state.copy.values.uTexSize.ref.value, width, height)
+    );
+    state.copy.update();
     destination.bind();
     beginQuad(webgl, viewport);
     state.copy.render();

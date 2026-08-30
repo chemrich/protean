@@ -161,11 +161,16 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   shuffle arm, because it claims nothing a shuffle arm could test — the marks
   follow the shading, which is a property of where the light is.
 
-  **It shipped as a Dutch Master and Charlie sent it back**: *"way too earth
-  tone, too dark ... brighten the mood. Make it joyful."* It is `spring` now —
-  coral against sky on cream — with `poster` and `orchard` beside it. The
-  interesting part is what the hunt for the gloom turned up, because the ground
-  was the least of it and all four of these reported success:
+  **It shipped as a Dutch Master, Charlie sent it back, and four rounds later
+  he took it again.** First: *"way too earth tone, too dark ... brighten the
+  mood. Make it joyful."* Three bright looks followed. Then all four were
+  rendered side by side on the same scene and compared: *"original is still the
+  best. Keep it, remove all the rest."* So `chiaroscuro` is the only look, on
+  the dark ground it was built for.
+
+  **The bright rounds are not wasted and should not be read as a detour.** They
+  are why the darkness is now a choice rather than an accident, and the hunt
+  for the gloom turned up four defects that all reported success:
 
   1. **The pass was not running a Kuwahara filter.** The sector weight is the
      published one, which operates on 0-255 values; on [0,1] the exponent

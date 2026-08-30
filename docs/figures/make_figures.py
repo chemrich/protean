@@ -510,6 +510,12 @@ async def presets() -> list[Path]:
             await load("1ubq")
             await server.background(color=ground)
             await server.lighting(rig="standard")
+            # And the paint, which the comment above already names and this
+            # loop did not put back. It is a *canvas* property, so it survives
+            # the reload that clears everything else — the sheet ran clean only
+            # because no preset turned it on until `painting` did, and it cost
+            # a blank tile the first time one ran after the brushwork figure.
+            await server.brushwork(look="off")
             try:
                 await server.preset(name)
             except Exception as exc:  # reported, never swallowed

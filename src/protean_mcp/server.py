@@ -4020,21 +4020,23 @@ async def brushwork(
 
     look: the painting, or "off".
 
-      spring       Coral against sky on cream, shadows tinted cool rather
-                   than darkened. What `preset("painting")` reaches for.
-      poster       The whimsical one: hot pink beside mustard on near-white, a
-                   harder brush, almost no relief. Flat and graphic.
-      orchard      Vermilion against deep teal — bright, but with real value
-                   contrast rather than pastel.
       chiaroscuro  A Dutch Master: earth pigments, a brown glaze in the darks,
-                   lead white in the lights. Wants a dark ground and a studio
-                   rig, so it is the one look that does not suit the scene
-                   `preset("painting")` builds.
+                   lead white in the lights, and the paint standing off a woven
+                   ground. It wants the dark ground and studio rig that
+                   `preset("painting")` builds, which is the scene it was made
+                   for.
       off          Back to a plain render. Bit-for-bit the picture you had
                    before, which is asserted rather than hoped.
 
-    A look sets how the paint behaves; the ribbon's colours are a *colour
-    theme* of the same name — `color("spring")` — so any pairing is available
+    **One look, and that is a decision rather than a beginning.** Three bright
+    ones — `spring`, `poster`, `orchard` — were built over four rounds against
+    "brighten the mood, make it joyful", and then all four plates were compared
+    side by side and the first was chosen. They are in the history if the
+    question reopens.
+
+    A look sets how the paint behaves; the ribbon's colours are a separate
+    *colour theme* — `color("pigment")`, and the three bright palettes are
+    still registered under their own names — so any pairing is one call away
     and `capabilities()` lists both sets.
 
     brush_size: "fine", "medium" or "broad".
@@ -5005,19 +5007,21 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # Open, and this is most of what makes the picture bright.
         #
         # It was `studio` with a cast shadow, which is a rig for a dark ground:
-        # it models hard, and it was taking the colour out of the palette before
-        # the paint ever saw it. Measured on 1UBQ with the same palette and the
-        # same look, only the rig changed: subject luminance 112 -> 162 and
-        # saturation 112 -> 146. The renderer was the biggest lever of the
-        # several this look has, and none of the others is close.
-        # Open, but not flat. At 0.72 the ribbon lost most of its modelling —
-        # which brightened the picture and took the contrast with it, and took
-        # the flow field's own signal with that. 0.55 keeps a light picture with
-        # a light and a shadow side, which is what makes a form read.
+        # it models hard. Measured on 1UBQ with the same palette and the same
+        # look, only the rig changed: subject luminance 112 -> 162 and
+        # saturation 112 -> 146. **The renderer is the biggest lever this look
+        # has, and none of the others is close** — which is why the four
+        # brightening rounds are worth their commits even though the picture
+        # came back here: they are how that is known rather than guessed.
+        # The studio rig, at its own ambient. A `ring` at 0.55 was tried for
+        # four rounds and is what the paragraph above measured; it lit a
+        # brighter picture and took the contrast with it, and the flow field
+        # reads contrast. Charlie compared the two and kept this one.
         await _run(lighting, rig="studio"),
-        # Occlusion stays because the pass reads the shading to find the form —
-        # a flat-lit ribbon has no gradient, so no flow, and the brush would
-        # have nothing to follow. The cast shadow goes.
+        # Occlusion because the pass reads the shading to find the form — a
+        # flat-lit ribbon has no gradient, so no flow, and the brush has
+        # nothing to follow. The cast shadow stays with it: it is most of what
+        # separates the ribbon from the ground on a dark ground.
         *await _set_effects(occlusion=True, shadow=True, painterly=_PAINTING_LOOK),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),

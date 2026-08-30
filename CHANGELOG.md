@@ -102,6 +102,40 @@ nothing is released yet, so everything below is unreleased.
   than a filename.
 
 
+### Views
+
+- **`painting` goes back to the Dutch Master, and keeps only that look.** Four
+  plates of one scene were compared and the first was chosen: *"original is
+  still the best. Keep it, remove all the rest."* `brushwork()` now offers
+  `chiaroscuro` and `off`; `preset("painting")` builds the dark umber ground,
+  studio rig and cast shadow the look was made for. The `spring`, `poster` and
+  `orchard` *palettes* stay registered and are still reachable through
+  `color()` — only the looks are gone.
+
+- **`edgeBreak` is removed.** It shipped at 1.0 on every look, wired to the
+  shader every frame, under a commit message that said *"This has never
+  produced a picture. It typechecks and nothing more."* A commit message is a
+  claim about intent; the default is the claim about state.
+
+- **The abstraction is kept general and set to the value that does nothing.**
+  The Kuwahara sector weight was arithmetically inert — the published formula
+  is for 0-255 values, and on the [0,1] the shader carries, its whole range at
+  hardness 8 is 1.0000000 to 0.9999847. The reference variance is a uniform
+  now, and `chiaroscuro` asks for the ungoverned form explicitly. It is
+  bit-for-bit the old behaviour, verified at every sample and then on the plate
+  by identical MD5. The guard survives with a real subject: it asserts the
+  formula *can* discriminate, and separately that this look chooses not to.
+
+- **Reverted with it: two corrections that were only corrections against an
+  intent nobody held.** A relight costing 14.3% of the mean painted pixel and a
+  one-sided weave costing 4.3% were replaced with mean-neutral forms during the
+  brightening; the darkness they removed is the darkness that was chosen. The
+  glaze goes back from a tint to a multiply for the same reason — a tint floors
+  the darks at 0.2.
+
+- **Kept regardless:** the `atan(0.0, 0.0)` guard, whose absence made the pass
+  return a transparent pixel and got whole captures refused as incomplete.
+
 ### Print finishes
 
 - **`hedcut` bows around the form, and three dot finishes are new.** Answering
