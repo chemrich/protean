@@ -90,15 +90,6 @@ const FLOW_SIGMA_PX = 2.0;
  * on 1UBQ the empty ground reads under 0.02 and the ribbon reads 0.3 upwards. */
 const FLOW_FLOOR = 0.08;
 
-/** How loudly the depth gradient speaks in the structure tensor, against a
- * colour gradient of the same size.
- *
- * Depth is normalised over the scene, so its gradient across a ribbon is a few
- * thousandths per pixel where a shading gradient is a few hundredths. This
- * brings them into the same range, so the form is heard under flat light
- * without drowning the colour under raking light. */
-const FORM_WEIGHT = 14.0;
-
 /** How slowly the ground's block-in direction wanders, as a fraction of the
  * diagonal. A twentieth means the sweep turns about five times across the
  * frame, which reads as a hand rather than as a ruled fill. */
@@ -190,7 +181,6 @@ const TensorSchema = {
   uNear: UniformSpec('f'),
   uFar: UniformSpec('f'),
   uIsOrtho: UniformSpec('f'),
-  uFormWeight: UniformSpec('f'),
 };
 
 const BlurSchema = {
@@ -221,30 +211,21 @@ const BrushSchema = {
   uHardness: UniformSpec('f'),
   uVarRef: UniformSpec('f'),
   uDepthFalloff: UniformSpec('f'),
-  uStrokeLen: UniformSpec('f'),
-  uStrokeWidth: UniformSpec('f'),
-  uStrokeFill: UniformSpec('f'),
-  uRidge: UniformSpec('f'),
+  uStroke: UniformSpec('f'),
+  uGrain: UniformSpec('f'),
   uBristle: UniformSpec('f'),
-  uLoad: UniformSpec('f'),
   uRelief: UniformSpec('f'),
-  uSpecular: UniformSpec('f'),
   uFar: UniformSpec('f'),
   uGroundPaint: UniformSpec('f'),
-  uEdgeBreak: UniformSpec('f'),
   uGlaze: UniformSpec('f'),
-  uShadowColor: UniformSpec('v3'),
-  uShadowFrom: UniformSpec('f'),
-  uShadowTo: UniformSpec('f'),
+  uGlazeColor: UniformSpec('v3'),
   uHighlight: UniformSpec('f'),
   uHighlightColor: UniformSpec('v3'),
-  uLightFrom: UniformSpec('f'),
-  uLightTo: UniformSpec('f'),
-  uShade: UniformSpec('f'),
-  uChroma: UniformSpec('f'),
+  uEdgeDark: UniformSpec('f'),
   uWeaveDepth: UniformSpec('f'),
   uWeavePitch: UniformSpec('f'),
   dSamples: DefineSpec('number'),
+  dStroke: DefineSpec('number'),
 };
 
 const TensorShader = ShaderCode('painterly-tensor', quad_vert, painterly_tensor_frag);
@@ -294,7 +275,6 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uNear: ValueCell.create(1),
     uFar: ValueCell.create(100),
     uIsOrtho: ValueCell.create(0),
-    uFormWeight: ValueCell.create(0),
   };
   const tensor = createComputeRenderable(
     createComputeRenderItem(webgl, 'triangles', TensorShader, { ...TensorSchema }, tensorValues),
@@ -335,32 +315,23 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uRadius: ValueCell.create(radius),
     uAlpha: ValueCell.create(1),
     uHardness: ValueCell.create(8),
-    uVarRef: ValueCell.create(0.03),
+    uVarRef: ValueCell.create(1),
     uDepthFalloff: ValueCell.create(1),
-    uStrokeLen: ValueCell.create(1),
-    uStrokeWidth: ValueCell.create(1),
-    uStrokeFill: ValueCell.create(0.8),
-    uRidge: ValueCell.create(0),
+    uStroke: ValueCell.create(1),
+    uGrain: ValueCell.create(1),
     uBristle: ValueCell.create(0),
-    uLoad: ValueCell.create(0),
     uRelief: ValueCell.create(0),
-    uSpecular: ValueCell.create(0),
     uFar: ValueCell.create(100),
     uGroundPaint: ValueCell.create(0.3),
-    uEdgeBreak: ValueCell.create(1.0),
     uGlaze: ValueCell.create(0),
-    uShadowColor: ValueCell.create(Vec3.create(0, 0, 0)),
-    uShadowFrom: ValueCell.create(0.38),
-    uShadowTo: ValueCell.create(0.04),
+    uGlazeColor: ValueCell.create(Vec3.create(0, 0, 0)),
     uHighlight: ValueCell.create(0),
     uHighlightColor: ValueCell.create(Vec3.create(1, 1, 1)),
-    uLightFrom: ValueCell.create(0.7),
-    uLightTo: ValueCell.create(0.96),
-    uShade: ValueCell.create(0),
-    uChroma: ValueCell.create(1),
+    uEdgeDark: ValueCell.create(0),
     uWeaveDepth: ValueCell.create(0),
     uWeavePitch: ValueCell.create(4),
     dSamples: ValueCell.create(samples),
+    dStroke: ValueCell.create(1),
   };
   const brush = createComputeRenderable(
     createComputeRenderItem(webgl, 'triangles', BrushShader, { ...BrushSchema }, brushValues),
@@ -477,7 +448,6 @@ function paint(
     state.tensor.values.uIsOrtho,
     camera.state.mode === 'orthographic' ? 1 : 0
   );
-  ValueCell.updateIfChanged(state.tensor.values.uFormWeight, FORM_WEIGHT);
   state.tensor.update();
   state.tensorA.bind();
   beginQuad(webgl, viewport);
@@ -520,11 +490,14 @@ function paint(
   const lengths = resolveBrush(width, height, look, settings.brushSize);
   const strokePx = lengths.stroke;
   const samples = samplesFor(radius);
-  if (samples !== state.samples) {
-    // A define, so this recompiles the program. It changes only when the brush
-    // size or the frame size changes — a tool call or a resize.
+  const strokeSteps = Math.max(2, Math.min(48, Math.round(strokePx)));
+  if (samples !== state.samples || strokeSteps !== state.stroke) {
+    // Defines, so this recompiles the program. They change only when the brush
+    // size, the look or the frame size changes — a tool call or a resize.
     ValueCell.update(state.brush.values.dSamples, samples);
+    ValueCell.update(state.brush.values.dStroke, strokeSteps);
     state.samples = samples;
+    state.stroke = strokeSteps;
   }
   ValueCell.update(state.brush.values.tColor, source.texture);
   ValueCell.update(state.brush.values.tFlow, state.tensorB.texture);
@@ -537,12 +510,9 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uHardness, look.hardness);
   ValueCell.updateIfChanged(state.brush.values.uVarRef, look.varRef);
   ValueCell.updateIfChanged(state.brush.values.uDepthFalloff, falloff);
-  ValueCell.updateIfChanged(state.brush.values.uStrokeLen, Math.max(4, strokePx));
-  ValueCell.updateIfChanged(state.brush.values.uStrokeWidth, Math.max(2, lengths.grain));
-  ValueCell.updateIfChanged(state.brush.values.uStrokeFill, look.strokeFill);
-  ValueCell.updateIfChanged(state.brush.values.uRidge, look.ridge);
+  ValueCell.updateIfChanged(state.brush.values.uStroke, strokePx);
+  ValueCell.updateIfChanged(state.brush.values.uGrain, Math.max(1, lengths.grain));
   ValueCell.updateIfChanged(state.brush.values.uBristle, look.bristle);
-  ValueCell.updateIfChanged(state.brush.values.uLoad, look.load);
   // Scaled with the grain, not fixed. The relief reads `dFdx` of the streak
   // field, whose slope goes as 1/grain — so a fixed number gives a thin bristle
   // a violently steeper ridge than a thick one, and at a small plate the paint
@@ -553,26 +523,19 @@ function paint(
     state.brush.values.uRelief,
     (look.relief * lengths.grain) / REFERENCE_GRAIN_PX
   );
-  ValueCell.updateIfChanged(state.brush.values.uSpecular, look.specular);
   ValueCell.updateIfChanged(state.brush.values.uFar, camera.far);
   ValueCell.updateIfChanged(state.brush.values.uGroundPaint, look.groundPaint);
-  ValueCell.updateIfChanged(state.brush.values.uEdgeBreak, look.edgeBreak);
   ValueCell.updateIfChanged(state.brush.values.uGlaze, look.glaze);
   ValueCell.update(
-    state.brush.values.uShadowColor,
-    Vec3.set(state.brush.values.uShadowColor.ref.value, ...look.shadowColor)
+    state.brush.values.uGlazeColor,
+    Vec3.set(state.brush.values.uGlazeColor.ref.value, ...look.glazeColor)
   );
-  ValueCell.updateIfChanged(state.brush.values.uShadowFrom, look.shadowBand[0]);
-  ValueCell.updateIfChanged(state.brush.values.uShadowTo, look.shadowBand[1]);
-  ValueCell.updateIfChanged(state.brush.values.uLightFrom, look.lightBand[0]);
-  ValueCell.updateIfChanged(state.brush.values.uLightTo, look.lightBand[1]);
   ValueCell.updateIfChanged(state.brush.values.uHighlight, look.highlight);
   ValueCell.update(
     state.brush.values.uHighlightColor,
     Vec3.set(state.brush.values.uHighlightColor.ref.value, ...look.highlightColor)
   );
-  ValueCell.updateIfChanged(state.brush.values.uShade, look.shade);
-  ValueCell.updateIfChanged(state.brush.values.uChroma, look.chroma);
+  ValueCell.updateIfChanged(state.brush.values.uEdgeDark, look.edge);
   ValueCell.updateIfChanged(
     state.brush.values.uWeaveDepth,
     weavePx >= MIN_WEAVE_PX ? look.weave : 0

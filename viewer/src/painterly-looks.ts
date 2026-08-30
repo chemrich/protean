@@ -11,119 +11,43 @@
  * `capabilities()` reports these keys and `brushwork()` checks against them, so
  * the offer and the gate cannot come apart. */
 export interface Look {
-  /** How far the shadows are tinted, and the colour they are tinted toward.
-   *
-   * A *tint*, not a multiply. The multiply this replaced could only ever
-   * darken — every component of a colour is at most 1 — which is right for a
-   * Dutch Master, whose shadow is a brown laid over the ground, and makes a
-   * bright look arithmetically impossible. A pale periwinkle here *lifts* a
-   * dark passage, and that is the move that reads as joyful rather than as
-   * merely lighter. */
+  /** Depth of the shadow glaze, and the colour it is glazed with. */
   glaze: number;
-  shadowColor: [number, number, number];
-  /** Where the shadow tint fades in and reaches full, in luminance. Descending.
-   *
-   * A look field because it was a literal at 0.38/0.04, tuned around a subject
-   * living at L 0.18-0.40 — so on a bright palette living at 0.45-0.85 it never
-   * fired at all, and reported itself applied. */
-  shadowBand: [number, number];
-  /** Weight of the light, and the colour it is tinted toward. */
+  glazeColor: [number, number, number];
+  /** Weight of the opaque light, and the white it is mixed from. */
   highlight: number;
   highlightColor: [number, number, number];
-  /** Where the light tint starts and reaches full. Ascending, and a look field
-   *  for the same reason: at 0.70/0.96 the brightest thing a Dutch Master ever
-   *  drew arrived at 0.676, so it never fired either. */
-  lightBand: [number, number];
-  /** Deepening wherever the flow field is coherent.
-   *
-   * Which on a molecular ribbon is nearly the whole subject, so this reads as a
-   * general dim rather than as an edge — it was written as the latter and
-   * measured as the former. Switching it off on 1UBQ lifts the painted
-   * subject's mean luminance from 0.686 of the render to 0.852 and its mean
-   * saturation from 0.698 to 0.867, which makes it far and away the most
-   * expensive term in the pass. A bright look should spend very little here. */
-  shade: number;
-  /** How hard the brush commits to the flattest sector it found.
-   *
-   * Meaningful only against `varRef`. On its own it did nothing whatsoever: the
-   * weight is `1/(1 + spread^hardness)` and on the [0,1] values a shader has,
-   * that spans 1.0000000 to 0.9999847 across every spread a luminance can have.
-   * Every sector was weighted the same, the least-variance choice never
-   * happened, and the pass was an anisotropic Gaussian blur wearing a
-   * Kuwahara's name. The note that used to sit here — that above 16 it
-   * posterises into patches with visible seams — described an effect the
-   * arithmetic could not produce at any setting. */
+  /** Darkening where the paint has structure. Not a silhouette outline. */
+  edge: number;
+  /** How hard the brush commits to one sector. Above ~16 it posterises. */
   hardness: number;
-  /** The spread `hardness` is measured against, and the number that makes the
-   *  selection happen at all. At 0.03 with hardness 8 the weight runs 0.96 at a
-   *  spread of 0.02 down to 6.6e-5 at 0.10. */
+
+  /** The variance the abstraction measures itself against, before `hardness`
+   * bites. Small values abstract hard — flat passages average and edges
+   * survive. **1.0 leaves the filter ungoverned**, which is an anisotropic
+   * Gaussian blur rather than a Kuwahara, and `chiaroscuro` asks for exactly
+   * that: it melts interior colour transitions over about six pixels at
+   * `medium`, and that softness is the look. Charlie compared it against the
+   * governed version and picked this one. */
   varRef: number;
   /** How far the brush stretches along the flow, as `1 + anisotropy`. */
   eccentricity: number;
   /** Depth of the canvas weave, 0 for a smooth ground. */
   weave: number;
-  /** Length of a brush stroke, as a fraction of the frame diagonal.
+  /** Half-length of a brush stroke, as a fraction of the frame diagonal.
    *
    * The number that decides whether this reads as painting or as a novelty
    * filter. Past about a twentieth of the diagonal the strokes run further than
    * the thing they are describing, which is the classic failure of every "Van
-   * Gogh filter" ever shipped. Against `grain`, which is the width, it also
-   * sets how much a mark reads as a *stroke* rather than a dab: four or five to
-   * one is a brush. */
+   * Gogh filter" ever shipped. */
   stroke: number;
-  /** Width of one stroke, as a fraction of the frame diagonal. */
+  /** Scale of the noise the stroke drags, as a fraction of the diagonal. This
+   * is the width of a bristle. */
   grain: number;
-  /** How much of its cell a stroke actually fills, along its length.
-   *
-   * Below 1 the marks have ends and the ground shows between them, which is
-   * most of what makes a passage read as *painted* rather than *filled*. */
-  strokeFill: number;
-  /** How sharply the paint crests across a stroke's width. At 0 the section is
-   *  a plain wedge; at 1 it is an eased ridge with the paint thinning to
-   *  nothing at both edges, which is the section a bristle leaves. */
-  ridge: number;
-  /** How much a stroke's own tone shifts its *value*.
-   *
-   * Small, and it has to be. A random brightness per mark on a curved surface
-   * is what crumpled foil looks like — random brightness *is* light catching
-   * facets at random angles — and at 0.30 that is exactly what it looked
-   * like. */
+  /** How strongly the bristle modulates colour. */
   bristle: number;
-  /** How much a stroke's own tone shifts its *chroma*: how loaded the brush
-   *  was. This is where the variation belongs, because a brush carries more or
-   *  less pigment far more than it carries more or less light. */
-  load: number;
-  /** How thick the paint stands off the canvas, for the raking light.
-   *
-   * **Zero for every bright look, and that is the finding rather than a
-   * setting.** Charlie, on the first bright plates: *"the ribbons look like
-   * crumpled foil or mylar."* They did, and it was this — a relit height field
-   * reads as a *metal* surface, because relighting is what tells an eye it is
-   * looking at something with a surface normal. Real oil paint on a ribbon
-   * reads as paint through its *tone* varying mark to mark, not through
-   * catching a light. Taking the relight to zero removed the metal outright.
-   * `chiaroscuro` keeps a little because a Dutch Master genuinely is a lit
-   * impasto; nothing else should.
-   *
-   * It reads as a swing about unity, mean-neutral by construction. Quoted as an
-   * absolute range it took **14.3%** off the mean painted pixel — not the 7.3% a
-   * flat pixel suggests, because a textured surface tilts a mean 53 degrees off
-   * the screen and a third of it has its lambert clamped to zero. The look was
-   * reported as a Dutch Master and the gloom was blamed on the ground; most of
-   * it was here. */
+  /** How thick the paint stands off the canvas, for the raking light. */
   relief: number;
-  /** How wet the paint looks: the specular glint off a ridge. Gouache is
-   *  matte and takes near zero; an oil takes some. */
-  specular: number;
-  /** Chroma, scaled. 1 leaves the colours where the abstraction left them.
-   *
-   * The abstraction is a mean and a mean desaturates: with every other term off
-   * the painted subject came back at 0.876 of the render's saturation. So 1.14
-   * is roughly parity and anything above is a decision. Hue and lightness are
-   * held exactly, which matters here more than it would elsewhere — the ribbon
-   * is coloured by secondary structure, and a boost that rotated hue would make
-   * a helix read as a strand. */
-  chroma: number;
   /** How much of the brushwork the bare ground gets, 0 to 1.
    *
    * Zero is a real answer and the usual one: the ground is primed canvas, and
@@ -131,21 +55,6 @@ export interface Look {
    * the background was full impasto and shouted the molecule down, and at 0.15
    * it still read as fur. */
   groundPaint: number;
-  /** How far a stroke is allowed off the drawing, 0 to 1.
-   *
-   * At 0 the paint stops exactly at the molecule's silhouette, which is a
-   * machine-perfect antialiased vector boundary and the single loudest thing
-   * saying "render" in a picture that is otherwise worked all over. At 1 the
-   * mark decides: a stroke laid from a point on the molecule carries its colour
-   * out past the edge, and one laid from the ground bites in. Only the band one
-   * mark wide around the drawing is touched.
-   *
-   * This is the term that has to be watched. A stroke is about a quarter the
-   * width of a loop, so at 1 a loop can lose or gain a stroke's worth of itself,
-   * and the paint must not be allowed to close a gap between two chains or to
-   * carry a helix's colour into a strand. There is no guard for that yet,
-   * and this term must not ship without one. */
-  edgeBreak: number;
 }
 
 export const PAINTERLY_LOOKS: Record<string, Look> = {
@@ -156,124 +65,22 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
   // is `hardness`: at 16 the brush posterises into hard patches with visible
   // seams, which is the most recognisably filtered outcome available.
   chiaroscuro: {
-    glaze: 0.5,
-    shadowColor: [0.2, 0.13, 0.08],
-    shadowBand: [0.4, 0.06],
-    highlight: 0.22,
-    highlightColor: [0.965, 0.93, 0.85],
-    lightBand: [0.5, 0.85],
-    shade: 0.22,
+    glaze: 0.45,
+    glazeColor: [0.42, 0.3, 0.19],
+    highlight: 0.3,
+    highlightColor: [0.949, 0.91, 0.835],
+    edge: 0.22,
     hardness: 8,
-    varRef: 0.03,
+    varRef: 1.0,
     eccentricity: 1,
     weave: 0.13,
     // A twelfth of a Van Gogh. Dutch Master brushwork is *there* — you can see
     // where the brush went — but it describes the form rather than performing.
-    stroke: 1 / 26,
-    grain: 1 / 165,
-    strokeFill: 1.1,
-    ridge: 0.55,
-    bristle: 0.12,
-    load: 0.4,
-    relief: 6,
-    specular: 0.04,
-    chroma: 1.0,
+    stroke: 1 / 150,
+    grain: 1 / 340,
+    bristle: 0.13,
+    relief: 14,
     groundPaint: 0.0,
-    edgeBreak: 1.0,
-  },
-
-  // -- the bright ones --------------------------------------------------------
-  //
-  // Three things separate these from `chiaroscuro`, and only the last is about
-  // taste. `shade` is near zero, because it was the most expensive term in the
-  // pass and it was spending on a dim nobody asked for. The glaze *tints*
-  // rather than darkens: its colour has a blue above 1, so a shadow goes cool
-  // and stays where it is instead of going brown and going down. And `chroma`
-  // is above 1, because the abstraction is a mean and a mean desaturates.
-
-  // The three bright looks differ in *how much brush you see*, as well as in
-  // colour: `spring` is the quietest, `orchard` in between, `poster` the most
-  // worked. That is `load` and the mark's width — not `bristle`, which is
-  // value, and value is the one thing a brush mark must not vary much.
-  //
-  // Soft, high-key, luminous. A gouache rather than an oil: matte, no specular,
-  // a light weave, and the quietest brush of the three.
-  spring: {
-    glaze: 0.42,
-    shadowColor: [0.62, 0.66, 0.92],
-    shadowBand: [0.58, 0.18],
-    highlight: 0.4,
-    highlightColor: [1.0, 0.972, 0.906],
-    lightBand: [0.5, 0.86],
-    shade: 0.06,
-    hardness: 8,
-    varRef: 0.028,
-    eccentricity: 1,
-    weave: 0.05,
-    stroke: 1 / 26,
-    grain: 1 / 175,
-    strokeFill: 1.15,
-    ridge: 0.7,
-    bristle: 0.12,
-    load: 0.55,
-    relief: 0,
-    specular: 0.0,
-    chroma: 1.5,
-    groundPaint: 0.0,
-    edgeBreak: 1.0,
-  },
-
-  // Flat and graphic. A harder brush so the colour goes down in patches rather
-  // than blending, almost no relief, and the highest chroma of the three.
-  poster: {
-    glaze: 0.4,
-    shadowColor: [0.66, 0.72, 0.95],
-    shadowBand: [0.5, 0.16],
-    highlight: 0.3,
-    highlightColor: [1.0, 0.985, 0.95],
-    lightBand: [0.55, 0.9],
-    shade: 0.04,
-    hardness: 13,
-    varRef: 0.02,
-    eccentricity: 1,
-    weave: 0.04,
-    stroke: 1 / 22,
-    grain: 1 / 135,
-    strokeFill: 1.05,
-    ridge: 0.8,
-    bristle: 0.24,
-    load: 1.2,
-    relief: 0,
-    specular: 0.0,
-    chroma: 1.55,
-    groundPaint: 0.0,
-    edgeBreak: 1.0,
-  },
-
-  // A painting rather than a print: visible brush, real impasto, bright.
-  orchard: {
-    glaze: 0.48,
-    shadowColor: [0.58, 0.62, 0.9],
-    shadowBand: [0.6, 0.2],
-    highlight: 0.38,
-    highlightColor: [1.0, 0.97, 0.9],
-    lightBand: [0.5, 0.86],
-    shade: 0.08,
-    hardness: 8,
-    varRef: 0.03,
-    eccentricity: 1,
-    weave: 0.06,
-    stroke: 1 / 24,
-    grain: 1 / 155,
-    strokeFill: 1.1,
-    ridge: 0.65,
-    bristle: 0.18,
-    load: 0.85,
-    relief: 0,
-    specular: 0.0,
-    chroma: 1.4,
-    groundPaint: 0.0,
-    edgeBreak: 1.0,
   },
 };
 
@@ -305,26 +112,9 @@ export const BRUSH_SIZES: Record<string, number> = {
  * one. */
 export const MIN_BRUSH_PX = 3;
 
-/** The weight one sector of the brush gets, from how uniform it was.
- *
- * **This mirrors a line of GLSL** — `painterly-shaders.ts`, in the reduction
- * loop — and exists because that line was arithmetically inert for the whole of
- * the pass's life and nothing could see it. Kyprianidis and Doellner's weight is
- * `1/(1 + sigma^q)` on *0-255* values; on the [0,1] values a shader has, the
- * exponent annihilates it. At `hardness 8` the weight spanned 1.0000000 to
- * 0.9999847 across every spread a luminance can have, so every sector was
- * weighted the same, the least-variance selection never happened, and the pass
- * was an anisotropic Gaussian blur wearing a Kuwahara's name.
- *
- * A picture could not catch that: the abstraction going missing looks like a
- * slightly softer painting, and every other term in the pass still runs. So the
- * guard is on the arithmetic, and it is a guard on a *property* — that the
- * weight can actually discriminate — rather than on a value.
- *
- * The duplication is real and is the price. Changing the GLSL without changing
- * this leaves a test that passes for a formula nobody is running; the test's own
- * docstring says so, and it is checked against the shader source.
- */
+/** The GLSL sector weight, in TypeScript, so the suite can reason about it.
+ * Duplicated deliberately and guarded by a test that reads the shader source —
+ * see `painterly-looks.test.ts`. */
 export function sectorWeight(variance: number, hardness: number, varRef: number): number {
   return 1 / (1 + Math.pow(variance / (varRef * varRef), 0.5 * hardness));
 }

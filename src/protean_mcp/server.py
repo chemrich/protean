@@ -3995,7 +3995,7 @@ async def shading(
 #: The viewer holds the real list and `capabilities()` reports it; this copy
 #: exists so a refusal can name the choices without a round trip, and
 #: `test_the_looks_are_the_ones_the_viewer_offers` compares the two.
-_PAINTERLY_LOOKS = ("off", "chiaroscuro", "spring", "poster", "orchard")
+_PAINTERLY_LOOKS = ("off", "chiaroscuro")
 _BRUSH_SIZES = ("fine", "medium", "broad")
 
 
@@ -4952,24 +4952,27 @@ _PAINTING_PALETTE = {
 _PAINTING_THEME = "protean-painting"
 
 # A primed panel, and a light one. It was `#4a3b2c` — the brown a
-# seventeenth-century ground was laid in — for exactly one day, because a Dutch
-# Master was the wrong idea. Charlie, having looked at it: *"the painted styles
-# are way too earth tone, too dark ... brighten the mood. Make it joyful."*
-#
-# So the ground is nearly the one `felt` uses, which is the view they said they
-# liked, and the paint is put *on* it rather than dug out of it.
-_PAINTING_GROUND = "#f2f0e4"
+# seventeenth-century ground. It was laid in, then taken out for a bright one
+# — *"way too earth tone, too dark ... brighten the mood. Make it joyful"* —
+# and four rounds later put back, because Charlie compared the two side by side
+# and said the first was still the best. The bright rounds are not wasted: they
+# are why the brightness of this one is a choice rather than an accident, and
+# what they found on the way (an inert abstraction, a relight that cost 14.3%
+# of every painted pixel) is written down in `docs/views.md`.
+_PAINTING_GROUND = "#4a3b2c"
 
 #: The look and the palette `painting` reaches for. Named together because the
 #: preset picks a pair; `brushwork()` and `color()` take them separately, so any
 #: other pairing is one call away. `capabilities()` lists both sets.
-_PAINTING_LOOK = "spring"
+_PAINTING_LOOK = "chiaroscuro"
 
 #: Secondary structure in the painting's own palette, registered by the viewer.
 #: See `registerPaletteThemes` in `viewer/src/dispatch.ts` for why it is Mol*'s
 #: own secondary-structure assignment wearing a different colour map rather than
 #: a second opinion computed here.
-_PIGMENT_THEME = _PAINTING_LOOK
+# Decoupled from the look, which the alias only ever managed because `spring`
+# happened to name both a look and a palette. `chiaroscuro` names only a look.
+_PIGMENT_THEME = "pigment"
 
 
 async def _painting_style(_target: str, handle: str) -> list[str]:
@@ -5011,11 +5014,11 @@ async def _painting_style(_target: str, handle: str) -> list[str]:
         # which brightened the picture and took the contrast with it, and took
         # the flow field's own signal with that. 0.55 keeps a light picture with
         # a light and a shadow side, which is what makes a form read.
-        await _run(lighting, rig="ring", ambient=0.55),
+        await _run(lighting, rig="studio"),
         # Occlusion stays because the pass reads the shading to find the form —
         # a flat-lit ribbon has no gradient, so no flow, and the brush would
         # have nothing to follow. The cast shadow goes.
-        *await _set_effects(occlusion=True, shadow=False, painterly=_PAINTING_LOOK),
+        *await _set_effects(occlusion=True, shadow=True, painterly=_PAINTING_LOOK),
         await _run(shading, style="normal", name=handle),
         await _run(material, finish="matte", name=handle),
         # Registered before `brushwork`, because it has to exist before anything

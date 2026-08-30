@@ -532,7 +532,7 @@ describe('createDispatcher', () => {
       path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
       // 'off' leads rather than sorting into the middle of the painters: it is
       // a value `brushwork()` accepts and not a look.
-      painterly_looks: ['off', 'chiaroscuro', 'orchard', 'poster', 'spring'],
+      painterly_looks: ['off', 'chiaroscuro'],
       brush_sizes: ['fine', 'medium', 'broad'],
       // Perspective first rather than alphabetical: it is Mol*'s default and
       // so the one the caller already has.
