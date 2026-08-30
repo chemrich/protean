@@ -53,6 +53,24 @@ nothing is released yet, so everything below is unreleased.
 
 ### The viewer
 
+- **A refused view says why, on the page.** Charlie, clicking Scaffold on a
+  crystal structure: *"Scaffold doesn't show anything."* It shows a refusal —
+  and the menu was putting that refusal in a `title` attribute on the Views
+  button, a tooltip on a control the person had already moved away from, so
+  what the click looked like was a click that did nothing.
+
+  The reason now renders in the menu, under the item that was asked for, and
+  clears when another view is asked for or a fresh catalogue arrives. Several
+  of these are the most useful sentences protean writes: `scaffold` explains
+  that pLDDT and the B-factor are the same mmCIF column with opposite polarity,
+  that there is nothing to cover because every atom here was observed, and that
+  `putty` answers the question actually being asked.
+
+  The menu moved to `viewer/src/view-menu.ts` so it could be tested at all —
+  `main.ts` boots Mol\* at import time, which put protean's one human-facing
+  control out of reach of a suite running in jsdom. Nine unit tests, and one
+  that drives a real page.
+
 - **Mol\* is bundled from source rather than loaded as a prebuilt global.**
   `viewer/src/main.ts` had said since the first commit that bundling "needs
   >4 GB RAM, the prebuilt bundle needs none", and a great deal followed from
@@ -85,6 +103,140 @@ nothing is released yet, so everything below is unreleased.
 
 
 ### Print finishes
+
+- **`hedcut` bows around the form, and three dot finishes are new.** Answering
+  the second half of "Hedcut is also way too coarse. They read like bad modern
+  art" — the size half shipped in #143, the mechanism half is this. `hedcut`
+  keeps its one direction and its swelling stroke and pushes the ruled plane
+  aside with the light the render already carries, so the rules bend around
+  each atom instead of running through it. Chosen from a bracket of five
+  plates. It stays a *control* for the rim guard, measured: the bow moves the
+  rim lift by 0.002, so it is a texture rather than a depth cue.
+
+- **`dotty`, `dotty-mixed` and `dotty-confetti`.** A jittered dot lattice
+  where each disc grows with the tone. The two colour variants ink that one
+  field rather than laying a second over it — same lattice, same pitch, same
+  dot size, each cell taking either the near-black key or one of three print
+  colours — so the plates partition one mask and never cross. They differ only
+  in how much colour: about a fifth of the ink against about half.
+
+  They sort by the hue already on screen and claim nothing about it, so they
+  follow whatever you coloured by and a greyscale render gives them nothing to
+  sort. The reply now carries `chromatic`, the share of ink that came off a
+  plate other than the key, because otherwise that case returns a path, a
+  success and a sensible ink fraction describing a picture with no colour in
+  it.
+
+- **A finish can ask for its capture to be taken larger.** A plate has exactly
+  two grey levels — `ink_mask` recovers the mask bit for bit *because* of it —
+  so an antialiased edge cannot be drawn, only averaged out of a bigger plate.
+  The four new finishes are captured at 2x and averaged down; the other five
+  are unchanged, and `spot-ink-plates` must stay hard-edged because its
+  boundaries are a category rather than a shade. The size ceiling is
+  re-checked against the pixels actually captured, refusing above 5477 px
+  rather than letting a `DecompressionBombError` escape as a tool failure.
+
+- **Three guards could not see what they checked.** The mark-size guard
+  resolved the frame diagonal as `hypot(w, h)` where the product uses
+  `sqrt(w * h)`, so it reported `engraving` clear of the grain floor by 6%
+  while the finish drew the floor exactly — and it checked `pitch` only, so
+  the stroke finishes were never checked at the comparison size at all. With
+  both fixed, four of the six shipped finishes turned out to be pinned there:
+  the pairwise comparison had never seen the marks the product draws. The rim
+  guard named `hedcut` in prose as its control, with a number (+0.086) that no
+  longer matched the code (+0.0668) and a finish that was not even the highest
+  control (`engraving`, +0.0922). Both are now derived from the field carrying
+  the mechanism, and the rim bar is two-sided so it cannot drift.
+
+- **The hatching now follows the form, in two treatments.** `linear-hatch` is
+  new; `cross-hatch` keeps its name and is rebuilt on the same mechanism.
+  Answering "the hatching should have separate linear and cross treatments.
+  Hedcut is also way too coarse", which turned out to be two independent
+  defects rather than one.
+
+  **Coarseness was only a number, and no test could see it.** An atom is about
+  40 px on a 1890 px plate, and `apply_finish`'s `max(4.0, longest / 110)` is
+  17 px there and 34 at 600 dpi — two or three lines per sphere, so every
+  sphere vanished into a grid. Every guard in `tests/test_hatching.py` draws at
+  240 or 480 px, where that expression returns its own 4 px floor: the suite
+  had only ever drawn the finish at its finest while the product shipped its
+  coarsest. Stated as strokes per feature, the `_dome` fixture is a 173 px
+  sphere at a 4 px interval, 43 to 1, against the product's 2.35 to 1 —
+  eighteen times better sampled. A finish can now declare its own interval, the
+  way `_Survey` already declares `pitch` and `line`.
+
+  **Form-blindness was the mechanism, and fineness does not touch it.**
+  Re-drawn at 17, 12, 8, 6, 4, 3 and 2 px, the old `cross-hatch`'s ink landed
+  on the form's edges no more often than chance every single time: +0.014,
+  +0.001, +0.011, +0.010, +0.011, +0.012, +0.003, against `engraving`'s +0.202.
+  It ruled three fixed angles over the frame regardless of what was underneath,
+  at every scale.
+
+  `_Lozenge` draws marks that are level sets of a ruled plane warped by the
+  recovered light — flat frame, straight rules; a sphere bows them around it,
+  the way ruled lines on a rubber sheet bend when a ball is pushed through from
+  behind. At constant *duty* rather than constant width, because the warp
+  changes the local interval and a constant-width stroke would then change its
+  coverage wherever lines bunch. And the stroke swells where the lighting turns
+  over — the burin's burr, and what draws the seam where one atom passes in
+  front of another. **That swell is the entire rim mechanism**: the assumption
+  that a tone-driven width would find the rims by itself is false, because mean
+  darkness over the steepest decile is 0.625 against the whole subject's 0.622.
+  The rim is not darker. It is only steeper. Measured, the pair scores +0.259.
+
+  The two treatments differ past `hold`: the linear opens a second thread half
+  an interval over at the same angle, so the whites split rather than the
+  blacks closing; the crossed one lays a second family at -41 degrees, into
+  lozenges that shear as they pass over a dome. **They are not one drawing at
+  two strengths.** An earlier version shared a carrier angle, which made them
+  bit-identical below `hold` and left them disagreeing on 0.064 of a real
+  cartoon subject; with their own angles they disagree on 0.433 / 0.401, where
+  the old `cross-hatch` against `hedcut` is 0.466 / 0.426.
+
+  6 px for the linear and 4 for the crossed, chosen by looking at a 6/4/3
+  bracket at plate size rather than from print convention. The floor is about
+  3: at 2 px the lattice beats against the pixel grid and ink jumps from 0.42
+  to 0.64 of the subject with no change in tone at all. `hedcut` keeps its
+  mechanism, which is its style rather than a defect, and takes only the half
+  of the complaint that was about size: 5 px.
+
+- **A guard the numbers could not provide.** Setting `relief` to 0 leaves
+  straight ruled lines with the swelling still on, and that mutant scores
+  **every scalar the real finish does** — ink 0.506 against 0.507, rim lift
+  +0.259 against +0.259, tone fidelity 0.934 against 0.936 — while the picture
+  goes from strokes that bend over each dome to a flat ruling with dark blobs
+  at the seams. A scalar over a whole frame cannot see a local geometric
+  property.
+
+  So the guard is a differential against the finish with its own mechanism
+  removed, which is the arm `test_shuffle_differential.py` uses for the same
+  reason. Sabotaged, it reports 0.0000; the warp moves 0.42 of a real spacefill
+  subject and 0.32 of a cartoon.
+
+  The three new tests draw at 1890x956 on a field of small overlapping spheres
+  rather than on `_dome`, and the fixture carries a guard of its own. Lit as it
+  was first written its median tone was 0.72 against a real capture's 0.32,
+  coverage came out at 0.04, and every finish scored at chance for want of any
+  ink on the page — which reads as a broken finish and was a broken fixture.
+
+- **`capabilities()` now reports the print finishes.** It already reported
+  `presets` for exactly this reason — composed in Python, so the viewer cannot
+  report them — and the finishes were left out. The only ways to learn the list
+  were to read `snapshot()`'s docstring or to guess a name and read the error,
+  which is discovery by exception offered to a caller who cannot see the file
+  it is asking for. The docstring guard stays, because a name in a list tells
+  nobody whether `cyanotype` is blue.
+
+- **`engraving` was missing from its own figure.** It shipped and never reached
+  `print-finishes.png`, the gallery's finish table, the cookbook or the README,
+  all of which showed four finishes and named four while the product offered
+  five. The figure now derives its list from `FINISHES`, and captures at 900 px
+  rather than 520 — at 520 a hatch resolves to about 2 px and every finish
+  turns into the same grey, which is the figure claiming the finishes are
+  indistinguishable when they are not.
+
+  Two hardcoded finish lists in the suite are now derived as well. Adding a
+  finish failed four tests that had nothing to do with it.
 
 - **`engraving` — depth-cued line work, in ink on paper.** A fifth finish, and
   no new rendering code: it is the engine that already draws `cyanotype`, with
@@ -776,6 +928,72 @@ nothing is released yet, so everything below is unreleased.
   measurement so the assumption is harder to make twice.
 
 ### Mol\* 5
+
+- **The Mol\* upgrade that doubled the browser CI job has a cause, and it is
+  Mol\* 5.4.2.** A standalone capture benchmark (`bench/molstar-capture`,
+  driven by `molstar-capture-bench.yml`) timed one image-pass capture on each
+  of the nineteen releases between 4.18.0 and 5.11.0, all in one job on one
+  runner. Nine of them cost nothing; **5.4.2 costs 2.91x**; the remaining nine
+  add 18% between them.
+
+  The cause is one line of GLSL. `ssao.frag`'s `isBackground()` became
+  `depth == 1.0` where it had read `depth > 0.999`, taking with it the comment
+  saying the tolerance was there for precision. On the *transparent* occlusion
+  path depth comes from `unpackRGBAToDepthWithAlpha` over a uint8 target that
+  `clearDepth` fills with (1,1,1,1), and that unpacks to
+  `16777215/16777216 = 1 - 2^-24`, the largest value the encoding can produce
+  and not 1.0. The early-out in front of the sample loop is therefore dead for
+  every texel, and a level-4 capture pays sixteen full-screen 128-sample
+  occlusion evaluations over the whole framebuffer.
+
+  **Occlusion is about 91% of a 5.11 capture and about 73% at 4.18** — those two
+  come from different jobs on different runners, so read them as +/-2 rather
+  than as exact.
+
+  The nine releases after 5.4.2 are not drift either: **5.6.0 is a second,
+  smaller step of 1.15x in the same shader**, and it is *not* fixed by the patch
+  below. It is the whole of the 15% that separates the patched build from
+  5.4.1.
+
+- **Captures are 2.72x cheaper, and look the same.** The Vite build now applies
+  upstream's own repair — `depth >= 0.99999994`, with their comment — to the six
+  shaders they have not reached yet. Mol\* met this bug and fixed three of the
+  nine it landed in; `postprocessing.frag`, `illumination/compose.frag` and
+  `bloom/luminosity.frag` already read the corrected constant at 5.11.0, and
+  `ssao.frag`, `ssao-blur.frag`, `outlines.frag`, `dof.frag`, `shadows.frag` and
+  `illumination/trace.frag` do not.
+
+  Measured on the prebuilt 5.11.0 bundle: a capture goes from 9,829 ms to
+  3,619 ms, against 3,136 ms for 5.4.1 — the last release before the bug. That
+  is a laptop measurement with n=1 per condition, so the band it supports is
+  **2.2x-2.9x**, not a point.
+
+  **The picture changes slightly, and an earlier version of this entry said it
+  did not.** At full resolution 56 of 480,000 pixels differ by at most 2/255,
+  none on the background, most at the silhouette. With the outline pass on —
+  `preset('illustrative')` — 2,425 pixels change by up to 161/255, and *that* is
+  a correction: patched outline coverage matches 5.4.1's to five decimals, where
+  stock 5.11.0 does not.
+
+  **On the browser CI job: 56:33 and 45:39 without the patch, 32:48 and 43:07
+  with it.** Identical test counts across all four (1457 passed, 31 skipped), so
+  it is not faster because less ran. Job wall time cannot carry the ratio — the
+  two unpatched runs are 1.24x apart and one of them beats a patched run — so
+  the figure is taken from per-test durations instead: about **1.3x-1.45x**
+  overall, 2.0x-2.6x on the render-heavy fixtures.
+
+  **Not one constant, and assuming it was is a bug this shipped with.**
+  `ssao-blur.frag` reads a 16-bit `packUnitIntervalToRG` encoding rather than the
+  24-bit depth texture, so a background texel reaches it as 0.99998468 and
+  `>= 0.99999994` can never fire there. It gets `>= 0.999` instead — what Mol\*
+  itself had in that file at 5.4.1. `shadows.frag` and `illumination/trace.frag`
+  read only opaque depth, where the patch is a no-op today.
+
+  It is a find-and-replace against someone else's source, so it is guarded in
+  both directions it can fail. The build errors if it matched nothing, and a
+  test asserts the exact list of shaders still needing it — and now computes the
+  16-bit round trip from Mol\*'s own pack/unpack, so the wrong-constant bug
+  cannot come back.
 
 - **The viewer runs on Mol\* 5.11, up from 4.18.** Fourteen months and 32
   releases behind, which was making every "can Mol\* do this?" answer

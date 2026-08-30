@@ -10,8 +10,10 @@ import io
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -23,7 +25,7 @@ from PIL import Image as PILImage
 import protean_mcp.server as server_mod
 from protean_mcp.analysis.conservation import SHALLOW_MSA
 from protean_mcp.analysis.electrostatics import read_dx
-from protean_mcp.analysis.hatching import FINISHES
+from protean_mcp.analysis.hatching import FINISHES, apply_finish, ink_fraction
 from protean_mcp.analysis.superposition import ResidueDeviation
 from protean_mcp.connection import ViewerError
 from protean_mcp.handles import summarise
@@ -233,6 +235,27 @@ async def test_save_session_writes_a_gzipped_document(wired_bridge, tmp_path):
 
 
 async def test_session_round_trip(wired_bridge, tmp_path):
+    """A round trip is three viewer calls, and the third is the palette.
+
+    It was served two. `load_session()` calls `define_elements()` inside a
+    `contextlib.suppress(ViewerError)` — the element palette is protean's own,
+    registered by the page rather than shipped by Mol*, so a restored snapshot
+    that names it finds nothing unless it is put back. Unserved, that third
+    call waited out `ViewerBridge.request`'s 60 s default and the timeout was
+    swallowed by the suppress.
+
+    So this test took **60.00 s** and passed with `element_palette_restored`
+    False on every run since it was written. Serving the call takes it to
+    0.20 s, and takes `tests/test_server.py` as a whole from about 65 s to 5 s.
+
+    The restore itself was never unguarded — `test_session_analysis_state.py`'s
+    `test_restoring_puts_proteans_own_element_palette_back` asserts both the
+    call and the flag, and is the test that owns that claim. This one was
+    simply waiting out a timeout for nothing. The last assertion below is here
+    so the served handler is load-bearing rather than decorative: without it,
+    removing the handler again would restore the hang and nothing in this test
+    would object.
+    """
     wired_bridge.handlers["save_session"] = lambda args: {
         "snapshot": {"id": "snap"},
         "handles": {"prot": ["ref-1"]},
@@ -244,8 +267,9 @@ async def test_session_round_trip(wired_bridge, tmp_path):
         return {"restored": ["prot"], "dropped": [], "atom_count": 4779}
 
     wired_bridge.handlers["load_session"] = on_load
+    wired_bridge.handlers["define_elements"] = lambda args: {"name": args["name"]}
 
-    task = wired_bridge.serve(2)
+    task = wired_bridge.serve(3)
     saved = await save_session(str(tmp_path / "s.protean"))
     result = await load_session(saved["path"])
     await task
@@ -254,6 +278,7 @@ async def test_session_round_trip(wired_bridge, tmp_path):
     assert sent["handles"] == {"prot": ["ref-1"]}
     assert result["restored"] == ["prot"]
     assert result["atom_count"] == 4779
+    assert result["element_palette_restored"] is True
 
 
 async def test_load_session_missing_file(wired_bridge, tmp_path):
@@ -1724,6 +1749,161 @@ async def test_snapshot_refuses_a_size_beyond_what_can_be_captured():
         await snapshot("/tmp/x.png", column="double", dpi=4800)
 
 
+def _ramp(width: int, height: int) -> PILImage.Image:
+    """A left-to-right tone ramp: something with edges for a finish to resolve."""
+    pixels = np.zeros((height, width, 4), dtype=np.uint8)
+    pixels[:, :, :3] = np.linspace(0, 255, width, dtype=np.uint8)[None, :, None]
+    pixels[:, :, 3] = 255
+    return PILImage.fromarray(pixels, "RGBA")
+
+
+def _shaded_handler(sent: dict[str, Any], height: int):
+    """A viewer that returns a ramp, at whatever width it was asked for.
+
+    A ramp rather than the flat fill `_snapshot_handler` returns, because a
+    finish draws no edges on a flat frame — and the whole subject of the two
+    tests below is what happens to edges.
+    """
+
+    def handle(args):
+        sent.update(args)
+        width = args["width"]
+        buffer = io.BytesIO()
+        _ramp(width, height).save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {
+            "data_uri": f"data:image/png;base64,{encoded}",
+            "requested_width": width,
+            "cropped": args.get("crop", False),
+        }
+
+    return handle
+
+
+async def test_a_supersampled_capture_reports_the_plates_ink_not_the_downsampled_one(
+    wired_bridge, tmp_path, monkeypatch
+):
+    """`ink` is measured before the average, and reversing the two lines is
+    invisible without this.
+
+    `ink_fraction` counts every pixel that is not the paper. That is exact on a
+    plate, which has two values, and wrong the instant the edges go grey: an
+    edge pixel that is a third of a mark counts as a whole one. Taking the
+    number after the downsample instead yields a reply that is plausible,
+    monotone in the right direction, and wrong by 2.2x to 5.3x — and nothing
+    else in the suite would fail, because every other test in this file calls
+    `apply_finish` directly and never travels this path.
+
+    So the assertion is against the plate's own value, and the second half is
+    what makes the first mean anything: the two numbers must be far enough
+    apart that this test could tell them apart at all.
+    """
+    monkeypatch.setitem(FINISHES, "hedcut", replace(FINISHES["hedcut"], supersample=2))
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _shaded_handler(sent, 744)
+    task = wired_bridge.serve(1)
+    reply = await snapshot(
+        str(tmp_path / "fig"), column="single", dpi=300, finish="hedcut"
+    )
+    await task
+
+    assert sent["width"] == 2102, "the capture was not taken at twice the width"
+
+    written = PILImage.open(reply["path"])
+    plate = apply_finish(_ramp(2102, 744), "hedcut")
+    on_the_plate = ink_fraction(plate, "hedcut")
+    after_the_average = ink_fraction(
+        plate.resize((1051, 372), PILImage.Resampling.LANCZOS), "hedcut"
+    )
+
+    assert written.size == (1051, 372), "the file is not the size that was asked for"
+    assert reply["ink"] == pytest.approx(on_the_plate, abs=1e-9)
+    # Without this the assertion above passes whenever the two agree, which is
+    # exactly the case where the ordering does not matter and the guard is idle.
+    assert abs(after_the_average - on_the_plate) > 0.05, (
+        f"averaging the plate barely moved its ink fraction "
+        f"({on_the_plate:.4f} against {after_the_average:.4f}), so this test "
+        f"cannot see the ordering it exists to pin"
+    )
+
+
+async def test_a_colour_finish_reports_how_much_colour_reached_the_page(
+    wired_bridge, tmp_path
+):
+    """A greyscale scene gives `dotty-mixed` nothing to sort, and it draws the
+    black finish and returns a success.
+
+    That is the honest picture and there is nothing to raise — the finish reads
+    the colours already on screen and claims nothing about them, so a scene
+    with no colour in it has no colour to print. But the reply is otherwise
+    indistinguishable from one where it worked: same path, same pixel count,
+    same ink fraction, no error. `chromatic` is the only thing in it that can
+    tell a caller which of the two happened, and the caller cannot look.
+
+    The ramp handler is grey, so this is the failing case by construction.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _shaded_handler(sent, 400)
+    task = wired_bridge.serve(1)
+    reply = await snapshot(
+        str(tmp_path / "fig"), width_mm=60.0, dpi=300, finish="dotty-mixed"
+    )
+    await task
+
+    assert reply["ink"] > 0.0, "nothing was drawn; this test would pass on a blank page"
+    assert reply["chromatic"] == 0.0, (
+        "a grey capture reported colour on the page, so the number is not "
+        "measuring what it says"
+    )
+
+
+async def test_a_one_ink_finish_does_not_claim_a_colour_share(wired_bridge, tmp_path):
+    """`chromatic` appears only where it means something.
+
+    A finish with one ink prints all of it off that ink, so the number would be
+    0.0 for ever — a constant in every reply, which reads to a caller as a
+    finish that failed to print any colour rather than as one that has none to
+    print.
+    """
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["snapshot"] = _shaded_handler(sent, 400)
+    task = wired_bridge.serve(1)
+    reply = await snapshot(str(tmp_path / "fig"), width_mm=60.0, dpi=300, finish="hedcut")
+    await task
+
+    assert "ink" in reply
+    assert "chromatic" not in reply
+
+
+async def test_a_supersampled_finish_is_refused_at_the_size_it_would_not_survive():
+    """The ceiling is re-checked against the pixels captured, not the pixels asked
+    for.
+
+    `_snapshot_pixels` clears the requested width, and four times that reaches
+    `_open_snapshot` as a raw `PIL.Image.DecompressionBombError` — a library
+    exception escaping a tool, which reads to a caller as protean breaking
+    rather than as a size it cannot have.
+
+    The message has to carry three things, because the caller cannot look: what
+    it asked for, the width that would work, and that the finish is what made
+    the difference. A refusal naming only a megapixel count leaves a model no
+    way to tell this from the ceiling it already cleared.
+    """
+    with mock.patch.dict(
+        FINISHES, {"hedcut": replace(FINISHES["hedcut"], supersample=2)}
+    ):
+        # 5477 px is the last width that clears at factor 2, so this is the
+        # first one that does not.
+        with pytest.raises(ViewerError, match="5477 pixels or less") as refused:
+            await snapshot("/tmp/x.png", width_mm=470.0, dpi=300, finish="hedcut")
+        assert "hedcut" in str(refused.value)
+        assert "2x" in str(refused.value)
+
+        # And the width just under it is allowed through to the capture.
+        with pytest.raises(ViewerError, match="No viewer"):
+            await snapshot("/tmp/x.png", width_mm=460.0, dpi=300, finish="hedcut")
+
+
 async def test_jpeg_and_transparency_are_refused_together():
     """JPEG has no alpha channel; flattening silently would lose the request."""
     with pytest.raises(ViewerError, match="JPEG has no alpha channel"):
@@ -1808,12 +1988,31 @@ async def test_a_lens_that_cannot_be_set_is_refused(kwargs, message):
         await lens(**kwargs)
 
 
-def test_every_finish_is_named_where_a_caller_can_find_it():
-    """`snapshot`'s docstring is the only place a finish is discoverable.
+async def test_an_empty_lens_call_is_answered_rather_than_only_refused():
+    """The refusal for `lens()` with no arguments is the one place a caller who
+    does not know the projections is standing, so it has to name them.
 
-    `capabilities()` does not report them, so a finish absent from the
-    docstring exists for anyone reading the source and for nobody calling the
-    tool. Making the suite fail is the whole mechanism: it forces adding one to
+    It used to say `capabilities()` answered the question, and `capabilities()`
+    reported no projections at all. Driven off `_PROJECTIONS` so that adding a
+    third one and leaving the sentence alone fails here.
+    """
+    with pytest.raises(ViewerError) as raised:
+        await lens()
+
+    said = str(raised.value)
+    for projection in server_mod._PROJECTIONS:
+        assert projection in said, f"the refusal never names {projection!r}: {said}"
+    assert "fog" in said
+
+
+def test_every_finish_is_named_where_a_caller_can_find_it():
+    """A finish must be *described* where a caller reads, not merely listed.
+
+    `capabilities()` now reports the names, which it did not when this was
+    written — so a caller can no longer be left guessing that a finish exists.
+    That is discovery and it is not the same as knowing what the thing draws:
+    a name in a list tells nobody whether `cyanotype` is blue. Making the suite
+    fail is still the whole mechanism, and it still forces adding a finish to
     be a thing a person wrote a sentence about.
 
     Here rather than beside the finish tests, because it is an assertion about
@@ -2442,6 +2641,25 @@ async def test_capabilities_reports_the_presets(wired_bridge):
 
     assert "ghost-heart" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
+
+
+async def test_capabilities_reports_the_finishes(wired_bridge):
+    """The print finishes are composed in Python, so the viewer cannot report
+    them — the same reason the presets are added here, and they were left out.
+
+    Until this, the only ways to learn the list were to read `snapshot`'s
+    docstring or to guess a name and read the error. That is discovery by
+    exception, offered to a caller who cannot see the file it is asking for.
+
+    Derived from FINISHES rather than named, so adding a finish cannot leave
+    this passing while the answer goes stale.
+    """
+    wired_bridge.handlers["capabilities"] = lambda args: {"representations": ["cartoon"]}
+    task = wired_bridge.serve(1)
+    out = await capabilities()
+    await task
+
+    assert out["finishes"] == sorted(FINISHES)
 
 
 # -- image and skybox backgrounds ----------------------------------------------

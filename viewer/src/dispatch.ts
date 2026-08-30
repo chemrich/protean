@@ -448,6 +448,18 @@ const GRADIENTS: Record<string, { variant: string; from: string; to: string }> =
   radial: { variant: 'radialGradient', from: 'centerColor', to: 'edgeColor' },
 };
 
+/** How the camera projects, and the only two values Mol\* accepts for it
+ * (`camera.mode`, `mol-canvas3d/canvas3d.js`).
+ *
+ * Named here rather than written into `lens()` because the gate and the report
+ * have to be the same list. `lens()` refused an unknown projection against a
+ * literal while `capabilities()` reported no projections at all, so the one
+ * sentence that told a caller where to look — "`capabilities()` answers it" —
+ * pointed at an answer that was not there. Two lists cannot disagree if there
+ * is one.
+ */
+export const PROJECTIONS = ['perspective', 'orthographic'] as const;
+
 /** Must stay below the bridge's own request timeout so our error wins the race. */
 const HIDDEN_TIMEOUT_MS = 30_000;
 /** Settling budget for a visible tab, where rAF runs and the work is real but
@@ -2144,7 +2156,7 @@ export function createDispatcher(plugin: any): Handler {
 
         const props: Record<string, unknown> = {};
         if (projection !== undefined) {
-          checkName('projection', projection, ['perspective', 'orthographic']);
+          checkName('projection', projection, [...PROJECTIONS]);
           props.camera = { mode: projection };
         }
         if (fog !== undefined) {
@@ -3126,6 +3138,10 @@ export function createDispatcher(plugin: any): Handler {
           // rather than sorting into the middle of the painters.
           painterly_looks: ['off', ...Object.keys(PAINTERLY_LOOKS).sort()],
           brush_sizes: ['fine', 'medium', 'broad'],
+          // Unsorted, and deliberately: perspective is Mol*'s default and the
+          // one a caller already has, so it reads first. The others are sorted
+          // because nothing distinguishes their members.
+          projections: [...PROJECTIONS],
         };
       },
     },

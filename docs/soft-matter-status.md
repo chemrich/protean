@@ -13,8 +13,12 @@ Last updated **2026-08-26**, at `main` after #139 plus the painterly branch.
 Six PRs, #121 to #126, all merged: the finish route's base, `cyanotype`,
 `spot-ink-plates`, plates-by-element, `boil(trails=True)`, and `lens()`.
 
+<!-- Finishes are named here, never numbered. The ordinals this page used to
+carry ("the fourth finish", "the fifth") went stale on every addition and were
+wrong in two places at once by #150; `capabilities()` reports the live list. -->
+
 **Then #128 to #138, on 2026-08-25/26.** Two of those change this document's
-standing facts and are recorded below: a **fifth finish** (`engraving`, #136),
+standing facts and are recorded below: **`engraving`** (#136), a new finish,
 and the **removal of the reason mesh-based treatments were out of reach**
 (#137). `main` is at `829c95c`.
 
@@ -78,8 +82,7 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   channel legible in a single frame, where before it could only be seen by
   watching the sequence play. `smear` reads 0.0 exactly when nothing moved.
 
-- **`spot-ink-plates`** — the fourth finish and **the first that carries a
-  data channel**. Binds which plate a region prints on, which is a category and
+- **`spot-ink-plates`** — **the one finish that carries a data channel**. Binds which plate a region prints on, which is a category and
   so survives shading, where a shade-driven binding does not. Proved by taking
   the colour away: two inks and their crossing become one ink and nothing else.
   The capture is coloured by element for the one frame and the scene is put
@@ -90,17 +93,48 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   press keeps 0.485 of the difference the render carries against 0.183 for the
   same finish with its separation removed.
 
-- **`engraving`** — the fifth finish, added #136 on 2026-08-26, and the one
-  that answers "the hatching should be fine and depth cued". **No new rendering
+- **`linear-hatch` and `cross-hatch`** — the hatching, rebuilt 2026-08-27 on a
+  ruled plane warped by the recovered light, so the strokes bend around a form
+  instead of being ruled across it. `linear-hatch` is new and `cross-hatch`
+  keeps its name; the old mechanism is gone rather than kept beside its
+  successor.
+
+  Two findings worth keeping. **Fineness and form-blindness are independent**:
+  swept from a 17 px interval down to 2, the old finish's rim-landing never
+  left chance, while its tone fidelity improved the whole way. And **no test
+  could see the interval the product shipped** — every guard draws where
+  `max(4.0, longest / 110)` returns its floor, so the suite drew a 4 px mark
+  for a finish that shipped at 17. See `docs/views.md`.
+
+  6 px for the linear and 4 for the crossed, bracketed at plate size. `hedcut`
+  keeps its mechanism and takes only the size half of the complaint, at 5.
+
+- **`dotty`, `dotty-mixed` and `dotty-confetti`** — added #150 on 2026-08-29,
+  when `hedcut`'s rules were bowed around the form. A jittered dot lattice,
+  and two colour variants that ink *that same field* rather than laying a
+  second one over it. They sort by the hue already on screen and claim nothing
+  about it, so a greyscale render gives them nothing to sort and they draw
+  plain `dotty` — which is why `snapshot` reports the chromatic share.
+
+  With them came the only antialiasing this engine can have. A plate is one
+  bit by construction — `ink_mask` recovers the mask *because* every pixel is
+  the paper or the ink — so a soft edge cannot be drawn, only averaged out of
+  a larger capture. `_Style.supersample` is per-finish for a reason:
+  `spot-ink-plates` binds a category, and averaging across a plate boundary
+  invents inks its own `palette()` disowns.
+
+- **`engraving`** — added #136 on 2026-08-26, and the one that answers "the hatching should be fine and depth cued". **No new rendering
   code.** It is `_Survey` — the engine behind `cyanotype` — with the paper set
   white and the ink black, at fourteen levels rather than five.
 
   The finding is that `_Survey` was always a depth-cued renderer and had only
   ever been drawn in blue. It contours the *recovered lighting field* and holds
   constant line width by dividing the residual by the local slope, so the marks
-  follow the form because they **are** isolines of it. `cross-hatch` and
-  `hedcut` rule strokes at a fixed angle regardless of what is underneath,
-  which is why neither reads as having depth.
+  follow the form because they **are** isolines of it. `cross-hatch` rules strokes at a
+  fixed angle regardless of what is underneath, which is why it does not read
+  as having depth. `hedcut` was the same until its rules were bowed by the
+  recovered light; that changed how it reads without changing where its ink
+  lands, which is measured — the warp moves the rim lift by 0.002.
 
   Its numbers were chosen by rendering 5 / 9 / 14 / 20 / 28 at plate size and
   looking, not from print convention. `brightest` is raised to 0.9975 because

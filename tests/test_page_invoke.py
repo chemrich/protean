@@ -23,7 +23,21 @@ import pytest
 import protean_mcp.server as server_mod
 from protean_mcp.connection import ViewerError
 
+from .browser import BROWSER_MARKS, viewer_session
 from .test_server import _load, _record, _tiny_protein_pdb
+
+
+def needs_browser(fn: Any) -> Any:
+    """Gate one test on a real browser, in a file that otherwise needs none.
+
+    Everything else here tests the *protocol* against a mock viewer, which is
+    the right instrument for it. One claim below is about what a person sees on
+    a page, and only a page can answer that.
+    """
+    for mark in reversed(BROWSER_MARKS):
+        fn = mark(fn)
+    return fn
+
 
 # A click has to answer within a click's worth of time. Bounded rather than
 # awaited outright because the failure this guards against — running the
@@ -350,3 +364,55 @@ async def test_the_page_is_told_what_it_may_ask_for(wired):
     finally:
         await ws.close()
         await session.close()
+
+
+@needs_browser
+async def test_a_refused_view_says_why_on_the_page():
+    """The end of the road for a refusal: from a docstring to somebody's eyes.
+
+    `scaffold` refuses on a crystal structure, and the paragraph it refuses
+    with is one of the more useful things protean writes — that pLDDT and the
+    B-factor are the same mmCIF column read with opposite polarity, that there
+    is nothing to cover because every atom here was observed, and that `putty`
+    answers the question actually being asked.
+
+    None of that reached anyone. The menu put it in a `title` attribute on the
+    *Views* button — a tooltip on a control the person has already moved away
+    from — so a click on Scaffold looked like a click that did nothing, and got
+    reported as *"Scaffold doesn't show anything."*
+
+    Driven through the page rather than through the bridge, because every layer
+    between the two is a place this can be lost: the allowlist, the invoke
+    protocol, the reply shape, and the DOM.
+    """
+    # `_bridge` and `_b_factor_column` are outside the autouse isolation
+    # fixture's set, so they are put back by hand.
+    previous = server_mod._bridge
+    column = server_mod._b_factor_column
+    async with viewer_session("1ubq") as session:
+        server_mod.use_bridge(session.bridge)
+        try:
+            await server_mod.fetch_structure("1ubq")
+            shown = await session.evaluate(
+                """(async () => {
+                  const menu = document.getElementById('view-menu');
+                  const item = menu.querySelector('[data-view="scaffold"]');
+                  if (!item) return JSON.stringify({ error: 'no scaffold item' });
+                  item.click();
+                  for (let i = 0; i < 200; i++) {
+                    const why = menu.querySelector('.view-menu-why');
+                    if (why) return JSON.stringify({ why: why.textContent });
+                    await new Promise((r) => setTimeout(r, 50));
+                  }
+                  return JSON.stringify({ error: 'nothing appeared' });
+                })()"""
+            )
+        finally:
+            server_mod._bridge = previous
+            server_mod._b_factor_column = column
+
+    assert "error" not in shown, shown
+    # The whole sentence, not a truncation of it: this is the one place the
+    # explanation has room, and the reason it was moved off the tooltip.
+    assert "putty" in shown["why"], shown
+    assert "B_iso_or_equiv" in shown["why"], shown

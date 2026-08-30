@@ -85,11 +85,53 @@ range is wide (3.2x to 22x), so it is a median rather than a rule.
 
 ## What is left, honestly
 
-1. **Backlog 40.** A 2x regression beats every remaining optimisation combined.
-   Chrome is ruled out (both runs report 151.0.7922.169) and so is a changed
-   `sampleLevel` default (identical in 4.18 and 5.11), so the per-sample cost
-   itself grew. Bisecting the 19 releases between them would name the one that
-   did it. **Do it on CI, not on a laptop** — see below.
+1. **Backlog 40 — answered on 2026-08-28, and it is the biggest thing on this
+   page.** The release is **Mol\* 5.4.2**, and the cause is one line of GLSL:
+   `ssao.frag`'s `isBackground()` became `depth == 1.0` where it had been
+   `depth > 0.999`, and on the *transparent* occlusion path depth comes from
+   `unpackRGBAToDepthWithAlpha`, which cannot return more than
+   `1 - 2^-24 = 0.99999994`. So the early-out in front of the sample loop is
+   dead for every texel, and a level-4 capture pays sixteen full-screen
+   128-sample evaluations over the whole framebuffer instead of over the few
+   percent that transparent geometry covers.
+
+   **Occlusion is 91% of a 5.11.0 capture** and was 73% at 4.18.0.
+
+   **Fixed. The job is faster; by exactly how much, three runs cannot say.**
+   `viewer/src/molstar-patches.ts` applies upstream's own repair to the six
+   shaders they have not reached. The same tree with and without it, all as
+   `pull_request` runs:
+
+   ```
+   without   3393.88s (56:33)   1457 passed, 31 skipped
+   with      1968.39s (32:48)   1457 passed, 31 skipped
+   with      2587.77s (43:07)   1457 passed, 31 skipped
+   ```
+
+   Identical counts, so it is not faster because less ran. **But job wall time
+   cannot carry this ratio.** A fourth run exists that was missed when this was
+   first written — 33168369704, an *unpatched* tree, at **45:39** — so unpatched
+   trees alone span 45:39 to 56:33 and one unpatched run beats one patched run.
+   Normalised against per-test durations the job is about **1.3x-1.45x** faster,
+   and on the render-heavy fixtures 2.0x-2.6x.
+
+   **And "every threshold passed" is not evidence the picture held.** Of 493
+   assertions in the browser suites, 120 read pixels and **none compares against
+   a stored baseline**; `tests/pixels.py` has `TOLERANCE = 8` while the patch's
+   largest change under default postprocessing is 2, so `difference()` returns
+   exactly 0.000000 — below the instrument's floor, not inside its threshold.
+   The suite is blind to this class of change. `docs/backlog.md` item 40 has the
+   full-resolution comparison that was done instead.
+
+   The instrument is `bench/molstar-capture` and the workflow is
+   `molstar-capture-bench.yml`. It is worth knowing how it was measured,
+   because the method is reusable and the obvious method does not work: all
+   nineteen releases in **one job on one runner, back to back**, never a
+   bisection across jobs. Runner variance here is 40%; measured that way it was
+   **1%**, with a noise floor read off three releases whose render paths are
+   byte-identical. `docs/backlog.md` item 40 carries the full curve, the four
+   measurements that each could have refuted the diagnosis, and the two wrong
+   turns on the way.
 2. **The `--durations` output**, which lands with the next run of this branch
    and should be read before anything else is attempted.
 3. **One browser per file, a fresh tab per test.** The re-scoped version of the
@@ -171,9 +213,13 @@ tool whose product is a picture.
 
 **The lead worth following instead.** That reproducibility depends on sample
 count at all is suspicious: it suggests a capture reads before something has
-finished settling, and more samples merely hide it. That may be the same defect
-as backlog 40's doubled capture cost. If it is, fixing it would remove this
-lever's only objection — which is a better outcome than spending the guarantee.
+finished settling, and more samples merely hide it.
+
+*This paragraph used to go on to guess that it was the same defect as backlog
+40's doubled capture cost. It is not.* Backlog 40 turned out to be a dead
+background early-out in the SSAO shader, which changes how long a capture takes
+and nothing about what it contains. The determinism lead is still open and
+still worth following; it just has to be followed on its own.
 
 ## The shuffle test, and what it adds to the job
 

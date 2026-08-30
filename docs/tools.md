@@ -84,7 +84,7 @@ Restore a scene previously written by save_session().
 capabilities()
 ```
 
-List the representation and colour-theme names this viewer accepts.
+List every value a display tool will accept, off the running viewer.
 
 ---
 

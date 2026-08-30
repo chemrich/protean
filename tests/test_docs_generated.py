@@ -20,6 +20,7 @@ from types import ModuleType
 
 import pytest
 
+from protean_mcp.analysis.hatching import FINISHES
 from tests.docs_pages import documentation_pages, engineering_records
 
 REPO = Path(__file__).resolve().parents[1]
@@ -125,3 +126,36 @@ def test_the_derived_page_list_can_see_the_documentation():
         assert expected in pages, f"{expected} missing from {pages}"
     for page in pages + engineering_records():
         assert (REPO / page).exists(), f"index points at missing file: {page}"
+
+
+def test_the_print_finishes_caption_names_every_finish():
+    """The one claim about the finish *set* that prose makes, checked against it.
+
+    `engraving` shipped and never reached this figure: the gallery, the cookbook
+    and the README each showed four finishes under a caption naming four, while
+    the product offered five. Nothing in the repo could notice, because no count
+    anywhere is derived and none was asserted — and the sheet itself is not
+    built in CI, so a stale image fails nothing either.
+
+    The caption is where it can be caught. It is a list a person writes out, in
+    three places, about a set the code owns.
+
+    Matched on whole names, because `dotty` is a prefix of `dotty-mixed`: a
+    substring test would read a caption naming only the variants as naming the
+    finish it does not mention.
+    """
+    shipped = sorted(FINISHES)
+    for page in ("docs/gallery.md", "docs/cookbook.md", "README.md"):
+        text = (REPO / page).read_text()
+        captions = re.findall(r"!\[([^\]]*print finishes[^\]]*)\]", text)
+        assert captions, f"{page} no longer carries the print-finishes figure"
+        for caption in captions:
+            named = [
+                name
+                for name in shipped
+                if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", caption)
+            ]
+            assert named == shipped, (
+                f"{page}'s print-finishes caption names {named} but the product "
+                f"ships {shipped} — missing {sorted(set(shipped) - set(named))}"
+            )

@@ -181,7 +181,7 @@ all, so a capture from any viewer is a picture at whatever size the window was.
 protean also has a raster pipeline of its own, applied **in Python after the
 capture** — the one place it does add to the rendering:
 
-![The same render as no finish, cross-hatch, hedcut, cyanotype and spot-ink-plates](docs/images/print-finishes.png)
+![The same spacefill render with no finish and each of the nine print finishes: cross-hatch, cyanotype, dotty, dotty-confetti, dotty-mixed, engraving, hedcut, linear-hatch and spot-ink-plates](docs/images/print-finishes.png)
 
 `spot-ink-plates` is the one that carries data: it binds *which plate a region
 prints on* — a category, not a shade, so shading cannot quantise it away.
@@ -221,8 +221,9 @@ documentation. [`docs/README.md`](docs/README.md) says which is which.
 ## Tools
 
 `capabilities()` reports the live lists — representations, colour themes,
-lighting rigs, shading styles, material finishes, gradients, presets,
-path-trace quality, and whether ffmpeg is installed.
+size themes, lighting rigs, shading styles, material finishes, gradients,
+camera projections, presets, path-trace quality, and whether ffmpeg is
+installed.
 
 <!-- BEGIN GENERATED TOOL TABLE -->
 | Area | Tools |
@@ -293,7 +294,7 @@ Four things follow, and they are most of what protean adds:
 
 Everything *live* on screen — every representation, colour theme, lighting rig,
 material, and the path tracer — is Mol\*'s, reached through a different set of
-controls. The exceptions are the four print finishes and the boil's exposure
+controls. The exceptions are the print finishes and the boil's exposure
 plate, which are protean's own and are composited in Python after the capture.
 
 **What protean changes about the viewer.** It opens as a canvas rather than as

@@ -349,6 +349,30 @@ One thing the stub did not anticipate, found by watching someone use it: a run
 of views leaves no way back, because each hides `auto` and replaces the shared
 handle. `default` is the first entry now.
 
+**"Refuses and says so on the control" was not true, and it took a year of
+being wrong to notice.** The reason went into a `title` attribute on the Views
+*button* — a tooltip on a control the person has already moved away from — and
+the button's text changed to "Views — refused". So what a click on Scaffold
+looked like, on any crystal structure, was a click that did nothing. Charlie's
+report of it was *"Scaffold doesn't show anything."*
+
+It shows something: it refuses, and the paragraph it refuses with is one of the
+more useful things protean writes. That pLDDT and the B-factor are the same
+mmCIF column read with opposite polarity; that there is nothing to cover here
+because every atom was observed; that `putty` answers the question actually
+being asked. **A refusal is only a report if it is legible where it was asked
+for**, so it now renders in the menu, under the item, and clears when another
+view is asked for or a fresh catalogue arrives.
+
+The menu moved to `viewer/src/view-menu.ts` to make that testable: `main.ts`
+boots Mol\* at import time, so nothing in it is reachable from a suite running
+in jsdom, and this is the piece most worth testing.
+
+**Still open, and the same family:** a view that *succeeds* while doing nothing
+visible says so only in its reply. `scaffold` on a model that is confident
+everywhere draws no cover, correctly, and the page has nowhere to put "nothing
+to cover" — which is §5.8's problem rather than this one's.
+
 ### 5.3 The rest of the catalogue — planned 2026-08-18
 
 Seven MCPymol views remain. Re-read against their implementations rather than
@@ -864,6 +888,117 @@ Three routes, and the middle one is chosen:
    ESM rather than TypeScript. So no fork is required either — what a source
    build actually costs is a build step protean does not have today. It would
    buy a live preview and a heavier CI.
+
+#### The hatching follows the form — 2026-08-27
+
+The section above chose to draw a hatch in Pillow rather than in a render pass,
+and that was right. What it got wrong was smaller and lived for the finish's
+whole life: **the marks were ruled without reference to what was underneath**,
+and they were far too big.
+
+Both halves came back as one complaint — "the hatches and halftones are way too
+coarse. They read like bad modern art" — and they are independent.
+
+**Size.** `apply_finish` spaces strokes at `max(4.0, longest / 110)`. On a
+1890 px plate that is 17 px against a 40 px atom, so a sphere got two or three
+lines and disappeared. **No test could see it.** Every guard draws at 240 or
+480 px, where the expression returns its own floor, so the suite had only ever
+drawn the mark at its finest. The general lesson is the sharpest form of this
+project's oldest defect: *does the fixture reach the regime the product runs
+in?* A clamp or a floor is exactly where a fixture and a product part company
+without saying so, and every size-derived constant should be resolved at both
+sizes and compared.
+
+**Direction.** Fineness was assumed to be the whole of it, and measuring said
+otherwise. Re-drawn at seven intervals from 17 px down to 2, the old
+`cross-hatch`'s ink landed on the form's edges no more often than chance at
+every single one — +0.014, +0.001, +0.011, +0.010, +0.011, +0.012, +0.003 —
+while tone reproduction quietly *improved* the whole way down. A tone measure
+scores that a success, which is why the measure that decided this one asks
+where the ink lands rather than how dark it is, and is chance-corrected so a
+finish cannot win by inking more.
+
+The mechanism is the one `_Survey` had all along, turned from contours into a
+hatch. A contour is a level set of the recovered lighting; a hatch is a level
+set of a *ruled plane warped by* it. Flat frame, straight rules; a sphere bows
+them around it. Two things then have to change from the survey's habits: hold
+constant **duty** rather than constant width, since the warp changes the local
+interval and a constant-width stroke would change its coverage wherever lines
+bunch; and swell the stroke where the lighting turns over, which is the burin's
+burr and is what actually draws the seam between two atoms. That last is worth
+stating plainly, because the obvious assumption is false: **the rim is not
+darker than the rest of the subject, only steeper** — 0.625 against 0.622 — so
+nothing driven by tone will ever find it.
+
+**And the bow cannot be defended by any number over the frame.** Switching the
+warp off leaves straight rules with the swelling still on and scores every
+scalar the real finish does: ink 0.506 against 0.507, rim-landing +0.259
+against +0.259, tone fidelity 0.934 against 0.936. The pictures are plainly
+different. A scalar over a whole frame cannot see a local geometric property,
+and the guard that can is a differential against the same finish with its own
+mechanism removed — which is the arm `test_shuffle_differential.py` had already
+used, for exactly this reason.
+
+#### The hedcut bows, and the plate learns to have edges — 2026-08-29
+
+The section above answered the hatches. `hedcut` was left ruling one direction
+straight through every form, which was defended as its style rather than a
+defect — correctly, but only half of the complaint was about size. The other
+half was the mechanism, and it came back as *"they read like bad modern art"*.
+
+Five plates were rendered and Charlie picked the third: the same swelling rule,
+debanded, with `_Lozenge`'s warped carrier under it. **The bow does not move
+the rim**, and that was checked rather than hoped for — the bowed finish lifts
++0.0694 against +0.0714 for the same finish with `relief` forced to 0. So it
+stays a *control* for the rim guard even though it now follows the form: the
+warp is a texture, and the burr is the rim-landing mechanism. Two things that
+look like one thing from the outside.
+
+**Antialiasing had to go somewhere it could not go.** The finish engine is one
+bit — `marks()` returns booleans, `apply_finish` paints flat ink, and
+`ink_mask` recovers the mask *bit for bit because of it* — so a plate has
+exactly two grey levels and an antialiased edge is not something it can draw.
+The old `hedcut` never showed the staircase because a fixed 75 degrees sits off
+both axes and off the 45 the render's own antialiasing favours; a bowed rule
+sweeps every angle including the bad ones. The resolution is that the *capture*
+gets bigger and the plate is averaged down afterwards, declared per finish
+rather than applied globally. `spot-ink-plates` must never have it: its
+boundaries are a category rather than a shade, and averaging across one invents
+inks its own `palette()` disowns.
+
+Which finishes was measured, not assumed. A mark whose size is a fraction of
+the frame comes back unchanged from a bigger capture with only its edges
+resolved — `hedcut`, `dotty` and `dotty-mixed` read an *identical* ink fraction
+at 1x and 2x. `engraving` moves 0.062 to 0.041, so supersampling would change
+its picture rather than resolve it.
+
+**Three guards could not see their own subject**, all found by this round and
+none of them caused by it. The mark-size guard resolved the diagonal as
+`hypot(w, h)` where `_Frame` carries `sqrt(w * h)` — 1.41x too large — and so
+reported `engraving` clear of the grain floor by 6% while it drew the floor
+exactly; it also read `pitch` only, so the three stroke finishes were never
+checked at the comparison size at all. Fixing both revealed that **four of the
+six shipped finishes were pinned to their floors at the comparison size**: the
+pairwise test had never once compared the marks the product draws. The rim
+guard named `hedcut` in prose as its control, with a number that no longer
+matched the code and a finish that was not even the highest control. And the
+pairwise comparison itself measured ink masks, which is one bit, and
+`dotty-mixed` partitions the field `dotty` draws — byte-identical masks by
+design — so the measure had to become *which plate printed* rather than
+*whether there is ink*.
+
+The general lesson is the file's own, arriving again: a guard that cannot
+observe the thing it checks passes for the wrong reason, and the only reliable
+way to find one is to break the subject deliberately and watch whether it
+notices. Every guard here was sabotage-verified in both directions.
+
+**And a colour finish can succeed at drawing nothing.** `dotty-mixed` sorts its
+dots by the hue already on screen and claims nothing about what a hue means,
+which is what makes it work over any colouring — and what makes it draw exactly
+`dotty` over a greyscale one, returning a path, a success and a sensible ink
+fraction for a picture with no colour in it. That is this project's signature
+failure and it was introduced, noticed and closed within one round, by
+reporting the chromatic share.
 
 #### The lens — projection and fog, 2026-08-25
 

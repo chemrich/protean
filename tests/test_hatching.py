@@ -7,18 +7,27 @@ it earns is a property rather than a measurement.
 
 from __future__ import annotations
 
+import functools
 import itertools
+import re
 from dataclasses import replace
+from typing import Any
+from unittest import mock
 
 import numpy as np
 import pytest
 from PIL import Image
 
 from protean_mcp.analysis.hatching import (
+    _PAPER,
     FINISHES,
+    _blur,
+    _Lozenge,
     _multiply,
+    _Style,
     _Survey,
     apply_finish,
+    chromatic_fraction,
     ink_fraction,
     ink_mask,
 )
@@ -29,21 +38,42 @@ FINISH_NAMES = sorted(FINISHES)
 #: The size the finish-comparison test draws at. Big enough that no two
 #: finishes' grain lattices collapse onto the same floor.
 #:
-#: `_grain` resolves its step as `max(2.0, diagonal * pitch)`, so below a
-#: certain size every fine finish clamps to 2 px and draws an identical
-#: lattice. Measured across all ten finish pairs: at 240 and 360 px the worst
-#: pair scores **0.0000** — indistinguishable — and at 480 it jumps to 0.4800.
-#: The cliff is where `engraving`'s 1/320 pitch clears the floor.
+#: `_grain` resolves its step as `max(2.0, diagonal * pitch)` and the stroke
+#: families as `max(floor, longest * spacing)`, so below a certain size every
+#: finish clamps to its own floor and draws the finest mark it can rather than
+#: the one it declares. Two finishes pinned that way can draw an identical
+#: lattice, and the comparison then scores a perfect 0.0000 while reporting a
+#: failure whose cause looks like the finishes rather than the fixture.
 #:
-#: Only the comparison uses it. The rest of the suite stays at 240, because
-#: raising the fixture everywhere took the file from 26 s to 113 s.
-_ENGRAVABLE = 480
+#: Plate-shaped, not square: `spacing` scales off the longer side and `pitch`
+#: off `sqrt(area)`, so 1660x830 clears every floor at 1.38 megapixels where
+#: the square that does the same needs 1520x1520 and 1.67x the pixels.
+#: `test_the_comparison_size_can_see_every_finishs_marks` is what says so.
+#:
+#: It was 480x480, where **four** of the shipped finishes sat on their floor —
+#: cross-hatch, hedcut and linear-hatch at 3, 4 and 3 px, and engraving at 2 —
+#: so the comparison has never once seen the marks the product draws. The
+#: guard that existed to catch this compared `hypot(w, h)` against a frame
+#: built on `sqrt(w * h)`, cleared engraving by 6%, and checked `pitch` only.
+#:
+#: Only the comparison uses it. The rest of the suite stays at 240. Raising it
+#: costs nothing here because the maps are now built once per finish rather
+#: than once per pair: 36 pairs at 1660x830 build in 19 s, which is what 10
+#: pairs at 480x480 cost uncached.
+_ENGRAVABLE = (1660, 830)
 
 
-def _flat(value: int, size: int = 240, alpha: int = 255) -> Image.Image:
-    """A square of one tone, which is the cleanest thing to engrave."""
+def _flat(value: int, size: int | tuple[int, int] = 240, alpha: int = 255) -> Image.Image:
+    """One tone, which is the cleanest thing to engrave.
+
+    Square by default. A width-and-height pair where a finish's mark size has
+    to be visible: `spacing` scales off the longer side and `pitch` off the
+    square root of the area, so a plate-shaped frame clears both floors for
+    fewer pixels than the square that does the same.
+    """
+    width, height = (size, size) if isinstance(size, int) else size
     return Image.fromarray(
-        np.full((size, size, 4), (value, value, value, alpha), dtype=np.uint8),
+        np.full((height, width, 4), (value, value, value, alpha), dtype=np.uint8),
         mode="RGBA",
     )
 
@@ -160,6 +190,93 @@ def test_colour_is_weighted_the_way_an_eye_weighs_it():
     )
 
 
+#: The tones the pairwise comparison is made at. Light enough that both
+#: finishes leave the paper bare would compare two blank frames and pass for
+#: any pair, including a duplicate.
+#:
+#: 40 is here for the thinnest pair the file has. `dotty` and `dotty-mixed`
+#: differ only in how many of the same dots take a colour, so their separation
+#: scales with how much ink is on the page: 0.0100 at tone 180, 0.1311 at 60,
+#: 0.1770 at 40. The comparison takes the best tone rather than the average,
+#: so a tone that separates nothing costs only its render.
+_COMPARED_TONES = (40, 60, 100, 140)
+
+
+#: Three hues at one luma, for the comparison. The file's other fixtures are
+#: grey, and a finish that sorts pixels by hue cannot be told from one that
+#: ignores hue on a frame that has none: `dotty-mixed` puts every cell on its
+#: key plate there and draws `dotty` exactly. Three rather than two because a
+#: four-ink finish needs more hue peaks than it has inks before an ink can be
+#: shown to be unreachable.
+_HUES = ((0.95, 0.35, 0.45), (0.35, 0.60, 0.95), (0.95, 0.75, 0.25))
+
+
+#: A plate shape small enough to be cheap, for the checks whose property does
+#: not depend on how finely the marks resolve.
+_A_SMALL_PLATE = (480, 240)
+
+
+def _flat_in_hues(tone: int, size: tuple[int, int] = _ENGRAVABLE) -> Image.Image:
+    """One tone, in three vertical bands of different hue.
+
+    Every band is scaled to the same Rec. 601 luma, so the frame is flat to any
+    finish that reads tone and banded to any finish that reads hue. That
+    separation is the whole point: it makes the comparison able to see a
+    difference in *which ink* a finish chose, without also handing it a
+    difference in tone it could pass on instead.
+    """
+    width, height = size
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+    frame[:, :, 3] = 255
+    for index, hue in enumerate(_HUES):
+        weighted = 0.299 * hue[0] + 0.587 * hue[1] + 0.114 * hue[2]
+        scaled = [min(255, round(tone * channel / weighted)) for channel in hue]
+        band = slice(index * width // len(_HUES), (index + 1) * width // len(_HUES))
+        frame[:, band, :3] = scaled
+    return Image.fromarray(frame, mode="RGBA")
+
+
+@functools.cache
+def _plate_map(finish: str, tone: int) -> np.ndarray:
+    """`_plates_printed` on the comparison fixture, built once per finish.
+
+    Every pair used to render both its sides, so a frame was engraved once per
+    pair it appeared in rather than once: 90 calls where 18 are needed. That is
+    what pays for `_ENGRAVABLE` being large enough for the comparison to see
+    the marks the product actually draws.
+    """
+    return _plates_printed(finish, _flat_in_hues(tone))
+
+
+def _plates_printed(finish: str, source: Image.Image) -> np.ndarray:
+    """Which plates printed each pixel, as the bit-code `apply_finish` composites
+    with: 0 for the paper, bit *i* set where plate *i* covers.
+
+    `ink_mask` answers "is there ink here", which is exactly one bit, and this
+    comparison was built on it. That stopped being enough when `dotty-mixed`
+    arrived: it partitions the field `dotty` draws rather than adding to it, so
+    the two have **byte-identical** ink masks by design.
+
+    Recovered from the printed page rather than from `plates()`, so a finish
+    cannot pass by declaring plates it never lays down — the same reasoning
+    that put `ink_mask` on the shipped output. The reverse map is unambiguous
+    because `palette()` is asserted to hold `2 ** len(inks)` distinct colours,
+    so no two codes can print alike; a finish that broke that would fail
+    `test_a_finish_may_print_only_from_the_palette_it_declares` first.
+
+    The code, not a palette index, because a code means the same thing to every
+    finish — 0 is bare paper and 1 is the first ink alone, whoever is printing.
+    """
+    style = FINISHES[finish]
+    printed = np.asarray(apply_finish(source, finish).convert("RGB"))
+    mapped = np.zeros(printed.shape[:2], dtype=np.int64)
+    for code in range(1, 1 << len(style.inks)):
+        crossed = tuple(ink for index, ink in enumerate(style.inks) if code >> index & 1)
+        colour = crossed[0] if len(crossed) == 1 else _multiply(crossed)
+        mapped[np.all(printed == np.asarray(colour, dtype=np.uint8), axis=2)] = code
+    return mapped
+
+
 @pytest.mark.parametrize(("left", "right"), list(itertools.combinations(FINISH_NAMES, 2)))
 def test_no_two_finishes_draw_the_same_picture(left, right):
     """Cross-hatching crosses and a hedcut does not, so the same tone has to
@@ -171,28 +288,85 @@ def test_no_two_finishes_draw_the_same_picture(left, right):
     pair would have gone on passing while the new name drew someone else's
     picture.
 
-    Compared on where the ink *is*, not on the colours, so a finish that is an
-    existing one recoloured is still caught. Through the shipped `ink_mask`
-    rather than a copy of it, so a change to what counts as ink cannot leave
-    this comparing masks the product no longer draws. Measured over inked
-    tones: the two shipping finishes disagree on 0.37 to 0.50 of the frame,
-    and a duplicate reads exactly 0.0.
+    Compared on **which plate printed**, not on where the ink is. It was the
+    latter, through `ink_mask`, until `dotty-mixed` arrived: that finish
+    partitions the very field `dotty` draws rather than adding to it, so the
+    two have byte-identical ink masks *by design* — 0.0000 disagreement at
+    every size, on grey and in colour — and a one-bit measure can only report
+    the design as two finishes drawing the same picture.
+
+    Palette index, not colour, so the property the old measure had survives: a
+    finish that is an existing one recoloured maps to the same indices and is
+    still caught. `test_a_recoloured_finish_is_not_a_new_finish` is what holds
+    that claim, since nothing here would now fail if it stopped being true.
+
+    On a fixture with hue in it, because a finish that sorts pixels by hue
+    cannot be told from one that ignores hue on a grey frame.
     """
     # Tones light enough that both finishes leave the paper bare would compare
     # two blank frames and pass for any pair, including a duplicate.
     disagreement = max(
-        float(
-            (
-                ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), left), left)
-                ^ ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), right), right)
-            ).mean()
-        )
-        for tone in (60, 100, 140)
+        float((_plate_map(left, tone) != _plate_map(right, tone)).mean())
+        for tone in _COMPARED_TONES
     )
 
     assert disagreement > 0.1, (
         f"{left} and {right} drew the same picture (disagreed on "
         f"{disagreement:.4f} of the frame)"
+    )
+
+
+@pytest.mark.parametrize("finish", FINISH_NAMES)
+def test_a_recoloured_finish_is_not_a_new_finish(finish):
+    """The same plates in different inks are the same picture.
+
+    The guard above compares plate codes rather than colours precisely so that
+    this stays true, and nothing there would fail if it stopped being — a
+    measure that read colour would score a palette swap as a whole new finish
+    and wave through a duplicate wearing a different hue. `cross-hatch` and
+    `hedcut` are one class apart in their fields; `cyanotype` and `engraving`
+    likewise. A third arriving as one of them recoloured must be caught.
+
+    So this asserts the property directly, on every finish, by recolouring it
+    and requiring the comparison to see no difference at all.
+    """
+    style = FINISHES[finish]
+    swapped: dict[str, _Style] = dict(FINISHES)
+    swapped[finish] = replace(
+        style,
+        inks=tuple(
+            (n * 53 % 251, n * 97 % 251, n * 31 % 251)
+            for n in range(1, len(style.inks) + 1)
+        ),
+    )
+    # Uncached on both sides. Clearing the shared cache to force a re-render
+    # would leave every other test in this file paying to rebuild it, and a
+    # cache cleared in the middle of a run is a way to make one test's result
+    # depend on which tests ran before it.
+    moved = 0.0
+    printed = 0.0
+    for tone in _COMPARED_TONES:
+        # Small, because plates do not depend on what colour they print in, so
+        # this property holds at any size — and the assertion below is what
+        # stops "any size" from quietly becoming "a size where nothing is
+        # drawn", which would make a comparison of two blank frames pass.
+        source = _flat_in_hues(tone, _A_SMALL_PLATE)
+        with mock.patch.dict(FINISHES, swapped):
+            recoloured = _plates_printed(finish, source)
+        live = _plates_printed(finish, source)
+        printed = max(printed, float((live != 0).mean()))
+        moved = max(moved, float((live != recoloured).mean()))
+
+    assert printed > 0.01, (
+        f"{finish} drew almost nothing on the fixture this compares at "
+        f"({printed:.4f} of it inked) — two blank frames agree perfectly and "
+        f"this test would pass for a finish that had genuinely changed"
+    )
+
+    assert moved == 0.0, (
+        f"{finish} recoloured reads as a different picture (moved {moved:.4f}) "
+        f"— the comparison above is reading colour, so it would score a palette "
+        f"swap as a new finish and let a duplicate through in a different hue"
     )
 
 
@@ -451,10 +625,14 @@ def test_an_unknown_finish_names_the_ones_that_exist(call):
     """`ValueError`, not `KeyError`: `str(KeyError(msg))` is `repr(msg)`, so a
     caller has to strip the quotes back off and a name containing one arrives
     mangled — measured, a finish named `a'b` reached the model with a literal
-    backslash in it."""
-    with pytest.raises(
-        ValueError, match="cross-hatch, cyanotype, engraving, hedcut, spot-ink-plates"
-    ):
+    backslash in it.
+
+    The expected list is **derived**, not written out. It was written out, and
+    adding a finish then failed three tests that have nothing to do with the
+    new finish and everything to do with the list having been copied — which is
+    this repo's most-repeated defect in its smallest form.
+    """
+    with pytest.raises(ValueError, match=re.escape(", ".join(FINISH_NAMES))):
         call(_flat(128), "woodblock")
 
 
@@ -542,35 +720,407 @@ def test_ink_fraction_ignores_what_was_never_drawn():
     assert ink_fraction(apply_finish(_flat(128, alpha=0), "hedcut"), "hedcut") == 0.0
 
 
-def test_no_two_finishes_share_a_grain_lattice_at_the_test_size():
-    """A guard on the guard above, aimed at the mechanism rather than the number.
+def _resolved(style, shape: tuple[int, int]) -> tuple[str, float, float]:
+    """The mark size a finish actually draws on a frame, and its own floor.
 
-    `test_no_two_finishes_draw_the_same_picture` compares ink masks, so it can
-    only see a difference the fixture is large enough to render. `_grain`
-    resolves its step as `max(2.0, diagonal * pitch)`: below a certain size
-    every fine finish clamps to the same 2 px floor and draws the same lattice,
-    and the comparison scores a perfect 0.0000 while reporting a failure whose
-    cause looks like the finishes rather than the fixture. That is what
-    happened when `engraving` was added — cyanotype and engraving disagreed on
-    nothing at 240 px and on 0.4811 of the frame at 1200.
+    The two expressions `apply_finish` builds `_Frame` from, not a second copy
+    written from the same idea. A stroke field runs one way, so `spacing`
+    scales off the longer side; a lattice does not, so `pitch` scales off
+    `sqrt(width * height)`.
 
-    This asserts the fixture can still tell them apart, so shrinking `_flat`
-    or adding a finer finish fails *here*, naming the real reason.
+    An earlier guard used `hypot(width, height)` here, which is 1.41x the
+    diagonal `_Frame` carries. It therefore reported `engraving` drawing a
+    2.12 px grain at the comparison size while the finish was drawing the
+    2.00 px floor, and cleared it by 6% — a guard that could not see the one
+    thing it existed to check.
     """
-    diagonal = float(np.hypot(_ENGRAVABLE, _ENGRAVABLE))
-    steps = {
-        name: max(2.0, diagonal * style.pitch)
-        for name, style in FINISHES.items()
-        if hasattr(style, "pitch")
-    }
-    assert len(steps) >= 2, f"expected at least two grained finishes, got {steps}"
-    collided = [name for name, step in steps.items() if step <= 2.0]
-    assert not collided, (
-        f"at {_ENGRAVABLE}px these finishes are pinned to the 2px grain floor "
-        f"and cannot be told apart: {sorted(collided)}. Raise _ENGRAVABLE. "
-        f"Resolved steps: { {n: round(v, 2) for n, v in steps.items()} }"
+    if getattr(style, "spacing", None) is not None:
+        floor = style.least if isinstance(style, _Lozenge) else 4.0
+        return "spacing", max(floor, float(max(shape)) * style.spacing), floor
+    if getattr(style, "pitch", None) is not None:
+        diagonal = float(np.sqrt(shape[0] * shape[1]))
+        return "pitch", max(2.0, diagonal * style.pitch), 2.0
+    return "", 0.0, 0.0
+
+
+def _sized() -> list[str]:
+    """The finishes that declare a mark size, derived rather than named."""
+    return [n for n, style in FINISHES.items() if _resolved(style, _A_PLATE)[0]]
+
+
+def test_every_finish_draws_the_mark_size_it_declares():
+    """A finish's declared size must be the one it draws on the plate it ships at.
+
+    The cheap half of the lesson, and it needs no render. `max(floor, ...)`
+    means a finish can declare any number at all and draw the floor instead,
+    and every small fixture in this file is below the point where the
+    difference shows: `cross-hatch` shipped a 17 px mark for its whole life
+    while the suite drew it at 4.
+
+    Over both families and derived from the field each declares, because the
+    version that named `(*_lozenges(), "hedcut")` checked `spacing` only —
+    so `pitch`, which four finishes size their marks with, was never checked
+    at all.
+    """
+    assert _sized(), "no finish declares a mark size: this test is testing nothing"
+    for name in sorted(_sized()):
+        kind, step, floor = _resolved(FINISHES[name], _A_PLATE)
+        assert step > floor, (
+            f"{name} declares a {kind} of {step:.2f} px on the plate it ships "
+            f"at, which is at or under its own {floor} px floor — so the number "
+            f"in FINISHES is decorative and the finish draws the floor instead"
+        )
+
+
+def test_the_comparison_size_can_see_every_finishs_marks():
+    """A guard on `test_no_two_finishes_draw_the_same_picture`, aimed at the
+    fixture rather than at any finish.
+
+    That test can only see a difference the fixture is large enough to render.
+    Below a certain size every fine finish clamps to its floor and draws the
+    same lattice, and the comparison scores a perfect 0.0000 while reporting a
+    failure whose cause looks like the finishes rather than the fixture. That
+    is what happened when `engraving` was added — it and `cyanotype` disagreed
+    on nothing at 240 px and on 0.4811 of the frame at 1200.
+
+    So adding a finer finish, or shrinking `_ENGRAVABLE`, fails *here*, naming
+    the real reason. `_ENGRAVABLE` is plate-shaped rather than square because
+    `spacing` scales off the longer side and `pitch` off the square root of the
+    area: a 1660x830 frame clears every floor at 1.38 megapixels, where the
+    square that does the same needs 1520x1520 and 1.67x the pixels.
+    """
+    pinned = {}
+    for name in sorted(_sized()):
+        kind, step, floor = _resolved(FINISHES[name], _ENGRAVABLE)
+        if step <= floor:
+            pinned[name] = f"{kind} {step:.2f} at its {floor} floor"
+    assert not pinned, (
+        f"at {_ENGRAVABLE[0]}x{_ENGRAVABLE[1]} these finishes are pinned to "
+        f"their own floor and draw the finest mark they can rather than the "
+        f"one they declare: {pinned}. Raise _ENGRAVABLE."
     )
-    assert len({round(v, 2) for v in steps.values()}) == len(steps), (
-        f"two finishes resolve to the same grain step: "
-        f"{ {n: round(v, 2) for n, v in steps.items()} }"
+
+
+# -- the hatch that follows the form -------------------------------------------
+#
+# Everything above draws at 240 or 480 px. `_Engraving`'s interval resolves as
+# `max(4.0, longest * spacing)` and `_Lozenge`'s as `max(least, ...)`, so at
+# those sizes EVERY hatching finish clamps to its own floor and the suite has
+# only ever seen the finest mark each one can draw. The product draws a 1890 px
+# plate, where `hedcut` is 5 px and `cross-hatch` 4 — and where the old
+# `cross-hatch` was 17 px against a 40 px atom, which is how "the hatches are
+# way too coarse" shipped with every test in this file green.
+#
+# So these three draw at plate size, on a subject shaped like the one the
+# product actually draws: many small overlapping spheres, not one large one.
+# They are the only tests here that do, and together they cost about a second.
+
+#: The plate the product draws: 160 mm at 300 dpi, which is what `snapshot()`
+#: returns for a double-column figure. Not a round number chosen for the test —
+#: the point is to draw exactly what ships.
+_A_PLATE = (1890, 956)
+
+#: A van der Waals sphere is about a fortieth of the plate's long side.
+#: Measured off a real 1890 px spacefill capture of 1UBQ, where an atom is
+#: about 40 px across, rather than assumed.
+_FEATURE = _A_PLATE[0] / 40
+
+#: The tone a real element-coloured spacefill sits at: the median luma over its
+#: subject. Measured on that same capture. The fixture is built to match,
+#: because it is the thing the first version of it got wrong — spheres lit to a
+#: median of 0.72 gave a coverage of 0.04, and every finish then scored at
+#: chance for want of any ink to land anywhere.
+_A_REAL_TONE = 0.32
+
+
+def _spheres(size: tuple[int, int] = _A_PLATE) -> Image.Image:
+    """A field of small overlapping spheres: the shape of a spacefill capture.
+
+    `_dome` is one sphere filling a third of the frame, which is the wrong
+    fixture for anything about mark size — at 240 px it is a 173 px feature
+    against a 4 px interval, 43 marks per feature, where the product draws a
+    40 px feature against 17, 2.35 per feature. Eighteen times better sampled,
+    and that gap is exactly where "too coarse" hid for the finish's whole life.
+
+    Laid on a jittered lattice rather than at random, so the picture is
+    repeatable and never resolves into a grid. Overlapping on purpose, and
+    depth-sorted rather than blended: the rim where one sphere passes in front
+    of another is the line a draughtsman would draw, and a max-blend has no
+    such edges in it at all.
+
+    Written per bounding box rather than over the whole array. The first
+    version touched a two-megapixel array once per sphere and took over two
+    minutes; this takes 0.1 s and draws the same picture.
+    """
+    width, height = size
+    field = np.ones((height, width))
+    depth = np.full((height, width), -np.inf)
+    radius = _FEATURE / 2
+    step = radius * 1.35
+    for row in range(int(height / step) + 2):
+        for column in range(int(width / step) + 2):
+            # A repeatable jitter, so the same fixture comes back the same way
+            # twice — a finish drawn twice must give the same pixels.
+            wobble = ((row * 73856093) ^ (column * 19349663)) % 1000 / 1000.0
+            cx = column * step + (wobble - 0.5) * step * 0.7
+            cy = row * step + (((wobble * 7919) % 1000) / 1000.0 - 0.5) * step * 0.7
+            left, right = max(0, int(cx - radius) - 1), min(width, int(cx + radius) + 2)
+            top, bottom = max(0, int(cy - radius) - 1), min(height, int(cy + radius) + 2)
+            if left >= right or top >= bottom:
+                continue
+            y, x = np.ogrid[top:bottom, left:right]
+            r2 = ((x - cx) ** 2 + (y - cy) ** 2) / radius**2
+            inside = r2 <= 1.0
+            if not inside.any():
+                continue
+            z = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+            # Lambert from up and to the left, where the viewer's default light
+            # sits, over a base and span that put the median at _A_REAL_TONE.
+            lit = np.clip(
+                -0.45 * (x - cx) / radius - 0.45 * (y - cy) / radius + z, 0, None
+            )
+            tone = np.clip(0.03 + 0.35 * lit, 0.0, 1.0)
+            nearer = inside & (z > depth[top:bottom, left:right])
+            patch = field[top:bottom, left:right]
+            field[top:bottom, left:right] = np.where(nearer, tone, patch)
+            depth[top:bottom, left:right] = np.where(
+                nearer, z, depth[top:bottom, left:right]
+            )
+    grey = (field * 255).astype(np.uint8)
+    rgb = np.repeat(grey[:, :, None], 3, axis=2)
+    return Image.fromarray(
+        np.dstack([rgb, np.full((height, width, 1), 255, dtype=np.uint8)]), "RGBA"
     )
+
+
+def _without_its_warp(style: _Style) -> _Style:
+    """The same finish with its carrier straightened.
+
+    `_warped()` selects on the field that carries the mechanism rather than on
+    a class, so there is no one type here for `replace` to check its keyword
+    against: the group is `_Lozenge` today and gains an `_Engraving` when
+    `hedcut` bows. Widened in one named place rather than at the call site, so
+    the reason is written down once.
+    """
+    straightened: dict[str, Any] = {"relief": 0.0}
+    return replace(style, **straightened)
+
+
+def _inked_in_more_than_one_colour() -> list[str]:
+    """The finishes that separate a frame onto more than one plate."""
+    return [n for n, style in FINISHES.items() if len(style.inks) > 1]
+
+
+def _burred() -> list[str]:
+    """The finishes that thicken their marks on a rim, derived from the field.
+
+    `_Lozenge.burr` calls itself "the entire rim-landing mechanism", so this is
+    the mechanism the rim guard separates. Derived rather than named because a
+    control named in prose stops being one the moment a finish changes class:
+    the guard below used to name `hedcut`, and `hedcut` is now an
+    `_Engraving` that bows.
+    """
+    return [n for n, style in FINISHES.items() if getattr(style, "burr", 0.0) > 0.0]
+
+
+def _warped() -> list[str]:
+    """The finishes whose carrier is pushed aside by the recovered light."""
+    return [n for n, style in FINISHES.items() if getattr(style, "relief", 0.0) != 0.0]
+
+
+def _subject_and_rims(source: Image.Image) -> tuple[np.ndarray, np.ndarray]:
+    """Where the drawing is, and where its form has an edge.
+
+    A rim is the steepest decile of the shading: where one sphere passes in
+    front of another, which is the line a draughtsman would draw.
+    """
+    grey = np.asarray(source.convert("L"), dtype=np.float64) / 255.0
+    subject = grey < _PAPER
+    gradient_y, gradient_x = np.gradient(_blur(grey, max(source.size) / 500.0))
+    steep = np.hypot(gradient_x, gradient_y)
+    return subject, subject & (steep > np.percentile(steep[subject], 90.0))
+
+
+def test_the_fixture_is_the_picture_the_product_draws():
+    """A guard on the two guards below, aimed at the fixture rather than a finish.
+
+    Both of them measure how ink falls across a form, and both are meaningless
+    if the fixture has no ink or no form. The first version of `_spheres` was
+    lit far too brightly — median subject luma 0.72 against a real capture's
+    0.32 — so coverage came out at 0.04, and every finish scored at chance for
+    want of anything on the page. That failure looked exactly like a broken
+    finish and was a broken fixture, which is the confusion this asserts away.
+    """
+    source = _spheres()
+    subject, _ = _subject_and_rims(source)
+    grey = np.asarray(source.convert("L"), dtype=np.float64) / 255.0
+    tone = float(np.median(grey[subject]))
+    assert abs(tone - _A_REAL_TONE) < 0.06, (
+        f"the fixture sits at a median tone of {tone:.3f} where a real capture "
+        f"is {_A_REAL_TONE} — it is no longer the picture the product draws, "
+        f"and the tests below will report a finish's failure instead of this one"
+    )
+    # And it must be many small features, not one large one: that is the whole
+    # difference from `_dome` and the reason these tests exist.
+    assert max(_A_PLATE) / 20 > _FEATURE, "the fixture's spheres are not small"
+
+
+#: How much likelier a rim pixel must be to take ink than any other subject
+#: pixel, for a finish whose marks swell on a rim. Measured on `_spheres()` at
+#: 1890x956: the burred finishes score +0.1545 to +0.1558 and the unburred ones
+#: +0.0275 to +0.0922, so the bar sits in a gap 0.06 wide.
+_A_RIM_IS_FOUND = 0.12
+
+
+def _rim_lift(finish: str) -> float:
+    """How much more likely a rim pixel is to be inked than any other pixel of
+    the subject. Chance-corrected, so a finish cannot pass by laying down more
+    ink, and 0 is a mark field laid without reference to what is underneath."""
+    source = _spheres()
+    subject, rim = _subject_and_rims(source)
+    inked = ink_mask(apply_finish(source, finish), finish)
+    return float(inked[rim].mean() - inked[subject].mean())
+
+
+@pytest.mark.parametrize("finish", sorted(_burred()))
+def test_a_burred_finish_lands_its_ink_on_the_form(finish):
+    """The marks must go where the form has an edge, not merely where it is dark.
+
+    This is the whole difference between the hatching and what it replaced.
+    Measured on a real 1890 px spacefill capture, the old `cross-hatch` scored
+    +0.014 and `hedcut` +0.004 — and **drawing them finer never moved it**.
+    Swept from a 17 px interval down to 2, the best either managed was +0.026.
+    """
+    lift = _rim_lift(finish)
+    assert lift > _A_RIM_IS_FOUND, (
+        f"{finish} put ink on the form's edges no more often than anywhere "
+        f"else (lift {lift:+.4f}); it is ruling a screen over a silhouette"
+    )
+
+
+@pytest.mark.parametrize("finish", sorted(set(FINISHES) - set(_burred())))
+def test_an_unburred_finish_is_still_a_control(finish):
+    """The other arm, and the reason the bar means anything.
+
+    A one-sided bar drifts: raise it until everything passes and the test still
+    reports green while separating nothing. So every finish *without* the burr
+    must sit under the same number every finish with it clears.
+
+    This replaces a control named in a docstring. That prose said `hedcut`
+    scored +0.086 and the hatches "about +0.18"; measured on today's fixture
+    they are +0.0668 and +0.155, and `engraving` — which nobody had measured —
+    sits highest of the controls at +0.0922. Naming one finish as the control
+    was therefore already naming the wrong one, before `hedcut` acquired a bow
+    and stopped being what the sentence described. A computed set cannot go
+    stale that way, and it grows when a finish is added.
+    """
+    lift = _rim_lift(finish)
+    assert lift < _A_RIM_IS_FOUND, (
+        f"{finish} declares no burr but lands ink on rims like a finish that "
+        f"does (lift {lift:+.4f}) — either it grew the mechanism without "
+        f"declaring it, or the bar has drifted up over a control"
+    )
+
+
+@pytest.mark.parametrize("finish", sorted(_warped()))
+def test_the_warp_is_what_draws_the_form(finish):
+    """Take the warp out and the picture must change, a lot.
+
+    **No aggregate number over the frame can see this**, and that is why the
+    guard is a differential. Setting `relief` to 0 leaves straight ruled lines
+    with the rim-swelling still on, and that mutant scores every scalar the
+    shipped finish does: on a real capture, ink 0.506 against 0.507, the rim
+    lift above +0.259 against +0.259, tone fidelity 0.934 against 0.936. The
+    pictures are not remotely alike — one is a flat ruling with dark blobs
+    where atoms meet, the other has strokes that bend over every dome.
+
+    So this compares the finish against **itself with the mechanism removed**,
+    which is the arm `test_shuffle_differential.py` uses for the same reason.
+    On real captures the warp moves 0.42 of a spacefill subject and 0.32 of a
+    cartoon.
+    """
+    source = _spheres()
+    subject, _ = _subject_and_rims(source)
+
+    style = FINISHES[finish]
+    live = ink_mask(apply_finish(source, finish), finish)
+    flattened: dict[str, _Style] = dict(FINISHES)
+    flattened[finish] = _without_its_warp(style)
+    with mock.patch.dict(FINISHES, flattened):
+        flat = ink_mask(apply_finish(source, finish), finish)
+
+    moved = float((live ^ flat)[subject].mean())
+    assert moved > 0.15, (
+        f"{finish} draws the same picture with its warp switched off "
+        f"(moved {moved:.4f} of the subject) — the strokes are not following "
+        f"anything, and every other number in this file would still pass"
+    )
+
+
+@pytest.mark.parametrize("finish", sorted(_inked_in_more_than_one_colour()))
+def test_a_multi_ink_finish_says_how_much_colour_it_actually_printed(finish):
+    """The number that separates "mixed" from "drew the black one and said so".
+
+    These finishes sort their marks by the hue already in the render and claim
+    nothing about what a hue means, which is what makes them work over any
+    colouring — and what makes them draw nothing but the key over a colouring
+    that has no hue in it. That is not an error and there is no exception to
+    raise: it is the honest picture of a greyscale scene. But it comes back as
+    a path, a success and a perfectly sensible ink fraction describing a
+    picture with no colour in it, which is this codebase's signature failure.
+
+    Both arms, because either alone is satisfiable by a constant.
+    """
+    coloured = chromatic_fraction(
+        apply_finish(_flat_in_hues(100, _A_SMALL_PLATE), finish), finish
+    )
+    grey = chromatic_fraction(apply_finish(_flat(100, _A_SMALL_PLATE), finish), finish)
+
+    assert coloured > 0.05, (
+        f"{finish} printed {coloured:.3f} of its ink off the key plate on a "
+        f"frame with three hues in it — it is not separating anything"
+    )
+    assert grey == 0.0, (
+        f"{finish} reported {grey:.3f} of its ink as chromatic on a frame with "
+        f"no hue in it at all, so the number is not measuring what it says"
+    )
+
+
+@pytest.mark.parametrize(
+    "finish", sorted(set(FINISHES) - set(_inked_in_more_than_one_colour()))
+)
+def test_a_one_ink_finish_prints_no_colour_by_definition(finish):
+    """0.0 is the truth here rather than a special case: every mark a one-ink
+    finish makes is its only ink. Asserted so that a change to the measure
+    cannot start reporting a fraction of a mono plate as coloured."""
+    printed = chromatic_fraction(
+        apply_finish(_flat_in_hues(100, _A_SMALL_PLATE), finish), finish
+    )
+    assert printed == 0.0, f"{finish} has one ink but printed {printed:.3f} off it"
+
+
+def test_a_mixed_dotty_draws_plain_dotty_when_there_is_no_hue_to_sort():
+    """The design claim, stated as a test rather than left in a docstring.
+
+    `dotty-mixed` partitions the field `dotty` draws — it does not add to it,
+    thin it, or lay anything over it — so on a frame with no hue to sort, every
+    cell takes the key and the two plates are the same plate. Byte for byte,
+    not nearly.
+
+    This is what `dotty-sprinkles` failed. It knocked the key out where a
+    colour landed (`dots & ~disc`), so its greyscale plate was `dotty` with
+    holes in it, and Charlie could see the layer that made. Nothing else in
+    this file can tell the two mechanisms apart, because both look right in
+    colour — the difference only shows where the colour goes away.
+    """
+    grey = _flat(100, _A_SMALL_PLATE)
+    plain = ink_mask(apply_finish(grey, "dotty"), "dotty")
+    for finish in ("dotty-mixed", "dotty-confetti"):
+        mixed = ink_mask(apply_finish(grey, finish), finish)
+        moved = float((plain ^ mixed).mean())
+        assert moved == 0.0, (
+            f"{finish} drew {moved:.4f} of the frame differently from `dotty` "
+            f"on a frame with no hue in it — it is not partitioning dotty's "
+            f"field, it is drawing a different one"
+        )
+    assert plain.mean() > 0.05, "the fixture is blank; the comparison above is vacuous"

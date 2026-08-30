@@ -57,6 +57,7 @@ from .analysis.exposure import (
 from .analysis.hatching import (
     FINISHES,
     apply_finish,
+    chromatic_fraction,
     ink_fraction,
     validate_finish,
 )
@@ -2507,6 +2508,80 @@ def _snapshot_pixels(
     return pixels, millimetres
 
 
+def _supersample(finish: str | None, width: int, millimetres: float, dpi: int) -> int:
+    """How many times over this finish's capture is taken, refusing the size it
+    would not survive.
+
+    Some finishes want the capture larger than the file they produce. The
+    finish engine is one bit — `marks` returns booleans, `apply_finish` paints
+    flat ink, and `ink_mask` recovers the mask bit for bit *because* of it — so
+    an antialiased edge cannot be drawn, only averaged out of a bigger plate
+    afterwards. `_Style.supersample` says which finishes want it and why.
+
+    The ceiling is re-checked here against the size actually captured rather
+    than the size requested. `_snapshot_pixels` has already cleared the
+    requested width, and four times the pixels is four times what this process
+    must decode and hold. Left unchecked, `snapshot(width_mm=800, dpi=300)`
+    with a supersampled finish reaches `_open_snapshot` at 340 megapixels and
+    comes back as a raw `PIL.Image.DecompressionBombError` — a library
+    exception escaping a tool, which reads to a caller as protean breaking
+    rather than as a size it cannot have.
+
+    Against the same ceiling rather than a new one, deliberately: a
+    supersampled finish's worst case is then exactly the worst case that was
+    already allowed — 85 megapixels decoded, and the 9.4 GB `apply_finish`
+    holds for it, measured at 111 MB per megapixel.
+    """
+    factor = FINISHES[finish].supersample if finish is not None else 1
+    captured = width * factor
+    if factor > 1 and captured * captured > _MAX_SNAPSHOT_PIXELS:
+        allowed = math.isqrt(_MAX_SNAPSHOT_PIXELS) // factor
+        raise ViewerError(
+            f"{millimetres} mm at {dpi} dpi is {width} pixels wide, and the "
+            f"{finish!r} finish is captured {factor}x that and averaged back "
+            f"down — {captured} pixels, beyond what can be captured "
+            f"({_MAX_SNAPSHOT_PIXELS // 1_000_000} megapixels). Lower the dpi "
+            f"or the width to {allowed} pixels or less, or choose a finish "
+            f"that is not supersampled."
+        )
+    return factor
+
+
+def _printed(
+    image: PILImage.Image, finish: str, factor: int
+) -> tuple[PILImage.Image, float, float, int]:
+    """Redraw a capture as a print, and measure it *before* averaging it down.
+
+    The order is load-bearing, which is why it is one function rather than four
+    lines at the call site. Both numbers are defined against a plate, which has
+    exactly two values: `ink_fraction` counts every pixel that is not the paper
+    and `chromatic_fraction` every inked pixel that is not the key. Averaged
+    edges are neither — an edge pixel that is a third of a mark counts as a
+    whole one, and an edge between the key and a colour is a blend belonging to
+    neither. Measured on one subject at 1890 px, taking the ink fraction after
+    the downsample instead reported hedcut's 0.046 as 0.101 and cross-hatch's
+    0.052 as 0.276.
+
+    Returns the plate's width as well, taken from what came back rather than
+    from what was asked for: `crop` narrows a capture, so a reply that quoted
+    the requested width would describe a downsample that did not happen.
+    """
+    plate = apply_finish(image, finish)
+    inked = ink_fraction(plate, finish)
+    chromatic = chromatic_fraction(plate, finish)
+    width = plate.width
+    if factor > 1:
+        # Lanczos rather than a box average: it is what the plates Charlie
+        # chose from were made with, and a box average of the same plate is a
+        # visibly softer mark. Shipping the other filter would ship a picture
+        # nobody approved.
+        plate = plate.resize(
+            (plate.width // factor, plate.height // factor),
+            PILImage.Resampling.LANCZOS,
+        )
+    return plate, inked, chromatic, width
+
+
 @_tool()
 async def snapshot(
     path: str,
@@ -2535,10 +2610,49 @@ async def snapshot(
     transparent: overrides the canvas setting for this one capture.
     crop: trim to the molecule's bounds. This changes the output dimensions, so
       the reply reports the physical width the result actually corresponds to.
-    finish: redraw the capture as a print. "cross-hatch" and "hedcut" are
-      engravings — tone becomes line, the image banded by brightness and each
-      band filled with strokes, more of them where it is darker, the way an
-      engraving carries shading without any greys.
+    finish: redraw the capture as a print. capabilities() reports the live
+      list; what each one is, is below.
+
+      "linear-hatch" and "cross-hatch" are the hatching, in two treatments.
+      Both draw strokes that are level sets of a ruled plane warped by the
+      light the render already carries, so the lines bend around a form
+      instead of being ruled across it, and both swell where one form passes
+      in front of another — which is what draws the seam between two atoms.
+      "linear-hatch" keeps one direction and splits its whites in the deep
+      shadows; "cross-hatch" lays a second family across the first, into
+      lozenges that shear as they pass over a curve. The linear draws the
+      bolder mark of the two.
+
+      "hedcut" is the third and works differently on purpose: one direction,
+      the stroke thickening with the tone, and the ruled plane pushed aside by
+      the light the render already carries — so the rules bow around each form
+      instead of running straight through it. That is the stipple-portrait
+      look rather than a drawing of the surface. The bow is texture and not
+      depth cueing: unlike the hatchings it puts no more ink on a rim than
+      anywhere else, which is what keeps it reading as engraved.
+
+      "dotty" is the same idea in dots rather than rules. A jittered lattice
+      where each cell takes a disc that grows with the tone, so the shading is
+      carried by how much paper the dots have closed rather than by any line.
+      Like the hatchings it swells its marks where one form passes in front of
+      another, so the seams between atoms are drawn rather than shaded.
+
+      "dotty-mixed" and "dotty-confetti" are that one dot field, inked. Each
+      cell takes either the near-black key or one of three print colours, on
+      the same lattice at the same pitch and the same dot size — so a coloured
+      dot is not a dot laid over the grain, it is a grain dot that happens to
+      be poppy. The two differ only in how many cells go chromatic: about a
+      fifth of the drawn pixels for "dotty-mixed", about half for
+      "dotty-confetti". Colour can only be as fine as the grain, which is the
+      design rather than a limit.
+
+      **They colour by what is already on screen and claim nothing about it.**
+      Colour by conservation and the dots are the conservation ramp; by chain
+      and they are chains. On a greyscale render there is no hue to sort, every
+      cell takes the key, and the result is exactly "dotty" — so the reply
+      reports what share of the ink actually came out chromatic, because that
+      is the one number that separates "mixed" from "drew your black finish
+      and called it mixed".
 
       "spot-ink-plates" is a two-colour press: the frame is sorted into colour
       families, each family screened onto its own plate at its own angle, and
@@ -2603,6 +2717,9 @@ async def snapshot(
         except ValueError as exc:
             raise ViewerError(str(exc)) from exc
 
+    factor = _supersample(finish, width, millimetres, dpi)
+    captured = width * factor
+
     # And the same for where the file is going. `_writable` refuses a path that
     # holds something other than a figure, and it used to run *after* the
     # capture — so pointing a snapshot at a directory, or at notes.txt, cost
@@ -2623,7 +2740,7 @@ async def snapshot(
             "background. Use png or tiff, or pass transparent=False."
         )
 
-    args: dict[str, Any] = {"width": width, "crop": crop}
+    args: dict[str, Any] = {"width": captured, "crop": crop}
     if transparent is not None:
         args["transparent"] = transparent
     # A finish that separates a frame by colour cannot know what a hue was made
@@ -2637,7 +2754,12 @@ async def snapshot(
         args["recolour"] = separated_by
 
     bridge = _require_viewer()
-    timeout = _capture_timeout(width, traced=_path_tracing)
+    # The budget follows the pixels actually rendered, not the pixels asked for.
+    # The rate has about a 2x margin over a CI runner under software rendering;
+    # four times the work spends all of it, so a supersampled capture given the
+    # requested width's budget would be aborted for being the size it was told
+    # to be.
+    timeout = _capture_timeout(captured, traced=_path_tracing)
     result = await bridge.request("snapshot", args, timeout=timeout)
 
     data_uri: str = result["data_uri"]
@@ -2663,6 +2785,8 @@ async def snapshot(
             "or capture on a machine with a GPU."
         )
     inked: float | None = None
+    chromatic: float | None = None
+    plate: int | None = None
     if finish is not None:
         # Checked above too, before the render was paid for. Repeated here
         # rather than trusted, because `FINISHES` is a plain dict and the
@@ -2670,8 +2794,7 @@ async def snapshot(
         # an invariant nobody at this line can see. A raw exception escaping a
         # tool reads to a caller as protean breaking, not as a bad argument.
         try:
-            image = apply_finish(image, finish)
-            inked = ink_fraction(image, finish)
+            image, inked, chromatic, plate = _printed(image, finish, factor)
         except ValueError as exc:
             raise ViewerError(str(exc)) from exc
 
@@ -2706,6 +2829,28 @@ async def snapshot(
                 "finish": finish,
                 "finish_applied": "after the capture, in Python — the viewer "
                 "does not show this",
+                # Said outright, because the caller cannot look and nothing
+                # else in this reply implies it. `pixels` is the file, not the
+                # render: this capture cost the square of the factor in time
+                # and in memory, and the marks in this file are the only ones
+                # protean produces with soft edges. Both are things a caller
+                # deciding whether to raise the dpi needs to know before it
+                # walks into the ceiling.
+                **(
+                    {
+                        "supersampled": factor,
+                        "captured_pixels": plate,
+                        "supersample_note": (
+                            f"captured {plate} px wide and averaged down to "
+                            f"{image.width} — this finish's marks are one bit, "
+                            f"so their edges are resolved by the capture rather "
+                            f"than by the finish. The render cost "
+                            f"{factor * factor}x the pixels of the file."
+                        ),
+                    }
+                    if factor > 1
+                    else {}
+                ),
                 # Said outright: the scene was coloured for this capture and
                 # restored, so a caller who looks at the viewer afterwards and
                 # sees their own colours has not been lied to about what the
@@ -2723,6 +2868,16 @@ async def snapshot(
                 # filled rectangle with the molecule showing through as a few
                 # light strokes.
                 "ink": inked,
+                # Which plates the ink actually came off, for the finishes that
+                # have more than one. `dotty-mixed` and `dotty-confetti` sort
+                # their dots by the hue already on screen and claim nothing
+                # about it, so a greyscale render gives them nothing to sort:
+                # every cell takes the key and they draw exactly `dotty`, down
+                # to the byte. That is a success, a file and a sensible ink
+                # fraction describing a picture with no colour in it, which is
+                # this codebase's signature failure and the reason for the one
+                # number that can see it.
+                **({"chromatic": chromatic} if len(FINISHES[finish].inks) > 1 else {}),
             }
             if finish is not None
             else {}
@@ -3981,8 +4136,10 @@ async def lens(
         args["fog"] = float(fog)
     if not args:
         raise ViewerError(
-            "Nothing to change. Pass projection, fog, or both — `lens()` with "
-            "no arguments would be a question, and `capabilities()` answers it."
+            "Nothing to change. Pass projection — "
+            f"{' or '.join(_PROJECTIONS)} — or fog, 0 to turn it off and 1 to "
+            f"{_MAX_FOG:g} for how heavily the distance fades, or both. "
+            "`capabilities()` reports the projections too."
         )
     return await _call("lens", args)
 
@@ -4189,16 +4346,36 @@ async def measure(kind: str, names: list[str]) -> dict[str, Any]:
 
 @_tool()
 async def capabilities() -> dict[str, Any]:
-    """List the representation and colour-theme names this viewer accepts.
+    """List every value a display tool will accept, off the running viewer.
 
-    Read from Mol*'s live registries, so the list matches the bundled version
-    rather than a hardcoded guess.
+    Representations, colour themes and size themes are read from Mol\\*'s live
+    registries, so they match the bundled version rather than a hardcoded
+    guess. The named sets protean composes — lighting rigs, shading styles,
+    background gradients, material finishes, path-trace qualities, camera
+    projections — come from the one list the matching tool checks against, so
+    what is reported and what is accepted cannot drift apart.
+
+    `projections` is here because it was the thing `lens()` told callers to
+    look up and the one key this reply did not carry. Fog is not a list and so
+    is not one of these; its range is in `lens()`'s own signature.
+
+    `finishes` is the **print** finishes `snapshot()` accepts — a redrawing of
+    the whole capture in ink — and not the `material()` gloss of the same name
+    a few words above. Two different things called a finish, and the reply
+    keys them apart: `material_finishes` for the surface, `finishes` for the
+    press.
     """
     reported = await _call("capabilities", {})
     # Presets are composed here rather than in the viewer, so the viewer cannot
     # report them. They belong in the same answer as everything else a caller
     # can choose from.
     reported["presets"] = sorted(_PRESETS)
+    # And the print finishes, for exactly the same reason: they are applied to
+    # the capture in Python and the viewer has never heard of them. Until now
+    # the only ways to learn the list were to read `snapshot()`'s docstring or
+    # to guess a name and read the error — which is discovery by exception,
+    # for a caller that cannot see the file it is asking for.
+    reported["finishes"] = sorted(FINISHES)
     # Whether a movie can actually be written, rather than finding out at
     # the end of a long capture.
     reported["ffmpeg"] = _ffmpeg_binary() is not None

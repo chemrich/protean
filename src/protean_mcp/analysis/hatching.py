@@ -69,6 +69,22 @@ _RANK_SAMPLES = 400_000
 # nothing to sort, and everything goes to the key plate.
 _A_SEPARATION = 2
 
+# `hedcut`'s stroke interval, as a fraction of the longest side: 5 px on a
+# 1890 px plate, against the 17 it drew at before.
+#
+# "Hedcut is also way too coarse" was half of one observation, and this is the
+# half of the answer that is only about size — the mechanism is the style and
+# is kept. Chosen by looking at 17 / 8 / 6 / 5 at plate size: 17 is bars, 8 is
+# bold but readable, 6 keeps the width modulation visible, and 5 gives the
+# smoothest gradation while the stroke is still plainly a stroke. Below it the
+# swelling that carries the tone has too little room, since the lightest band's
+# width is the interval over `bands`.
+#
+# It also leaves the three hatching finishes at three distinct marks — 6 px for
+# `linear-hatch`, 5 here, 4 for `cross-hatch` — so the choice between them is a
+# choice of texture and not only of mechanism.
+_HEDCUT_SPACING = 1 / 378
+
 
 @dataclass(frozen=True)
 class _Frame:
@@ -157,6 +173,36 @@ class _Style:
     for the capture and put the scene back afterwards.
 
     `None` for a finish that reads only tone, which is most of them.
+    """
+
+    supersample: int = 1
+    """How many times over this finish wants its capture taken, before it is
+    averaged back down to the size that was asked for.
+
+    A plate has exactly two grey levels. `marks` returns booleans and
+    `apply_finish` paints flat ink, and `ink_mask` recovers the mask bit for
+    bit *because* of it — so an antialiased edge is not something this engine
+    can draw. It can only be averaged out of a bigger plate afterwards. The
+    stroke interval is a fraction of the frame, so a capture N times as wide
+    puts the marks at N times the pixels and averaging back down returns them
+    to the size they were chosen at with their edges resolved.
+
+    Declared here rather than applied here, the same way `needs_colour` is:
+    this is a fact about the finish, and `snapshot()` is the one place that
+    decides how big a capture is. Nothing in `apply_finish` changes, so nothing
+    the suite asserts about a plate's two values changes either.
+
+    1 for every finish that does not need it, and that is not a default nobody
+    looked at. A fixed-angle rule stays off the axes the renderer's own
+    antialiasing favours and does not show a staircase; a bowed rule sweeps
+    through every angle, including the bad ones, everywhere on the plate.
+    `spot-ink-plates` must stay at 1 for a stronger reason: its plate
+    boundaries are a **category**, not a shade, and averaging across one
+    invents intermediate inks that its own `palette()` disowns.
+
+    The cost is the square: 2 is four times the pixels, four times the render
+    and four times the memory `apply_finish` holds. `snapshot()` re-checks the
+    scaled size against the capture ceiling for that reason.
     """
 
     @property
@@ -248,6 +294,30 @@ class _Engraving(_Style):
     rather than as sketched.
     """
 
+    spacing: float | None = None
+    """Interval between strokes as a fraction of the longest side, or `None`
+    to take `apply_finish`'s.
+
+    Added because `apply_finish`'s `max(4.0, longest / 110)` is 17 px on a
+    1890 px plate and 34 at 600 dpi, against a 40 px atom — and because **no
+    test could see that**. Every guard in `tests/test_hatching.py` runs at 240
+    or 480 px, where that expression clamps to its own 4 px floor, so the suite
+    had only ever drawn this finish at its finest while the product shipped it
+    at its coarsest. Stated as strokes per feature: the suite's `_dome` is a
+    173 px sphere at a 4 px interval, 43 to 1; a real capture is a 40 px atom
+    at 17 px, 2.35 to 1.
+
+    Declaring it here rather than changing that expression keeps every caller's
+    explicit `spacing=` working and leaves any finish that does not declare one
+    exactly as it was.
+    """
+
+    def _step(self, frame: _Frame) -> float:
+        """This finish's interval in pixels: its own, or the frame's."""
+        if self.spacing is None:
+            return frame.gap
+        return max(4.0, frame.longest * self.spacing)
+
     def marks(self, frame: _Frame) -> np.ndarray:
         # Band 0 is the lightest and takes no ink at all; the darkest band is
         # solid. Everything between is the number of strokes it earns.
@@ -260,20 +330,362 @@ class _Engraving(_Style):
             here = band == level
             if not here.any():
                 continue
+            step = self._step(frame)
             if self.cumulative:
                 # Each darker band adds another direction across the last.
                 for angle in self.angles[: min(level, len(self.angles))]:
                     marks |= here & _strokes(
-                        frame.shape, angle, frame.gap, max(1.0, frame.gap * 0.30)
+                        frame.shape, angle, step, max(1.0, step * 0.30)
                     )
                 if level >= self.bands:
                     marks |= here  # solid, past what crossing can carry
             else:
                 # One direction throughout, the stroke swelling with the tone —
                 # at the last band it closes up into solid ink on its own.
-                width = frame.gap * (level / self.bands)
-                marks |= here & _strokes(frame.shape, self.angles[0], frame.gap, width)
+                width = step * (level / self.bands)
+                marks |= here & _strokes(frame.shape, self.angles[0], step, width)
         return marks
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Lozenge(_Style):
+    """Tone becomes coverage; the form becomes the path the strokes take.
+
+    `cross-hatch` and `hedcut` ruled strokes at a fixed angle regardless of
+    what was underneath, which is why neither read as having depth. Measured:
+    their ink landed on the form's edges no more often than anywhere else, and
+    **making them finer did not touch that** — swept from a 17 px interval down
+    to 2, the rim-landing never left chance. Coarseness was a number;
+    form-blindness was a mechanism, and this is the mechanism.
+
+    Marks are level sets of a ruled plane warped by the recovered light:
+
+        phase = (x cos a + y sin a) / step  +  relief * shade
+
+    The first term is the **carrier**, exactly the ruled plane `_strokes`
+    draws. The second is the **warp**: the lighting alone, with each element's
+    own unshaded colour divided out by `_shade`. Where the frame is flat the
+    warp is constant and the level sets are straight rules; where a sphere
+    sits, the lines are pushed aside by it, the way ruled lines on a rubber
+    sheet bow when a ball is pushed through from behind.
+
+    Three things then make it a *hatch* rather than a contour survey:
+
+    - **constant duty, not constant width.** `_Survey` divides the residual by
+      the local slope to hold one pixel width, which is right for a contour and
+      wrong for a hatch: the warp changes the local interval, so a
+      constant-width stroke changes its *coverage* wherever lines bunch, and
+      that coverage error is an atom-sized low-frequency stain. Testing
+      `|phase - rint(phase)| < 0.5 * c` instead puts a fraction `c` of every
+      interval under ink whatever the interval became. It is also the craft
+      rule — where the interval narrows the engraver thins the line, so the
+      tone stays where it was put.
+    - **the burr.** Extra coverage where the recovered lighting turns over: the
+      engraver leaning on the burin where one form passes in front of another.
+      At these intervals the swell closes adjacent strokes into a solid line
+      along the rim, so it *draws* the contour rather than merely darkening
+      near it. See `burr`.
+    - **the second cut.** Past `hold` the tone is carried by a second family:
+      half an interval over at the same angle in the linear treatment, and
+      across at a second angle in the crossed one. That single difference is
+      what separates the two finishes' shadows; their lights are separated by
+      the carrier angle.
+
+    What is *not* needed, and is why this is a smaller object than `_Survey`:
+    no grain, because a plane always climbs and so the carrier draws on a flat
+    tone by itself; no `flattest` guard, because `|grad phase|` is never zero;
+    no dome transform and so no `brightest` clamp, because `d(elevation)/
+    d(shade)` diverges at a highlight and `shade` used directly does not.
+
+    On a flat grey `_shade` finds no saturation to divide out and hands back
+    the value, so `turn` is zero, the burr is off, and what prints is a plain
+    ruling whose duty cycle is exactly the tone. That is the answer to the
+    suite's ramp, and it costs nothing.
+
+    One class, two rows in `FINISHES`, the way `cross-hatch` and `hedcut` are
+    one `_Engraving` twice. Like `_Survey`'s `pitch` and `line`, `spacing` is
+    read off the frame's own size rather than out of `frame.gap` — so, as with
+    `cyanotype` and `engraving`, an explicit `spacing=` from a caller does not
+    reach this finish.
+
+    Every number below was measured on two plate-size captures of 1UBQ, a
+    spacefill and a cartoon, 1890x956, where an atom is about 40 px across.
+    Where a number reads "spacefill / cartoon", that is the pair.
+    """
+
+    spacing: float
+    """Interval between strokes, as a fraction of the **longest side**.
+
+    Against `hedcut`'s `max(4.0, longest / 110)`, which is 17 px on a 1890 px
+    plate: at 17 px a 40 px atom gets two or three lines and disappears into a
+    grid. A sweep at 17 / 12 / 8 / 6 / 4 / 3 / 2 px found tone still grading
+    smoothly at 4 and the lattice beating against the pixel grid at 2, where
+    ink jumped from 0.42 to 0.64 of the subject with no change in tone at all.
+
+    The longest side rather than the diagonal because `_Frame`'s own docstring
+    says so: a stroke field runs one way, and it is the grain lattices that
+    want the diagonal.
+
+    Declared per row rather than defaulted, because the two treatments do not
+    want the same interval and the difference is the point — see `FINISHES`.
+    """
+
+    least: float = 3.0
+    """The interval never falls below this many pixels.
+
+    The analogue of `_grain`'s `max(2.0, ...)`, one pixel higher because a dot
+    can be 2 px and still be a dot while a stroke whose width has to grade
+    inside a 2 px interval cannot be a line. It binds below a 1410 px capture.
+    """
+
+    angle: float = 58.0
+    """Carrier direction in degrees.
+
+    Off both axes, so the rules never lie along a pixel row or column, and off
+    the 45 degrees the render's own antialiasing favours.
+
+    **Not chosen to maximise any rim statistic**, and the sweep is the reason.
+    Over ten carrier angles the correlation between mark direction and the
+    recovered shade's gradient runs monotonically from +0.212 at 12 degrees to
+    -0.181 at 82. A monotone trend means it is a fact about where these two
+    cameras put the light rather than about the finish: a fixed carrier cannot
+    know which way the form runs, and rotating the scene would rotate the
+    table. Chasing it would be fitting two frames.
+
+    What is left as a real constraint is the pixel grid, the AA diagonal, and
+    that the two treatments must not draw the same picture. A shallow carrier
+    would also stair-step badly, since a 12 degree line at a 4 px interval
+    steps every five pixels.
+    """
+
+    cross: float | None = None
+    """The second family's angle, or `None` for the linear treatment.
+
+    The whole difference between the two finishes past `hold`, in the way
+    `cumulative` is the whole difference between `cross-hatch` and `hedcut`.
+    """
+
+    relief: float = 2.5
+    """Cycles of sideways deflection per unit of recovered shade — the bow.
+
+    **No aggregate measure over the frame can see this**, and that has to be
+    said where the parameter is. At relief 0.0 / 2.5 / 3.5 the ink fraction
+    reads 0.496 / 0.497 / 0.496 and the rim-landing 0.219 / 0.218 / 0.222.
+    A relief-0 mutant scores every scalar the shipped value does and is exactly
+    the "screen laid over a silhouette" this finish exists to stop being: a
+    flat ruling with dark blobs where atoms meet, against strokes that bend
+    over each dome.
+
+    What does see it is a differential — this finish against itself with
+    `relief` set to 0 — which is the idiom `test_shuffle_differential.py`
+    already uses, and which `tests/test_hatching.py` now carries. The warp
+    moves **0.42 / 0.32** of the subject. See [[guards-that-cannot-see]] in
+    spirit: a scalar over a whole frame cannot see a local geometric property.
+
+    Bounded above by a measurement artefact rather than by taste, and that is
+    the honest description. As the bow grows the carrier's spectral peak
+    spreads until a dominant-period measure jumps from the mark to the
+    atom-scale envelope: on the cartoon, relief 2.5 reads 4.03 px, 3.0 reads
+    4.03, and **3.5 reads 54.19**. 3.5 is arguably the better picture and
+    reports a number that fails. 2.5 is chosen for the margin.
+
+    Bend and interval spread are the same quantity, so a stronger bow is not
+    available from a scalar warp: the local interval's 5th-to-95th percentile
+    is 4.02-4.02 px at relief 0, 3.42-4.71 at 2.5 and 3.22-5.05 at 3.5, against
+    a nominal 4.02. Wanting more means a relaxed stripe field, which is not a
+    gradient and costs far more.
+    """
+
+    smooth: float = 1 / 380
+    """Blur on the shade before it warps the carrier, as a fraction of the
+    diagonal.
+
+    **This is the burr's detector bandwidth, not a softness dial**, which is
+    the thing to know before touching it. `turn` reads `|grad shade|`, and
+    blurring is exactly what takes a rim gradient away. Measured, rim-landing
+    on the spacefill at burr 0.6: 1/380 gives 0.218, 1/300 gives 0.109, 1/250
+    gives 0.064, 1/200 gives 0.021. Two steps softer and the finish is back at
+    chance.
+
+    The value is quantised more coarsely than it looks: `_blur` rounds its
+    radius, so at plate size 1/440 and 1/380 are the *same* five-pixel blur and
+    only 1/500 differs.
+    """
+
+    tone_curve: float = 2.4
+    """Darkness is raised to this power to become coverage.
+
+    Steeper than the module's `_TONE_CURVE` of 1.7, which was tuned for a
+    *banded* engraving whose lightest inked band already lays a whole stroke.
+    Mean ink over the subject, before the burr (spacefill / cartoon):
+
+        2.0  0.561/0.470    2.2  0.528/0.435
+        2.4  0.496/0.405    2.6  0.466/0.377
+
+    At 2.0 the spacefill comes back with more ink than paper and reads as a
+    dark mass with light seams; at 2.4 it sits beside `engraving` (0.542)
+    rather than past it, and the domes keep a lit side.
+    """
+
+    weight: float = 1.04
+    """Darkness is scaled by this before the curve, so black closes solid.
+
+    Without it a tone of 0 reaches coverage 1.0 only in the limit and the
+    suite's darkest-tone assertion rests on rounding. 1.04 puts everything
+    darker than a value of 10 at full width, which is where `hedcut`'s last
+    band is.
+    """
+
+    hold: float = 0.55
+    """Coverage at which the second cut opens.
+
+    For the linear treatment that is the interline; for the crossed one it is
+    the second angle.
+
+    **It deliberately does not carry the suite.** An earlier version gave both
+    treatments the same carrier angle, which made them bit-identical below
+    `hold`: on a real capture they then disagreed on 0.127 / 0.064 of the
+    subject, against 0.466 / 0.426 for the old `cross-hatch` against `hedcut`.
+    Two finishes that draw nearly the same picture are not two treatments, and
+    the whole of their suite separation was riding on one fixture tone. With
+    their own carrier angles they disagree on 0.433 / 0.401 as the pair ships,
+    and on the suite's fixture at 0.488 / 0.444 / 0.272 for tones 60 / 100 /
+    140 — which is `2c(1-c)` exactly, the most two patterns of equal density
+    can differ. `hold` is therefore free to be chosen for the picture.
+
+    0.55 for the linear: at 0.5 the stroke and the gap are equal, which is the
+    widest a line can be and still read as a line, and a shade past that is
+    where an engraver puts the second cut in rather than fattening the first.
+    At `tone_curve` 2.4 that coverage is reached at a value of about 64/255, so
+    the interline appears only in the deep shadows. Looked at as well as
+    reasoned: at 0.40 the interline is open across the mid-tones and the mark
+    goes speckly at 4x; at 0.55 the strokes stay continuous swelling lines.
+    The crossed row holds at 0.45, which asks the same craft question of a
+    different mark — see `FINISHES`.
+    """
+
+    burr: float = 0.75
+    """Extra coverage where the surface turns away, in units of the target.
+
+    A burin throws a burr at a form's edge and the engraver leans on the tool
+    there. **This is the entire rim-landing mechanism**, and the assumption
+    that a tone-driven width would find the rims by itself is false: mean
+    darkness over the steepest decile against the whole subject is 0.625
+    against 0.622 on the spacefill. The rim is not darker than the subject — it
+    is only steeper.
+
+    Measured (rim-landing spacefill / cartoon, then tone fidelity spacefill):
+
+        0.0   0.017/0.036  0.960      0.6   0.218/0.230  0.941
+        0.3   0.123/0.138  0.953      0.75  0.259/0.267  0.936
+        0.9   0.290/0.291  0.931      1.2   0.338/0.323  0.923
+
+    Monotone in the first and monotone the other way in the second, so this is
+    a taste choice inside a measured range, and the crop settles it: at 0.0 the
+    atoms barely separate; at 0.9 and past it every sphere carries a drawn
+    outline and the picture reads as outline-and-fill rather than as engraving.
+    0.75 draws the seam where two atoms meet without the seam becoming a
+    cartoon edge.
+    """
+
+    turn_lo: float = 20.0
+    turn_hi: float = 28.0
+    """`|grad shade| * diagonal` between which the burr ramps in.
+
+    Dimensionless per-diagonal, which is what makes it scale-invariant: render
+    the same scene twice as large and the per-pixel gradient halves while the
+    diagonal doubles, so the swell lands in the same places.
+
+    Placed on the measured distribution rather than guessed. Over subject
+    pixels at this blur:
+
+        percentile     p50    p75    p90    p99
+        spacefill      15.3   21.1   26.7   40.7
+        cartoon        11.1   19.4   27.9   43.1
+
+    So 20 is about the upper quartile on both plates and 28 about the top
+    decile on both: the burr is off for three quarters of the subject and full
+    on over the decile a rim measure calls the edge. Spending it more widely
+    buys nothing, because that measure is chance-corrected.
+    """
+
+    achromatic: float = 0.12
+    """Below this saturation a pixel has no element colour to divide out. The
+    same value `_Survey` uses, for the same reason."""
+
+    bands: int = 8
+    """What the suite checks the finish separates, and a floor rather than a
+    count: nothing here quantises. Measured over the full 255-to-0 ramp at
+    240 px, both treatments come back with **219** distinguishable ink levels
+    against the required `bands + 1` of 9, the way `_Survey` measures in the
+    hundreds.
+    """
+
+    def _fields(self, frame: _Frame) -> tuple[np.ndarray, float, np.ndarray]:
+        """The shade, the interval, and the coverage to lay.
+
+        Split out so nothing downstream can disagree about any of them.
+        """
+        shade = _blur(_shade(frame.rgb, self.achromatic), frame.diagonal * self.smooth)
+        gradient_y, gradient_x = np.gradient(shade)
+        slope = np.hypot(gradient_x, gradient_y)
+        step = max(self.least, frame.longest * self.spacing)
+
+        target = (
+            np.clip(np.clip(1.0 - frame.luma, 0.0, 1.0) * self.weight, 0.0, 1.0)
+            ** self.tone_curve
+        )
+        turn = np.clip(
+            (slope * frame.diagonal - self.turn_lo) / (self.turn_hi - self.turn_lo),
+            0.0,
+            1.0,
+        )
+        return shade, step, np.clip(target * (1.0 + self.burr * turn), 0.0, 1.0)
+
+    def _phase(
+        self, frame: _Frame, shade: np.ndarray, step: float, degrees: float
+    ) -> np.ndarray:
+        """The warped carrier: a ruled plane pushed aside by the light."""
+        height, width = frame.shape
+        y, x = np.ogrid[0:height, 0:width]
+        radians = np.deg2rad(degrees)
+        # `np.asarray` for mypy: `ogrid` is Any, so the whole expression is.
+        return np.asarray(
+            (x * np.cos(radians) + y * np.sin(radians)) / step + self.relief * shade
+        )
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        shade, step, coverage = self._fields(frame)
+
+        # The first cut carries the tone until `hold`, then holds its width.
+        first = np.minimum(coverage, self.hold)
+        phase = self._phase(frame, shade, step, self.angle)
+        # Constant *duty*: a fraction `first` of every interval, whatever the
+        # warp did to that interval's width in pixels.
+        ink = np.abs(phase - np.rint(phase)) < 0.5 * first
+
+        if self.cross is None:
+            # The interline — a second thread half an interval over, at the
+            # same angle, warped by the same shade, opening in the gap the
+            # first leaves. The two bands are disjoint until they meet at
+            # solid, so the shares **add** and the union is exactly the
+            # coverage asked for. Halving the interval rather than turning the
+            # tool is the single-family engraver's move.
+            second = np.clip(coverage - self.hold, 0.0, 1.0)
+            between = phase + 0.5
+            ink |= np.abs(between - np.rint(between)) < 0.5 * second
+        else:
+            # A second direction, whose phase is incommensurate with the
+            # first's, so the union is 1 - (1 - first)(1 - second). Solving
+            # that for `second` makes the union exactly the coverage again — so
+            # the two treatments lay down identical density at every tone and
+            # differ only in the lay of the marks. Measured: the ink fractions
+            # agree to 0.001 on both plates.
+            second = np.clip((coverage - first) / np.maximum(1.0 - first, 1e-6), 0.0, 1.0)
+            across = self._phase(frame, shade, step, self.cross)
+            ink |= np.abs(across - np.rint(across)) < 0.5 * second
+
+        return np.asarray(ink & ~frame.is_paper)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -514,9 +926,401 @@ class _Plates(_Style):
         return covered
 
 
+@dataclass(frozen=True, kw_only=True)
+class _Bowed(_Engraving):
+    """C — the incumbent mechanism, surviving, with the form added under it.
+
+    `_Debanded` plus `_Lozenge`'s warped carrier: the ruled plane is pushed
+    aside by the recovered light, so one direction still thickens with tone but
+    the rules bow around each atom rather than running straight through it.
+
+    This is the answer that keeps the most of what ships. Its rim lift says it
+    does not answer the rim half — included because "keep the mechanism, add the
+    bow" is the reasonable first idea and it should be looked at, not argued
+    about.
+    """
+
+    relief: float = 2.5
+    smooth: float = 1 / 380
+    achromatic: float = 0.12
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        shade = _blur(_shade(frame.rgb, self.achromatic), frame.diagonal * self.smooth)
+        darkness = np.power(np.clip(1.0 - frame.luma, 0.0, 1.0), _TONE_CURVE)
+        step = self._step(frame)
+        height, width = frame.shape
+        y, x = np.ogrid[0:height, 0:width]
+        radians = np.deg2rad(self.angles[0])
+        phase = np.asarray(
+            (x * np.cos(radians) + y * np.sin(radians)) / step + self.relief * shade
+        )
+        residual = np.abs(phase - np.rint(phase))
+        return np.asarray((residual < 0.5 * darkness) & ~frame.is_paper)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Stipple(_Style):
+    """`dotty` — a dot field, with the parameters a dot field actually has.
+
+    Split out of `_AllDots` rather than kept as one. That was hedcut's
+    overshoot: a `_Lozenge` with its burin branch switched off, so it carried
+    an `angle`, a `cross`, a `hold`, a `relief` and a `split_lo`/`split_hi`
+    ramp it never read, and took its dot pitch from `cross-hatch`'s 1/470 by
+    inheritance rather than by choice. A finish whose defaults arrived by
+    accident is a finish nobody can tune.
+
+    What a stipple has instead:
+
+    `pitch` is the lattice interval, the only size in the finish. `jitter` is
+    how far a dot may wander from its cell — 0 is a mechanical halftone screen,
+    0.5 is a dot that can reach its neighbour's seat, and the point of a hedcut
+    dot field is that it is hand-placed rather than screened.
+
+    `dot` is the radius at the lightest inked tone as a fraction of the pitch,
+    and `growth` is how much it swells toward black. Both, because a stipple
+    carries tone two ways at once — bigger dots and more of them — and a field
+    that only has density cannot reach solid: measured, one caps at 0.283
+    coverage at black and fails the suite's bar.
+
+    The burr stays. It is what puts ink on the rim of an atom rather than
+    spreading it evenly, and it is the reason a dot field reads as modelling a
+    form rather than as a grey wash.
+    """
+
+    pitch: float = 1 / 470
+    """Lattice interval as a fraction of the frame diagonal — 2.9 px on an
+    1890 px plate.
+
+    A fine grain rather than countable dots, which is Charlie's call: shown
+    1/280, where a dot is round and plainly a dot, they said *"too coarse"*.
+    So the pitch stays where it was and the fineness is now a decision rather
+    than an inheritance from `cross-hatch`.
+
+    **No test can see this.** `_step` clamps to a 2 px floor, and every guard
+    in `tests/test_hatching.py` runs at 240 or 480 px where 1/470 and 1/220
+    both clamp to the same 2 px — so all four pitches I swept scored byte
+    identical bars. The same trap `_Engraving.spacing` documents. The numbers
+    below were taken at 700 and 1200 px instead.
+    """
+
+    jitter: float = 0.30
+    """How far a dot may wander from its cell, in cells.
+
+    0 is a mechanical halftone screen; 0.5 lets a dot reach its neighbour's
+    seat. It costs almost nothing in tone — measured, ink over the drawn region
+    moves 0.508 to 0.517 across the whole range — so it is a choice about
+    character rather than density, and 0.30 is a hand that is placing dots
+    rather than a machine ruling them.
+    """
+
+    dot: float = 0.40
+    """Dot radius at the lightest inked tone, as a fraction of the pitch.
+
+    0.40 rather than the 0.34 inherited from the overshoot, because **0.34
+    cannot close.** A stipple has to reach solid at black or it fails the
+    suite's `coverage[-1] > 0.9` bar, and a circle needs a radius near 0.71 of
+    its cell to cover the corners.
+
+    This is a fraction of the pitch, so it is **independent of the pitch** —
+    which is what lets the grain stay fine while the darks still close. That
+    was not obvious: the first attempt coarsened the pitch to fix closure and
+    changed the one thing that did not need changing. Measured at 1200 px with
+    the pitch held at 1/470:
+
+        0.34  black 0.792   fails
+        0.38        0.891   fails
+        0.40        0.928   closes, and is the least that does
+        0.44        0.974
+
+    `growth` cannot substitute: the swell is clipped at 1.6, so 0.34 tops out
+    at 0.792 whatever growth is set to.
+    """
+
+    growth: float = 1.1
+    """How much the dot swells from the lightest inked tone toward black.
+
+    A stipple carries tone two ways at once, more dots and bigger ones. Density
+    alone caps at 0.283 coverage at black — the reason the pure-density variant
+    was dropped before it was ever plated.
+    """
+    lattice_angle: float = 33.0
+    burr: float = 0.75
+    turn_lo: float = 20.0
+    turn_hi: float = 28.0
+    smooth: float = 1 / 380
+    achromatic: float = 0.12
+    tone_curve: float = 2.4
+    weight: float = 1.04
+    bands: int = 8
+
+    def _chroma(self, frame: _Frame) -> np.ndarray:
+        """Whether a pixel has a hue at all.
+
+        Computed here rather than read off `_families`, because `_families`
+        sends an achromatic pixel to family 0 — which is the key plate in
+        `_Plates` and is a *colour* here, so the two cases have to be told
+        apart or every grey pixel would print in the first ink.
+        """
+        unit = frame.rgb / 255.0
+        value = unit.max(axis=2)
+        low = unit.min(axis=2)
+        saturation = np.where(value > 0.0, (value - low) / np.maximum(value, 1e-6), 0.0)
+        return np.asarray(saturation >= self.achromatic)
+
+    def _coverage(self, frame: _Frame) -> np.ndarray:
+        """How much ink this tone asks for, with the burr applied.
+
+        Split out of `marks` so the colour variants can lay their own plates
+        against the *same* field. They must: the whole design is that black
+        carries the form and colour carries the hue, and that only holds if the
+        black is bit-for-bit the field `dotty` already draws rather than a
+        second implementation that agrees by inspection.
+        """
+        shade = _blur(_shade(frame.rgb, self.achromatic), frame.diagonal * self.smooth)
+        gradient_y, gradient_x = np.gradient(shade)
+        slope = np.hypot(gradient_x, gradient_y) * frame.diagonal
+        turn = np.clip((slope - self.turn_lo) / (self.turn_hi - self.turn_lo), 0.0, 1.0)
+        return np.asarray(
+            np.clip(
+                np.clip(1.0 - frame.luma, 0.0, 1.0) ** self.tone_curve
+                * self.weight
+                * (1.0 + self.burr * turn),
+                0.0,
+                1.0,
+            )
+        )
+
+    def _dots(self, frame: _Frame, coverage: np.ndarray) -> np.ndarray:
+        """One jittered dot lattice, lit and sized by `coverage`.
+
+        Split out of `marks` alongside `_coverage`, for the same reason: the
+        colour variants lay several of these — one per ink — and a second
+        implementation of a dot lattice would drift from this one silently.
+        """
+        height, width = frame.shape
+        pitch = max(2.0, frame.diagonal * self.pitch)
+        radians = np.deg2rad(self.lattice_angle)
+        y, x = np.ogrid[0:height, 0:width]
+        u = (x * np.cos(radians) + y * np.sin(radians)) / pitch
+        v = (-x * np.sin(radians) + y * np.cos(radians)) / pitch
+        cell_u = np.floor(u).astype(np.int64)
+        cell_v = np.floor(v).astype(np.int64)
+
+        dots = np.zeros((height, width), dtype=bool)
+        # Three by three, so a dot jittered out of a neighbouring cell still
+        # lands here. At jitter 0.5 a dot reaches the next seat exactly, so one
+        # ring is enough and two would only cost time.
+        for du in (-1, 0, 1):
+            for dv in (-1, 0, 1):
+                au, av = cell_u + du, cell_v + dv
+                ju = au + 0.5 + (_hash01(au, av, 1) - 0.5) * 2 * self.jitter
+                jv = av + 0.5 + (_hash01(au, av, 2) - 0.5) * 2 * self.jitter
+                radius = self.dot * np.clip(0.6 + self.growth * coverage, 0.0, 1.6)
+                dots |= (np.hypot(u - ju, v - jv) < radius) & (
+                    _hash01(au, av, 3) < np.sqrt(coverage)
+                )
+        return dots
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        return np.asarray(self._dots(frame, self._coverage(frame)) & ~frame.is_paper)
+
+
+_KEY = (26, 22, 34)
+
+#: Poppy, marigold, cornflower. Bright enough to read as a dot on white at
+#: seven pixels, which a process yellow is not: (252, 222, 26) sits 0.18 of
+#: luma from the paper and vanishes. These sit 0.477, 0.325 and 0.520 away.
+#: Marigold is the weakest and is the one to watch.
+#:
+#: Which family wears which is decided by hue prevalence rather than by
+#: chemistry, so all three have to work as the dominant colour.
+_POPPY = (230, 87, 118)
+_MARIGOLD = (238, 165, 36)
+_CORNFLOWER = (58, 140, 200)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _Intermixed(_Stipple):
+    """Colour in the same dot field as the black, not on a layer above it.
+
+    Charlie, on `dotty-sprinkles`: *"they look like they're on top of the
+    protein, and I'd like them to appear intermixed with the black dots."*
+
+    That is a symptom, and two mechanisms were producing it.
+
+    **The sprinkle lattice was four times coarser** — 1/120 against the key's
+    1/470 — so a coloured dot was four times the diameter of a grain dot, and a
+    bigger mark reads as a nearer one. **And the sprinkles knocked out of the
+    key**: `dots & ~disc` removed the black wherever a colour landed, which is
+    exactly what something lying on top of something else does.
+
+    So this does not overlay a second field. It **inks the one field**: the
+    same lattice, the same pitch, the same jitter, the same dot size that
+    `dotty` draws — and each cell takes either the key or one of the colours.
+    A coloured dot is not a dot placed over the grain, it is a grain dot that
+    happens to be poppy. Nothing is knocked out because nothing overlaps: the
+    plates *partition* one mask rather than competing for it.
+
+    A consequence worth stating, because it is the design and not a
+    limitation: colour can only be as fine as the grain. There is no way to
+    make a sprinkle bigger than a black dot here without reintroducing the
+    layer Charlie is objecting to.
+    """
+
+    inks: tuple[tuple[int, int, int], ...] = (_KEY, _POPPY, _MARIGOLD, _CORNFLOWER)
+    """Key first, then the colours. The key is a blue-black rather than black
+    for the reason `_Sprinkles` records: `_multiply` collapses every crossing a
+    pure black takes part in, and `palette()` then holds nine colours where the
+    suite asserts sixteen. It applies here even though these plates never
+    actually cross, because `palette()` enumerates the combinations rather than
+    observing them."""
+
+    rate: float = 0.42
+    """Share of chromatic cells that take a colour rather than the key.
+
+    Sits above the fraction of the *plate* that ends up coloured, because a
+    cell only becomes a candidate where there is hue to carry. Tuned to land
+    near the 21.7% chromatic share of the plate Charlie liked, so the change
+    is about where the colour sits rather than how much of it there is.
+    """
+
+    lift: float = 0.12
+    """Coverage below which a cell keeps the key.
+
+    Colour is held off the lights. A bright dot alone on near-paper reads as a
+    speck of dirt rather than as modelling, and the same reasoning kept the
+    old sprinkles off the highlights.
+    """
+
+    def _inked(
+        self, frame: _Frame, coverage: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The dot field, and which ink each pixel's cell takes.
+
+        The lattice arithmetic is `_Stipple._dots`' exactly — same pitch, angle,
+        jitter, radius and lighting test — with a second array carried
+        alongside saying which plate the cell belongs to. It is duplicated
+        rather than shared because `_dots` returns a union and this needs the
+        cell identity that the union throws away; if the two ever disagree the
+        colour would drift off the grain, which is the whole thing being fixed.
+        """
+        colours = len(self.inks) - 1
+        family = _families(frame.rgb, colours, self.achromatic)
+        chroma = self._chroma(frame)
+        seat = np.clip(coverage / self.lift, 0.0, 1.0) * self.rate
+
+        height, width = frame.shape
+        pitch = max(2.0, frame.diagonal * self.pitch)
+        radians = np.deg2rad(self.lattice_angle)
+        y, x = np.ogrid[0:height, 0:width]
+        u = (x * np.cos(radians) + y * np.sin(radians)) / pitch
+        v = (-x * np.sin(radians) + y * np.cos(radians)) / pitch
+        cell_u = np.floor(u).astype(np.int64)
+        cell_v = np.floor(v).astype(np.int64)
+
+        dots = np.zeros((height, width), dtype=bool)
+        which = np.zeros((height, width), dtype=np.int64)
+        for du in (-1, 0, 1):
+            for dv in (-1, 0, 1):
+                au, av = cell_u + du, cell_v + dv
+                ju = au + 0.5 + (_hash01(au, av, 1) - 0.5) * 2 * self.jitter
+                jv = av + 0.5 + (_hash01(au, av, 2) - 0.5) * 2 * self.jitter
+                radius = self.dot * np.clip(0.6 + self.growth * coverage, 0.0, 1.6)
+                here = (np.hypot(u - ju, v - jv) < radius) & (
+                    _hash01(au, av, 3) < np.sqrt(coverage)
+                )
+                # A cell goes chromatic on its own hash, so the choice is
+                # stable per dot rather than flickering within one.
+                takes = here & chroma & (_hash01(au, av, 21) < seat)
+                which = np.where(takes & ~dots, family + 1, which)
+                dots |= here
+        return dots, which
+
+    def plates(self, frame: _Frame) -> tuple[np.ndarray, ...]:
+        coverage = self._coverage(frame)
+        dots, which = self._inked(frame, coverage)
+        dots &= ~frame.is_paper
+        # A partition, not an overlay: every drawn pixel belongs to exactly one
+        # plate, so no two ever cross and `_multiply` is never reached.
+        return tuple(dots & (which == index) for index in range(len(self.inks)))
+
+    def marks(self, frame: _Frame) -> np.ndarray:
+        covered = np.zeros(frame.shape, dtype=bool)
+        for plate in self.plates(frame):
+            covered |= plate
+        return covered
+
+
 FINISHES: dict[str, _Style] = {
-    "cross-hatch": _Engraving(angles=(45.0, -45.0, 90.0), cumulative=True, bands=4),
-    "hedcut": _Engraving(angles=(75.0,), cumulative=False, bands=6),
+    # The hatching, in two treatments — which is the whole of the ask, and the
+    # reason `_Lozenge` exists. The old `cross-hatch` ruled three fixed angles
+    # over the frame regardless of what was underneath; its ink landed on the
+    # form's edges no more often than chance (+0.014, against `engraving`'s
+    # +0.202) and drawing it finer never moved that. It is replaced rather than
+    # kept beside its successor, because two finishes under one idea is a menu
+    # that makes the reader choose between a good one and a bad one.
+    #
+    # The two intervals are not the same and the difference is deliberate: one
+    # direction can carry a bold mark, and two crossing families at the same
+    # interval close up into tone. 6 px and 4 px on a 1890 px plate. Chosen by
+    # looking at a 6/4/3 bracket at plate size, not from print convention.
+    #
+    # Their carrier angles are 26 degrees apart and neither is 45, so the pair
+    # differs in the lights as well as in the shadows. Measured, they disagree
+    # on 0.433 / 0.401 of a real subject — against 0.466 / 0.426 for the old
+    # `cross-hatch` against `hedcut`, which is the separation two finishes that
+    # have always been considered distinct actually have.
+    "linear-hatch": _Lozenge(angle=58.0, cross=None, hold=0.55, spacing=1 / 315),
+    "cross-hatch": _Lozenge(angle=32.0, cross=-41.0, hold=0.45, spacing=1 / 470),
+    # The four below are captured at twice the width and averaged back down.
+    # `_Style.supersample` says why an antialiased edge cannot be drawn by this
+    # engine and has to be averaged out of a bigger plate — and the reason it is
+    # these four is measured rather than assumed. A mark whose size is a
+    # fraction of the frame comes back at the same size from a bigger capture
+    # with only its edges changed: `hedcut`, `dotty` and `dotty-mixed` all read
+    # an identical ink fraction at 1x and 2x on the same subject, 2 grey levels
+    # becoming 256. `engraving` does not — it moves 0.062 to 0.041, so
+    # supersampling would change its picture and not merely resolve it, which
+    # is a separate round from this one.
+    # A hedcut rules one direction and thickens it, and that is the style
+    # rather than a defect. What it did not do was turn: the rules ran straight
+    # through every form. `_Bowed` keeps the mechanism and pushes the ruled
+    # plane aside with the light the render already carries, so the rules bow
+    # around each atom. Chosen from a bracket of five plates.
+    #
+    # It stays a *control* for the rim guard, and that is not an oversight. The
+    # bow is a texture, not a rim-landing mechanism: measured on `_spheres()`
+    # at 1890x956 the bowed finish lifts +0.0694 and the same finish with
+    # `relief` at 0 lifts +0.0714 — the warp does not move the rim at all.
+    #
+    # `bands` survives as a floor claim rather than as a count. Nothing in
+    # `_Bowed.marks` reads it; it is the number the suite requires the finish
+    # to beat in distinguishable ink levels, and a continuous duty clears six
+    # bands by drawing 245 of them.
+    "hedcut": _Bowed(
+        angles=(75.0,),
+        cumulative=False,
+        bands=6,
+        spacing=_HEDCUT_SPACING,
+        supersample=2,
+    ),
+    # The same idea in dots rather than rules. Charlie asked for the dots-only
+    # treatment as its own style rather than as a hedcut variant, and named it.
+    "dotty": _Stipple(supersample=2),
+    # `dotty`'s one dot field, inked — not a second field laid over it. The two
+    # differ only in how many cells go chromatic, which is the one parameter
+    # separating them: about a fifth of the drawn pixels against about half.
+    #
+    # Neither declares `needs_colour`, deliberately. `spot-ink-plates` demands
+    # an element theme because its plates *mean* something; these claim nothing
+    # about what a hue is, so forcing one would override a colouring the caller
+    # chose on purpose in order to sprinkle three arbitrary print inks. The
+    # cost is that a greyscale render has no hue to sort and every cell takes
+    # the key, which draws exactly `dotty` — so `snapshot` reports the
+    # chromatic share, and that is what keeps the silence from passing for a
+    # result.
+    "dotty-mixed": _Intermixed(rate=0.26, supersample=2),
+    "dotty-confetti": _Intermixed(rate=0.70, supersample=2),
     # Prussian blue and the white of unexposed paper — never pure 255, because
     # a cyanotype's highlight is paper rather than light.
     "cyanotype": _Survey(bands=5, paper=(17, 48, 92), inks=((238, 245, 252),)),
@@ -926,6 +1730,36 @@ def ink_mask(engraved: Image.Image, finish: str) -> np.ndarray:
     pixels = np.asarray(_rgba(engraved))
     off_paper: np.ndarray = (pixels[:, :, :3] != paper).any(axis=2)
     return off_paper & (pixels[:, :, 3] > 0)
+
+
+def chromatic_fraction(engraved: Image.Image, finish: str) -> float:
+    """How much of the ink came off a plate other than the first.
+
+    Reported for the reason `ink_fraction` is: the caller cannot look, and the
+    failure this catches is silent. `dotty-mixed` sorts its dots by the hue
+    already in the render and claims nothing about what a hue means — which is
+    what makes it useful over any colouring, and what makes it draw **exactly**
+    `dotty` over a greyscale one. There is no hue to sort, every cell takes the
+    key, and the plate that comes back is byte-identical to the mono finish's.
+    Without this number the reply carries a path, a success and an ink fraction
+    with nothing anywhere saying the colour never arrived.
+
+    A share of the *ink*, not of the frame, so it does not move when the
+    subject grows or the tone deepens — it answers "how much of what was drawn
+    came out coloured", which is the question, rather than "how much of the
+    page is coloured", which confounds it with coverage.
+
+    0.0 for a finish with one ink is the truth rather than a special case:
+    every mark it makes is its only ink.
+    """
+    validate_finish(finish)
+    inked = ink_mask(engraved, finish)
+    if not inked.any():
+        return 0.0
+    key = np.array(FINISHES[finish].inks[0], dtype=np.uint8)
+    pixels = np.asarray(_rgba(engraved))[:, :, :3]
+    off_key: np.ndarray = (pixels != key).any(axis=2)
+    return round(float(off_key[inked].mean()), 3)
 
 
 def ink_fraction(engraved: Image.Image, finish: str) -> float:

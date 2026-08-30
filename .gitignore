@@ -18,6 +18,11 @@ wheels/
 # `viewer/node_modules/` rule. Symlinking these in is a normal thing to do when
 # working across checkouts, so the rule has to cover both shapes.
 viewer/node_modules
+# And at the root, where one has no business being. `npx vitest` run from the
+# repo root instead of `viewer/` creates `node_modules/.vite` — and also runs a
+# different, larger set of tests and reports nonsense about them, which is the
+# more expensive half of that mistake.
+node_modules
 viewer/dist
 viewer/public/molstar*
 src/protean_mcp/static

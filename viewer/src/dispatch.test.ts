@@ -341,7 +341,11 @@ function withCanvas(plugin: any) {
     transparentBackground: false,
     // Off by default, exactly as Mol* ships it; `load_structure` turns it on so
     // a later `show()` cannot take the camera. See backlog 26.
-    camera: { manualReset: false },
+    camera: { manualReset: false, mode: 'perspective' },
+    // On at 15, which is Mol*'s default and therefore what every figure
+    // protean has ever made carries. A fake that started it off would make
+    // `lens(fog=0)` look like a change when it is the baseline.
+    cameraFog: { name: 'on', params: { intensity: 15 } },
     // Mirrors a live canvas, read off one with CDP: occlusion and bloom start
     // on with full parameter groups, everything else is off and — crucially —
     // an off mapped static carries `params: {}`. That last detail is the whole
@@ -377,6 +381,10 @@ function withCanvas(plugin: any) {
       }
       // `load_structure` takes the camera off Mol*'s automatic fitting here.
       if (props.camera) Object.assign(canvasProps.camera, props.camera);
+      // Replaced rather than merged: `cameraFog` is a mapped static, so its
+      // `params` belong to the branch named beside them and merging would
+      // leave an intensity attached to `off`.
+      if (props.cameraFog) canvasProps.cameraFog = props.cameraFog;
     }),
     // Settled instantly: these tests are about props, not about timing.
     commitQueueSize: { value: 0 },
@@ -526,7 +534,37 @@ describe('createDispatcher', () => {
       // a value `brushwork()` accepts and not a look.
       painterly_looks: ['off', 'chiaroscuro', 'orchard', 'poster', 'spring'],
       brush_sizes: ['fine', 'medium', 'broad'],
+      // Perspective first rather than alphabetical: it is Mol*'s default and
+      // so the one the caller already has.
+      projections: ['perspective', 'orthographic'],
     });
+  });
+
+  // The defect this pair exists for: `lens()` checked a projection name against
+  // a literal written at the call site while `capabilities()` reported no
+  // projections at all — so the refusal's advice, "`capabilities()` answers
+  // it", named a key that did not exist. Asserting the two lists agree by
+  // *driving both* is what makes a future edit to one of them fail here rather
+  // than in a caller's hands.
+  it('accepts exactly the projections it reports', async () => {
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const reported = (await dispatch('capabilities', {})) as any;
+    expect(reported.projections.length).toBeGreaterThan(1);
+    for (const projection of reported.projections) {
+      await expect(dispatch('lens', { projection })).resolves.toMatchObject({
+        projection,
+      });
+    }
+  });
+
+  it('refuses a projection with the same list it reports', async () => {
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const reported = (await dispatch('capabilities', {})) as any;
+    await expect(dispatch('lens', { projection: 'isometric' })).rejects.toThrow(
+      `Unknown projection 'isometric'. Available: ${[...reported.projections]
+        .sort()
+        .join(', ')}`
+    );
   });
 
   it('skips validation when the registry cannot be read', async () => {
