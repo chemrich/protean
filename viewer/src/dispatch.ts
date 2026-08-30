@@ -10,6 +10,13 @@
  */
 
 import type { Handler } from './bridge';
+import {
+  BRUSH_SIZES,
+  MIN_BRUSH_PX,
+  PAINTERLY_LOOKS,
+  brushPixels,
+  resolveBrush,
+} from './painterly-looks';
 
 interface LoadStructureArgs {
   name: string;
@@ -698,8 +705,13 @@ function jitterRadius(element: number, radius: number): number {
   return radius * (0.93 + 0.14 * ((h >>> 0) / 4294967296));
 }
 
+/** The secondary-structure palettes, named here because `BUILT_IN_THEMES` needs
+ *  them before the table itself is declared. `registerPaletteThemes` asserts
+ *  the two agree, so this cannot become a second, drifting list. */
+const STRUCTURE_PALETTE_NAMES = ['pigment', 'spring', 'poster', 'orchard'] as const;
+
 /** Themes protean registers itself, which are not Mol*'s and are not fields. */
-const BUILT_IN_THEMES = new Set(['jitter', 'plddt']);
+const BUILT_IN_THEMES = new Set(['jitter', 'plddt', ...STRUCTURE_PALETTE_NAMES]);
 
 /** Registers `jitter` as an ordinary size theme, once per plugin. */
 function registerJitterSize(plugin: any): void {
@@ -866,10 +878,183 @@ function registerPlddtThemes(plugin: any): void {
   });
 }
 
+/** Secondary structure in the pigments a seventeenth-century studio had.
+ *
+ * Mol\*'s own `secondary-structure` theme is Jmol's shapely scheme — magenta
+ * helices, chrome-yellow strands, pure white coil — and those three are the
+ * loudest thing in a frame that is trying to be a painting. This is the same
+ * theme with a different colour map: madder and burnt sienna for the helices,
+ * lead-tin yellow for the strands, a warm lead white for the coil.
+ *
+ * **Mol\*'s own secondary structure, not a second opinion.** The colour map is
+ * handed to `SecondaryStructureColorThemeParams.colors`, so the assignment that
+ * decides a hue is the same one that decided to draw an arrow there. Computing
+ * secondary structure again on the Python side and colouring from *that* would
+ * put a strand's colour and a strand's arrowhead in different places whenever
+ * the two assignments disagreed — and they do disagree, which is what
+ * `docs/benchmark` found when it treated a depositor's `struct_conf` records as
+ * ground truth.
+ */
+/** Secondary-structure palettes protean registers, by the name a caller uses.
+ *
+ * One table so that adding a palette is one entry rather than a function.
+ * `capabilities()` reports these keys and `show()` checks a colour name against
+ * the live registry, so an entry here is reachable the moment it exists and
+ * there is no second list to keep in step.
+ *
+ * Every one of them has to answer the same question, which is not a question
+ * about mood: **helix, strand and coil must be separable at a glance**, and
+ * separable to a reader with red-green colour blindness. That rules out the
+ * obvious warm/cool pairing of coral against leaf green, which is exactly the
+ * axis deuteranopia collapses.
+ */
+const STRUCTURE_PALETTES: Record<string, Record<string, number>> = {
+  // Earth pigments, and the darkest of them. Madder and burnt sienna for the
+  // helices, lead-tin yellow for the strands, lead white for the coil.
+  pigment: {
+    alphaHelix: 0xa5563c,
+    threeTenHelix: 0x8f4835,
+    piHelix: 0x7c3f31,
+    betaStrand: 0xc8a03c,
+    betaTurn: 0x8a7f52,
+    coil: 0xddd3bf,
+    bend: 0x94886a,
+    turn: 0x84795c,
+    dna: 0x6f5f86,
+    rna: 0x8a5b6b,
+    carbohydrate: 0x9c8f6d,
+  },
+
+  // Spring. The relationship taken from Miyazaki rather than any swatch: a
+  // *warm* subject read against a *cool* one, both at high value, with the
+  // cream of a cloud carrying the connective tissue — the way a Totoro field
+  // is green and coral and sky all at once and none of it is dark.
+  //
+  // Coral against sky rather than the obvious coral against leaf green,
+  // because red-against-green is the one axis deuteranopia collapses and a
+  // helix that reads as a strand is a figure that lies.
+  //
+  // Deeper than the first attempt, which came back washed out: under the open
+  // lighting a bright look needs, pale values bleach. Pastel is the failure
+  // mode of "brighten it", and this palette fell straight into it on the first
+  // render.
+  spring: {
+    alphaHelix: 0xd9564e,
+    threeTenHelix: 0xc94a43,
+    piHelix: 0xb8423c,
+    betaStrand: 0x3d95bd,
+    betaTurn: 0x5fa88c,
+    // Toned down twice: on a cream ground the first coil was so close to the
+    // paper that the loops vanished, which is what a reader sees first on a
+    // ribbon diagram. A connective passage should recede, not disappear.
+    coil: 0xb9b09b,
+    bend: 0x77b195,
+    turn: 0x6aa8c8,
+    dna: 0xa98cc4,
+    rna: 0xd18fb0,
+    carbohydrate: 0xcbbf94,
+  },
+
+  // Whimsy, after Marimekko: a few flat colours at full strength, paired
+  // unexpectedly, on near-white. What is taken is the *pairing* — hot pink
+  // beside mustard, which no colour wheel suggests and which works — and the
+  // flatness, not any print.
+  poster: {
+    alphaHelix: 0xe0407a,
+    threeTenHelix: 0xc93569,
+    piHelix: 0xb32d5c,
+    betaStrand: 0xf2b32e,
+    betaTurn: 0x4f9d8c,
+    coil: 0xdcd6c8,
+    bend: 0x6fae9e,
+    turn: 0x3f5f8f,
+    dna: 0x7a5fa8,
+    rna: 0xe0637f,
+    carbohydrate: 0xc9b878,
+  },
+
+  // Neither a pastel nor a poster. Vermilion against a deep teal is a real
+  // complementary pair at full chroma with genuine value contrast between
+  // them, so the picture is bright without being weightless — which is the
+  // failure mode of "brighten it".
+  orchard: {
+    alphaHelix: 0xc2452f,
+    threeTenHelix: 0xad3c2a,
+    piHelix: 0x983425,
+    betaStrand: 0x2f7d6a,
+    betaTurn: 0x5d9c6a,
+    coil: 0xe8dfc8,
+    bend: 0x7fae86,
+    turn: 0x4a8f7d,
+    dna: 0x6b5f9e,
+    rna: 0xb8577a,
+    carbohydrate: 0xcdb277,
+  },
+};
+
+export function registerPaletteThemes(plugin: any): void {
+  const colors = plugin.representation?.structure?.themes?.colorThemeRegistry;
+  if (!colors?.add) return;
+  const base = colors.get?.('secondary-structure');
+  // Absent rather than assumed. An alias forwarding to a provider that is not
+  // there paints everything the no-data grey while reporting success; a name
+  // the registry has never heard of is refused by `show()` and says so.
+  if (base?.name !== 'secondary-structure') return;
+
+  for (const name of Object.keys(STRUCTURE_PALETTES)) {
+    if (colors.get?.(name)?.name === name) continue;
+    const custom = { name: 'custom', params: { ...STRUCTURE_PALETTES[name] } };
+    // `base.defaultValues` first, and this is not defensive tidiness — it is
+    // the whole theme. `SecondaryStructureColorTheme` runs
+    // `getAdjustedColorMap(map, props.saturation, props.lightness)`
+    // (`mol-theme/color/secondary-structure.js:89`), and with those two
+    // undefined every channel comes out NaN and the molecule renders **solid
+    // black** while the theme reports itself applied. That is exactly the
+    // failure this project has met before with an empty colour list, and it
+    // took one render to find.
+    const factory = (ctx: any, props: any) => ({
+      ...base.factory(ctx, { ...base.defaultValues, ...props, colors: custom }),
+      factory,
+      props,
+    });
+    colors.add({
+      ...base,
+      name,
+      label: name,
+      factory,
+      // Fixed rather than exposed. The point of a palette theme is that it *is*
+      // a palette; a caller who wants to choose the colours wants
+      // `define_atom_classes`, not this.
+      getParams: () => ({}),
+      defaultValues: {},
+      description: `Secondary structure in protean's '${name}' palette.`,
+    });
+  }
+}
+
+/** The palette names, for `capabilities()` and for anything that has to check
+ *  one without asking a live registry. */
+export const PALETTE_NAMES: readonly string[] = Object.keys(STRUCTURE_PALETTES);
+
+// The two lists are declared apart because one is needed before the other can
+// exist, so they are compared rather than trusted. A palette added to the table
+// and not to the name list would be registrable and then refused by name — the
+// silent-success shape, in the one file that keeps meeting it.
+if (
+  PALETTE_NAMES.length !== STRUCTURE_PALETTE_NAMES.length ||
+  PALETTE_NAMES.some((name) => !STRUCTURE_PALETTE_NAMES.includes(name as never))
+) {
+  throw new Error(
+    `protean: the structure palettes ${PALETTE_NAMES.join(', ')} and the names ` +
+      `${STRUCTURE_PALETTE_NAMES.join(', ')} disagree.`
+  );
+}
+
 export function createDispatcher(plugin: any): Handler {
   takeTheCameraOffAutomaticFitting(plugin);
   registerJitterSize(plugin);
   registerPlddtThemes(plugin);
+  registerPaletteThemes(plugin);
 
   /** Named components, so later show/color calls can target an earlier select. */
   const components = new Map<string, Entry>();
@@ -1639,6 +1824,22 @@ export function createDispatcher(plugin: any): Handler {
         if (!Number.isInteger(width) || width < 1) {
           throw new Error(`Snapshot width must be a whole number of pixels, got ${width}`);
         }
+        // Refused rather than quietly ignored. `autocrop` finds the molecule by
+        // testing each pixel for *exact* equality with the background colour
+        // (`mol-plugin/util/viewport-screenshot.js:209`), and a painterly look
+        // lays canvas weave and a glaze across the whole frame — so every
+        // background pixel differs, the box comes back as the whole frame, and
+        // the reply would report a crop that did not happen. The ground of a
+        // painting is part of the painting anyway.
+        const painting = (window as any).__protean?.painterly?.state?.()?.look;
+        if (crop && painting) {
+          throw new Error(
+            `A '${painting}' finish paints the ground as well as the molecule, so ` +
+              'there is no background left for crop=True to find and it would ' +
+              'return the whole frame while reporting a crop. Turn the finish ' +
+              'off with brushwork(look="off"), or capture without cropping.'
+          );
+        }
 
         // Keep the figure proportioned like what is on screen unless a height
         // was given, rather than defaulting to a square nobody asked for.
@@ -1985,6 +2186,78 @@ export function createDispatcher(plugin: any): Handler {
             applied?.cameraFog?.name === 'on'
               ? (applied.cameraFog.params?.intensity ?? null)
               : 0,
+        };
+      },
+    },
+
+    // The one styling action that is not a Mol* parameter. Everything else here
+    // forwards to something the library already does; this one drives protean's
+    // own render pass, patched into Mol*'s by `painterly.ts` and reached the way
+    // the raf pump is reached, through `window.__protean`. Keeping Mol* out of
+    // this module is what lets the unit suite run the dispatcher in jsdom.
+    brushwork: {
+      render: true,
+      async run({ look, brush_size }: { look?: string; brush_size?: string }) {
+        const control = (window as any).__protean?.painterly;
+        if (!control) {
+          throw new Error(
+            'This page has no painterly pass, so brushwork() cannot draw. It is ' +
+              'installed once at boot; a page missing it has lost the feature ' +
+              'rather than one setting.'
+          );
+        }
+        const canvas3d = plugin.canvas3d;
+        if (!canvas3d) throw new Error('No 3D canvas yet — load a structure first.');
+
+        const current = control.state();
+        const wanted = look ?? (current.look ?? 'off');
+        if (wanted !== 'off') {
+          checkName('painterly look', wanted, ['off', ...Object.keys(PAINTERLY_LOOKS)]);
+        }
+        const size = brush_size ?? current.brushSize;
+        checkName('brush size', size, Object.keys(BRUSH_SIZES));
+
+        // Resolved against the frame the caller is looking at, and reported.
+        // The brush is a fraction of the diagonal, so a capture resolves its own
+        // — which is the point, and also the thing that has to be visible in the
+        // reply rather than inferred.
+        const frame = canvas3d.webgl?.getDrawingBufferSize?.() ?? { width: 0, height: 0 };
+        const px = brushPixels(frame.width, frame.height, size);
+        const lengths =
+          wanted === 'off'
+            ? null
+            : resolveBrush(frame.width, frame.height, PAINTERLY_LOOKS[wanted], size);
+        if (wanted !== 'off' && Number.isFinite(px) && px < MIN_BRUSH_PX) {
+          throw new Error(
+            `A ${size} brush on a ${frame.width}x${frame.height} frame is ` +
+              `${px.toFixed(1)}px across, below the ${MIN_BRUSH_PX}px floor where the ` +
+              'marks stop being marks and become tone. Widen the window, or ask ' +
+              'for a broader brush.'
+          );
+        }
+
+        const applied = control.set({
+          look: wanted === 'off' ? null : wanted,
+          brushSize: size,
+        });
+        // Nothing about a Mol* prop changed, so nothing has asked for a frame.
+        // Without this the look lands on whatever redraw happens next — which,
+        // on a still scene, is never.
+        canvas3d.requestDraw?.();
+
+        return {
+          look: applied.look ?? 'off',
+          brush_size: applied.brushSize,
+          brush_px: Number.isFinite(px) ? Math.round(px * 100) / 100 : null,
+          // The other length that decides the mark. Reported because
+          // `brush_size` claims to change how the paint looks, and the width of
+          // the abstraction on its own does not — see `resolveBrush`.
+          stroke_px: lengths ? Math.round(lengths.stroke * 100) / 100 : null,
+          frame: [frame.width, frame.height],
+          // Whether the patch landed on the classes this viewer is actually
+          // using. `null` where it could not be checked; `false` means the look
+          // is set and will not draw, which is worth more than a picture.
+          reaches_viewer: control.patched ?? null,
         };
       },
     },
@@ -2861,6 +3134,10 @@ export function createDispatcher(plugin: any): Handler {
           gradients: ['off', ...Object.keys(GRADIENTS).sort()],
           material_finishes: Object.keys(MATERIAL_FINISHES).sort(),
           path_trace_quality: Object.keys(TRACE_QUALITY).sort(),
+          // 'off' is a value `brushwork()` accepts and not a look, so it leads
+          // rather than sorting into the middle of the painters.
+          painterly_looks: ['off', ...Object.keys(PAINTERLY_LOOKS).sort()],
+          brush_sizes: ['fine', 'medium', 'broad'],
           // Unsorted, and deliberately: perspective is Mol*'s default and the
           // one a caller already has, so it reads first. The others are sorted
           // because nothing distinguishes their members.

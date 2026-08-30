@@ -4,7 +4,7 @@
 is the original proposal, the review is what six agents found wrong with it, and
 this file is the only one that says what is actually true right now.
 
-Last updated **2026-08-25**, at `main` after #126.
+Last updated **2026-08-26**, at `main` after #139 plus the painterly branch.
 
 ---
 
@@ -21,6 +21,13 @@ wrong in two places at once by #150; `capabilities()` reports the live list. -->
 standing facts and are recorded below: **`engraving`** (#136), a new finish,
 and the **removal of the reason mesh-based treatments were out of reach**
 (#137). `main` is at `829c95c`.
+
+**A sixth finish landed on 2026-08-26, and it is the first that is not a
+finish at all.** `brushwork()` is a GPU render pass, not a Pillow pass over
+captured pixels — see "The one that runs in the viewer" below. It is the first
+thing built on #137, and it changes this document's oldest standing fact: the
+sentence in `analysis/hatching.py` that says the cost of drawing a finish in
+Python rather than in the renderer is that *the viewer cannot show it*.
 
 **What comes next is not another treatment.** `docs/molstar-capabilities.md` —
 an audit of Mol\*'s actual parameter surface, commissioned because `lens()`
@@ -143,6 +150,97 @@ Each of these is settled. Reopening one needs a reason, not a preference.
   at 1200. The comparison now draws at 480 and a guard asserts no two finishes
   share a resolved grain step.
 
+- **`brushwork(look="chiaroscuro")`** — the sixth finish, 2026-08-26, and the
+  first that runs in the viewer. An oil painting: the picture abstracted along
+  the form, noise dragged through it by line-integral convolution for the
+  bristle, that same field read as a height and relit by a raking light for the
+  impasto, and a woven ground under both. `preset("painting")` is the scene set
+  up for it and is no longer the Geis homage it was.
+
+  **A drawing style with no data channel**, like `cyanotype` and `felt`. No
+  shuffle arm, because it claims nothing a shuffle arm could test — the marks
+  follow the shading, which is a property of where the light is.
+
+  **It shipped as a Dutch Master, Charlie sent it back, and four rounds later
+  he took it again.** First: *"way too earth tone, too dark ... brighten the
+  mood. Make it joyful."* Three bright looks followed. Then all four were
+  rendered side by side on the same scene and compared: *"original is still the
+  best. Keep it, remove all the rest."* So `chiaroscuro` is the only look, on
+  the dark ground it was built for.
+
+  **The bright rounds are not wasted and should not be read as a detour.** They
+  are why the darkness is now a choice rather than an accident, and the hunt
+  for the gloom turned up four defects that all reported success:
+
+  1. **The pass was not running a Kuwahara filter.** The sector weight is the
+     published one, which operates on 0-255 values; on [0,1] the exponent
+     annihilates it, and at `hardness 8` the weight's entire dynamic range is
+     1.0000000 to 0.9999847. An anisotropic Gaussian blur had been wearing the
+     name of an abstraction for the feature's whole life, and **two comments in
+     this repo described behaviour that arithmetic cannot produce**.
+  2. The impasto relight took 14.3% off every painted pixel, quoted as an
+     absolute range rather than as contrast.
+  3. The "edge darkening" was a 21% global dim, keyed on a gradient's *shape*
+     rather than its strength.
+  4. The shadow could only ever darken, and its luminance band never fired on a
+     bright palette.
+
+  **The lesson for the next treatment is the guard, not the bug.** None of these
+  could be seen in a picture: an abstraction going missing looks like a slightly
+  softer painting, and every other term still runs. Three were found by
+  re-deriving the shader's arithmetic on the CPU and printing the numbers. The
+  one now guarded is guarded by a **property test** — that the weight can
+  discriminate at all — rather than by a value, plus an assertion that the
+  TypeScript mirror still matches the GLSL it mirrors.
+
+  And the biggest lever was not in the pass at all: the studio rig with its cast
+  shadow was taking the colour out of the palette before the paint saw it. Same
+  palette and look, only the light changed — subject luminance 112 to 162,
+  saturation 112 to 146. **A treatment that reads the shading is downstream of
+  the lighting rig, and the rig is the first thing to look at.**
+
+  **And then the rig bit from the other side**, which is the finding to carry
+  into any treatment with an internal direction field. Opening the light cost
+  the *flow field* its signal: the flow runs along a ribbon only because the
+  shading gradient runs across it, so flattening the light flattened the thing
+  the marks steer by. The strokes went haphazard for the same reason the picture
+  got brighter, and the two complaints looked unrelated. Fixed by putting a
+  depth gradient into the structure tensor beside the colour one.
+
+  Three more, from three more rounds of Charlie looking at plates:
+
+  - **A relit height field reads as metal, always.** A fake impasto on a curved
+    ribbon is crumpled foil however the bumps are shaped, because relighting is
+    what tells an eye it is looking at a surface with a normal.
+  - **Random brightness per mark is the same illusion with no lighting at all.**
+    Move the variation into chroma, and make the marks *tile* — a mark covering
+    part of a surface is a fleck on it; a surface made of marks is paint.
+  - **A stroke is a shape and has to be placed**, not sampled out of a field.
+    Three field-based attempts each failed differently and all read as noise.
+
+  **The method that ended it: render the field rather than reasoning about it.**
+  One debug build settled a question three rounds of inference had got wrong.
+  Any treatment with an internal vector field should have a debug output before
+  it has a second parameter.
+
+  The finding worth carrying: **abstraction alone is not a painting.** The first
+  version was anisotropic Kuwahara and nothing else, which is what the
+  literature says a painterly filter is, and it gave back a clean render with a
+  softer silhouette. Kuwahara abstracts texture that is *already there*, and
+  every published demonstration runs on a photograph. Whatever the next
+  treatment borrows from image processing, ask first what texture in the source
+  it is meant to be sorting.
+
+  The other finding is this document's own §2.3 rule arriving on the GPU. Both
+  of the pass's own resolution bugs were the same shape: `brush_size` scaled the
+  abstraction radius and nothing else, so it changed a reported number and
+  almost no pixels; and the impasto relief was quoted as a fixed number while
+  the slope it reads goes as one over the grain, so a small plate came back as
+  black speckle. **A length inside a shader is exactly as prone to this as a
+  length inside Pillow, and harder to see** — there is no `ink_fraction` in the
+  reply to catch it. Hence `resolveBrush`, a pure function, and a reply carrying
+  both `brush_px` and `stroke_px`.
+
 - **`cyanotype`** — the third finish and the first that is not an engraving.
   A drawing style with no data channel, said outright in its docstring, the way
   `felt` is. No shuffle arm, because it claims nothing a shuffle arm could
@@ -230,7 +328,16 @@ is impossible without bundling Mol\* from source.
 
 **As of #137 on 2026-08-26, protean bundles Mol\* from source.** That last
 clause is no longer a hypothetical: per-atom generated geometry and a custom
-post-processing pass are reachable. Nothing has been built on it yet.
+post-processing pass are reachable. **The post-processing half is now built** —
+`brushwork()` — and what it learned about the seam is recorded in
+`docs/views.md` §5.11. The short version, for anyone reaching for the same door:
+Mol\* has no registry, no props variant and no hook for a third-party pass, so
+the passes are wrapped; `ImagePass` owns its *own* copies of them, so patching
+the canvas's instances gives a finish that is on screen and absent from every
+capture; and the live canvas accumulates four jittered sub-frames where a
+capture accumulates sixteen, so anything applied inside that is averaged away by
+different amounts in the two places. Per-atom generated geometry is still
+untouched.
 
 Three findings worth acting on regardless of the plan:
 
@@ -305,6 +412,33 @@ protean figure ever made carries it — and measured with no tolerance it is
 bit-identical to off below 40. A default being *set* is not evidence that it
 *does* anything, and that is a question worth asking of every parameter protean
 inherits. It is what the Mol\* capability audit was commissioned to ask.
+
+### 1b. The rest of the painting
+
+Charlie's direction on 2026-08-26, from using the viewer: **an oil painting of a
+ribbon drawing — brush strokes and canvas texture. Dutch Master first, then a
+Seurat pointillist, then a bold Van Gogh.** They chose **live in the viewer**
+rather than a capture-time finish, which is why #137 was done first.
+
+The Dutch Master is shipped as `chiaroscuro`. The other two are entries in
+`PAINTERLY_LOOKS` over the same engine — the flow field, the bristle and the
+relief already exist — plus one thing each:
+
+- **`divisionist`** (Seurat) needs a dab lattice, and it must not collide with
+  `spot-ink-plates`. The difference is structural rather than cosmetic and is
+  the thing to build to: **a halftone modulates dot *area* at fixed spacing with
+  a fixed ink; a pointillist dab modulates *colour* at near-constant area.**
+  Everything else falls out of that — the lattice is jittered rather than ruled
+  because the rosette is the failure here and the point there, the ground shows
+  as a positive colour rather than as absence of ink, and coverage is held below
+  1. A test can assert the difference directly: within one flat-coloured region
+  the dabs must not all be the same RGB, which for `spot-ink-plates` they are by
+  construction.
+- **`impasto`** (Van Gogh) is `chiaroscuro`'s own machinery turned up — longer
+  strokes, deeper relief, bolder chroma — with one real addition: the chroma
+  boost has to happen in a hue-preserving space, because per-channel clipping in
+  sRGB rotates a blue chain toward magenta at the top end and the picture would
+  then be lying about protean's own colour coding.
 
 ### 2. Decide whether a third treatment is worth building
 

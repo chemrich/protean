@@ -24,6 +24,12 @@ import { Viewer } from 'molstar/lib/apps/viewer/app';
 
 import { connectBridge } from './bridge';
 import { createDispatcher } from './dispatch';
+import {
+  checkPatchReachesViewer,
+  installPainterly,
+  painterlyState,
+  setPainterly,
+} from './painterly';
 import { mountViewMenu } from './view-menu';
 
 /**
@@ -125,9 +131,27 @@ async function init() {
     viewportShowAnimation: false,
     viewportShowTrajectoryControls: false,
   });
+  // The painterly pass patches Mol*'s own render passes, so it is installed
+  // here — this is the module that already imports Mol* — and reached from the
+  // dispatcher through `window.__protean`, the same door the raf pump uses.
+  // Keeping it out of `dispatch.ts` is what lets the unit suite go on running
+  // the dispatcher against a fake plugin in jsdom.
+  installPainterly();
+  // Asked of a live viewer rather than assumed. If the bundler handed out a
+  // second copy of the pass classes, the patch is on the wrong one and the
+  // finish would report success and never draw.
+  const patched = checkPatchReachesViewer(viewer.plugin);
+  if (patched === false) {
+    console.error(
+      'protean: the painterly pass patched a different copy of Mol*s render ' +
+        'passes than the viewer is using, so brushwork() will not draw.'
+    );
+  }
+
   // Exposed for debugging and for the render pump's introspection hooks.
   (window as any).__protean = Object.assign((window as any).__protean ?? {}, {
     plugin: viewer.plugin,
+    painterly: { set: setPainterly, state: painterlyState, patched },
   });
   mountControlsTab(viewer.plugin);
   mountViewMenu(connectBridge(createDispatcher(viewer.plugin)));

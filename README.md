@@ -221,9 +221,9 @@ documentation. [`docs/README.md`](docs/README.md) says which is which.
 ## Tools
 
 `capabilities()` reports the live lists — representations, colour themes,
-size themes, lighting rigs, shading styles, material finishes, gradients,
-camera projections, presets, path-trace quality, and whether ffmpeg is
-installed.
+size themes, lighting rigs, shading styles, material finishes, print finishes,
+painterly looks, brush sizes, gradients, camera projections, presets,
+path-trace quality, and whether ffmpeg is installed.
 
 <!-- BEGIN GENERATED TOOL TABLE -->
 | Area | Tools |
@@ -236,7 +236,7 @@ installed.
 | Camera | `focus`, `orient`, `reset_view`, `lens`, `spin`, `keyframe`, `list_keyframes` |
 | Analysis | `interface`, `superpose`, `conservation`, `electrostatics`, `sasa` |
 | Scalar colouring | `color_by_potential`, `color_by_conservation`, `color_by_rmsf` |
-| Style | `preset`, `background`, `lighting`, `effects`, `shading`, `material`, `path_trace` |
+| Style | `preset`, `background`, `lighting`, `effects`, `shading`, `material`, `brushwork`, `path_trace` |
 | Capture | `screenshot`, `snapshot`, `turntable`, `boil`, `record_trajectory`, `record_timeline`, `movie` |
 | Trajectories | `load_trajectory`, `frame`, `rmsf`, `rmsd_series` |
 | Volumes | `load_volume`, `isosurface`, `volume_info`, `list_volumes`, `remove_volume` |

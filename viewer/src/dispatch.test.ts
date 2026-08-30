@@ -9,6 +9,7 @@ import {
   rotateAbout,
   summarise,
 } from './dispatch';
+import { PAINTERLY_LOOKS, resolveBrush } from './painterly-looks';
 
 /** A structure shaped like Mol*'s, with the table layout the real one uses:
  *  comp_id on the atom table, seq/ins_code on the residue table. */
@@ -388,6 +389,11 @@ function withCanvas(plugin: any) {
     // Settled instantly: these tests are about props, not about timing.
     commitQueueSize: { value: 0 },
     reprCount: { value: 0 },
+    // A plausible viewport. `brushwork` resolves its brush against this, so a
+    // fake without it would make every resolved size `NaN` and the floor check
+    // unreachable.
+    webgl: { getDrawingBufferSize: () => ({ width: 1166, height: 755 }) },
+    requestDraw: vi.fn(),
   };
   plugin.helpers = {
     viewportScreenshot: {
@@ -405,13 +411,19 @@ function withCanvas(plugin: any) {
   return plugin;
 }
 
+// File-wide rather than per-describe, and the reason is scar tissue: a test
+// that leaves something on `window.__protean` changes the code path every later
+// test takes. One `visibilityState` mock left unrestored once made three new
+// tests pass against the bug they were written for, and a painterly look left
+// standing here made `snapshot(crop=True)` refuse in a test that had never
+// heard of painting.
+beforeEach(() => {
+  // jsdom reports 'visible', so render actions settle without spinning the
+  // turbo pump — and settling is a no-op where fakePlugin has no canvas3d.
+  window.__protean = { setTurbo: vi.fn() };
+});
+
 describe('createDispatcher', () => {
-  beforeEach(() => {
-    // jsdom reports 'visible', so render actions settle without spinning the
-    // turbo pump — and settling is a no-op here because fakePlugin has no
-    // canvas3d. The 'settling a visible tab' block below supplies one.
-    window.__protean = { setTurbo: vi.fn() };
-  });
 
   it('rejects an unknown action', async () => {
     const dispatch = createDispatcher(fakePlugin());
@@ -518,6 +530,10 @@ describe('createDispatcher', () => {
       gradients: ['off', 'horizontal', 'radial'],
       material_finishes: ['chrome', 'glossy', 'matte', 'metallic', 'satin'],
       path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
+      // 'off' leads rather than sorting into the middle of the painters: it is
+      // a value `brushwork()` accepts and not a look.
+      painterly_looks: ['off', 'chiaroscuro'],
+      brush_sizes: ['fine', 'medium', 'broad'],
       // Perspective first rather than alphabetical: it is Mol*'s default and
       // so the one the caller already has.
       projections: ['perspective', 'orthographic'],
@@ -838,6 +854,27 @@ describe('snapshot', () => {
     return { plugin, helper, captured };
   }
 
+  it('refuses to crop while a painterly look has painted the ground', async () => {
+    // autocrop finds the molecule by testing each pixel for exact equality with
+    // the background colour (`viewport-screenshot.js:209`), and a painted ground
+    // has none left to match — so the box comes back as the whole frame and
+    // `cropped: true` would be a lie the caller cannot see.
+    const { plugin, helper } = withHelper(fakePlugin());
+    (window as any).__protean = {
+      setTurbo: vi.fn(),
+      painterly: { state: () => ({ look: 'chiaroscuro', brushSize: 'medium' }) },
+    };
+    const dispatch = createDispatcher(plugin);
+
+    await expect(dispatch('snapshot', { width: 400, crop: true })).rejects.toThrow(
+      /paints the ground/
+    );
+    expect(helper.autocrop).not.toHaveBeenCalled();
+    await expect(dispatch('snapshot', { width: 400, crop: false })).resolves.toMatchObject({
+      cropped: false,
+    });
+  });
+
   it('captures at the requested width, keeping the viewport aspect', async () => {
     const { plugin, captured } = withHelper(fakePlugin());
     const result: any = await createDispatcher(plugin)('snapshot', { width: 4323 });
@@ -1140,6 +1177,215 @@ describe('the jitter size theme', () => {
     const provider = jitterOf(plugin);
 
     expect(provider.factory({}, {}).factory).toBe(provider.factory({}, {}).factory);
+  });
+});
+
+describe('the pigment colour theme', () => {
+  /** A colour registry that can be added to and read back.
+   *
+   * The default fake's `colorThemeRegistry.add` is a bare spy, which is enough
+   * for the handlers and not enough here: the theme has to be *registered* and
+   * then *found*, and a spy answers neither question. */
+  function withColorRegistry(plugin: any, providers: any[]) {
+    plugin.representation.structure.themes.colorThemeRegistry = {
+      types: providers.map((p) => [p.name]),
+      registered: providers,
+      add(provider: any) {
+        this.registered.push(provider);
+        this.types.push([provider.name]);
+      },
+      get(name: string) {
+        return this.registered.find((p: any) => p.name === name) ?? { name: '' };
+      },
+    };
+    return plugin;
+  }
+
+  /** Mol*'s own theme, reduced to what an alias has to carry forward — and
+   *  keeping the props it was handed, which is the whole point below. */
+  function molstarSecondaryStructure() {
+    const seen: any[] = [];
+    return {
+      seen,
+      provider: {
+        name: 'secondary-structure',
+        label: 'Secondary Structure',
+        category: 'Residue',
+        factory: (_ctx: any, props: any) => {
+          seen.push(props);
+          return { factory: () => {}, color: () => 0xffc800, props };
+        },
+        // Mol*'s real defaults for this theme
+        // (`mol-theme/color/secondary-structure.js:33`).
+        getParams: () => ({}),
+        defaultValues: { saturation: -1, lightness: 0, colors: { name: 'default', params: {} } },
+        isApplicable: () => true,
+        ensureCustomProperties: { attach: async () => {}, detach: async () => {} },
+      },
+    };
+  }
+
+  it('paints secondary structure in earth pigments rather than Jmols colours', () => {
+    const base = molstarSecondaryStructure();
+    const plugin: any = withColorRegistry(fakePlugin(), [base.provider]);
+    createDispatcher(plugin);
+
+    const registry = plugin.representation.structure.themes.colorThemeRegistry;
+    const pigment = registry.get('pigment');
+    expect(pigment.name).toBe('pigment');
+    pigment.factory({}, {});
+
+    const props = base.seen.at(-1);
+    expect(props.colors.name).toBe('custom');
+    // Jmol's shapely scheme, which this exists to replace.
+    expect(props.colors.params.betaStrand).not.toBe(0xffc800);
+    expect(props.colors.params.alphaHelix).not.toBe(0xff0080);
+    expect(props.colors.params.coil).not.toBe(0xffffff);
+  });
+
+  // The bug this is for was a whole black molecule on the first render, and it
+  // reported itself applied. `SecondaryStructureColorTheme` runs
+  // `getAdjustedColorMap(map, props.saturation, props.lightness)`, so a props
+  // object carrying only `colors` gives it two undefineds, every channel comes
+  // out NaN, and Mol* draws the lot in black. Nothing about the theme's own
+  // registration or the colour map can see that.
+  it('hands Mol*s theme its own defaults, not only the colour map', () => {
+    const base = molstarSecondaryStructure();
+    const plugin: any = withColorRegistry(fakePlugin(), [base.provider]);
+    createDispatcher(plugin);
+
+    plugin.representation.structure.themes.colorThemeRegistry.get('pigment').factory({}, {});
+
+    const props = base.seen.at(-1);
+    expect(props.saturation).toBe(-1);
+    expect(props.lightness).toBe(0);
+  });
+
+  it('does not register when Mol* has no secondary-structure theme to wear', () => {
+    // An alias forwarding to a provider that is not there paints everything the
+    // no-data grey and reports success. A name the registry never heard of is
+    // refused by show() and says so, which is the better failure.
+    const plugin: any = withColorRegistry(fakePlugin(), []);
+    createDispatcher(plugin);
+
+    expect(
+      plugin.representation.structure.themes.colorThemeRegistry.get('pigment').name
+    ).toBe('');
+  });
+
+  it('refuses to let a caller take the name', async () => {
+    const base = molstarSecondaryStructure();
+    const plugin: any = withColorRegistry(fakePlugin(), [base.provider]);
+    const dispatch = createDispatcher(plugin);
+
+    await expect(
+      dispatch('define_elements', { name: 'pigment', colors: { C: '#ffffff' } })
+    ).rejects.toThrow(/protean's own/);
+  });
+});
+
+describe('brushwork', () => {
+  /** The control `main.ts` publishes, stubbed the way `setTurbo` already is.
+   *  Mol* is not in this module's graph and must not be: the whole unit suite
+   *  runs the dispatcher against a fake plugin in jsdom. */
+  function withPainterly(look: string | null = null) {
+    let state = { look, brushSize: 'medium' };
+    const set = vi.fn((next: any) => {
+      state = { ...next };
+      return { ...state };
+    });
+    (window as any).__protean = {
+      setTurbo: vi.fn(),
+      painterly: { set, state: () => ({ ...state }), patched: true },
+    };
+    return { set, current: () => state };
+  }
+
+  it('reports the brush it resolved, in pixels of this frame', async () => {
+    withPainterly();
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const reply: any = await dispatch('brushwork', { look: 'chiaroscuro' });
+
+    expect(reply.look).toBe('chiaroscuro');
+    expect(reply.frame).toEqual([1166, 755]);
+    // hypot(1166, 755) / 260
+    expect(reply.brush_px).toBeCloseTo(5.34, 1);
+    expect(reply.reaches_viewer).toBe(true);
+  });
+
+  // The guard for a control that reports a number and changes nothing. The
+  // first version of the pass scaled only its abstraction radius, and `fine`
+  // against `broad` came back as very nearly the same picture — because the
+  // mark a viewer sees is the stroke and the grain, and those did not move.
+  // So this walks *every* length, not the one the reply happens to lead with.
+  it('moves every length the brush works at, for every size it offers', async () => {
+    withPainterly();
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const sizes = ((await dispatch('capabilities', {})) as any).brush_sizes;
+
+    const lengths = sizes.map((size: string) =>
+      resolveBrush(1166, 755, PAINTERLY_LOOKS.chiaroscuro, size)
+    );
+    for (const key of ['brush', 'stroke', 'grain'] as const) {
+      const values = lengths.map((l: any) => l[key]);
+      expect(new Set(values).size, `${key} is the same at every brush size`).toBe(
+        sizes.length
+      );
+      expect(values, `${key} does not follow the size`).toEqual(
+        [...values].sort((a: number, b: number) => a - b)
+      );
+    }
+
+    // And the reply carries the two that decide the mark.
+    const broad: any = await dispatch('brushwork', { look: 'chiaroscuro', brush_size: 'broad' });
+    const fine: any = await dispatch('brushwork', { look: 'chiaroscuro', brush_size: 'fine' });
+    expect(broad.brush_px).toBeGreaterThan(fine.brush_px);
+    expect(broad.stroke_px).toBeGreaterThan(fine.stroke_px);
+  });
+
+  it('accepts exactly the looks it reports', async () => {
+    withPainterly();
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const looks = ((await dispatch('capabilities', {})) as any).painterly_looks;
+    expect(looks).toContain('off');
+    for (const look of looks) {
+      await expect(dispatch('brushwork', { look })).resolves.toMatchObject({ look });
+    }
+    await expect(dispatch('brushwork', { look: 'rembrandt' })).rejects.toThrow(
+      /Unknown painterly look 'rembrandt'/
+    );
+  });
+
+  it('refuses a brush too small to be a mark on this frame', async () => {
+    withPainterly();
+    const plugin: any = withCanvas(fakePlugin());
+    plugin.canvas3d.webgl.getDrawingBufferSize = () => ({ width: 240, height: 180 });
+    const dispatch = createDispatcher(plugin);
+
+    // Refused, not clamped. A look that cannot be drawn should say so rather
+    // than draw a different one — the failure `analysis/hatching.py` shipped,
+    // where every fine finish collapsed onto one 2px floor at the fixture size.
+    await expect(
+      dispatch('brushwork', { look: 'chiaroscuro', brush_size: 'fine' })
+    ).rejects.toThrow(/below the 3px floor/);
+  });
+
+  it('says so when the page has no pass to drive', async () => {
+    (window as any).__protean = { setTurbo: vi.fn() };
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    await expect(dispatch('brushwork', { look: 'chiaroscuro' })).rejects.toThrow(
+      /no painterly pass/
+    );
+  });
+
+  it('asks for a frame, since no Mol* property changed to ask for one', async () => {
+    withPainterly();
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('brushwork', { look: 'chiaroscuro' });
+    // Without this the look lands on whatever redraw happens next, which on a
+    // still scene is never.
+    expect(plugin.canvas3d.requestDraw).toHaveBeenCalled();
   });
 });
 

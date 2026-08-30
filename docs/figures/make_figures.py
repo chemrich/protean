@@ -510,6 +510,12 @@ async def presets() -> list[Path]:
             await load("1ubq")
             await server.background(color=ground)
             await server.lighting(rig="standard")
+            # And the paint, which the comment above already names and this
+            # loop did not put back. It is a *canvas* property, so it survives
+            # the reload that clears everything else — the sheet ran clean only
+            # because no preset turned it on until `painting` did, and it cost
+            # a blank tile the first time one ran after the brushwork figure.
+            await server.brushwork(look="off")
             try:
                 await server.preset(name)
             except Exception as exc:  # reported, never swallowed
@@ -625,6 +631,63 @@ async def print_finishes() -> list[Path]:
             )
         return [
             contact_sheet(IMAGES / "print-finishes.png", tiles, columns=5, tile_width=520)
+        ]
+
+
+@figure("brushwork")
+async def brushwork() -> list[Path]:
+    """The oil painting, at one plate size, beside the render underneath it.
+
+    Two tiles rather than a sweep of brush sizes, and deliberately: the claim
+    the section makes is that the viewer *paints*, and the only way to see that
+    is the same scene with and without. The sizes differ by the width of a mark,
+    which a 520px tile cannot show and a differential test can.
+    """
+    await load("1ubq")
+    # Read before anything is painted, and put back after. A painterly look and
+    # a dark ground both persist across a reload — they are canvas properties,
+    # not properties of what is loaded — so a figure that leaves either behind
+    # hands the next one a scene it did not ask for. That already happened here
+    # once: `presets` came next and measured its "fresh load" ground off a
+    # painted canvas, then refused its own capture as blank.
+    ground = await ground_colour()
+    await server.preset("painting")
+    with scratch() as tmp:
+        await server.brushwork(look="off")
+        # Captured well above the tile it lands in. `contact_sheet` crops to the
+        # subject's bounds and scales that to the tile width, so a capture only
+        # as wide as the tile arrives *magnified* — and magnifying a painterly
+        # frame coarsens exactly the marks the figure exists to show.
+        plain = await capture(tmp / "plain.png", pixels=1400)
+        # The preset's own look, read rather than named: a figure whose label
+        # says `chiaroscuro` under a picture of something else is exactly the
+        # stale caption this whole script exists to prevent.
+        look = server._PAINTING_LOOK
+        await server.brushwork(look=look)
+        painted = await capture(tmp / "painted.png", pixels=1400)
+        await server.brushwork(look="off")
+        await server.background(color=ground)
+
+        # Both cropped to the *render's* bounds, because nothing can find the
+        # subject in the painted one: the canvas weave reaches every pixel, so
+        # `_bounds` returns the whole frame and the sheet's shared window
+        # becomes the whole frame too, stranding the molecule in the middle of
+        # its tile. It is the same fact that makes `snapshot(crop=True)` refuse
+        # while a look is on.
+        window = _bounds(plain)
+        tiles = []
+        for name, source in (("the render", plain), (look, painted)):
+            cut = tmp / f"cut-{source.name}"
+            Image.open(source).convert("RGB").crop(window).save(cut)
+            tiles.append((name, cut))
+        return [
+            contact_sheet(
+                IMAGES / "brushwork.png",
+                tiles,
+                columns=2,
+                tile_width=560,
+                share_frame=False,
+            )
         ]
 
 

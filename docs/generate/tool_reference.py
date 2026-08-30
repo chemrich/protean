@@ -100,6 +100,7 @@ AREAS: dict[str, tuple[str, ...]] = {
         "effects",
         "shading",
         "material",
+        "brushwork",
         "path_trace",
     ),
     "Capture": (

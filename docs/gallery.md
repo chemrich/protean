@@ -354,6 +354,72 @@ everything prints on one plate.
 
 ---
 
+## Brushwork — an oil painting, on the canvas
+
+> Paint this like a Dutch Master.
+
+```python
+preset("painting")
+```
+
+![The same ubiquitin ribbon twice: a flat render, and the same thing as an oil painting with visible brush marks, glazed darks and a woven ground](images/brushwork.png)
+
+The print finishes above are Python, over pixels that have already left the
+renderer. This is the other thing entirely: **protean's own render pass, on the
+GPU, running every frame.** The viewer shows the painting, and `snapshot()`
+returns what the viewer is showing.
+
+`brushwork(look="chiaroscuro")` reaches it directly, on whatever is on screen.
+`preset("painting")` is the whole scene set up for it — a ribbon in earth
+pigments, a studio rig with a cast shadow, a dark umber ground.
+
+**One look**, and it is the one this started as: a Dutch Master, with a brown
+glaze in the darks and lead white in the lights. Three bright looks were built
+over four rounds against *"brighten the mood, make it joyful"*, and then all
+four were compared side by side and the first was chosen. They are in the
+history if the question reopens; what they found on the way is below, and it
+is worth more than the palettes were.
+
+A look sets how the paint behaves; the ribbon's colours are a separate colour
+theme, so `color("poster")` with `brushwork(look="chiaroscuro")` is still a
+pairing you can ask for — the three bright palettes stay registered.
+
+**The light matters more than any of it.** A studio rig with a cast shadow is a
+rig for a dark ground: it models hard and takes the colour out of a palette
+before the paint ever sees it. Same palette, same look, only the light changed —
+the subject's luminance went 112 to 162 and its saturation 112 to 146. Occlusion
+stays, because the brush reads the shading to find the form.
+
+**What makes it paint rather than a filter.** The first version was anisotropic
+Kuwahara, which is what a painterly filter is made of in every paper on the
+subject, and it gave back a clean cartoon with a softer silhouette. That filter
+abstracts texture that is *already there* — every demonstration of it runs on a
+photograph, where the grass and the brickwork supply the variation. A molecular
+render supplies none. So the paint is made instead: noise dragged along the
+form for the bristle, the same field read as a height and lit by a raking lamp
+fixed in the upper left for the impasto, and a woven ground under both.
+
+`brush_size` is `fine`, `medium` or `broad`, and it names a *mark*: the
+abstraction, the stroke and the grain of the bristle move together. It is a
+fraction of the frame, so a 1200 px plate gets a proportionally larger brush
+than an 800 px viewport and the two look like the same painting rather than the
+same pixels. The reply says what it resolved to, in pixels, both ways.
+
+**It carries no data**, the way `felt` and `cyanotype` do not: the marks follow
+the shading, which is a property of where the light is standing rather than of
+the molecule. Say so if you caption it.
+
+Two costs, both in the reply rather than implied. `snapshot(crop=True)` is
+refused while a look is on — cropping finds the molecule by looking for
+background, and a painted ground has none left. And the pass is patched into
+Mol\*'s own render passes, so every reply reports whether the patch reached the
+viewer the page is actually running.
+
+`brushwork(look="off")` is the way back, and it gives the *identical* picture —
+which the suite asserts at a tolerance of zero rather than hoping for.
+
+---
+
 ## Boil — a molecule drawn on twos
 
 ```python

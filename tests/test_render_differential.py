@@ -858,6 +858,9 @@ _README_PHRASES = {
     "path_trace_quality": "path-trace quality",
     "projections": "camera projections",
     "presets": "presets",
+    "finishes": "print finishes",
+    "painterly_looks": "painterly looks",
+    "brush_sizes": "brush sizes",
     "ffmpeg": "ffmpeg",
 }
 
@@ -869,10 +872,17 @@ async def test_the_readme_names_every_capability_the_viewer_reports():
 
     Driven off a live reply rather than a fixture, because the point is that a
     key added to the viewer and left out of the sentence fails here.
+
+    Through `server.capabilities()` rather than the viewer's own reply, and the
+    difference is not cosmetic. This used to ask the viewer and then add
+    `{"presets", "ffmpeg"}` by hand for the keys Python composes — so a *third*
+    Python-side key was invisible to it, and one duly arrived: #150 added
+    `finishes` to the reply and to nothing else. A guard that enumerates half
+    its subject by hand can only ever check the half it was told about.
     """
-    async with viewer_session(FIXTURE) as session:
-        caps = await session.request("capabilities", {})
-    reported = set(caps) | {"presets", "ffmpeg"}  # composed on the Python side
+    async with viewer_session(FIXTURE) as session, _as_server(session):
+        caps = await server_mod.capabilities()
+    reported = set(caps)
 
     assert reported == set(_README_PHRASES), (
         "capabilities() and this table disagree about what it answers with: "
@@ -1471,26 +1481,52 @@ def _frame(views: list[tuple[str, Render]], name: str) -> Render:
     return dict(views)[name]
 
 
-# Measured on 1UBQ rather than guessed, and the tolerance is the point. The
-# painting ground is #efe9dc, which covers 0.918 of the frame under it and
-# 0.0025 of the white-ground frames — but at tolerance 40 plain white *also*
-# matches it, at 0.969, because white is within 40 of buff on every channel. A
-# looser tolerance would have made this test pass for every view in the
-# catalogue while appearing to check the one thing that is different.
-PAPER = (0xEF, 0xE9, 0xDC, 255)
-PAPER_TOLERANCE = 20
+# Measured on 1UBQ rather than guessed, and the tolerance is the point.
+#
+# Four grounds now, each move taste correcting an earlier one: `#efe9dc` buff
+# while `painting` was a sphere model under a studio rig; `#4a3b2c` when it
+# became a Dutch Master; `#f2f0e4` when that was called too earth-toned and too
+# dark; and `#4a3b2c` again, because all four plates were put side by side and
+# the first was chosen.
+#
+# **The old tolerance argument does not survive the move and was not carried
+# over.** It reasoned about nearness to *white*: at 40 a plain white frame also
+# matched a buff ground on every channel, so the test would have passed for
+# every view in the catalogue, and 8 was chosen to keep 13 counts of daylight
+# on the green channel. On a dark umber ground that constraint is gone —
+# `#4a3b2c` is 211 counts from white and 184 from the cream it replaced, so
+# nothing in the catalogue is anywhere near it.
+#
+# What binds instead is the *weave*, which runs ungated on bare ground: it
+# modulates the ground itself, so the painted frame's own ground pixels are not
+# `#4a3b2c` exactly. Measured on the painted plate, they run 10 counts off at
+# the median and 16 at the maximum, and the fraction of the frame matching
+# within a given tolerance is 0.337 at 8, 0.845 at 12 and 0.974 at 16. At the
+# old 8 this test would fail on a correct picture, which is how the number came
+# to be re-measured rather than restored.
+#
+# 20 clears the weave's own spread with margin and still sits 164 counts below
+# anything that could be confused for another view's ground.
+GROUND = (0x4A, 0x3B, 0x2C, 255)
+GROUND_TOLERANCE = 20
 
 
 async def test_painting_lays_down_the_ground_it_names(views):
-    """A view whose ground is nine tenths of the frame has to have that ground.
+    """A view whose ground is most of the frame has to have that ground.
 
-    The cheapest thing to get wrong here is the order: the recipe recolours the
-    molecule after drawing it, and a `background()` that never landed would
-    leave the previous view's white behind a correctly repainted structure —
-    which reads as "nearly right" rather than as a failure.
+    The cheapest thing to get wrong here is the order: `brushwork()` is the last
+    step and paints whatever the frame holds, so a `background()` that never
+    landed would leave the previous view's white behind a correctly painted
+    ribbon — which reads as "nearly right" rather than as a failure.
+
+    The painterly pass leaves bare ground the colour it was given rather than
+    relighting it, which is what keeps this measurable at all: an impasto
+    relight over a flat surface still multiplies it, and a ground coming back
+    7% darker than the one the caller asked for is a small lie nothing else
+    here could see.
     """
-    painted = color_fraction(_frame(views, "painting"), PAPER, PAPER_TOLERANCE)
-    plain = color_fraction(_frame(views, "plain"), PAPER, PAPER_TOLERANCE)
+    painted = color_fraction(_frame(views, "painting"), GROUND, GROUND_TOLERANCE)
+    plain = color_fraction(_frame(views, "plain"), GROUND, GROUND_TOLERANCE)
     assert painted > 0.5 and plain < 0.01, (
         f"painting covers {painted:.4f} of the frame in its own ground against "
         f"{plain:.4f} for the plain load"

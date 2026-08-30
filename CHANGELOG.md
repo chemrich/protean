@@ -102,6 +102,40 @@ nothing is released yet, so everything below is unreleased.
   than a filename.
 
 
+### Views
+
+- **`painting` goes back to the Dutch Master, and keeps only that look.** Four
+  plates of one scene were compared and the first was chosen: *"original is
+  still the best. Keep it, remove all the rest."* `brushwork()` now offers
+  `chiaroscuro` and `off`; `preset("painting")` builds the dark umber ground,
+  studio rig and cast shadow the look was made for. The `spring`, `poster` and
+  `orchard` *palettes* stay registered and are still reachable through
+  `color()` — only the looks are gone.
+
+- **`edgeBreak` is removed.** It shipped at 1.0 on every look, wired to the
+  shader every frame, under a commit message that said *"This has never
+  produced a picture. It typechecks and nothing more."* A commit message is a
+  claim about intent; the default is the claim about state.
+
+- **The abstraction is kept general and set to the value that does nothing.**
+  The Kuwahara sector weight was arithmetically inert — the published formula
+  is for 0-255 values, and on the [0,1] the shader carries, its whole range at
+  hardness 8 is 1.0000000 to 0.9999847. The reference variance is a uniform
+  now, and `chiaroscuro` asks for the ungoverned form explicitly. It is
+  bit-for-bit the old behaviour, verified at every sample and then on the plate
+  by identical MD5. The guard survives with a real subject: it asserts the
+  formula *can* discriminate, and separately that this look chooses not to.
+
+- **Reverted with it: two corrections that were only corrections against an
+  intent nobody held.** A relight costing 14.3% of the mean painted pixel and a
+  one-sided weave costing 4.3% were replaced with mean-neutral forms during the
+  brightening; the darkness they removed is the darkness that was chosen. The
+  glaze goes back from a tint to a multiply for the same reason — a tint floors
+  the darks at 0.2.
+
+- **Kept regardless:** the `atan(0.0, 0.0)` guard, whose absence made the pass
+  return a transparent pixel and got whole captures refused as incomplete.
+
 ### Print finishes
 
 - **`hedcut` bows around the form, and three dot finishes are new.** Answering
@@ -275,6 +309,103 @@ nothing is released yet, so everything below is unreleased.
 
 
 ### Views
+
+- **`painting` is an oil painting now, and the paint is real.** Charlie, from
+  using the viewer: *"Painting just reproduces felt."* It did — both drew
+  `not solvent` as spacefill, their carbons differed by 13 counts of 255 and
+  their grounds by exactly 8, which `tests/pixels.py` counts as identical, so
+  protean's own differ could not tell the two views apart.
+
+  It is now a ribbon in earth pigments on a warm dark ground, painted by
+  **`brushwork()`** — protean's own GPU render pass, patched into Mol\*'s. The
+  first thing built on #137's decision to bundle Mol\* from source, and the
+  thing the print finishes could never be: the viewer shows the finish, and
+  `snapshot()` returns what the viewer is showing.
+
+  - **The finding that shaped it: abstraction alone is not a painting.** The
+    first version was anisotropic Kuwahara and nothing else, which is what a
+    painterly filter is made of — and it gave back a clean cartoon with a
+    softer silhouette. Kuwahara abstracts texture that is *already there*, and
+    every published demonstration runs on a photograph. A Mol\* cartoon is a
+    smooth surface under a smooth light. So the paint is made rather than
+    found: noise dragged along the flow field for the bristle, the same field
+    read as a height and relit by a raking light for the impasto, a woven
+    ground under both.
+  - **Three seams, not one.** `ImagePass` owns its own `DrawPass`, so patching
+    the canvas's instance would paint the screen and leave every capture plain
+    — with a success message on it. And the live canvas accumulates four
+    jittered sub-frames where a capture accumulates sixteen, so a finish
+    applied *inside* that is averaged away by different amounts on screen and
+    in the file. So the pass sits after accumulation, on all three routes.
+  - **`brush_size` was almost a no-op and the reply hid it.** It scaled the
+    abstraction radius, which over a textureless render changes nearly
+    nothing; `fine` and `broad` came back as the same picture with different
+    numbers. Every length moves together now, and the guard walks all three.
+  - **The new `pigment` colour theme painted the molecule solid black** on its
+    first render and reported itself applied. It is Mol\*'s own
+    secondary-structure theme wearing earth colours, and that theme reads
+    `props.saturation` and `props.lightness` — a props object carrying only the
+    colour map hands it two undefineds and every channel comes out NaN.
+  - **`snapshot(crop=True)` is refused while a look is on.** `autocrop` finds
+    the molecule by testing each pixel for exact equality with the background
+    colour, and a painted ground leaves none to match, so the box would come
+    back as the whole frame while the reply said it had cropped.
+
+  **It shipped as a Dutch Master and that was the wrong idea.** Charlie, on the
+  plates: *"way too earth tone, too dark ... brighten the mood. Make it
+  joyful."* `painting` is coral against sky on a cream ground now — `spring` —
+  with `poster` and `orchard` beside it and `chiaroscuro` still available.
+
+  Chasing the gloom found four defects, every one of which reported success:
+
+  - **The pass was not running a Kuwahara filter.** Its sector weight is
+    Kyprianidis and Döllner's, which operates on 0-255 values; on the [0,1]
+    values a shader has, the exponent annihilates it. At `hardness 8` the
+    weight's entire dynamic range across every spread a luminance can have is
+    1.0000000 to 0.9999847 — so every sector was weighted the same, the
+    least-variance selection never happened, and an anisotropic Gaussian blur
+    had been wearing the name of an abstraction. Two comments in this repo
+    described behaviour that arithmetic cannot produce.
+  - **The impasto relight took 14.3% off every painted pixel**, quoted as an
+    absolute range rather than as contrast. A flat pixel suggests 7.3%; the mean
+    is twice that, because a textured surface tilts 53° off the screen and a
+    third of it has its light clamped to zero.
+  - **The "edge darkening" was a 21% global dim**, keyed on anisotropy — which
+    measures a gradient's *shape*, not its strength, so a smoothly shaded ribbon
+    saturated it over 87% of the subject. It is called `shade` now.
+  - **The shadow could only ever darken and its band never fired.** A multiply
+    by a colour cannot lift; the band was a literal tuned around a subject at
+    luminance 0.18-0.40. Both are look fields now and the shadow tints.
+
+  And the biggest lever was not in the pass: the studio rig with its cast shadow
+  was taking the colour out of the palette before the paint saw it. Same palette
+  and look, only the light changed — subject luminance 112 → 162, saturation
+  112 → 146.
+
+  `felt` is untouched, as asked. It shares no code path with the pass, and its
+  numbers were the target: ground 237, subject 114, saturation 41.
+
+  **Then four more rounds, and each was a defect rather than a preference.**
+  *"Crumpled foil or mylar"* was the fake impasto: a relit height field reads as
+  metal, always, because relighting is what tells an eye it is looking at a
+  surface with a normal. *"Still like crumpled mylar"* was the same illusion
+  without any lighting — random brightness per mark, on marks that covered only
+  part of the ribbon, which is light catching facets at random angles. The marks
+  tile now and their variation lives in chroma. *"The strokes aren't obvious and
+  the direction is haphazard"* was **caused by brightening the picture**: the
+  flow field reads the shading gradient, so opening the light up flattened the
+  very signal the marks steer by, and one change had made both problems. The
+  structure tensor takes a second gradient on depth, which does not care how a
+  scene is lit.
+
+  The method worth keeping: **render the field rather than reasoning about it.**
+  Direction as red and green, confidence as blue, straight out of the shader.
+  One build settled a question three rounds of inference had got wrong.
+
+  What is not built: `divisionist` (Seurat) and `impasto` (Van Gogh), the other
+  two Charlie named. The engine is shared and waiting. And `painting`'s brush
+  volume is still open — `spring`, `orchard` and `poster` bracket it at 0.55,
+  0.85 and 1.2 rather than converging on a guess.
 
 - **`cinematic` is withdrawn.** Nineteen presets, not twenty. It was a
   near-black ground and a rim light, and the only thing it did that nothing

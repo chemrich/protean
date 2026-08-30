@@ -752,6 +752,12 @@ field**, bloom and sharpening.
 
 #### `painting` — after Irving Geis
 
+> **Superseded on 2026-08-26.** `painting` is now an oil painting of a ribbon,
+> drawn by a render pass rather than by a lighting recipe. Everything below is
+> the record of what it was and why, kept because the reasoning about *what a
+> recipe over existing controls can and cannot deliver* is exactly what
+> §5.11 goes on to answer. Read that section for what ships.
+
 All-atom, painterly, depth carried by shading rather than by line. Sketch:
 spacefill or ball-and-stick, occlusion strong, **shadow on**, `ring` or `studio`
 lighting, matte, **no outline**, a warm muted ground, possibly a little depth of
@@ -1216,6 +1222,307 @@ now does, by hiding the handle inside the session while it is still live.
 Worth keeping in mind before optimising `felt`: the halo is the obvious thing
 to drop for speed, and it is doing visible work. Dropping it saved 0.47 s of a
 1.78 s apply and changed a tenth of the frame.
+
+---
+
+### 5.11 `painting` becomes an oil painting — 2026-08-26
+
+Charlie, from using the viewer: *"Painting just reproduces felt."* It did. Both
+drew `not solvent` as spacefill; their carbons differed by 13 counts of 255 and
+their grounds by exactly 8, which `tests/pixels.py:40` counts as identical. So
+protean's own differ could not tell two entries in its catalogue apart, and the
+all-pairs test in `test_render_differential.py` was passing on the strength of
+the wool palette alone.
+
+Their redirect: **an oil painting of a ribbon drawing — brush strokes and canvas
+texture — Dutch Master first, then a Seurat pointillist, then a bold Van Gogh**,
+and **live in the viewer** rather than as a capture-time finish. This section is
+the first of those three.
+
+#### What §5.9 got wrong, and it was not a detail
+
+§5.9 built `painting` as a *recipe over controls protean already has*: a ground,
+a rig, occlusion, a shadow, a matte material, a palette. That is the right way
+to build `richardson` and it cannot build a painting, because none of those
+controls puts paint on anything. The picture it produced was a well-lit render
+on a warm ground — which is exactly what the levers it pulled do.
+
+The block that priced the alternative is in the cross-hatching section further
+up: *"A custom Mol\* post-processing pass. The right answer technically and
+blocked practically."* It stopped being blocked when #137 landed.
+
+#### The finding: abstraction alone is not a painting
+
+The first version of the pass was anisotropic Kuwahara and nothing else, which
+is what a painterly filter is made of in every paper on the subject. Rendered,
+it gave back a clean cartoon with a slightly softer silhouette.
+
+The reason is worth writing down, because it generalises to every filter anyone
+will reach for next: **Kuwahara abstracts texture that is already there.** Every
+published demonstration runs on a photograph, where the grass and the brickwork
+supply the variation the filter sorts through. A Mol\* cartoon supplies none —
+it is a smooth surface under a smooth light — and the honest output of an
+abstraction filter over it is the same smooth surface.
+
+So the paint has to be *made*. Three layers over the abstraction, in
+`viewer/src/painterly-shaders.ts`:
+
+- **Bristle.** Value noise dragged along the flow field by line-integral
+  convolution, which turns isotropic noise into streaks that follow the form.
+- **Impasto.** The same streak field read as a height and relit by a raking
+  light fixed in screen space. This is the single strongest signal that a
+  surface is oil rather than print, and screen-fixed because a relief that
+  rotated with the molecule would read as a bug.
+- **Canvas.** A woven ground under both, buried where the paint is thick.
+
+#### Three renders, three findings
+
+Each of these cost one build and one look, and none was visible by reading:
+
+1. **The background shouted the molecule down.** Full impasto across the whole
+   frame read as fur. The fix is that the ground is a *ground*: `groundPaint` is
+   0, so bare canvas gets its weave and nothing else, and the tensor pass parks
+   the background beyond four times the far plane so the test is clean rather
+   than tuned.
+2. **A bright halo hugged the silhouette.** A streak walked from a ground pixel
+   beside the molecule stops after two steps, and two samples of noise average
+   to whatever those two happened to be — an extreme value, relit. The walk now
+   counts the weight a complete walk *would* have carried and fades the mark by
+   the ratio.
+3. **`brush_size` was very nearly a no-op.** It scaled the abstraction radius,
+   which over a textureless render changes almost nothing; `fine` against
+   `broad` came back as the same picture with a different number in the reply.
+   Every length moves together now, and `resolveBrush` is a pure function so
+   that a unit test can say so without a GPU.
+
+#### The ground, and the palette
+
+The ground is `#4a3b2c`, the warm brown a seventeenth-century panel was primed
+with. `#efe9dc` was right for §5.9's subject — a sphere model under a studio rig
+wants a light ground — and wrong for this one, because an oil painting is built
+the other way round: the lights are put *on* a dark ground, and on buff the
+whole chiaroscuro apparatus has nothing to work against.
+
+The palette is a new colour theme, `pigment`: **Mol\*'s own secondary-structure
+assignment wearing earth colours**, not a second opinion. `SecondaryStructure
+ColorThemeParams.colors` takes a custom map, so the thing that decides a hue is
+the thing that decided to draw an arrow there. Computing secondary structure
+again on the Python side would put a strand's colour and its arrowhead in
+different places whenever the two assignments disagreed, and they do disagree.
+
+It painted the whole molecule **black** on its first render, and reported itself
+applied. `SecondaryStructureColorTheme` reads `props.saturation` and
+`props.lightness`; a props object carrying only the colour map hands it two
+undefineds and every channel comes out NaN. Nothing about the registration could
+see that — only a picture could.
+
+#### Where the pass runs, and why it is three seams
+
+Mol\* has no registry, no props variant and no hook for a third-party pass; the
+search is in `viewer/src/painterly.ts`. So the passes are wrapped, and the seam
+has to satisfy two conditions at once:
+
+- **Every route that makes pixels.** `ImagePass` owns its *own* `DrawPass`,
+  `MultiSamplePass` and `IlluminationPass`, so patching the canvas's instances
+  gives a finish that is on screen and absent from every capture — protean's
+  signature failure, arriving through the one door that reports success.
+  Patching the *prototypes* catches both.
+- **After multisample accumulation, not inside it.** The live canvas runs
+  `multiSample: temporal` at level 2 and a capture runs `on` at level 4 — four
+  jittered sub-frames against sixteen. A finish applied per sub-frame is
+  *averaged*, which low-pass filters exactly the marks it exists to make, and by
+  different amounts on screen and in the file.
+
+The cost is stated plainly: with `toDrawingBuffer` forced off, Mol\*'s own copy
+to the canvas never runs, so a blit that silently does nothing turns the canvas
+**black** rather than leaving a plain picture. Every test of this feature reads
+pixels, and each seam was proved by breaking it.
+
+#### The Dutch Master was the wrong idea, and chasing it found four defects
+
+Charlie, on the plates: *"the painted styles are way too earth tone, too dark.
+Maybe suggesting a dutch master style wasn't the right thing. Brighten the mood.
+Make it joyful."* The ground was part of it. Most of it was not, and the hunt is
+worth writing down in full because every one of these reported success.
+
+1. **The pass was not running a Kuwahara filter.** The sector weight is
+   `1/(1 + spread^hardness)`, which is Kyprianidis and Döllner's — on *0-255*
+   values. On the [0,1] values a shader has, the exponent annihilates it: at
+   `hardness 8` its entire dynamic range across every spread a luminance can
+   have is **1.0000000 to 0.9999847**. Every sector was weighted the same, the
+   least-variance selection never happened, and what ran was an anisotropic
+   Gaussian blur wearing the name of an abstraction. Two comments in this repo —
+   one about posterising above hardness 16, one about a "hard plastic seam" at
+   hue boundaries — described behaviour that arithmetic cannot produce. It is
+   fixed by dividing by a reference spread first, and it is guarded by a unit
+   test on the *property* (that the weight can discriminate at all) rather than
+   on a value, because a picture cannot see this: an abstraction going missing
+   looks like a slightly softer painting.
+2. **The relight took 14.3% off every painted pixel.** Quoted as an absolute
+   range rather than as contrast. A flat pixel suggests 7.3%; the real mean is
+   twice that, because a textured surface tilts a mean 53° off the screen and a
+   third of it has its lambert clamped to zero. It is odd in the slope now, so
+   its mean is zero at any paint thickness by construction.
+3. **The "edge darkening" was a 21% global dim.** Keyed on *anisotropy*, which
+   measures the shape of a gradient and not its strength — so a smoothly shaded
+   ribbon is as directional as a hard edge and the term saturated over 87% of
+   the subject. Renamed `shade`, for what it measurably does.
+4. **The shadow could only ever darken, and its band never fired.**
+   `mix(col, col * G, g)` cannot lift, because every component of a colour is at
+   most 1 — right for a brown laid over a ground, arithmetically incapable of
+   joy. And its luminance band was a literal tuned around a subject at L
+   0.18-0.40, so on a bright palette it did not fire at all. Both are look
+   fields now, and the shadow *tints* toward a colour, so a pale periwinkle
+   lifts a dark passage.
+
+**And the biggest lever was not in the pass at all.** `painting` was lit with a
+studio rig and a cast shadow, which is a rig for a dark ground: it models hard
+and takes the colour out of a palette before the paint ever sees it. Same
+palette, same look, only the light changed — subject luminance **112 → 162**,
+saturation **112 → 146**. Occlusion stays, because the brush reads the shading
+to find the form and a flat-lit ribbon has no gradient to follow; the cast
+shadow goes.
+
+The measurement to keep, because it is the target: `felt` — the view Charlie
+said they liked — sits on a ground at luminance 237 with its subject at 114 and
+saturation 41. `painting` sat on 54 with its subject at 82. All three bright
+candidates now sit at or above felt's numbers.
+
+#### Four rounds of taste, and each one was a defect
+
+Charlie looked at every set of plates and sent four back. None of the four was a
+preference: each named something the pass was doing wrong, and the wrong thing
+was never where the words pointed.
+
+**"Crumpled foil or mylar."** The fake impasto. **A relit height field reads as
+metal, always** — relighting is what tells an eye it is looking at a surface
+with a normal, so a raking light over a bumped ribbon is foil however the bumps
+are shaped. `relief` is zero on every bright look now. `chiaroscuro` keeps a
+little, because a Dutch Master genuinely *is* a lit impasto, and that is exactly
+why nothing else should be.
+
+**"Still like crumpled mylar."** The relight was already gone, so this was the
+same illusion arriving without any lighting: each mark took a random shift of up
+to 30% in *value*, and the marks covered only part of the ribbon — isolated
+bright and dark dashes on a smooth curve. **Random brightness is light catching
+facets at random angles**, whether or not anything was lit. Two fixes, one idea:
+the marks **tile** (a mark covering part of a surface is a fleck sitting on it; a
+surface made of marks is paint), and their variation moved from value into
+**chroma**, because a loaded brush carries more or less pigment far more than it
+carries more or less light.
+
+**"The strokes aren't obvious, and their direction is haphazard."** The
+direction was **caused by brightening the picture**, which is why it looked like
+two unrelated complaints. The flow is the direction of least change, which runs
+along a ribbon *because* the shading gradient runs across it — so opening the
+light up flattened the ribbon and flattened the signal the marks steer by. One
+change had made both problems. The structure tensor takes a second gradient on
+**depth**, normalised over the scene's range: depth does not care how a scene is
+lit, and a ribbon curves away from the camera across its width whatever the rig
+is doing.
+
+**And a stroke is a shape that has to be placed.** Three field-based attempts
+failed before that landed — isotropic noise dragged along the flow (foil), noise
+stretched then dragged (sandpaper), and a lattice from `dot(P, tangent)`, which
+*looks* right and is not: screen coordinates are of order a thousand, so a
+tangent rotation of a hundredth of a radian moves the coordinate by a whole
+stroke width and the lattice dissolves into noise before it can be a mark. The
+marks are splatted now, each oriented by the flow **at its own centre**, on a
+lattice spaced by the stroke's *width* — spacing it by the length leaves
+scattered dashes on bare colour, and the search window caps how long a mark can
+be, so the window is what decides whether you get a stroke or a dash.
+
+**The method that ended it: render the field rather than reasoning about it.**
+Direction as red and green, confidence as blue, straight out of the brush
+shader. One build, and it settled a question three rounds of inference had got
+wrong. Any pass with an internal vector field should have a debug output before
+it has a second parameter.
+
+#### Three palettes, and the one that shipped — superseded 2026-08-30
+
+> **The bright looks are gone.** All four plates were rendered on one scene and
+> compared, and Charlie chose the first: *"original is still the best. Keep it,
+> remove all the rest."* `chiaroscuro` is the only look now, on the dark ground
+> and studio rig it was built for. This subsection is kept as written because
+> the reasoning in it is still true of the palettes — which **are** still
+> registered, reachable by `color()`, and separable under deuteranopia — and
+> because the round that produced them is what turned four silent defects up.
+> See "The rounds ended where they started" below.
+
+#### Three palettes, as they were built
+
+`spring` is the default: coral against sky rather than the obvious coral against
+leaf green, because red-against-green is the one axis deuteranopia collapses and
+a helix that reads as a strand is a figure that lies. `poster` is the whimsical
+one — hot pink beside mustard, a pairing no colour wheel suggests. `orchard` is
+vermilion against deep teal, bright with real value contrast.
+
+The first `spring` came back **pastel**, which is the failure mode of "brighten
+it" and was named as such in review before it was rendered. Deepening the
+palette and raising the chroma took its subject saturation from 35 to 62.
+
+A look and a palette are separate — `brushwork(look=…)` and `color(…)` — so any
+pairing is available; the preset picks a pair.
+
+The three also differ in **how much brush you see**, which is the one thing left
+open: `spring` at `load` 0.55, `orchard` 0.85, `poster` 1.2, deliberately
+bracketing rather than converging, so the answer sits inside the range.
+
+#### The rounds ended where they started — 2026-08-30
+
+Five plates of the same scene, differing only in mark length, then a straight
+comparison against the first commit's render. Charlie picked the first.
+
+**What that decided, and what it did not.** It decided the look. It did not
+decide that the four brightening rounds were wrong to run: the largest lever on
+this pass is the *lighting rig*, not the pass — subject luminance 112 to 162
+from the rig alone — and that is a measurement, not an opinion, made only
+because the rounds happened. Three of the four defects they turned up were real
+and stay fixed in kind.
+
+**Two of them, though, were only defects against an intent nobody held.** The
+impasto relight took 14.3% off the mean painted pixel and the weave was a
+one-sided tax of 4.3%; both were replaced with mean-neutral forms, and both are
+back, because the darkness they removed is the darkness that was chosen. The
+glaze is the sharpest case: `mix(col, col * glazeColour, g)` is a multiply and
+can only darken, which made a bright look arithmetically impossible;
+`mix(col, shadowColour, g)` is a tint and puts a *floor* under the darks at
+0.2. The tint was the right fix for a bright palette and is the wrong one here,
+and the fix stopped being a fix the moment the bright palettes left.
+
+**One was a real defect and is kept, without changing the picture.** The
+Kuwahara sector weight is `1/(1 + σ^q)` — a formula published for 0-255 values.
+On the [0,1] the shader carries, its entire range at hardness 8 is 1.0000000 to
+0.9999847, so the pass was an anisotropic Gaussian blur wearing a Kuwahara's
+name. Rather than restore that arithmetic, the reference variance is now a
+uniform and `chiaroscuro` sets it to **1.0**, which is the ungoverned form
+*bit for bit* — verified at every sample, and then verified on the plate:
+identical MD5 against the render that was approved, on a render path measured
+to be deterministic by rendering the same build twice.
+
+That distinction is the whole method here. A look's softness is taste and
+belongs in the look table; whether the filter is *capable* of abstraction is
+correctness and belongs in a test. `painterly-looks.test.ts` now asserts the
+second at a governing reference, and asserts separately that `chiaroscuro`
+declines it — so a later reader who finds the ratio at 1.0000000 and calls it
+broken has to change that line and read why first.
+
+**And one term was shipped that had never rendered.** `edgeBreak` was committed
+with a message saying plainly *"This has never produced a picture. It
+typechecks and nothing more"* — and shipped at 1.0 on all four looks, wired to
+the shader every frame. It is removed. The lesson is not about this term: a
+commit message is a claim about *intent*, and the default is the claim about
+*state*.
+
+#### What is not built
+
+`divisionist` (Seurat) and `impasto` (Van Gogh) are the other two Charlie named.
+The engine is shared — the flow field, the bristle and the relief are already
+here — and what each needs is its own entry in `PAINTERLY_LOOKS` plus, for the
+pointillist, a dab lattice that must not collide with `spot-ink-plates`. That
+collision is real and named in `docs/soft-matter-status.md`: a halftone
+modulates dot *area* at fixed spacing with a fixed ink, and a pointillist dab
+modulates *colour* at near-constant area.
 
 ---
 
