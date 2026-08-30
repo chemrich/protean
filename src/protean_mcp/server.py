@@ -2507,6 +2507,45 @@ def _snapshot_pixels(
     return pixels, millimetres
 
 
+def _supersample(finish: str | None, width: int, millimetres: float, dpi: int) -> int:
+    """How many times over this finish's capture is taken, refusing the size it
+    would not survive.
+
+    Some finishes want the capture larger than the file they produce. The
+    finish engine is one bit — `marks` returns booleans, `apply_finish` paints
+    flat ink, and `ink_mask` recovers the mask bit for bit *because* of it — so
+    an antialiased edge cannot be drawn, only averaged out of a bigger plate
+    afterwards. `_Style.supersample` says which finishes want it and why.
+
+    The ceiling is re-checked here against the size actually captured rather
+    than the size requested. `_snapshot_pixels` has already cleared the
+    requested width, and four times the pixels is four times what this process
+    must decode and hold. Left unchecked, `snapshot(width_mm=800, dpi=300)`
+    with a supersampled finish reaches `_open_snapshot` at 340 megapixels and
+    comes back as a raw `PIL.Image.DecompressionBombError` — a library
+    exception escaping a tool, which reads to a caller as protean breaking
+    rather than as a size it cannot have.
+
+    Against the same ceiling rather than a new one, deliberately: a
+    supersampled finish's worst case is then exactly the worst case that was
+    already allowed — 85 megapixels decoded, and the 9.4 GB `apply_finish`
+    holds for it, measured at 111 MB per megapixel.
+    """
+    factor = FINISHES[finish].supersample if finish is not None else 1
+    captured = width * factor
+    if factor > 1 and captured * captured > _MAX_SNAPSHOT_PIXELS:
+        allowed = math.isqrt(_MAX_SNAPSHOT_PIXELS) // factor
+        raise ViewerError(
+            f"{millimetres} mm at {dpi} dpi is {width} pixels wide, and the "
+            f"{finish!r} finish is captured {factor}x that and averaged back "
+            f"down — {captured} pixels, beyond what can be captured "
+            f"({_MAX_SNAPSHOT_PIXELS // 1_000_000} megapixels). Lower the dpi "
+            f"or the width to {allowed} pixels or less, or choose a finish "
+            f"that is not supersampled."
+        )
+    return factor
+
+
 @_tool()
 async def snapshot(
     path: str,
@@ -2616,6 +2655,9 @@ async def snapshot(
         except ValueError as exc:
             raise ViewerError(str(exc)) from exc
 
+    factor = _supersample(finish, width, millimetres, dpi)
+    captured = width * factor
+
     # And the same for where the file is going. `_writable` refuses a path that
     # holds something other than a figure, and it used to run *after* the
     # capture — so pointing a snapshot at a directory, or at notes.txt, cost
@@ -2636,7 +2678,7 @@ async def snapshot(
             "background. Use png or tiff, or pass transparent=False."
         )
 
-    args: dict[str, Any] = {"width": width, "crop": crop}
+    args: dict[str, Any] = {"width": captured, "crop": crop}
     if transparent is not None:
         args["transparent"] = transparent
     # A finish that separates a frame by colour cannot know what a hue was made
@@ -2650,7 +2692,12 @@ async def snapshot(
         args["recolour"] = separated_by
 
     bridge = _require_viewer()
-    timeout = _capture_timeout(width, traced=_path_tracing)
+    # The budget follows the pixels actually rendered, not the pixels asked for.
+    # The rate has about a 2x margin over a CI runner under software rendering;
+    # four times the work spends all of it, so a supersampled capture given the
+    # requested width's budget would be aborted for being the size it was told
+    # to be.
+    timeout = _capture_timeout(captured, traced=_path_tracing)
     result = await bridge.request("snapshot", args, timeout=timeout)
 
     data_uri: str = result["data_uri"]
@@ -2684,7 +2731,32 @@ async def snapshot(
         # tool reads to a caller as protean breaking, not as a bad argument.
         try:
             image = apply_finish(image, finish)
+            # Measured on the plate, before it is averaged down, and the order
+            # is load-bearing. `ink_fraction` counts every pixel that is not the
+            # paper, which is exact on a two-valued plate and wrong the moment
+            # the edges go grey — an antialiased edge pixel is a fraction of a
+            # mark and counts as a whole one. Measured on one subject at 1890
+            # px, taking it after the downsample instead reported hedcut's 0.046
+            # as 0.101 and cross-hatch's 0.052 as 0.276. This is the one number
+            # in the reply whose whole job is to say whether the tone had
+            # anywhere to go, and the plate is where it is true.
             inked = ink_fraction(image, finish)
+            # What came back, not what was asked for. `crop` narrows the
+            # capture to the subject, so the viewer may hand back something
+            # other than `captured` — and a note that reported the width it
+            # requested would describe a downsample that did not happen. It
+            # cannot be exercised today because `crop=True` is a no-op, which
+            # is exactly why it is derived here rather than assumed.
+            plate = image.width
+            if factor > 1:
+                # Lanczos rather than a box average: it is what the plates
+                # Charlie chose from were made with, and a box average of the
+                # same plate is a visibly softer mark. Shipping the other filter
+                # would ship a picture nobody approved.
+                image = image.resize(
+                    (image.width // factor, image.height // factor),
+                    PILImage.Resampling.LANCZOS,
+                )
         except ValueError as exc:
             raise ViewerError(str(exc)) from exc
 
@@ -2719,6 +2791,28 @@ async def snapshot(
                 "finish": finish,
                 "finish_applied": "after the capture, in Python — the viewer "
                 "does not show this",
+                # Said outright, because the caller cannot look and nothing
+                # else in this reply implies it. `pixels` is the file, not the
+                # render: this capture cost the square of the factor in time
+                # and in memory, and the marks in this file are the only ones
+                # protean produces with soft edges. Both are things a caller
+                # deciding whether to raise the dpi needs to know before it
+                # walks into the ceiling.
+                **(
+                    {
+                        "supersampled": factor,
+                        "captured_pixels": plate,
+                        "supersample_note": (
+                            f"captured {plate} px wide and averaged down to "
+                            f"{image.width} — this finish's marks are one bit, "
+                            f"so their edges are resolved by the capture rather "
+                            f"than by the finish. The render cost "
+                            f"{factor * factor}x the pixels of the file."
+                        ),
+                    }
+                    if factor > 1
+                    else {}
+                ),
                 # Said outright: the scene was coloured for this capture and
                 # restored, so a caller who looks at the viewer afterwards and
                 # sees their own colours has not been lied to about what the

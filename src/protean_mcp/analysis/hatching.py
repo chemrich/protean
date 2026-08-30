@@ -175,6 +175,36 @@ class _Style:
     `None` for a finish that reads only tone, which is most of them.
     """
 
+    supersample: int = 1
+    """How many times over this finish wants its capture taken, before it is
+    averaged back down to the size that was asked for.
+
+    A plate has exactly two grey levels. `marks` returns booleans and
+    `apply_finish` paints flat ink, and `ink_mask` recovers the mask bit for
+    bit *because* of it — so an antialiased edge is not something this engine
+    can draw. It can only be averaged out of a bigger plate afterwards. The
+    stroke interval is a fraction of the frame, so a capture N times as wide
+    puts the marks at N times the pixels and averaging back down returns them
+    to the size they were chosen at with their edges resolved.
+
+    Declared here rather than applied here, the same way `needs_colour` is:
+    this is a fact about the finish, and `snapshot()` is the one place that
+    decides how big a capture is. Nothing in `apply_finish` changes, so nothing
+    the suite asserts about a plate's two values changes either.
+
+    1 for every finish that does not need it, and that is not a default nobody
+    looked at. A fixed-angle rule stays off the axes the renderer's own
+    antialiasing favours and does not show a staircase; a bowed rule sweeps
+    through every angle, including the bad ones, everywhere on the plate.
+    `spot-ink-plates` must stay at 1 for a stronger reason: its plate
+    boundaries are a **category**, not a shade, and averaging across one
+    invents intermediate inks that its own `palette()` disowns.
+
+    The cost is the square: 2 is four times the pixels, four times the render
+    and four times the memory `apply_finish` holds. `snapshot()` re-checks the
+    scaled size against the capture ceiling for that reason.
+    """
+
     @property
     def ink(self) -> tuple[int, int, int]:
         """The first ink, for the finishes that have only one."""
