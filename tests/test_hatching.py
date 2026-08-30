@@ -192,24 +192,88 @@ def test_colour_is_weighted_the_way_an_eye_weighs_it():
 #: The tones the pairwise comparison is made at. Light enough that both
 #: finishes leave the paper bare would compare two blank frames and pass for
 #: any pair, including a duplicate.
-_COMPARED_TONES = (60, 100, 140)
+#:
+#: 40 is here for the thinnest pair the file has. `dotty` and `dotty-mixed`
+#: differ only in how many of the same dots take a colour, so their separation
+#: scales with how much ink is on the page: 0.0100 at tone 180, 0.1311 at 60,
+#: 0.1770 at 40. The comparison takes the best tone rather than the average,
+#: so a tone that separates nothing costs only its render.
+_COMPARED_TONES = (40, 60, 100, 140)
+
+
+#: Three hues at one luma, for the comparison. The file's other fixtures are
+#: grey, and a finish that sorts pixels by hue cannot be told from one that
+#: ignores hue on a frame that has none: `dotty-mixed` puts every cell on its
+#: key plate there and draws `dotty` exactly. Three rather than two because a
+#: four-ink finish needs more hue peaks than it has inks before an ink can be
+#: shown to be unreachable.
+_HUES = ((0.95, 0.35, 0.45), (0.35, 0.60, 0.95), (0.95, 0.75, 0.25))
+
+
+#: A plate shape small enough to be cheap, for the checks whose property does
+#: not depend on how finely the marks resolve.
+_A_SMALL_PLATE = (480, 240)
+
+
+def _flat_in_hues(tone: int, size: tuple[int, int] = _ENGRAVABLE) -> Image.Image:
+    """One tone, in three vertical bands of different hue.
+
+    Every band is scaled to the same Rec. 601 luma, so the frame is flat to any
+    finish that reads tone and banded to any finish that reads hue. That
+    separation is the whole point: it makes the comparison able to see a
+    difference in *which ink* a finish chose, without also handing it a
+    difference in tone it could pass on instead.
+    """
+    width, height = size
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+    frame[:, :, 3] = 255
+    for index, hue in enumerate(_HUES):
+        weighted = 0.299 * hue[0] + 0.587 * hue[1] + 0.114 * hue[2]
+        scaled = [min(255, round(tone * channel / weighted)) for channel in hue]
+        band = slice(index * width // len(_HUES), (index + 1) * width // len(_HUES))
+        frame[:, band, :3] = scaled
+    return Image.fromarray(frame, mode="RGBA")
 
 
 @functools.cache
-def _engraved(finish: str, tone: int) -> np.ndarray:
-    """One finish's ink mask on the comparison fixture, built once.
+def _plate_map(finish: str, tone: int) -> np.ndarray:
+    """`_plates_printed` on the comparison fixture, built once per finish.
 
     Every pair used to render both its sides, so a frame was engraved once per
-    pair it appeared in rather than once: 90 calls where 18 are needed. That
-    is what pays for `_ENGRAVABLE` being large enough for the comparison to
-    see the marks the product actually draws — the cached build at 1660x830
-    costs what the uncached one cost at 480x480.
-
-    Cached on the name rather than on the style so that a finish rebound in
-    `FINISHES` between tests would be a stale hit; nothing does that, and this
-    note is here so nothing starts.
+    pair it appeared in rather than once: 90 calls where 18 are needed. That is
+    what pays for `_ENGRAVABLE` being large enough for the comparison to see
+    the marks the product actually draws.
     """
-    return ink_mask(apply_finish(_flat(tone, _ENGRAVABLE), finish), finish)
+    return _plates_printed(finish, _flat_in_hues(tone))
+
+
+def _plates_printed(finish: str, source: Image.Image) -> np.ndarray:
+    """Which plates printed each pixel, as the bit-code `apply_finish` composites
+    with: 0 for the paper, bit *i* set where plate *i* covers.
+
+    `ink_mask` answers "is there ink here", which is exactly one bit, and this
+    comparison was built on it. That stopped being enough when `dotty-mixed`
+    arrived: it partitions the field `dotty` draws rather than adding to it, so
+    the two have **byte-identical** ink masks by design.
+
+    Recovered from the printed page rather than from `plates()`, so a finish
+    cannot pass by declaring plates it never lays down — the same reasoning
+    that put `ink_mask` on the shipped output. The reverse map is unambiguous
+    because `palette()` is asserted to hold `2 ** len(inks)` distinct colours,
+    so no two codes can print alike; a finish that broke that would fail
+    `test_a_finish_may_print_only_from_the_palette_it_declares` first.
+
+    The code, not a palette index, because a code means the same thing to every
+    finish — 0 is bare paper and 1 is the first ink alone, whoever is printing.
+    """
+    style = FINISHES[finish]
+    printed = np.asarray(apply_finish(source, finish).convert("RGB"))
+    mapped = np.zeros(printed.shape[:2], dtype=np.int64)
+    for code in range(1, 1 << len(style.inks)):
+        crossed = tuple(ink for index, ink in enumerate(style.inks) if code >> index & 1)
+        colour = crossed[0] if len(crossed) == 1 else _multiply(crossed)
+        mapped[np.all(printed == np.asarray(colour, dtype=np.uint8), axis=2)] = code
+    return mapped
 
 
 @pytest.mark.parametrize(("left", "right"), list(itertools.combinations(FINISH_NAMES, 2)))
@@ -223,23 +287,85 @@ def test_no_two_finishes_draw_the_same_picture(left, right):
     pair would have gone on passing while the new name drew someone else's
     picture.
 
-    Compared on where the ink *is*, not on the colours, so a finish that is an
-    existing one recoloured is still caught. Through the shipped `ink_mask`
-    rather than a copy of it, so a change to what counts as ink cannot leave
-    this comparing masks the product no longer draws. Measured over inked
-    tones: the two shipping finishes disagree on 0.37 to 0.50 of the frame,
-    and a duplicate reads exactly 0.0.
+    Compared on **which plate printed**, not on where the ink is. It was the
+    latter, through `ink_mask`, until `dotty-mixed` arrived: that finish
+    partitions the very field `dotty` draws rather than adding to it, so the
+    two have byte-identical ink masks *by design* — 0.0000 disagreement at
+    every size, on grey and in colour — and a one-bit measure can only report
+    the design as two finishes drawing the same picture.
+
+    Palette index, not colour, so the property the old measure had survives: a
+    finish that is an existing one recoloured maps to the same indices and is
+    still caught. `test_a_recoloured_finish_is_not_a_new_finish` is what holds
+    that claim, since nothing here would now fail if it stopped being true.
+
+    On a fixture with hue in it, because a finish that sorts pixels by hue
+    cannot be told from one that ignores hue on a grey frame.
     """
     # Tones light enough that both finishes leave the paper bare would compare
     # two blank frames and pass for any pair, including a duplicate.
     disagreement = max(
-        float((_engraved(left, tone) ^ _engraved(right, tone)).mean())
+        float((_plate_map(left, tone) != _plate_map(right, tone)).mean())
         for tone in _COMPARED_TONES
     )
 
     assert disagreement > 0.1, (
         f"{left} and {right} drew the same picture (disagreed on "
         f"{disagreement:.4f} of the frame)"
+    )
+
+
+@pytest.mark.parametrize("finish", FINISH_NAMES)
+def test_a_recoloured_finish_is_not_a_new_finish(finish):
+    """The same plates in different inks are the same picture.
+
+    The guard above compares plate codes rather than colours precisely so that
+    this stays true, and nothing there would fail if it stopped being — a
+    measure that read colour would score a palette swap as a whole new finish
+    and wave through a duplicate wearing a different hue. `cross-hatch` and
+    `hedcut` are one class apart in their fields; `cyanotype` and `engraving`
+    likewise. A third arriving as one of them recoloured must be caught.
+
+    So this asserts the property directly, on every finish, by recolouring it
+    and requiring the comparison to see no difference at all.
+    """
+    style = FINISHES[finish]
+    swapped: dict[str, _Style] = dict(FINISHES)
+    swapped[finish] = replace(
+        style,
+        inks=tuple(
+            (n * 53 % 251, n * 97 % 251, n * 31 % 251)
+            for n in range(1, len(style.inks) + 1)
+        ),
+    )
+    # Uncached on both sides. Clearing the shared cache to force a re-render
+    # would leave every other test in this file paying to rebuild it, and a
+    # cache cleared in the middle of a run is a way to make one test's result
+    # depend on which tests ran before it.
+    moved = 0.0
+    printed = 0.0
+    for tone in _COMPARED_TONES:
+        # Small, because plates do not depend on what colour they print in, so
+        # this property holds at any size — and the assertion below is what
+        # stops "any size" from quietly becoming "a size where nothing is
+        # drawn", which would make a comparison of two blank frames pass.
+        source = _flat_in_hues(tone, _A_SMALL_PLATE)
+        with mock.patch.dict(FINISHES, swapped):
+            recoloured = _plates_printed(finish, source)
+        live = _plates_printed(finish, source)
+        printed = max(printed, float((live != 0).mean()))
+        moved = max(moved, float((live != recoloured).mean()))
+
+    assert printed > 0.01, (
+        f"{finish} drew almost nothing on the fixture this compares at "
+        f"({printed:.4f} of it inked) — two blank frames agree perfectly and "
+        f"this test would pass for a finish that had genuinely changed"
+    )
+
+    assert moved == 0.0, (
+        f"{finish} recoloured reads as a different picture (moved {moved:.4f}) "
+        f"— the comparison above is reading colour, so it would score a palette "
+        f"swap as a new finish and let a duplicate through in a different hue"
     )
 
 
