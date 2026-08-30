@@ -181,7 +181,7 @@ all, so a capture from any viewer is a picture at whatever size the window was.
 protean also has a raster pipeline of its own, applied **in Python after the
 capture** — the one place it does add to the rendering:
 
-![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](docs/images/print-finishes.png)
+![The same spacefill render with no finish and each of the nine print finishes: cross-hatch, cyanotype, dotty, dotty-confetti, dotty-mixed, engraving, hedcut, linear-hatch and spot-ink-plates](docs/images/print-finishes.png)
 
 `spot-ink-plates` is the one that carries data: it binds *which plate a region
 prints on* — a category, not a shade, so shading cannot quantise it away.

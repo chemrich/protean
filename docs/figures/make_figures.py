@@ -595,6 +595,18 @@ async def print_finishes() -> list[Path]:
     520 the two hatchings resolve to about 2 px and every one of them turns
     into the same grey — which is the figure telling the reader the finishes
     are indistinguishable when they are not.
+
+    Five columns rather than four because there are ten tiles: nine finishes
+    and the render they were made from. Four leaves a ragged row of two.
+
+    900 px still holds now that the dot finishes are here, and it was worth
+    checking rather than assuming: `dotty`'s pitch is 1/470 of the diagonal,
+    which is under a pixel once a tile is 520 wide, and the capture size
+    cannot help because the tile is a fixed fraction of the frame either way.
+    What saves it is the supersampling — the lattice comes back unclamped and
+    antialiased, so a sub-pixel dot survives the downscale as grain instead of
+    averaging into a wash, and the three dotty finishes read as three finishes.
+    Looked at, not calculated; the calculation said they would not.
     """
     await load("1ubq")
     await server.hide(SCENE)
@@ -612,7 +624,7 @@ async def print_finishes() -> list[Path]:
                 (finish, await capture(tmp / f"{finish}.png", pixels=900, finish=finish))
             )
         return [
-            contact_sheet(IMAGES / "print-finishes.png", tiles, columns=4, tile_width=520)
+            contact_sheet(IMAGES / "print-finishes.png", tiles, columns=5, tile_width=520)
         ]
 
 

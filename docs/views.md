@@ -933,6 +933,67 @@ and the guard that can is a differential against the same finish with its own
 mechanism removed — which is the arm `test_shuffle_differential.py` had already
 used, for exactly this reason.
 
+#### The hedcut bows, and the plate learns to have edges — 2026-08-29
+
+The section above answered the hatches. `hedcut` was left ruling one direction
+straight through every form, which was defended as its style rather than a
+defect — correctly, but only half of the complaint was about size. The other
+half was the mechanism, and it came back as *"they read like bad modern art"*.
+
+Five plates were rendered and Charlie picked the third: the same swelling rule,
+debanded, with `_Lozenge`'s warped carrier under it. **The bow does not move
+the rim**, and that was checked rather than hoped for — the bowed finish lifts
++0.0694 against +0.0714 for the same finish with `relief` forced to 0. So it
+stays a *control* for the rim guard even though it now follows the form: the
+warp is a texture, and the burr is the rim-landing mechanism. Two things that
+look like one thing from the outside.
+
+**Antialiasing had to go somewhere it could not go.** The finish engine is one
+bit — `marks()` returns booleans, `apply_finish` paints flat ink, and
+`ink_mask` recovers the mask *bit for bit because of it* — so a plate has
+exactly two grey levels and an antialiased edge is not something it can draw.
+The old `hedcut` never showed the staircase because a fixed 75 degrees sits off
+both axes and off the 45 the render's own antialiasing favours; a bowed rule
+sweeps every angle including the bad ones. The resolution is that the *capture*
+gets bigger and the plate is averaged down afterwards, declared per finish
+rather than applied globally. `spot-ink-plates` must never have it: its
+boundaries are a category rather than a shade, and averaging across one invents
+inks its own `palette()` disowns.
+
+Which finishes was measured, not assumed. A mark whose size is a fraction of
+the frame comes back unchanged from a bigger capture with only its edges
+resolved — `hedcut`, `dotty` and `dotty-mixed` read an *identical* ink fraction
+at 1x and 2x. `engraving` moves 0.062 to 0.041, so supersampling would change
+its picture rather than resolve it.
+
+**Three guards could not see their own subject**, all found by this round and
+none of them caused by it. The mark-size guard resolved the diagonal as
+`hypot(w, h)` where `_Frame` carries `sqrt(w * h)` — 1.41x too large — and so
+reported `engraving` clear of the grain floor by 6% while it drew the floor
+exactly; it also read `pitch` only, so the three stroke finishes were never
+checked at the comparison size at all. Fixing both revealed that **four of the
+six shipped finishes were pinned to their floors at the comparison size**: the
+pairwise test had never once compared the marks the product draws. The rim
+guard named `hedcut` in prose as its control, with a number that no longer
+matched the code and a finish that was not even the highest control. And the
+pairwise comparison itself measured ink masks, which is one bit, and
+`dotty-mixed` partitions the field `dotty` draws — byte-identical masks by
+design — so the measure had to become *which plate printed* rather than
+*whether there is ink*.
+
+The general lesson is the file's own, arriving again: a guard that cannot
+observe the thing it checks passes for the wrong reason, and the only reliable
+way to find one is to break the subject deliberately and watch whether it
+notices. Every guard here was sabotage-verified in both directions.
+
+**And a colour finish can succeed at drawing nothing.** `dotty-mixed` sorts its
+dots by the hue already on screen and claims nothing about what a hue means,
+which is what makes it work over any colouring — and what makes it draw exactly
+`dotty` over a greyscale one, returning a path, a success and a sensible ink
+fraction for a picture with no colour in it. That is this project's signature
+failure and it was introduced, noticed and closed within one round, by
+reporting the chromatic share.
+
 #### The lens — projection and fog, 2026-08-25
 
 Two Canvas3D parameters protean never exposed, and between them most of the

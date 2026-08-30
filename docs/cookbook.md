@@ -444,15 +444,22 @@ snapshot(path="plate.png", finish="linear-hatch")
 snapshot(path="crossed.png", finish="cross-hatch")
 snapshot(path="contoured.png", finish="engraving")
 snapshot(path="plates.png", finish="spot-ink-plates")
+snapshot(path="dots.png", finish="dotty")
+snapshot(path="party.png", finish="dotty-confetti")
 ```
 
-Three of those are engravings and they differ in what the marks follow.
-`linear-hatch` and `cross-hatch` are the hatching: strokes that bend around a
-form rather than being ruled across it, one direction or two. `engraving`
-contours the shading instead, like a relief map, so every atom becomes a
-contoured hill. `capabilities()` reports the whole list.
+They differ in what the marks follow. `linear-hatch` and `cross-hatch` are the
+hatching: strokes that bend around a form rather than being ruled across it,
+one direction or two. `engraving` contours the shading instead, like a relief
+map, so every atom becomes a contoured hill. `dotty` carries the same shading
+in dots. `capabilities()` reports the whole list.
 
-![The same spacefill render with no finish and each of the six print finishes: cross-hatch, cyanotype, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
+`dotty-mixed` and `dotty-confetti` ink `dotty`'s dots in three print colours,
+sorted by the hue already on screen — so they follow whatever you coloured by,
+and a greyscale render gives them nothing to sort and comes back as plain
+`dotty`. The reply's `chromatic` number is what says which happened.
+
+![The same spacefill render with no finish and each of the nine print finishes: cross-hatch, cyanotype, dotty, dotty-confetti, dotty-mixed, engraving, hedcut, linear-hatch and spot-ink-plates](images/print-finishes.png)
 
 The finish is applied **after the capture, in Python** — the viewer does not
 show it, and the reply says so outright, because protean's claim is that the
