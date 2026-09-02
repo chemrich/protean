@@ -388,7 +388,7 @@ function withCanvas(plugin: any) {
     }),
     // Settled instantly: these tests are about props, not about timing.
     commitQueueSize: { value: 0 },
-    reprCount: { value: 0 },
+    reprCount: { value: 1 },
     // A plausible viewport. `brushwork` resolves its brush against this, so a
     // fake without it would make every resolved size `NaN` and the floor check
     // unreachable.

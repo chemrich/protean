@@ -497,14 +497,24 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   // so sampling immediately finds an untouched queue and calls it drained —
   // the same trap settleCamera documents, and the reason CI captured a blank
   // frame from a molecule that had definitely loaded.
-  for (let i = 0; i < 3; i++) await frame();
+  for (let i = 0; i < 5; i++) await frame();
 
   let previous = sample();
   let quiet = 0;
-  while (quiet < 3 && performance.now() - start < budgetMs) {
+  while (performance.now() - start < budgetMs) {
     await frame();
     const current = sample();
-    quiet = current === previous ? quiet + 1 : 0;
+    const reprCount = canvas3d.reprCount?.value ?? 0;
+    const queueSize = canvas3d.commitQueueSize?.value ?? 0;
+    const structuresCount =
+      plugin.managers?.structure?.hierarchy?.current?.structures?.length ?? 0;
+    const busy = queueSize > 0 || (structuresCount > 0 && reprCount === 0);
+    if (!busy && current === previous) {
+      quiet++;
+      if (quiet >= 3) break;
+    } else {
+      quiet = 0;
+    }
     previous = current;
   }
 }
