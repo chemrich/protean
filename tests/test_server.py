@@ -1439,6 +1439,72 @@ async def test_material_sends_the_finish_and_omits_unmentioned_knobs(wired_bridg
     assert sent == {"name": "surf", "finish": "chrome"}
 
 
+async def test_material_origami_finish(wired_bridge):
+    """The origami finish passes dielectric matte and paper grain bumpiness to the viewer."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": args["finish"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await material(finish="origami", name="sele")
+    await task
+
+    assert sent == {"name": "sele", "finish": "origami"}
+
+
+async def test_material_glass_finish(wired_bridge):
+    """The glass finish passes clear transmission finish to the viewer."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": args["finish"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await material(finish="glass", name="sele")
+    await task
+
+    assert sent == {"name": "sele", "finish": "glass"}
+
+
+async def test_material_seaglass_finish(wired_bridge):
+    """The seaglass finish passes frosted glass finish to the viewer."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": args["finish"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await material(finish="seaglass", name="sele")
+    await task
+
+    assert sent == {"name": "sele", "finish": "seaglass"}
+
+
+async def test_material_glass_with_explicit_overrides(wired_bridge):
+    """Explicit parameters override defaults when sent to the viewer."""
+    sent: dict[str, Any] = {}
+    wired_bridge.handlers["material"] = lambda args: (
+        sent.update(args) or {"finish": args["finish"], "representations": 1}
+    )
+    task = wired_bridge.serve(1)
+    await material(
+        finish="glass",
+        name="sele",
+        roughness=0.25,
+        metalness=0.1,
+        bumpiness=0.3,
+        bump_frequency=4.0,
+    )
+    await task
+
+    assert sent == {
+        "name": "sele",
+        "finish": "glass",
+        "roughness": 0.25,
+        "metalness": 0.1,
+        "bumpiness": 0.3,
+        "bump_frequency": 4.0,
+    }
+
+
 async def test_material_carries_an_emissive_of_zero_rather_than_dropping_it(wired_bridge):
     """0.0 is a value — it is how you stop something glowing — not an omission."""
     sent: dict[str, Any] = {}
@@ -2187,7 +2253,7 @@ async def test_active_site_insists_on_being_told_which_site(wired_bridge, tmp_pa
 # the viewer's load preset, so a view has to hide it and take the scene over, and
 # two views in a row have to replace each other rather than stack.
 
-_DRAWING_PRESETS = ["textbook", "putty", "hydrophobic-surface", "spacefill", "skeleton"]
+_DRAWING_PRESETS = ["textbook", "origami", "putty", "hydrophobic-surface", "spacefill", "skeleton"]
 
 
 async def _preset_calls(
@@ -2434,6 +2500,52 @@ async def test_an_all_atom_view_leaves_the_solvent_out(wired_bridge, tmp_path, v
     assert "HOH" not in {str(r) for r in array[scene.indices].res_name}
 
 
+async def test_preset_origami_coordinates_recipe(wired_bridge, tmp_path):
+    """The origami visual recipe: washi background, 3-point light, origami shading and finish."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out, calls = await _preset_calls(wired_bridge, tmp_path, "origami")
+
+    assert out["preset"] == "origami"
+    actions = [action for action, _ in calls]
+    assert "background" in actions
+    assert "lighting" in actions
+    assert "effects" in actions
+    assert "shading" in actions
+    assert "material" in actions
+
+    bg_call = next(args for action, args in calls if action == "background")
+    assert bg_call["color"] == "#f6f4eb"
+
+    light_call = next(args for action, args in calls if action == "lighting")
+    assert light_call["rig"] == "three-point"
+    assert light_call["ambient"] == 0.45
+
+    eff_call = next(args for action, args in calls if action == "effects")
+    assert eff_call["occlusion"] is True
+    assert eff_call["shadow"] is False
+
+    shading_call = next(args for action, args in calls if action == "shading")
+    assert shading_call["style"] == "origami"
+    assert shading_call["name"] == "auto_view"
+
+    mat_call = next(args for action, args in calls if action == "material")
+    assert mat_call["finish"] == "origami"
+    assert mat_call["name"] == "auto_view"
+
+
+async def test_preset_seaglass_coordinates_recipe(wired_bridge, tmp_path):
+    """The seaglass visual recipe: seafoam tint, three-point lighting, and seaglass finish."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "gly.pdb"))
+    out, calls = await _preset_calls(wired_bridge, tmp_path, "seaglass")
+
+    assert out["preset"] == "seaglass"
+    actions = [action for action, _ in calls]
+    assert "material" in actions
+
+    mat_call = next(args for action, args in calls if action == "material")
+    assert mat_call["finish"] == "seaglass"
+
+
 async def test_capabilities_reports_the_presets(wired_bridge):
     wired_bridge.handlers["capabilities"] = lambda args: {"representations": ["cartoon"]}
     task = wired_bridge.serve(1)
@@ -2441,7 +2553,24 @@ async def test_capabilities_reports_the_presets(wired_bridge):
     await task
 
     assert "ghost-heart" in out["presets"]
+    assert "origami" in out["presets"]
+    assert "seaglass" in out["presets"]
     assert out["presets"] == sorted(out["presets"])
+
+
+async def test_capabilities_reports_glass_and_seaglass_finishes(wired_bridge):
+    """Capabilities RPC reports glass and seaglass material finishes and presets."""
+    wired_bridge.handlers["capabilities"] = lambda args: {
+        "representations": ["cartoon"],
+        "material_finishes": ["chrome", "glass", "glossy", "matte", "metallic", "origami", "satin", "seaglass"],
+    }
+    task = wired_bridge.serve(1)
+    out = await capabilities()
+    await task
+
+    assert "glass" in out["material_finishes"]
+    assert "seaglass" in out["material_finishes"]
+    assert "seaglass" in out["presets"]
 
 
 # -- image and skybox backgrounds ----------------------------------------------
@@ -3268,7 +3397,7 @@ def test_the_ligand_flag_follows_the_selection_rather_than_a_boolean():
     maltose."""
     drawn = {name: view.draws_ligands for name, view in server_mod._VIEWS.items()}
 
-    assert drawn["textbook"] and drawn["putty"] and drawn["hydrophobic-surface"]
+    assert drawn["textbook"] and drawn["origami"] and drawn["putty"] and drawn["hydrophobic-surface"]
     assert not drawn["spacefill"] and not drawn["skeleton"], (
         "an all-atom view already has the ligand; drawing it twice nests copies"
     )
@@ -3782,6 +3911,7 @@ def _quiet_viewer() -> dict[str, Any]:
             "background",
             "size",
             "load_structure",
+            "reset_view",
         ),
         nothing,
     )
@@ -3984,3 +4114,46 @@ async def test_active_site_registers_no_hetero_handle_when_there_is_none(
         await preset("active-site", handle="site")
 
     assert server_mod._CONTEXT_HETERO not in server_mod._handles.names()
+
+
+async def test_material_glass_and_seaglass_tool_arguments(wired_bridge, tmp_path):
+    """Test material tool with glass and seaglass finishes."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "tiny.pdb"))
+
+    async with _serving(wired_bridge, material=lambda a: {"ok": True, **a}):
+        reply_glass = await server_mod.material(finish="glass", roughness=0.05, metalness=0.0)
+        assert reply_glass.get("finish") == "glass"
+
+        reply_seaglass = await server_mod.material(finish="seaglass", roughness=0.7, bumpiness=0.45, bump_frequency=4.0)
+        assert reply_seaglass.get("finish") == "seaglass"
+
+
+async def test_preset_seaglass_tool(wired_bridge, tmp_path):
+    """Test preset tool with seaglass."""
+    await _load(wired_bridge, _tiny_protein_pdb(tmp_path / "tiny.pdb"))
+
+    async with _serving(wired_bridge, **_quiet_viewer()):
+        reply = await server_mod.preset("seaglass")
+        assert reply.get("preset") == "seaglass"
+        assert reply.get("applied_to") == "auto"
+        assert len(reply.get("steps", [])) > 0
+
+
+def test_glass_and_seaglass_snapshot_artifacts_present():
+    """Verify that 1ubq_glass_snapshot.png and 1ubq_seaglass_preset_snapshot.png exist and are valid."""
+    from pathlib import Path
+    from PIL import Image
+
+    snapshots_dir = Path(__file__).resolve().parent / "snapshots"
+    out_glass = snapshots_dir / "1ubq_glass_snapshot.png"
+    out_seaglass = snapshots_dir / "1ubq_seaglass_preset_snapshot.png"
+
+    assert out_glass.exists(), f"Missing glass snapshot: {out_glass}"
+    assert out_glass.stat().st_size > 1000, f"Glass snapshot too small: {out_glass.stat().st_size}"
+    with Image.open(out_glass) as img:
+        assert img.width > 0 and img.height > 0
+
+    assert out_seaglass.exists(), f"Missing seaglass snapshot: {out_seaglass}"
+    assert out_seaglass.stat().st_size > 1000, f"Seaglass snapshot too small: {out_seaglass.stat().st_size}"
+    with Image.open(out_seaglass) as img:
+        assert img.width > 0 and img.height > 0

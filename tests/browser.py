@@ -218,4 +218,4 @@ async def viewer_session(
         )
         log.close()
         await bridge.stop()
-        shutil.rmtree(profile, ignore_errors=True)
+        # shutil.rmtree(profile, ignore_errors=True)

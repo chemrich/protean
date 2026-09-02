@@ -3743,10 +3743,13 @@ async def material(
       sharp, so a shinier name really is shinier.
 
       matte      Fully diffuse. Mol*'s default, and the way back.
+      origami    Folded paper finish: matte dielectric with paper grain texture.
       satin      A soft, broad sheen.
       glossy     A tight highlight — wet or lacquered.
       metallic   Brushed metal: the highlight takes the surface colour.
       chrome     Polished metal, close to a mirror.
+      glass      Clear, smooth, refractive transmission.
+      seaglass   Frosted, tumbled glass with high roughness and surface diffusion.
 
     metalness / roughness: 0 to 1, overriding the finish where given.
       Roughness runs 0 (mirror) to 1 (fully diffuse), and only bites when
@@ -3813,6 +3816,7 @@ async def shading(
     style: one of — capabilities() reports the live list.
 
       normal         Mol*'s own shading. Also the way back.
+      origami        Folded paper facets: sharp normal derivative creasing.
       cel            Banded, cartoon-like. Pair with effects(outline=True) for
                      the illustrative look.
       xray           The ghost look: see-through with the edges picked out.
@@ -4863,6 +4867,28 @@ async def _paint_the_ligands() -> list[str]:
     return [await _run(color, color=_PAINTING_THEME, name=_LIGAND_HANDLE)]
 
 
+async def _origami_style(_target: str, handle: str) -> list[str]:
+    """Folded paper: sharp crease facets, matte paper grain, and warm washi ground."""
+    return [
+        await _run(background, color="#f6f4eb", gradient="off"),
+        await _run(lighting, rig="three-point", ambient=0.45),
+        *await _set_effects(occlusion=True, shadow=False),
+        await _run(shading, style="origami", name=handle),
+        await _run(material, finish="origami", name=handle),
+    ]
+
+
+async def _preset_seaglass(_target: str, handle: str) -> list[str]:
+    """Frosted sea glass: tumbled translucent surface with seafoam tint and soft refraction diffusion."""
+    return [
+        await _run(background, color="#ffffff", gradient="off"),
+        await _run(lighting, rig="three-point", ambient=0.45),
+        *await _set_effects(occlusion=True, shadow=False),
+        await _run(color, color="#73b9a2", name=handle),
+        await _run(material, finish="seaglass", name=handle),
+    ]
+
+
 async def _richardson_style(_target: str, handle: str) -> list[str]:
     """The ribbon diagram's restraint: two tones, a quiet line, white paper.
 
@@ -5144,6 +5170,18 @@ _VIEWS: dict[str, _View] = {
         color="secondary-structure",
         style=lambda target, handle: _preset_illustrative(target),
     ),
+    "origami": _View(
+        selection="polymer",
+        representation="cartoon",
+        color="secondary-structure",
+        style=_origami_style,
+    ),
+    "seaglass": _View(
+        selection="polymer",
+        representation="cartoon",
+        color="uniform",
+        style=_preset_seaglass,
+    ),
     "putty": _View(
         selection="polymer",
         representation="putty",
@@ -5376,6 +5414,12 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            ground alone.
       textbook             Cartoon by secondary structure, flat and outlined —
                            illustrative's styling with the drawing done too.
+      origami              Biomolecular origami: secondary structure cartoon
+                           rendered as folded paper with sharp creases, matte
+                           paper grain texture, and a warm washi ground.
+      seaglass             Frosted sea glass: secondary structure cartoon
+                           rendered with tumbled translucent texture, seafoam
+                           green tint, and diffused refraction.
       putty                A tube whose width *and* colour follow B-factor, so
                            a disordered loop reads as a fat warm bulge. On a
                            predicted model this draws `plddt` instead, and the
@@ -5588,6 +5632,8 @@ _PAGE_VIEWS: dict[str, tuple[str, str]] = {
     # share.
     "default": ("default", _VIEW_DRAWS),
     "textbook": ("textbook", _VIEW_DRAWS),
+    "origami": ("origami", _VIEW_DRAWS),
+    "seaglass": ("seaglass", _VIEW_DRAWS),
     "putty": ("putty", _VIEW_DRAWS),
     # Listed alongside `putty` rather than instead of it. A click cannot know
     # which kind of file is loaded, so both entries exist and `preset()` sends

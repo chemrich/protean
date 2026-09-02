@@ -380,7 +380,7 @@ function withCanvas(plugin: any) {
     }),
     // Settled instantly: these tests are about props, not about timing.
     commitQueueSize: { value: 0 },
-    reprCount: { value: 0 },
+    reprCount: { value: 1 },
     // A plausible viewport. `brushwork` resolves its brush against this, so a
     // fake without it would make every resolved size `NaN` and the floor check
     // unreachable.
@@ -518,9 +518,9 @@ describe('createDispatcher', () => {
       // Named styles are reported for the same reason the registries are: a
       // model can only choose from what it can see at the point of use.
       lighting_rigs: ['flat', 'rim', 'ring', 'standard', 'studio', 'three-point'],
-      shading_styles: ['cel', 'flat', 'normal', 'xray', 'xray-inverted'],
+      shading_styles: ['cel', 'flat', 'normal', 'origami', 'xray', 'xray-inverted'],
       gradients: ['off', 'horizontal', 'radial'],
-      material_finishes: ['chrome', 'glossy', 'matte', 'metallic', 'satin'],
+      material_finishes: ['chrome', 'glass', 'glossy', 'matte', 'metallic', 'origami', 'satin', 'seaglass'],
       path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
       // 'off' leads rather than sorting into the middle of the painters: it is
       // a value `brushwork()` accepts and not a look.
@@ -1609,6 +1609,68 @@ describe('materials', () => {
     expect(materialOf(plugin).material).toMatchObject({ roughness: 0.05, metalness: 0 });
   });
 
+  it('applies origami finish with dielectric matte properties and paper bump', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    const reply: any = await dispatch('material', { name: 'sele', finish: 'origami' });
+
+    expect(materialOf(plugin).material).toEqual({
+      metalness: 0,
+      roughness: 1.0,
+      bumpiness: 0.45,
+    });
+    expect(materialOf(plugin).bumpFrequency).toBe(4.5);
+    expect(reply).toMatchObject({
+      finish: 'origami',
+      metalness: 0,
+      roughness: 1.0,
+      bumpiness: 0.45,
+      bump_frequency: 4.5,
+      bump_will_show: true,
+      bump_shows_on: 1,
+    });
+  });
+
+  it('applies glass finish with clean transmission properties and smooth surface', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    const reply: any = await dispatch('material', { name: 'sele', finish: 'glass' });
+
+    expect(materialOf(plugin).material).toEqual({
+      metalness: 0,
+      roughness: 0.05,
+      bumpiness: 0,
+    });
+    expect(reply).toMatchObject({
+      finish: 'glass',
+      metalness: 0,
+      roughness: 0.05,
+      bumpiness: 0,
+    });
+  });
+
+  it('applies seaglass finish with frosted roughness and tumble bump', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = await shown(plugin);
+    const reply: any = await dispatch('material', { name: 'sele', finish: 'seaglass' });
+
+    expect(materialOf(plugin).material).toEqual({
+      metalness: 0,
+      roughness: 0.7,
+      bumpiness: 0.45,
+    });
+    expect(materialOf(plugin).bumpFrequency).toBe(4.0);
+    expect(reply).toMatchObject({
+      finish: 'seaglass',
+      metalness: 0,
+      roughness: 0.7,
+      bumpiness: 0.45,
+      bump_frequency: 4.0,
+      bump_will_show: true,
+      bump_shows_on: 1,
+    });
+  });
+
   it('puts bumpiness in the material group and frequency beside it', async () => {
     // The two halves of a bump live in different places: `bumpiness` is a
     // member of the material group, `bumpFrequency` is a parameter of the
@@ -1730,7 +1792,7 @@ describe('materials', () => {
     const dispatch = await shown(plugin);
     await expect(
       dispatch('material', { name: 'sele', finish: 'velvet' })
-    ).rejects.toThrow(/Unknown finish 'velvet'.*chrome, glossy/s);
+    ).rejects.toThrow(/Unknown finish 'velvet'.*chrome.*matte/s);
   });
 
   it.each(['metalness', 'roughness', 'emissive'])(
@@ -1856,6 +1918,30 @@ describe('effects, shading and gradients', () => {
     await dispatch('shading', { name: 'sele', style: 'cel', cel_steps: 4 });
 
     expect(plugin.canvas3d.props.renderer.celSteps).toBe(4);
+  });
+
+  it('applies origami shading with flatShaded and faceted secondary structure geometry', async () => {
+    const plugin: any = withCanvas(fakePlugin());
+    const dispatch = createDispatcher(plugin);
+    await dispatch('show', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+      representation: 'cartoon',
+    });
+    const result: any = await dispatch('shading', { name: 'sele', style: 'origami' });
+
+    const params = plugin.componentRefs[0].representations[0].cell.transform.params;
+    expect(params.type.params).toMatchObject({
+      flatShaded: true,
+      celShaded: false,
+      xrayShaded: false,
+      helixProfile: 'square',
+      nucleicProfile: 'square',
+      radialSegments: 4,
+      linearSegments: 6,
+      aspectRatio: 4.5,
+    });
+    expect(result).toMatchObject({ style: 'origami', representations: 1 });
   });
 
   it('refuses shading a handle that was never shown', async () => {

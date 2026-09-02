@@ -30,6 +30,7 @@ import {
   painterlyState,
   setPainterly,
 } from './painterly';
+import { installRefraction } from './refraction';
 
 /**
  * A tab on the right edge that opens Mol*'s controls panel.
@@ -251,6 +252,7 @@ async function init() {
   // Keeping it out of `dispatch.ts` is what lets the unit suite go on running
   // the dispatcher against a fake plugin in jsdom.
   installPainterly();
+  installRefraction();
   // Asked of a live viewer rather than assumed. If the bundler handed out a
   // second copy of the pass classes, the patch is on the wrong one and the
   // finish would report success and never draw.

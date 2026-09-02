@@ -369,15 +369,62 @@ const EFFECT_PARAMS: Record<string, Record<string, unknown>> = {
  */
 const SHADING_STYLES: Record<string, Record<string, unknown>> = {
   // Mol*'s own shading. Also the way back from any of the others.
-  normal: { celShaded: false, xrayShaded: false, ignoreLight: false },
+  normal: {
+    celShaded: false,
+    xrayShaded: false,
+    ignoreLight: false,
+    flatShaded: false,
+    helixProfile: 'elliptical',
+    nucleicProfile: 'square',
+    radialSegments: 16,
+    linearSegments: 8,
+    aspectRatio: 5,
+  },
   // Banded, cartoon-like. Band count is renderer.celSteps, which is global.
-  cel: { celShaded: true, xrayShaded: false, ignoreLight: false },
+  cel: {
+    celShaded: true,
+    xrayShaded: false,
+    ignoreLight: false,
+    flatShaded: false,
+    helixProfile: 'elliptical',
+    nucleicProfile: 'square',
+    radialSegments: 16,
+    linearSegments: 8,
+    aspectRatio: 5,
+  },
   // The ghost look: see-through with edges picked out.
-  xray: { celShaded: false, xrayShaded: true, ignoreLight: false },
+  xray: {
+    celShaded: false,
+    xrayShaded: true,
+    ignoreLight: false,
+    flatShaded: false,
+  },
   // Inverts which parts fade, so the facing surface goes and the rim stays.
-  'xray-inverted': { celShaded: false, xrayShaded: 'inverted', ignoreLight: false },
+  'xray-inverted': {
+    celShaded: false,
+    xrayShaded: 'inverted',
+    ignoreLight: false,
+    flatShaded: false,
+  },
   // Unlit flat colour, for a diagram rather than a picture of an object.
-  flat: { celShaded: false, xrayShaded: false, ignoreLight: true },
+  flat: {
+    celShaded: false,
+    xrayShaded: false,
+    ignoreLight: true,
+    flatShaded: false,
+  },
+  // Folded paper origami aesthetic: flat normal derivative shading for crisp creases on secondary structures, with square helix trace profile and faceted geometry.
+  origami: {
+    celShaded: false,
+    xrayShaded: false,
+    ignoreLight: false,
+    flatShaded: true,
+    helixProfile: 'square',
+    nucleicProfile: 'square',
+    radialSegments: 4,
+    linearSegments: 6,
+    aspectRatio: 4.5,
+  },
 };
 
 /** Path-trace quality, as sample counts.
@@ -422,14 +469,36 @@ const TRACE_QUALITY: Record<string, number> = {
  * physically accurate BRDF parameters. Anyone wanting the physical values can
  * pass metalness and roughness explicitly.
  *
+ * **`origami` is a folded paper material.** Dielectric matte paper properties
+ * (`metalness: 0`, `roughness: 1.0`) paired with fine procedural paper tooth
+ * bumpiness (`bumpiness: 0.45`, `bump_frequency: 4.5`) for physical paper grain.
+ *
+ * **`glass` is a smooth dielectric transmission material.** Optically clear
+ * transmission properties (`metalness: 0`, `roughness: 0.05`, `bumpiness: 0`).
+ *
+ * **`seaglass` is a frosted tumbled beach glass material.** High microfacet
+ * roughness scattering (`metalness: 0`, `roughness: 0.7`) paired with tumbled
+ * surface bump facets (`bumpiness: 0.45`, `bump_frequency: 4.0`).
+ *
  * `matte` is Mol*'s default material, so it is also the way back.
  */
-const MATERIAL_FINISHES: Record<string, { metalness: number; roughness: number }> = {
+const MATERIAL_FINISHES: Record<
+  string,
+  {
+    metalness: number;
+    roughness: number;
+    bumpiness?: number;
+    bump_frequency?: number;
+  }
+> = {
   matte: { metalness: 0, roughness: 1.0 },
   satin: { metalness: 0.15, roughness: 0.6 },
   glossy: { metalness: 0.3, roughness: 0.15 },
   metallic: { metalness: 1.0, roughness: 0.6 },
   chrome: { metalness: 1.0, roughness: 0.1 },
+  origami: { metalness: 0, roughness: 1.0, bumpiness: 0.45, bump_frequency: 4.5 },
+  glass: { metalness: 0, roughness: 0.05, bumpiness: 0 },
+  seaglass: { metalness: 0, roughness: 0.7, bumpiness: 0.45, bump_frequency: 4.0 },
 };
 
 /** Gradient background variants, keyed by the name we expose.
@@ -485,14 +554,24 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   // so sampling immediately finds an untouched queue and calls it drained —
   // the same trap settleCamera documents, and the reason CI captured a blank
   // frame from a molecule that had definitely loaded.
-  for (let i = 0; i < 3; i++) await frame();
+  for (let i = 0; i < 5; i++) await frame();
 
   let previous = sample();
   let quiet = 0;
-  while (quiet < 3 && performance.now() - start < budgetMs) {
+  while (performance.now() - start < budgetMs) {
     await frame();
     const current = sample();
-    quiet = current === previous ? quiet + 1 : 0;
+    const reprCount = canvas3d.reprCount?.value ?? 0;
+    const queueSize = canvas3d.commitQueueSize?.value ?? 0;
+    const structuresCount =
+      plugin.managers?.structure?.hierarchy?.current?.structures?.length ?? 0;
+    const busy = queueSize > 0 || (structuresCount > 0 && reprCount === 0);
+    if (!busy && current === previous) {
+      quiet++;
+      if (quiet >= 3) break;
+    } else {
+      quiet = 0;
+    }
     previous = current;
   }
 }
@@ -1989,7 +2068,11 @@ export function createDispatcher(plugin: any): Handler {
         // declare none at all (label, line, point, plane, gaussian-volume).
         // Pinning bumpiness killed the control everywhere; on those seven it
         // would have worked with no other change.
-        const material: Record<string, number> = { ...base, bumpiness: 0 };
+        const material: Record<string, number> = {
+          metalness: base.metalness,
+          roughness: base.roughness,
+          bumpiness: base.bumpiness ?? 0,
+        };
         for (const [key, value] of overrides) {
           if (value === undefined) continue;
           checkFraction(key, value);
@@ -2006,6 +2089,9 @@ export function createDispatcher(plugin: any): Handler {
         ) {
           throw new Error(`bump_frequency must be between 0 and 10, got ${bump_frequency}`);
         }
+
+        const effBumpFrequency =
+          bump_frequency !== undefined ? bump_frequency : base.bump_frequency;
 
         const entry = require(name);
         const target = hierarchyComponents(entry.refs);
@@ -2027,8 +2113,8 @@ export function createDispatcher(plugin: any): Handler {
               // `label` has no surface to perturb. Counted rather than assumed,
               // so asking for a bump on something that cannot take one is
               // reported instead of ignored.
-              if (bump_frequency !== undefined && 'bumpFrequency' in old.type.params) {
-                old.type.params.bumpFrequency = bump_frequency;
+              if (effBumpFrequency !== undefined && 'bumpFrequency' in old.type.params) {
+                old.type.params.bumpFrequency = effBumpFrequency;
                 bumped++;
               }
               // Whether the bump can show at all, on this representation, after
@@ -2054,6 +2140,11 @@ export function createDispatcher(plugin: any): Handler {
         await update.commit();
 
         const bloom = plugin.canvas3d?.props?.postprocessing?.bloom;
+        const bumpRequested =
+          bumpiness !== undefined ||
+          bump_frequency !== undefined ||
+          (base.bumpiness !== undefined && base.bumpiness > 0) ||
+          base.bump_frequency !== undefined;
         return {
           name,
           finish,
@@ -2065,12 +2156,12 @@ export function createDispatcher(plugin: any): Handler {
           // or a frequency with the bumpiness this call just defaulted back to
           // zero. Both are silent, and the caller mentioned a bump either way.
           // The same courtesy `bloom_will_show` pays one field down.
-          ...(bumpiness !== undefined || bump_frequency !== undefined
+          ...(bumpRequested
             ? { bump_will_show: showing > 0, bump_shows_on: showing }
             : {}),
-          ...(bump_frequency !== undefined
+          ...(effBumpFrequency !== undefined
             ? {
-                bump_frequency,
+                bump_frequency: effBumpFrequency,
                 // A bump needs both halves and they live in different places,
                 // so the reply says how many representations took the frequency
                 // rather than leaving a silent nothing to look like success.
