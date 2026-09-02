@@ -4000,6 +4000,7 @@ def _quiet_viewer() -> dict[str, Any]:
             "background",
             "size",
             "load_structure",
+            "reset_view",
         ),
         nothing,
     )
