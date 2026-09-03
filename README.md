@@ -4,12 +4,13 @@ Agent-native molecular visualization. An MCP server (Python) drives a
 [Mol\*](https://molstar.org) viewer in a browser tab — a model does the
 driving, you watch and tweak.
 
-![Carbonic anhydrase II: the catalytic zinc site in ball-and-stick against a faded cartoon fold](docs/images/zinc-site.png)
+![HIV protease's fold in glossy grey cartoon on black, indinavir picked out in gold spacefill where it sits in the binding cleft](docs/images/hero.png)
 
-*"Load 1CA2 and show me the catalytic zinc site" — protean's own output, and
-its own answer: His94, His96 and His119 coordinating the zinc. The selection
-was written as `byres (polymer within 5 of resn ZN) or resn ZN`; the figure
-came out of `snapshot()` at a real physical size.*
+*"Show me where indinavir sits in HIV protease" — protean's own output. The
+picture carries no colour-coded data: a `studio` lighting rig, a `glossy`
+material and one accent colour on the ligand are the whole of what makes it
+read as more than a diagram. `capabilities()` lists six lighting rigs and
+five material finishes; this is one pairing of them.*
 
 protean is built for a model to use, not for a human at a REPL. Selections are
 named handles that analysis returns and display tools consume; every reply is
@@ -187,8 +188,14 @@ capture** — the one place it does add to the rendering:
 prints on* — a category, not a shade, so shading cannot quantise it away.
 
 And `boil()` redraws the molecule every two frames with the atoms nudged, the
-way hand-drawn animation breathes. How far an atom wanders follows how sure the
-data is about it, so a disordered loop swings and an ordered core holds.
+way hand-drawn animation breathes.
+
+![Ubiquitin redrawn every two frames, animation's "on twos"](docs/images/boil.gif)
+
+How far an atom wanders follows how sure the data is about it, so a disordered
+loop swings and an ordered core holds — a single frame of the boil can't show
+that binding, so it's held open instead, every pose accumulated into one long
+exposure:
 
 ![Every boil pose accumulated into one exposure, showing which regions smear](docs/images/boil-trails.png)
 

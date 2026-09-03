@@ -693,7 +693,7 @@ async def brushwork() -> list[Path]:
 
 @figure("zinc-site")
 async def zinc_site() -> list[Path]:
-    """The README's opening figure: one question, answered as a picture."""
+    """Getting-started's opening figure: one question, answered as a picture."""
     await load("1ca2")
     await server.preset("publication-cartoon")
     await server.select("byres (polymer within 5 of resn ZN) or resn ZN", name="site")
@@ -702,6 +702,38 @@ async def zinc_site() -> list[Path]:
     )
     await server.focus("site")
     return [trim(await capture(IMAGES / "zinc-site.png", pixels=1000))]
+
+
+@figure("hero")
+async def hero() -> list[Path]:
+    """The README's own opening figure — carried by lighting and material, not colour.
+
+    Replaced `zinc-site.png` in that slot on Charlie's word: a bracket of
+    colour-driven candidates (chain-id, a potential map) read as arbitrary and
+    "overlapping" rather than considered. This one carries no analysis at
+    all — grey glossy cartoon, a black ground, one gold accent — and the
+    accent means exactly one thing: this is what the drug is holding onto.
+
+    1HSG rather than 1CA2: HIV protease's fold gives the studio rig two lobes
+    and a real cleft to light, and indinavir sitting in it is a more legible
+    single subject than a scattered zinc site once colour stops doing the
+    pointing.
+    """
+    await load("1hsg")
+    await server.brushwork(look="off")
+    await server.hide(SCENE)
+    await server.background(color="#15181c")
+    await server.lighting(rig="studio")
+    await server.show(
+        selection="polymer", name="fold", representation="cartoon", color="#aab0b8"
+    )
+    await server.material(finish="glossy", name="fold")
+    await server.show(
+        selection="resn MK1", name="lig", representation="spacefill", color="#e0a840"
+    )
+    await server.material(finish="glossy", name="lig")
+    await server.focus("fold")
+    return [trim(await capture(IMAGES / "hero.png", pixels=1300))]
 
 
 @figure("interface")
@@ -1084,6 +1116,40 @@ async def boil() -> list[Path]:
         if not exposure.is_file():
             raise Blank(f"boil reported trails but wrote no exposure.png ({result})")
         return [sheet, trim(Path(shutil.copy(exposure, IMAGES / "boil-trails.png")))]
+
+
+@figure("boil-animated")
+async def boil_animated() -> list[Path]:
+    """The boil playing, not standing for it — a grid of stills can only imply motion.
+
+    `boil-poses.png` exists because a README is static; this exists because
+    GitHub renders an embedded GIF as a loop, so the actual claim — the line
+    breathes — no longer needs a reader to take four frames on faith.
+
+    16 frames at hold=2 is 8 poses; fps=6 plays that back in a little over two
+    seconds per lap, slow enough that the second-to-second redraw reads as a
+    living line rather than a flicker. Checked by eye, not derived.
+    """
+    await load("1ubq")
+    await server.preset("textbook")
+    with scratch() as tmp:
+        frames = tmp / "poses"
+        await server.boil(directory=str(frames), frames=16, hold=2, width=700)
+        written = sorted(frames.glob("frame_*.png"))
+        if len(written) < 8:
+            raise Blank(f"boil wrote {len(written)} frames, expected at least 8")
+        # The mechanical guard for "this plays": the first and last pose must
+        # actually differ. A boil that silently drew the same pose sixteen
+        # times would still write sixteen well-formed, non-blank PNGs.
+        first = np.asarray(Image.open(written[0]).convert("RGB"))
+        last = np.asarray(Image.open(written[-1]).convert("RGB"))
+        if np.array_equal(first, last):
+            raise Blank("boil-animated: first and last frame are identical")
+        gif = IMAGES / "boil.gif"
+        await server.movie(directory=str(frames), path=str(gif), fps=6, overwrite=True)
+        if not gif.is_file() or gif.stat().st_size == 0:
+            raise Blank("boil-animated: movie() reported success but wrote nothing")
+        return [gif]
 
 
 async def run(selected: list[str] | None) -> int:
