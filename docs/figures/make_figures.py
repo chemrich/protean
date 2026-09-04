@@ -634,6 +634,42 @@ async def print_finishes() -> list[Path]:
         ]
 
 
+@figure("neon")
+async def neon() -> list[Path]:
+    """The two neon presets: a glowing tube, and an isolated glowing cofactor.
+
+    Two subjects, not one, and neither is arbitrary. `neon-backbone` runs on
+    myoglobin specifically because it has a heme: `_draw_the_ligands` draws it
+    automatically, and `neon-backbone`'s own style callback then gives it the
+    same chrome/emissive material as the tube — the two-tone "tube plus
+    cofactor" look is what a bound ligand gets for free, not a separate case
+    to demonstrate by hand. `neon-cofactors` runs on HIV protease because its
+    whole point is a structure whose interesting part *is* the small molecule;
+    myoglobin's heme would work here too, but a bound drug makes the "what is
+    this" question answer itself.
+    """
+    await load("1mbn")
+    await server.preset("neon-backbone")
+    tube = trim(await capture(IMAGES / "neon-backbone.png", pixels=1100))
+
+    await load("1hsg")
+    await server.preset("neon-cofactors")
+    cofactor = trim(await capture(IMAGES / "neon-cofactors.png", pixels=1100))
+
+    return [
+        tube,
+        cofactor,
+        contact_sheet(
+            IMAGES / "neon.png",
+            [("neon-backbone (1MBN)", tube), ("neon-cofactors (1HSG)", cofactor)],
+            columns=2,
+            share_frame=False,
+            ground=(8, 9, 12),
+            ink=(230, 230, 235),
+        ),
+    ]
+
+
 @figure("brushwork")
 async def brushwork() -> list[Path]:
     """The oil painting, at one plate size, beside the render underneath it.

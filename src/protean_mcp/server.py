@@ -5299,6 +5299,11 @@ class _View:
     representation: str
     color: str
     style: Any
+    #: A `show()` size factor for the base representation, or None to leave
+    #: Mol*'s own default alone. Every view but `neon-backbone` wants that
+    #: default, so this is optional rather than a field every entry has to
+    #: name — the tube is the one place "thicker than normal" is the point.
+    size: float | None = None
 
     @property
     def draws_ligands(self) -> bool:
@@ -5316,6 +5321,93 @@ class _View:
         the first.
         """
         return self.selection == "polymer"
+
+
+#: The colour `neon-backbone` reaches for. Arbitrary in the sense that any hex
+#: value or theme works just as well after the fact — `color(name=...)` is one
+#: call away, and `chain-id` turns a multi-chain structure into one glowing
+#: colour per chain for free — but a preset has to draw *something* by default.
+_NEON_TUBE_COLOR = "#19fff2"
+
+#: Chosen with Charlie over several rounds of looking at renders, not derived.
+#: The full story, for whoever touches this next:
+#:
+#: **Why 1.4x and not thicker.** Past a certain radius the tube's own geometry
+#: self-intersects on a normally packed fold — confirmed under plain lighting
+#: with the glow off entirely, so it is not a rendering artefact. 1.4x held up
+#: on both a compact beta-grasp fold (ubiquitin) and a helix bundle
+#: (myoglobin); it is a considered ceiling, not an arbitrary one.
+#:
+#: **Why emissive=0.23 and not higher.** A material at full self-illumination
+#: (1.0) has no diffuse shading left at all, so once neighbouring windings sit
+#: close together there is no gradient left to tell them apart and the picture
+#: reads as one flat blob. Turning bloom's own strength down to 0.15 barely
+#: changed that blob, which is what ruled out blur radius as the cause rather
+#: than shading. Partial emissive, real light, and ambient occlusion back on
+#: together restore enough shading that a thick tube still reads as a tube.
+#: 0.27 is a brighter version of the same picture that still holds up; the
+#: whole range up to 1.0 stays legible at this resolution and lighting if a
+#: caller wants brighter still — `material(emissive=..., name=...)` reaches it.
+_NEON_TUBE_EMISSIVE = 0.23
+
+#: `neon-cofactors` never needed this correction. A single small molecule has
+#: room around every bond — none of the self-occlusion a packed backbone has —
+#: so full self-illumination reads as a clean neon sign rather than a blur.
+_NEON_COFACTOR_EMISSIVE = 1.0
+
+
+async def _neon_backbone_style(_target: str, handle: str) -> list[str]:
+    """Chrome, partial emissive, real light: a thick tube that stays a tube.
+
+    `putty`'s own default width tracks the B-factor column — right for
+    `plddt`, wrong here, where the whole point is one uniform tube — so
+    `size()` flattens it before anything else runs. Chrome (metalness 1.0,
+    roughness 0.1) needs a light with actual direction to reflect, which is
+    why this pairs with `three-point` rather than `flat`: a mirror finish
+    under `flat`'s ambient-only light has nothing to catch.
+
+    Any ligand `_draw_the_ligands` drew gets the same material, so a bound
+    cofactor glows in the same chrome finish as the backbone rather than
+    sitting in it lit like a diagram — the two-colour "tube plus cofactor"
+    look is just this plus a different `color()` on the ligand handle
+    afterward.
+    """
+    steps = [
+        await _run(size, size="uniform", name=handle),
+        await _run(background, color="#000000", gradient="off"),
+        await _run(lighting, rig="three-point", ambient=0.3),
+        await _run(material, finish="chrome", emissive=_NEON_TUBE_EMISSIVE, name=handle),
+    ]
+    if _LIGAND_HANDLE in _handles.names():
+        steps.append(
+            await _run(
+                material,
+                finish="chrome",
+                emissive=_NEON_TUBE_EMISSIVE,
+                name=_LIGAND_HANDLE,
+            )
+        )
+    steps += await _set_effects(bloom=True, occlusion=True)
+    return steps
+
+
+async def _neon_cofactors_style(_target: str, handle: str) -> list[str]:
+    """Matte, fully self-lit, isolated in black — a cofactor as a neon sign.
+
+    Ambient is near zero and there is no directional key: the glow is meant to
+    be the only light in the scene, which is what read best across every round
+    this was looked at. `flat` rather than one of the directional rigs because
+    there is nothing here for a key light to model — full emissive already
+    draws the whole shape.
+    """
+    return [
+        await _run(background, color="#000000", gradient="off"),
+        await _run(lighting, rig="flat", ambient=0.05),
+        await _run(
+            material, finish="matte", emissive=_NEON_COFACTOR_EMISSIVE, name=handle
+        ),
+        *await _set_effects(bloom=True),
+    ]
 
 
 _VIEWS: dict[str, _View] = {
@@ -5432,6 +5524,29 @@ _VIEWS: dict[str, _View] = {
         color="#d8d3c8",
         style=_richardson_style,
     ),
+    # Backbone draws a straight cylinder between every consecutive C-alpha,
+    # which is why it always read as angular — not a rendering quality issue,
+    # what the representation architecturally is. `putty` is Mol*'s real
+    # spline-through-backbone tube, the same machinery PyMOL's `show tube`
+    # uses, so this view draws that instead.
+    "neon-backbone": _View(
+        selection="polymer",
+        representation="putty",
+        color=_NEON_TUBE_COLOR,
+        style=_neon_backbone_style,
+        size=1.4,
+    ),
+    # Isolated on purpose: an early round tried a dim ghost of the surrounding
+    # fold to show *where* a cofactor sits, and it didn't land — asked, and
+    # the answer was that the isolated version was already the one that
+    # worked. `hetatm and not solvent` refuses outright on a structure with no
+    # ligand or cofactor to draw, rather than glowing an empty scene.
+    "neon-cofactors": _View(
+        selection="hetatm and not solvent",
+        representation="ball-and-stick",
+        color="element-symbol",
+        style=_neon_cofactors_style,
+    ),
 }
 
 
@@ -5479,7 +5594,11 @@ async def _draw_view(name: str, target: str) -> list[str]:
     handle, steps = await _take_the_scene(target, view.selection)
     steps.append(
         await _run(
-            show, representation=view.representation, handle=handle, color=view.color
+            show,
+            representation=view.representation,
+            handle=handle,
+            color=view.color,
+            size=view.size,
         )
     )
     if view.draws_ligands:
@@ -5592,6 +5711,16 @@ async def preset(name: str, handle: str | None = None) -> dict[str, Any]:
                            the soft edge is the honest picture of a van der
                            Waals surface, which is a probability falling off
                            rather than a boundary.
+      neon-backbone        The polymer as a thick, glowing chrome tube on
+                           black — real emissive material and bloom, not a
+                           raster finish. Cyan by default; `color()` takes any
+                           hex value or theme afterward, and `chain-id` glows
+                           a multi-chain structure one colour per chain.
+      neon-cofactors       Cofactors and other small molecules — everything
+                           that is not solvent and not polymer — as an
+                           isolated neon sign in black, element-coloured and
+                           fully self-lit. Refused outright on a structure
+                           with nothing bound to draw.
 
       Add to what is there:
 
