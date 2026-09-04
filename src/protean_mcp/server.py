@@ -5403,7 +5403,9 @@ async def _neon_cofactors_style(_target: str, handle: str) -> list[str]:
     return [
         await _run(background, color="#000000", gradient="off"),
         await _run(lighting, rig="flat", ambient=0.05),
-        await _run(material, finish="matte", emissive=_NEON_COFACTOR_EMISSIVE, name=handle),
+        await _run(
+            material, finish="matte", emissive=_NEON_COFACTOR_EMISSIVE, name=handle
+        ),
         *await _set_effects(bloom=True),
     ]
 

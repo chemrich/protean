@@ -111,8 +111,9 @@ async def test_neon_backbones_ligand_gets_the_same_material():
     same way `DRAWN`/`BLANK` were. `LIGAND_STYLED` sits at half that, with
     margin over pixel noise but well under the real effect.
     """
-    async with viewer_session("1mbn") as session, _as_server(
-        session, load=True, pdb_id="1mbn"
+    async with (
+        viewer_session("1mbn") as session,
+        _as_server(session, load=True, pdb_id="1mbn"),
     ):
         await server_mod.preset("neon-backbone")
         glowing = await _shot(session)
@@ -130,8 +131,9 @@ async def test_neon_backbones_ligand_gets_the_same_material():
 
 async def test_neon_cofactors_glow_is_visible_in_the_picture():
     """The same guard as the tube, for the isolated-cofactor look."""
-    async with viewer_session("1hsg") as session, _as_server(
-        session, load=True, pdb_id="1hsg"
+    async with (
+        viewer_session("1hsg") as session,
+        _as_server(session, load=True, pdb_id="1hsg"),
     ):
         await server_mod.preset("neon-cofactors")
         glowing = await _shot(session)
