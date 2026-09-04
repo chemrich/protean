@@ -362,23 +362,32 @@ everything prints on one plate.
 preset("painting")
 ```
 
-![The same ubiquitin ribbon twice: a flat render, and the same thing as an oil painting with visible brush marks, glazed darks and a woven ground](images/brushwork.png)
+![The same ubiquitin ribbon three times: a flat render, the same thing as an oil painting with visible brush marks, glazed darks and a woven ground, and again as a lattice of pointillist dabs covering the whole frame](images/brushwork.png)
 
 The print finishes above are Python, over pixels that have already left the
 renderer. This is the other thing entirely: **protean's own render pass, on the
 GPU, running every frame.** The viewer shows the painting, and `snapshot()`
 returns what the viewer is showing.
 
-`brushwork(look="chiaroscuro")` reaches it directly, on whatever is on screen.
-`preset("painting")` is the whole scene set up for it — a ribbon in earth
-pigments, a studio rig with a cast shadow, a dark umber ground.
+`brushwork(look=...)` reaches it directly, on whatever is on screen.
+`preset("painting")` is the whole scene set up for `chiaroscuro` — a ribbon in
+earth pigments, a studio rig with a cast shadow, a dark umber ground.
 
-**One look**, and it is the one this started as: a Dutch Master, with a brown
+**`chiaroscuro`** is the one this started as: a Dutch Master, with a brown
 glaze in the darks and lead white in the lights. Three bright looks were built
 over four rounds against *"brighten the mood, make it joyful"*, and then all
 four were compared side by side and the first was chosen. They are in the
 history if the question reopens; what they found on the way is below, and it
 is worth more than the palettes were.
+
+**`divisionist`** is Seurat's mechanism, not his palette: small dabs, each one
+coloured once at its own centre, at full coverage — foreground and background
+both, with no gap back to the smooth render underneath. A halftone modulates
+dot *area* at fixed spacing with a fixed ink; this modulates *colour* at
+near-constant area, which is the structural difference from
+`snapshot(finish="spot-ink-plates")` rather than a cosmetic one. Full account,
+including what it took to keep nine independently rotated lattices from
+beating against each other, in `docs/soft-matter-status.md` §1b.
 
 A look sets how the paint behaves; the ribbon's colours are a separate colour
 theme, so `color("poster")` with `brushwork(look="chiaroscuro")` is still a

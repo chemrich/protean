@@ -3995,7 +3995,7 @@ async def shading(
 #: The viewer holds the real list and `capabilities()` reports it; this copy
 #: exists so a refusal can name the choices without a round trip, and
 #: `test_the_looks_are_the_ones_the_viewer_offers` compares the two.
-_PAINTERLY_LOOKS = ("off", "chiaroscuro")
+_PAINTERLY_LOOKS = ("off", "chiaroscuro", "divisionist")
 _BRUSH_SIZES = ("fine", "medium", "broad")
 
 
@@ -4025,6 +4025,18 @@ async def brushwork(
                    ground. It wants the dark ground and studio rig that
                    `preset("painting")` builds, which is the scene it was made
                    for.
+      divisionist  Seurat's mechanism, not his palette: small dabs, each one
+                   coloured once at its own centre and never re-sampled per
+                   pixel, at full coverage — foreground and background both,
+                   with no gap back to a smooth render underneath. A halftone
+                   screen modulates dot *area* at fixed spacing with a fixed
+                   ink; this modulates *colour* at near-constant area, which
+                   is the structural difference from
+                   `snapshot(finish="spot-ink-plates")` rather than a
+                   cosmetic one. Nine independently rotated, offset and
+                   scaled lattices, unioned by nearest point, stand in for
+                   one ruled-then-jittered lattice, which keeps a visible
+                   grid no matter how hard it is jittered.
       off          Back to a plain render. Bit-for-bit the picture you had
                    before, which is asserted rather than hoped.
 

@@ -1514,15 +1514,31 @@ the shader every frame. It is removed. The lesson is not about this term: a
 commit message is a claim about *intent*, and the default is the claim about
 *state*.
 
+#### `divisionist` ships — 2026-09-04
+
+Seurat, the other look Charlie named alongside the Dutch Master. The engine
+is shared — the flow field, the bristle and the relief were already here —
+but a dab look does not run any of them; what it needed instead was a
+genuinely new mechanism, not a new entry over the old one. Full account,
+including the three real fixes it took (a nine-lattice union in place of one
+jittered grid, a hash swap for a diagonal artefact the FFT's own isotropic
+check missed, a power diagram for non-uniform dab size) in
+`docs/soft-matter-status.md` §1b.
+
+The one thing the original plan got wrong: coverage was meant to stay below
+1, ground showing through as a positive colour. What Charlie actually wanted,
+found by rendering and reacting rather than by re-reading the plan — *"the
+image should be only points, not points over a ribbon"* — was coverage as
+close to complete as the mechanism gets. The "positive colour, not absence of
+ink" half survived; the "below 1" half did not.
+
 #### What is not built
 
-`divisionist` (Seurat) and `impasto` (Van Gogh) are the other two Charlie named.
-The engine is shared — the flow field, the bristle and the relief are already
-here — and what each needs is its own entry in `PAINTERLY_LOOKS` plus, for the
-pointillist, a dab lattice that must not collide with `spot-ink-plates`. That
-collision is real and named in `docs/soft-matter-status.md`: a halftone
-modulates dot *area* at fixed spacing with a fixed ink, and a pointillist dab
-modulates *colour* at near-constant area.
+`impasto` (Van Gogh) is the one look Charlie named that is still open.
+`chiaroscuro`'s own machinery turned up — longer strokes, deeper relief,
+bolder chroma — plus one real addition: the chroma boost has to happen in a
+hue-preserving space, because per-channel clipping in sRGB rotates a blue
+chain toward magenta at the top end.
 
 ---
 

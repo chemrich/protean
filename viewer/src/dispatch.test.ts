@@ -532,7 +532,7 @@ describe('createDispatcher', () => {
       path_trace_quality: ['draft', 'high', 'standard', 'ultra'],
       // 'off' leads rather than sorting into the middle of the painters: it is
       // a value `brushwork()` accepts and not a look.
-      painterly_looks: ['off', 'chiaroscuro'],
+      painterly_looks: ['off', 'chiaroscuro', 'divisionist'],
       brush_sizes: ['fine', 'medium', 'broad'],
       // Perspective first rather than alphabetical: it is Mol*'s default and
       // so the one the caller already has.
@@ -1341,6 +1341,44 @@ describe('brushwork', () => {
     const fine: any = await dispatch('brushwork', { look: 'chiaroscuro', brush_size: 'fine' });
     expect(broad.brush_px).toBeGreaterThan(fine.brush_px);
     expect(broad.stroke_px).toBeGreaterThan(fine.stroke_px);
+  });
+
+  // divisionist draws nothing `stroke_px` describes — `stroke` is 0 on its
+  // Look entry, so that field alone would report a number that never moves,
+  // the exact "control reports success and changes nothing" shape this
+  // project has been burned by before. `dab_px` is its own length, for its
+  // own mechanism.
+  it('reports a dab-based look by its own length, not stroke_px', async () => {
+    withPainterly();
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+
+    const painted: any = await dispatch('brushwork', { look: 'divisionist' });
+    // Honestly 0, not null: divisionist's Look entry really does set
+    // stroke to 0 — this is the fixed control the failure above reads
+    // against, not the fix itself.
+    expect(painted.stroke_px).toBe(0);
+    expect(painted.dab_px).toBeGreaterThan(0);
+
+    const off: any = await dispatch('brushwork', { look: 'chiaroscuro' });
+    expect(off.dab_px).toBeNull();
+    expect(off.stroke_px).toBeGreaterThan(0);
+  });
+
+  it('moves the dab length with brush size, for every size it offers', async () => {
+    withPainterly();
+    const dispatch = createDispatcher(withCanvas(fakePlugin()));
+    const sizes = ((await dispatch('capabilities', {})) as any).brush_sizes;
+
+    const dabs = [];
+    for (const size of sizes) {
+      const reply: any = await dispatch('brushwork', {
+        look: 'divisionist',
+        brush_size: size,
+      });
+      dabs.push(reply.dab_px);
+    }
+    expect(new Set(dabs).size, 'dab_px is the same at every brush size').toBe(sizes.length);
+    expect(dabs, 'dab_px does not follow the size').toEqual([...dabs].sort((a, b) => a - b));
   });
 
   it('accepts exactly the looks it reports', async () => {

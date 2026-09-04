@@ -16,6 +16,7 @@ import {
   PAINTERLY_LOOKS,
   brushPixels,
   resolveBrush,
+  resolveDabs,
 } from './painterly-looks';
 
 interface LoadStructureArgs {
@@ -2237,6 +2238,14 @@ export function createDispatcher(plugin: any): Handler {
           wanted === 'off'
             ? null
             : resolveBrush(frame.width, frame.height, PAINTERLY_LOOKS[wanted], size);
+        // Dab-based looks (dabSpacing > 0) draw nothing `stroke_px` describes
+        // — it stays 0 for them, which reports a number and changes nothing,
+        // the exact shape of bug this project keeps meeting. So they get
+        // their own length reported instead.
+        const dabs =
+          wanted !== 'off' && PAINTERLY_LOOKS[wanted]?.dabSpacing > 0
+            ? resolveDabs(frame.width, frame.height, PAINTERLY_LOOKS[wanted], size)
+            : null;
         if (wanted !== 'off' && Number.isFinite(px) && px < MIN_BRUSH_PX) {
           throw new Error(
             `A ${size} brush on a ${frame.width}x${frame.height} frame is ` +
@@ -2263,6 +2272,10 @@ export function createDispatcher(plugin: any): Handler {
           // `brush_size` claims to change how the paint looks, and the width of
           // the abstraction on its own does not — see `resolveBrush`.
           stroke_px: lengths ? Math.round(lengths.stroke * 100) / 100 : null,
+          // The length a dab-based look's mark actually resolves to — the
+          // baseline radius before per-dab size variance, in pixels of this
+          // frame. `null` for a look with no dab lattice.
+          dab_px: dabs ? Math.round(dabs.radius * 100) / 100 : null,
           frame: [frame.width, frame.height],
           // Whether the patch landed on the classes this viewer is actually
           // using. `null` where it could not be checked; `false` means the look

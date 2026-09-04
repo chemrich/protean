@@ -420,25 +420,77 @@ ribbon drawing — brush strokes and canvas texture. Dutch Master first, then a
 Seurat pointillist, then a bold Van Gogh.** They chose **live in the viewer**
 rather than a capture-time finish, which is why #137 was done first.
 
-The Dutch Master is shipped as `chiaroscuro`. The other two are entries in
-`PAINTERLY_LOOKS` over the same engine — the flow field, the bristle and the
-relief already exist — plus one thing each:
+The Dutch Master is shipped as `chiaroscuro`. `divisionist` (Seurat) is now
+shipped too, as its own entry in `PAINTERLY_LOOKS` over the same engine — the
+flow field, the bristle and the relief were already there and go unused here;
+what a dab look needed instead is below. `impasto` (Van Gogh) is still not
+built — see its own entry further down.
 
-- **`divisionist`** (Seurat) needs a dab lattice, and it must not collide with
-  `spot-ink-plates`. The difference is structural rather than cosmetic and is
-  the thing to build to: **a halftone modulates dot *area* at fixed spacing with
-  a fixed ink; a pointillist dab modulates *colour* at near-constant area.**
-  Everything else falls out of that — the lattice is jittered rather than ruled
-  because the rosette is the failure here and the point there, the ground shows
-  as a positive colour rather than as absence of ink, and coverage is held below
-  1. A test can assert the difference directly: within one flat-coloured region
-  the dabs must not all be the same RGB, which for `spot-ink-plates` they are by
-  construction.
-- **`impasto`** (Van Gogh) is `chiaroscuro`'s own machinery turned up — longer
-  strokes, deeper relief, bolder chroma — with one real addition: the chroma
-  boost has to happen in a hue-preserving space, because per-channel clipping in
-  sRGB rotates a blue chain toward magenta at the top end and the picture would
-  then be lying about protean's own colour coding.
+**`divisionist`**, shipped 2026-09-04, over several rounds of bracketing
+against real renders rather than a single number chosen up front:
+
+The structural difference from a halftone survived intact: **a halftone
+modulates dot *area* at fixed spacing with a fixed ink; a pointillist dab
+modulates *colour* at near-constant area**, which is what keeps this from
+reading as `spot-ink-plates` with softer edges even though both draw discrete
+marks. Guarded directly — within one flat-coloured region the dabs must not
+all be the same RGB, checked against the plain render of the same flat colour
+as the mechanism-removed control, since no dab lattice runs there at all.
+
+**What changed from the plan, on Charlie's own direction from using the
+viewer rather than assumed in advance: coverage is not held below 1 — it is
+as close to complete as the mechanism gets, foreground and background both.**
+*"the image should be only points, not points over a ribbon"* and, once the
+background joined in, *"There's now a diagonal ripple"* and *"still reads as
+blobs that are too big and a muddy picture."* The single sentence in the
+original plan — coverage held below 1, the ground showing through as a
+positive colour — described a lattice with visible gaps. What shipped instead
+covers the frame almost completely; the "positive colour, not absence of ink"
+half of that sentence is still exactly right, since a dab's base colour is
+sampled from whatever the scene already rendered there rather than any fixed
+ink.
+
+Getting there took three real fixes, not one:
+
+- **A single jittered lattice keeps its own topology no matter how hard it is
+  jittered** — the *cell partition* stays a periodic grid underneath the
+  jitter, and that regularity is what the eye catches, not any one dab's own
+  wobble. Fixed by unioning nine independently rotated, offset and scaled
+  lattices rather than jittering one harder, each layer's angle separated
+  from the last by the golden angle (~137.5°) — the same spacing that keeps
+  sunflower seeds from ever lining up into rows, because it is about as far
+  from any simple fraction of a turn as an angle can be. Measured with an FFT
+  of the rendered background, not eyeballed: a four-way comparison (a
+  stronger domain warp, more layers, two candidate points per cell on a
+  single lattice, a finer-frequency warp) put nine layers well ahead of the
+  alternatives, and combining it with the stronger warp made it slightly
+  worse rather than better.
+- **Even after that fix, Charlie could still see a diagonal ripple** the FFT's
+  own isotropic check missed (it averages within radius bands, not by angle
+  — a directional artefact does not have to be a radial outlier). Root cause
+  was the classic `fract(sin(dot(p, vec2(127.1, 311.7))))` hash used for every
+  dab's jitter and colour: a well-documented gotcha, carrying a faint
+  directional bias that is invisible where the shader's older uses of it are
+  smoothed by interpolation (a canvas weave, a bristle noise field) and not
+  invisible where a dab reads it raw and unsmoothed, directly as a position
+  and a colour. Swapped for a better-behaved hash, used only there — the
+  shared `hash21` that `chiaroscuro`'s bristle still depends on was left
+  alone. The isotropic FFT score dropped from 6.28 to 3.41 on the same
+  change; Charlie confirmed the ripple was gone.
+- **Non-uniform dab size needed a power diagram, not just a per-dab radius.**
+  Sizing the disc alone without changing which dab *wins* a pixel leaves a
+  bigger dab still losing to a nearer small one exactly where it should be
+  reaching furthest, clipped against its neighbour's boundary instead of
+  drawing a whole circle. A per-dab size factor is folded into the contest as
+  a distance bonus instead. Size only ever shrinks from the baseline, never
+  grows past it — bracketed across four ceilings from 1.28x baseline down to
+  the baseline itself, because a large dab reads as a blob and muddies the
+  picture; the floor still falls to 0.2x, skewed toward it so most dabs sit
+  well under the baseline.
+
+The fine end of the size range (`dabSpacing` finer than what shipped) reads as
+a distinct "colour static" style in its own right — set aside deliberately as
+a possible future look rather than folded into `divisionist`.
 
 ### 2. Decide whether a third treatment is worth building
 

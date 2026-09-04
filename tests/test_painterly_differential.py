@@ -98,6 +98,27 @@ def _repainted(before: Render, after: Render) -> float:
     return float((gap.max(axis=2) > TOLERANCE)[mask].mean())
 
 
+def _local_jump(render: Render, mask: np.ndarray, step: int) -> float:
+    """Median colour change between a pixel and a neighbour `step` pixels
+    away, over the masked region — a measure of *local* variation at that
+    scale, as opposed to `difference()`'s whole-frame mean.
+
+    This is what tells a dab lattice from a smoothly shaded surface: shading
+    changes slowly, so its own local jump at one dab's width is small, while
+    a lattice of independently coloured dabs jumps sharply from one to the
+    next. Comparing against the same statistic on the *plain* render is the
+    mechanism-removed control — no dab lattice runs there at all.
+    """
+    px = render.pixels[:, :, :3].astype(np.int16)
+    shifted = np.roll(px, -step, axis=1)
+    shifted_mask = np.roll(mask, -step, axis=1)
+    both = mask & shifted_mask
+    if not both.any():
+        return 0.0
+    gap = np.abs(px - shifted).max(axis=2)
+    return float(np.median(gap[both]))
+
+
 async def _capture(session, width: int = 1200) -> Render:
     args = {"width": width, "crop": False}
     return _decode((await session.request("snapshot", args, timeout=240))["data_uri"])
@@ -561,4 +582,260 @@ async def test_painting_no_longer_reproduces_felt():
     assert apart > 0.6, (
         f"felt and painting differ on {apart:.4f} of what felt drew, which is "
         "the complaint this change exists to answer"
+    )
+
+
+#: divisionist is built to cover the whole picture, not just the subject —
+#: §1b's own direction. `chiaroscuro`'s `PAINTED` (0.6) is deliberately loose
+#: because it paints only where the subject is; this is a claim about the
+#: *ground* changing too, so it is measured on the frame's full 96% rather
+#: than the subject's 4%, and held to a real fraction of it rather than
+#: chiaroscuro's near-zero.
+DIVISIONIST_SUBJECT_COVERAGE = 0.97
+DIVISIONIST_GROUND_COVERAGE = 0.85
+
+
+@pytest.fixture(scope="module")
+async def painted_divisionist() -> dict[str, Any]:
+    """The same walk `painted` does, for the other live look.
+
+    Its own fixture rather than a parametrized version of `painted`: full
+    coverage and a dab lattice are claims `painted`'s tests never make, and
+    forcing one fixture to serve both risks the kind of guard that passes
+    for either look because it never had to distinguish them.
+    """
+    frames: dict[str, Any] = {}
+    async with viewer_session(FIXTURE) as session:
+        await _widen(session)
+        await _ribbon(session)
+
+        frames["plain"] = await _capture(session)
+        frames["plain_canvas"] = await _canvas(session)
+
+        frames["reply"] = await session.request(
+            "brushwork", {"look": "divisionist", "brush_size": "medium"}
+        )
+        frames["painted"] = await _capture(session)
+        frames["painted_canvas"] = await _canvas(session)
+
+        frames["sizes"] = (await session.request("capabilities", {}))["brush_sizes"]
+        for size in frames["sizes"]:
+            frames[f"{size}_reply"] = await session.request(
+                "brushwork", {"brush_size": size}
+            )
+            frames[size] = await _capture(session)
+
+        frames["off_reply"] = await session.request("brushwork", {"look": "off"})
+        frames["off"] = await _capture(session)
+        frames["off_canvas"] = await _canvas(session)
+
+        await session.evaluate(
+            "JSON.stringify(!!window.__protean.plugin.canvas3d"
+            ".setProps({ multiSample: { mode: 'off' } }))"
+        )
+        frames["single_plain"] = await _canvas(session)
+        await session.request("brushwork", {"look": "divisionist"})
+        frames["single_painted"] = await _canvas(session)
+        await session.request("brushwork", {"look": "off"})
+        await session.request("background", {"color": "#123456", "gradient": "off"})
+        frames["single_after"] = await _canvas(session)
+
+        # A flat-coloured subject: one solid colour, so any local colour
+        # variation left in the picture afterwards is the dab mechanism's
+        # own, not the molecule's own shading or its chain colouring.
+        await session.request("brushwork", {"look": "off"})
+        await session.request("background", {"color": "#4a3b2c", "gradient": "off"})
+        await session.request("color", {"name": "fold", "color": "#88bbee"})
+        frames["flat_plain"] = await _capture(session)
+        await session.request("brushwork", {"look": "divisionist"})
+        frames["flat_painted"] = await _capture(session)
+    return frames
+
+
+async def test_divisionist_reaches_the_capture(painted_divisionist):
+    """Mirrors `test_the_finish_reaches_the_capture` for the other look —
+    `ImagePass` builds its own `DrawPass`, so this arm can pass alone."""
+    changed = _repainted(painted_divisionist["plain"], painted_divisionist["painted"])
+    assert changed > PAINTED, (
+        f"the capture changed on {changed:.4f} of the subject, so divisionist "
+        "never reached ImagePass"
+    )
+
+
+async def test_divisionist_reaches_the_canvas(painted_divisionist):
+    """Mirrors `test_the_finish_reaches_the_canvas` for the other look."""
+    changed = _repainted(
+        painted_divisionist["plain_canvas"], painted_divisionist["painted_canvas"]
+    )
+    assert changed > PAINTED, (
+        f"the drawing buffer changed on {changed:.4f} of the subject, so "
+        "divisionist is in the file and not on the screen"
+    )
+
+
+async def test_divisionist_is_patched_into_the_viewer_that_is_running(
+    painted_divisionist,
+):
+    assert painted_divisionist["reply"]["reaches_viewer"] is True
+
+
+async def test_divisionist_survives_multisampling_being_switched_off(painted_divisionist):
+    """Mirrors `test_the_finish_survives_multisampling_being_switched_off`."""
+    plain = painted_divisionist["single_plain"]
+    for name in ("single_plain", "single_painted"):
+        lit = float(painted_divisionist[name].pixels[:, :, :3].mean())
+        assert lit > 16, f"{name} came back at a mean brightness of {lit:.1f}"
+
+    changed = _repainted(plain, painted_divisionist["single_painted"])
+    assert changed > PAINTED, (
+        f"with multisampling off the canvas changed on {changed:.4f} of the "
+        "subject, so the plain draw route has no dab lattice on it"
+    )
+
+    assert close(
+        background(painted_divisionist["single_after"]), (0x12, 0x34, 0x56, 255)
+    ), (
+        f"the canvas reads {background(painted_divisionist['single_after'])} "
+        "after the background was changed, so the plain draw route stopped "
+        "updating it"
+    )
+
+
+async def test_taking_divisionist_off_gives_back_the_exact_picture(painted_divisionist):
+    """Mirrors `test_taking_the_finish_off_gives_back_the_exact_picture`."""
+    assert difference(painted_divisionist["plain"], painted_divisionist["off"]) == 0.0
+    assert (
+        difference(painted_divisionist["plain_canvas"], painted_divisionist["off_canvas"])
+        == 0.0
+    )
+    assert painted_divisionist["off_reply"]["look"] == "off"
+
+
+async def test_the_dab_size_changes_the_mark_and_not_only_the_number(painted_divisionist):
+    """Mirrors `test_the_brush_size_changes_the_mark_and_not_only_the_number`,
+    against `dab_px` rather than `stroke_px` — divisionist's own length,
+    added for exactly this reason: `stroke_px` is always 0 for a look that
+    never runs the continuous stroke."""
+    sizes = painted_divisionist["sizes"]
+    assert len(sizes) >= 2, sizes
+    dab_px = [painted_divisionist[f"{size}_reply"]["dab_px"] for size in sizes]
+    assert dab_px == sorted(dab_px), dict(zip(sizes, dab_px, strict=True))
+    assert len(set(dab_px)) == len(sizes)
+
+    marked = difference(painted_divisionist[sizes[0]], painted_divisionist[sizes[-1]])
+    drawn = coverage(painted_divisionist["plain"])
+    assert marked > MARKED_FRACTION_OF_SUBJECT * drawn, (
+        f"{sizes[0]} and {sizes[-1]} differ on {marked:.4f} of the frame "
+        f"against a subject covering {drawn:.4f}, so the size is reported "
+        "and the mark is not drawn"
+    )
+
+
+async def test_a_divisionist_ground_also_refuses_to_be_cropped():
+    """The same refusal `test_a_painted_ground_refuses_to_be_cropped` checks
+    for chiaroscuro — the check itself is look-agnostic (`if (crop &&
+    painting)`), but nothing exercised that for the other look until now."""
+    async with viewer_session(FIXTURE) as session:
+        await _ribbon(session)
+        await session.request("brushwork", {"look": "divisionist"})
+        with pytest.raises(ViewerError, match="paints the ground"):
+            await session.request("snapshot", {"width": 400, "crop": True}, timeout=240)
+
+
+async def test_dabs_within_one_flat_region_are_not_all_the_same_rgb(painted_divisionist):
+    """§1b's own correctness claim, checked directly: within a flat-coloured
+    region the dabs must not all be the same RGB — which for
+    `spot-ink-plates` they are by construction, and which a plain render's
+    own smooth shading never produces at this frequency either.
+
+    The plain (unpainted) capture of the same flat-coloured molecule is the
+    mechanism-removed control: no dab lattice runs there, so whatever local
+    colour jump it has is shading and nothing else. `dab_px` from the
+    fixture's own reply — not a guessed pixel count — sets the neighbour
+    distance, so the measurement is at the mechanism's own scale.
+    """
+    plain = painted_divisionist["flat_plain"]
+    painted_img = painted_divisionist["flat_painted"]
+    mask = _subject(plain)
+
+    step = max(3, round(painted_divisionist["reply"]["dab_px"]))
+    baseline = _local_jump(plain, mask, step)
+    dabbed = _local_jump(painted_img, mask, step)
+    assert dabbed > max(baseline * 3, TOLERANCE * 2), (
+        f"neighbouring points {step}px apart differ by a median of {dabbed:.1f} "
+        f"under divisionist, against {baseline:.1f} on the plain flat render — "
+        "the dabs are not varying in colour from one to the next"
+    )
+
+
+async def test_divisionist_covers_the_subject_almost_completely(painted_divisionist):
+    """Full coverage was the point, confirmed on Charlie's own account after
+    several rounds of bracketing real renders: the picture reads as built
+    entirely from points, not as points scattered over a smooth ribbon."""
+    changed = _repainted(painted_divisionist["plain"], painted_divisionist["painted"])
+    assert changed > DIVISIONIST_SUBJECT_COVERAGE, (
+        f"only {changed:.4f} of the subject changed under divisionist, so "
+        "the smooth render still shows through — full coverage was the point"
+    )
+
+
+async def test_divisionist_covers_the_ground_too(painted_divisionist):
+    """*"the water and the grass in Seurat's own paintings are built from
+    points exactly as much as the figures are"* — the ground is 96% of this
+    frame, so this is the arm `_repainted` (subject-only, by design) cannot
+    supply on its own."""
+    plain = painted_divisionist["plain"]
+    painted_img = painted_divisionist["painted"]
+    ground = ~_subject(plain)
+    gap = np.abs(
+        plain.pixels[:, :, :3].astype(np.int16)
+        - painted_img.pixels[:, :, :3].astype(np.int16)
+    )
+    changed = float((gap.max(axis=2) > TOLERANCE)[ground].mean())
+    assert changed > DIVISIONIST_GROUND_COVERAGE, (
+        f"only {changed:.4f} of the ground changed under divisionist, so the "
+        "background is not carrying dabs the way the subject is"
+    )
+
+
+async def test_divisionist_paints_the_ground_and_chiaroscuro_does_not(
+    painted, painted_divisionist
+):
+    """The structural difference the two looks were built around, checked as
+    a mechanism fact rather than assumed from their names.
+
+    Not "chiaroscuro leaves the ground untouched" — measured, and it does
+    not: the canvas weave and the glaze/highlight tone-mapping are not gated
+    by `onPaint` the way the bristle and relief are, so chiaroscuro's own
+    ground changes on 0.65 of this fixture, not the near-zero its
+    `groundPaint: 0` might suggest. What is real is the *margin* — a dab
+    lattice with no gap back to the render underneath changes essentially
+    all of it (0.99) — and that chiaroscuro's own ground stays meaningfully
+    short of complete, which is the second assertion below: without it, a
+    future chiaroscuro change that pushed its own ground toward 1.0 could
+    still pass the margin check by dragging divisionist up alongside it.
+    """
+
+    def _ground_changed(before: Render, after: Render) -> float:
+        ground = ~_subject(before)
+        gap = np.abs(
+            before.pixels[:, :, :3].astype(np.int16)
+            - after.pixels[:, :, :3].astype(np.int16)
+        )
+        return float((gap.max(axis=2) > TOLERANCE)[ground].mean())
+
+    chiaroscuro_ground = _ground_changed(painted["plain"], painted["painted"])
+    divisionist_ground = _ground_changed(
+        painted_divisionist["plain"], painted_divisionist["painted"]
+    )
+    assert divisionist_ground > chiaroscuro_ground + 0.2, (
+        f"chiaroscuro changed {chiaroscuro_ground:.4f} of the ground and "
+        f"divisionist changed {divisionist_ground:.4f} of it — not the gap "
+        "between 'paint only the subject' and 'paint everywhere' the two "
+        "looks are supposed to be"
+    )
+    assert chiaroscuro_ground < 0.9, (
+        f"chiaroscuro changed {chiaroscuro_ground:.4f} of the ground, which "
+        "is close enough to complete that this comparison would stop "
+        "meaning anything even if divisionist agreed"
     )
