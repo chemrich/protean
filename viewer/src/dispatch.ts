@@ -501,21 +501,33 @@ async function settleRender(plugin: any, budgetMs: number): Promise<void> {
   for (let i = 0; i < 5; i++) await frame();
 
   let previous = sample();
+
+  // How many consecutive frames a loaded structure has reported zero
+  // representations. Genuinely busy for the first few — Mol* has not built
+  // them yet — but if it never changes, that is not "still building", it is
+  // a structure the caller emptied on purpose: `remove()` deletes a
+  // component's representations without deleting the structure itself
+  // (`hierarchy.current.structures` keeps the entry), which is the documented
+  // way to clear a preset's default representation before adding custom
+  // ones. Treating that as permanently busy burned the whole budget on every
+  // render action that followed, which is a worse failure than the one this
+  // signal was added to catch — so the grace period is bounded rather than
+  // trusted indefinitely.
+  const ZERO_REPR_GRACE = 5;
+  let zeroReprStreak = 0;
+
   let quiet = 0;
-  while (performance.now() - start < budgetMs) {
+  while (quiet < 3 && performance.now() - start < budgetMs) {
     await frame();
-    const current = sample();
     const reprCount = canvas3d.reprCount?.value ?? 0;
     const queueSize = canvas3d.commitQueueSize?.value ?? 0;
+    const current = `${queueSize}/${reprCount}`;
     const structuresCount =
       plugin.managers?.structure?.hierarchy?.current?.structures?.length ?? 0;
-    const busy = queueSize > 0 || (structuresCount > 0 && reprCount === 0);
-    if (!busy && current === previous) {
-      quiet++;
-      if (quiet >= 3) break;
-    } else {
-      quiet = 0;
-    }
+    const reprPending = structuresCount > 0 && reprCount === 0;
+    zeroReprStreak = reprPending ? zeroReprStreak + 1 : 0;
+    const busy = queueSize > 0 || (reprPending && zeroReprStreak <= ZERO_REPR_GRACE);
+    quiet = !busy && current === previous ? quiet + 1 : 0;
     previous = current;
   }
 }
@@ -611,9 +623,18 @@ async function withRenderPump<T>(
     }, budget);
   });
 
+  // `deadline`'s clock starts now, before `run()` is even called. `settled`'s
+  // has to share that same clock rather than start a fresh `budget`-length
+  // window for `settleRender` once `run()` resolves — a `run()` that takes
+  // any real time otherwise lets `settled`'s total (`run()` plus a full
+  // second `budget`) run past `deadline`, which fires while `settled` was
+  // still succeeding rather than stuck. `settleRender` gets whatever is left
+  // of the shared budget, not another whole one.
+  const raceStart = performance.now();
   const settled = (async () => {
     const result = await run();
-    await settleRender(plugin, budget);
+    const remaining = Math.max(0, budget - (performance.now() - raceStart));
+    await settleRender(plugin, remaining);
     return result;
   })();
 
