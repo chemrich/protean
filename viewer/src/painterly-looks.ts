@@ -55,6 +55,43 @@ export interface Look {
    * the background was full impasto and shouted the molecule down, and at 0.15
    * it still read as fur. */
   groundPaint: number;
+
+  /** Lattice spacing for a dab-based look, as a fraction of the frame
+   * diagonal. Zero — every look but `divisionist` — means "no lattice, paint
+   * continuously": which of the two mark mechanisms `painterly_brush_frag`
+   * runs is decided by this field alone. */
+  dabSpacing: number;
+  /** How far a dab wanders off its ruled lattice position, as a fraction of
+   * `dabSpacing`. Zero rules the lattice into a grid, and a grid samples the
+   * image at a fixed frequency and gets a rosette back — the specific
+   * failure a dab look exists to avoid — so this wants to stay large. */
+  dabJitter: number;
+  /** Dab radius, as a fraction of a layer's own spacing. `divisionist` runs
+   * this well past a single layer's own edge-to-edge point — full coverage
+   * (no gap back to the smooth render underneath) is the look, not an
+   * accident held in check, and it takes several unioned layers reaching
+   * into each other's territory to get there without the dabs reading as
+   * one continuous wash. See the layer union below, not this field alone. */
+  dabRadius: number;
+  /** Strength of the per-dab colour perturbation, drawn once per dab and
+   * held flat over its whole disc. Zero draws every dab in one flat-coloured
+   * region at the same RGB — which is what `spot-ink-plates` does by
+   * construction, and exactly what a dab look must not do. */
+  dabChroma: number;
+  /** How much a dab's own radius can shrink from the baseline, 0 to under 1
+   * as a fraction of `dabRadius` — the range is `[1 - x, 1]`. A dab only
+   * ever shrinks here, never grows past the baseline: a genuinely large one
+   * reads as a blob and muddies the picture, found by bracketing ceilings
+   * from 1.28x baseline down to the baseline itself and choosing the
+   * baseline. Drawn skewed toward that floor too, so most dabs sit well
+   * under it and the odd one reaches the baseline. Zero draws every dab the
+   * same size, which reads as a filter rather than a hand.
+   * This has to change which dab *wins* a pixel, not only how big the winner
+   * draws — sizing the disc alone without touching the contest a bigger dab
+   * would still lose to a nearer small one exactly where it should be
+   * reaching furthest, and its edge would clip against its neighbour's
+   * boundary rather than draw a whole circle. */
+  dabSizeVariance: number;
 }
 
 export const PAINTERLY_LOOKS: Record<string, Look> = {
@@ -81,6 +118,55 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     bristle: 0.13,
     relief: 14,
     groundPaint: 0.0,
+    dabSpacing: 0,
+    dabJitter: 0,
+    dabRadius: 0,
+    dabChroma: 0,
+    dabSizeVariance: 0,
+  },
+
+  // Seurat's mechanism, not his palette: dabs, each one colour sampled once
+  // at its own centre and then perturbed — never area-modulated the way a
+  // halftone screen is. Everything else on the `Look` (glaze, highlight,
+  // edge, weave) is shared with `chiaroscuro` and still applies on top of
+  // the dabs; `stroke`, `grain` and `bristle` are unused here — there is no
+  // continuous streak to drag noise along, only discrete marks.
+  //
+  // Chosen over several rounds of bracketing against real renders, not
+  // picked once: full coverage rather than a lattice with gaps back to the
+  // smooth render (§1b's original "coverage held below 1" was superseded —
+  // the picture has to read as built entirely from points, foreground and
+  // background both); a single ruled-then-jittered lattice always kept a
+  // visible grid no matter how hard it was jittered, fixed by unioning nine
+  // independently rotated, offset and scaled lattices (golden-angle
+  // separated) rather than jittering one harder; the classic sin/dot hash
+  // carried a faint diagonal bias only visible at this density, fixed by
+  // swapping it for a better one; dab size varies but only ever shrinks from
+  // the baseline, never grows past it, because a large dab reads as a blob.
+  // Full account in docs/soft-matter-status.md 1b.
+  divisionist: {
+    glaze: 0.18,
+    glazeColor: [0.3, 0.2, 0.35],
+    highlight: 0.12,
+    highlightColor: [1.0, 0.98, 0.9],
+    edge: 0.0,
+    // hardness/varRef govern the Kuwahara abstraction, which this look never
+    // runs — the dab path branches ahead of it. Left inert rather than
+    // omitted, so the record stays honest about what actually drives it.
+    hardness: 0,
+    varRef: 1,
+    eccentricity: 1,
+    weave: 0.0,
+    stroke: 0,
+    grain: 0,
+    bristle: 0,
+    relief: 0,
+    groundPaint: 0.0,
+    dabSpacing: 1 / 185,
+    dabJitter: 0.95,
+    dabRadius: 0.8,
+    dabChroma: 0.16,
+    dabSizeVariance: 0.8,
   },
 };
 
@@ -151,4 +237,20 @@ export function resolveBrush(
     stroke: diagonal * look.stroke * scale,
     grain: diagonal * look.grain * scale,
   };
+}
+
+/** Dab lattice spacing and radius, in pixels, for a frame of this size —
+ * the same brush-size scaling `resolveBrush` uses, so `dabSpacing` reads as
+ * "how far apart the dabs are" the way `stroke` reads as "how long the mark
+ * is": both fractions of the diagonal, scaled by the named brush size. */
+export function resolveDabs(
+  width: number,
+  height: number,
+  look: Look,
+  brushSize: string
+): { spacing: number; radius: number } {
+  const diagonal = Math.hypot(width, height);
+  const scale = BRUSH_SIZES[brushSize] / BRUSH_SIZES.medium;
+  const spacing = diagonal * look.dabSpacing * scale;
+  return { spacing, radius: spacing * look.dabRadius };
 }

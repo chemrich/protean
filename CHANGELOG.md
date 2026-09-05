@@ -104,6 +104,28 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`divisionist` ships — `brushwork()`'s second look, Seurat's mechanism.**
+  Dabs, not a continuous filter: each one coloured once at its own centre,
+  never re-sampled per pixel, at full coverage — foreground and background
+  both, with no gap back to the smooth render underneath. That coverage was
+  a change from the original plan, made live against real renders rather
+  than decided in advance: *"the image should be only points, not points
+  over a ribbon."*
+
+  A single jittered lattice kept a visible grid no matter how hard it was
+  jittered — the partition stays periodic underneath the jitter, and that is
+  what the eye catches. Fixed by unioning nine independently rotated, offset
+  and scaled lattices, separated by the golden angle. A residual diagonal
+  ripple survived that fix, visible to the eye but invisible to an isotropic
+  FFT check that averages within radius bands rather than by angle — traced
+  to the classic `fract(sin(dot(p, vec2(127.1, 311.7))))` hash, which carries
+  a well-documented directional bias invisible at the coarser, interpolated
+  uses of it elsewhere in the shader. Non-uniform dab size needed a power
+  diagram, not just a per-dab radius, or a bigger dab still loses to a
+  nearer small one and its edge clips against its neighbour's boundary.
+
+  Full technical account in `docs/soft-matter-status.md` §1b.
+
 - **`painting` goes back to the Dutch Master, and keeps only that look.** Four
   plates of one scene were compared and the first was chosen: *"original is
   still the best. Keep it, remove all the rest."* `brushwork()` now offers

@@ -65,7 +65,7 @@ import { DrawPass } from 'molstar/lib/mol-canvas3d/passes/draw';
 import { MultiSamplePass } from 'molstar/lib/mol-canvas3d/passes/multi-sample';
 import { IlluminationPass } from 'molstar/lib/mol-canvas3d/passes/illumination';
 
-import { PAINTERLY_LOOKS, brushPixels, resolveBrush } from './painterly-looks';
+import { PAINTERLY_LOOKS, brushPixels, resolveBrush, resolveDabs } from './painterly-looks';
 import {
   painterly_blur_frag,
   painterly_brush_frag,
@@ -224,6 +224,11 @@ const BrushSchema = {
   uEdgeDark: UniformSpec('f'),
   uWeaveDepth: UniformSpec('f'),
   uWeavePitch: UniformSpec('f'),
+  uDabSpacing: UniformSpec('f'),
+  uDabRadius: UniformSpec('f'),
+  uDabJitter: UniformSpec('f'),
+  uDabChroma: UniformSpec('f'),
+  uDabSizeVariance: UniformSpec('f'),
   dSamples: DefineSpec('number'),
   dStroke: DefineSpec('number'),
 };
@@ -330,6 +335,11 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uEdgeDark: ValueCell.create(0),
     uWeaveDepth: ValueCell.create(0),
     uWeavePitch: ValueCell.create(4),
+    uDabSpacing: ValueCell.create(0),
+    uDabRadius: ValueCell.create(0),
+    uDabJitter: ValueCell.create(0),
+    uDabChroma: ValueCell.create(0),
+    uDabSizeVariance: ValueCell.create(0),
     dSamples: ValueCell.create(samples),
     dStroke: ValueCell.create(1),
   };
@@ -567,6 +577,14 @@ function paint(
     weavePx >= MIN_WEAVE_PX ? look.weave : 0
   );
   ValueCell.updateIfChanged(state.brush.values.uWeavePitch, weavePx);
+
+  // -- the dab lattice, for a look that draws in discrete marks ---------------
+  const dabs = resolveDabs(width, height, look, settings.brushSize);
+  ValueCell.updateIfChanged(state.brush.values.uDabSpacing, dabs.spacing);
+  ValueCell.updateIfChanged(state.brush.values.uDabRadius, dabs.radius);
+  ValueCell.updateIfChanged(state.brush.values.uDabJitter, look.dabJitter);
+  ValueCell.updateIfChanged(state.brush.values.uDabChroma, look.dabChroma);
+  ValueCell.updateIfChanged(state.brush.values.uDabSizeVariance, look.dabSizeVariance);
   state.brush.update();
 
   const bounce = destination !== null;

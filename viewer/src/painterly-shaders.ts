@@ -264,6 +264,11 @@ uniform vec3 uHighlightColor;
 uniform float uEdgeDark;
 uniform float uWeaveDepth;
 uniform float uWeavePitch;
+uniform float uDabSpacing;
+uniform float uDabRadius;
+uniform float uDabJitter;
+uniform float uDabChroma;
+uniform float uDabSizeVariance;
 
 const float TAU = 6.283185307;
 // Upper left, and never anywhere else. Fixed in screen space so the relief
@@ -272,6 +277,24 @@ const vec3 RAKING = vec3(-0.5504, 0.6205, 0.5580);
 
 float hash21(const in vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// A better-behaved hash than the one above, which carries a faint diagonal
+// bias in the direction of its own (127.1, 311.7) constant — invisible at
+// the coarse scale hash21 was first used at (a canvas weave, a bristle
+// noise field, both smoothed by interpolation before they reach a pixel),
+// not invisible at the fine, dense lattice a dab reads unsmoothed and
+// directly as a position and a colour. Used only there.
+float hash21b(const in vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+vec2 rotate2(const in vec2 p, const in float a) {
+    float c = cos(a);
+    float s = sin(a);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
 float threadHash(const in float i) {
@@ -291,6 +314,31 @@ float valueNoise(const in vec2 p) {
     float c = hash21(i + vec2(0.0, 1.0));
     float d = hash21(i + vec2(1.0, 1.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+/** Which cell a position falls in, scrambled — not the position itself.
+ *
+ * A jittered lattice keeps its topology no matter how hard the jitter
+ * pushes: every point still has the same handful of neighbours at the same
+ * rough spacing, because the *partition* — which region of the screen maps
+ * to which cell — is still a perfectly periodic grid underneath the jitter.
+ * Two, let alone three, periodic partitions laid over each other do not
+ * erase that: their boundary is itself close to periodic, and the ripple
+ * that makes visible is a beat between two regular structures, not noise.
+ *
+ * Warping the position *before* it is floored into a cell breaks the
+ * partition itself rather than moving points around inside it — cascaded at
+ * two unrelated scales (an ex-Quilez trick) so neither octave leaves its own
+ * residue. Used only to choose a cell index; every other calculation for
+ * that cell (its jittered centre, its colour) stays in real screen space, so
+ * a dab is still a real, sample-able point and not a warped illusion of one.
+ */
+vec2 scrambleCell(const in vec2 p, const in float spacing) {
+    vec2 w = p + (vec2(valueNoise(p / (spacing * 2.6) + 5.0), valueNoise(p / (spacing * 2.6) + 71.0)) - 0.5)
+        * spacing * 1.7;
+    w += (vec2(valueNoise(w / (spacing * 0.85) + 133.0), valueNoise(w / (spacing * 0.85) + 271.0)) - 0.5)
+        * spacing * 0.8;
+    return w;
 }
 
 // Slub hashed on the thread index rather than on the pixel. Per-pixel noise is
@@ -399,104 +447,251 @@ void main(void) {
     // that writes 1 here turns a transparent snapshot opaque and reports
     // success — and one that writes straight colour has it divided out and
     // blown to white.
-    vec4 mean[8];
-    float lsum[8];
-    float l2sum[8];
-    float nsum[8];
-    for (int k = 0; k < 8; ++k) {
-        mean[k] = vec4(0.0);
-        lsum[k] = 0.0;
-        l2sum[k] = 0.0;
-        nsum[k] = 0.0;
-    }
+    vec4 here = fetchAt(gl_FragCoord.xy);
+    vec3 col;
+    float alpha;
 
-    for (int j = -dSamples; j <= dSamples; ++j) {
-        for (int i = -dSamples; i <= dSamples; ++i) {
-            vec2 u = vec2(float(i), float(j)) / float(dSamples);
-            float r2 = dot(u, u);
-            if (r2 > 1.0) continue;
+    if (uDabSpacing > 0.0) {
+        // -- a jittered lattice of dabs, in place of the continuous Kuwahara
+        // abstraction below. Colour is sampled once per dab, at its own
+        // jittered centre, and held flat over the whole disc — a dab modulates
+        // *colour*, never area, which is the one structural fact that keeps
+        // this from reading as spot-ink-plates with softer edges. Ungated by
+        // depth, unlike the bristle further down: a real divisionist canvas
+        // is dabs everywhere, ground included — the water and the grass in
+        // Seurat's own paintings are built from points exactly as much as the
+        // figures are, and painting the subject onto a smooth background
+        // reads as a sticker rather than as the technique.
+        // No backticks in this comment or the ones below, deliberately: the
+        // whole shader is a TypeScript template literal and one would end it.
+        vec2 P = gl_FragCoord.xy;
+        // bestScore, not bestD, decides the winner — see below, where a
+        // dab's own size is folded into the contest rather than only into
+        // how big it draws once it has already won.
+        float bestScore = 1.0e6;
+        float bestD = 1.0e6;
+        float bestRadius = uDabRadius * uDabSpacing;
+        vec3 dabColor = here.rgb;
+        float dabAlpha = here.a;
 
-            vec2 pixel = gl_FragCoord.xy + u.x * axisA + u.y * axisB;
-            vec4 tap = fetchAt(pixel);
-            vec3 rgb = tap.rgb;
+        // Nine lattices, independently rotated, offset and scaled, unioned by
+        // nearest point — not one lattice jittered harder. A single jittered
+        // grid keeps its topology no matter how far each point wanders
+        // inside its own cell: the same rough neighbour count at the same
+        // rough spacing is what the eye reads as a repeat, and jitter alone
+        // never touches it. Two or three unioned layers still beat visibly
+        // against each other — a beat is what any two periodic structures do
+        // when combined, however they are jittered — so this needed both
+        // more layers and a principled separation between them: each layer's
+        // angle is the last plus the golden angle (about 137.5 degrees), the
+        // same spacing that keeps sunflower seeds from ever lining up into
+        // rows, because it is about as far from any simple fraction of a
+        // turn as an angle can be. Scales spread the same way, by golden-
+        // ratio powers, so no layer's spacing is a simple multiple of
+        // another's either. Measured, not assumed: an FFT of the rendered
+        // background's periodicity dropped from 7.5 at five layers to 6.2 at
+        // nine — see the divisionist-anti-moire workflow run for the
+        // comparison against three other candidate techniques.
+        const int LAYERS = 9;
+        float layerAngle[LAYERS];
+        layerAngle[0] = 0.0;
+        layerAngle[1] = 2.399963;
+        layerAngle[2] = 4.799926;
+        layerAngle[3] = 7.199889;
+        layerAngle[4] = 9.599852;
+        layerAngle[5] = 11.999815;
+        layerAngle[6] = 14.399778;
+        layerAngle[7] = 16.799741;
+        layerAngle[8] = 19.199704;
+        float layerScale[LAYERS];
+        layerScale[0] = 0.55;
+        layerScale[1] = 0.65;
+        layerScale[2] = 0.78;
+        layerScale[3] = 0.92;
+        layerScale[4] = 1.0;
+        layerScale[5] = 1.08;
+        layerScale[6] = 1.22;
+        layerScale[7] = 1.38;
+        layerScale[8] = 1.55;
+        vec2 layerOffset[LAYERS];
+        layerOffset[0] = vec2(0.0, 0.0);
+        layerOffset[1] = vec2(31.7, 11.3);
+        layerOffset[2] = vec2(-17.1, 53.9);
+        layerOffset[3] = vec2(67.3, -29.4);
+        layerOffset[4] = vec2(-41.8, -63.2);
+        layerOffset[5] = vec2(83.1, 42.6);
+        layerOffset[6] = vec2(-59.4, 19.8);
+        layerOffset[7] = vec2(12.9, -77.3);
+        layerOffset[8] = vec2(-93.2, -8.4);
 
-            // The same silhouette guard the tensor smoothing uses. Without it
-            // the abstraction is also a bleed, and the subject grows a halo of
-            // its own colour against the ground.
-            float wz = exp(-abs(flowAt(pixel).w - z0) / uDepthFalloff);
-            float wr = exp(-r2 / (2.0 * 0.4 * 0.4));
-            float L = dot(rgb, vec3(0.299, 0.587, 0.114));
-            // The centre tap has no angle: atan(0.0, 0.0) is undefined in
-            // GLSL, and on a real driver it came back as NaN, which poisoned
-            // every sum in the pixel and arrived as **alpha zero**. That is not
-            // a visible artefact: it is one transparent pixel in a frame, and
-            // snapshot() refuses the whole capture on it, because on an
-            // opaque canvas a transparent pixel means part of the image was
-            // never rendered. Found by a 1890px plate of haemoglobin.
-            bool centred = r2 < 1e-12;
-            float ang = centred ? 0.0 : atan(u.y, u.x);
-
-            for (int k = 0; k < 8; ++k) {
-                float delta = ang - TAU * float(k) / 8.0;
-                delta = mod(delta + 3.14159265, TAU) - 3.14159265;
-                // Hann windows two sectors wide at 50% overlap are a partition
-                // of unity: they sum to exactly 1, so no tap is double counted
-                // and no sector boundary is a seam. A hard pie slice leaves a
-                // faint eight-pointed star on every flat region, which is the
-                // most recognisable way this filter looks wrong.
-                // The centre belongs to every sector equally, at an eighth
-                // each — which keeps the same total of 1 without pretending it
-                // points somewhere.
-                float wa = centred
-                    ? 0.125
-                    : (abs(delta) < TAU / 8.0 ? 0.5 + 0.5 * cos(delta * 4.0) : 0.0);
-                float w = wa * wr * wz;
-                mean[k] += tap * w;
-                lsum[k] += L * w;
-                l2sum[k] += L * L * w;
-                nsum[k] += w;
+        for (int layer = 0; layer < LAYERS; ++layer) {
+            float spacing = uDabSpacing * layerScale[layer];
+            vec2 lp = rotate2(scrambleCell(P, spacing), layerAngle[layer]) + layerOffset[layer];
+            vec2 cell = floor(lp / spacing);
+            for (int j = -1; j <= 1; ++j) {
+                for (int i = -1; i <= 1; ++i) {
+                    vec2 c = cell + vec2(float(i), float(j));
+                    // Seeded on the layer too, so the three lattices draw
+                    // independent jitter and colour rather than the same
+                    // pattern rotated three times.
+                    vec2 seed = c + float(layer) * 97.13;
+                    // Two independent hashes of the same seed, not one hash
+                    // read twice: hash21 is a scalar function, and reusing
+                    // its output for both axes would jitter every dab along
+                    // the diagonal only.
+                    vec2 jitter = (vec2(hash21b(seed), hash21b(seed + 91.7)) - 0.5) * uDabJitter;
+                    vec2 centerLocal = (c + 0.5 + jitter) * spacing;
+                    // Back to real screen space, so the distance test and the
+                    // colour fetch below both stay honest about where a pixel
+                    // actually is.
+                    vec2 center = rotate2(centerLocal - layerOffset[layer], -layerAngle[layer]);
+                    float d = distance(P, center);
+                    // A dab's own size, drawn once per dab like its colour —
+                    // and it has to change which dab *wins* a pixel, not only
+                    // how big the winner then draws. A power diagram rather
+                    // than a plain Voronoi one: size is folded into the
+                    // contest as a bonus subtracted from distance, so a
+                    // larger dab reaches out and wins ground a same-distance
+                    // smaller dab would have kept, and two different-sized
+                    // neighbours meet at a boundary shaped by both of them
+                    // rather than a smaller one clipping a bigger one's
+                    // circle in two.
+                    // Ceiling at the baseline itself, not above it: a dab
+                    // only ever shrinks from here, never grows past it,
+                    // because a genuinely large one reads as a blob and
+                    // muddies the picture — measured by bracketing four
+                    // ceilings from 1.28x down to 1.0x and this is the one
+                    // that was chosen. Squaring the hash before the mix
+                    // biases the draw toward the floor rather than sampling
+                    // it evenly, so most dabs land well under the baseline
+                    // and the odd one reaches it.
+                    float sizeDraw = hash21b(seed + 571.0);
+                    float sizeFactor = mix(1.0 - uDabSizeVariance, 1.0, sizeDraw * sizeDraw);
+                    float radius = uDabRadius * spacing * sizeFactor;
+                    float score = d - (sizeFactor - 1.0) * spacing * 0.6;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestD = d;
+                        bestRadius = radius;
+                        vec4 base = fetchAt(center);
+                        // Three more hashes of the seed, one per channel, so
+                        // the perturbation is a colour and not a brightness —
+                        // a shared scalar tint would still draw one RGB per
+                        // flat region, which is exactly the failure this look
+                        // exists to avoid.
+                        vec3 tint = vec3(hash21b(seed + 3.0), hash21b(seed + 41.0), hash21b(seed + 197.0));
+                        dabColor = clamp(base.rgb + (tint - 0.5) * 2.0 * uDabChroma, 0.0, 1.0);
+                        dabAlpha = base.a;
+                    }
+                }
             }
         }
-    }
+        // Soft disc edge, not a hard circle — an aliased dab boundary is the
+        // signature of a filter, not a mark. bestRadius is the winning dab's
+        // own radius (uDabRadius scaled by its layer's spacing and its own
+        // size factor).
+        float edge = smoothstep(bestRadius, bestRadius * 0.88, bestD);
+        col = mix(here.rgb, dabColor, edge);
+        alpha = mix(here.a, dabAlpha, edge);
+    } else {
+        vec4 mean[8];
+        float lsum[8];
+        float l2sum[8];
+        float nsum[8];
+        for (int k = 0; k < 8; ++k) {
+            mean[k] = vec4(0.0);
+            lsum[k] = 0.0;
+            l2sum[k] = 0.0;
+            nsum[k] = 0.0;
+        }
 
-    vec4 num = vec4(0.0);
-    float den = 0.0;
-    for (int k = 0; k < 8; ++k) {
-        if (nsum[k] <= 0.0) continue;
-        vec4 mu = mean[k] / nsum[k];
-        float lmu = lsum[k] / nsum[k];
-        // Luminance variance rather than the sum of per-channel variances. A
-        // structure coloured by chain has hue boundaries with no luminance
-        // step; on RGB variance the brush refuses to work across them and
-        // leaves a hard plastic seam at every one.
-        float variance = max(0.0, l2sum[k] / nsum[k] - lmu * lmu);
-        // Divided by a reference variance before the exponent bites. Written
-        // this way because the published formula (Kyprianidis & Doellner) is
-        // for 0-255 values: on the [0,1] the shader carries, raw variance
-        // never leaves the flat top of the curve — at hardness 8 its entire
-        // range is 1.0000000 to 0.9999847, which is a Gaussian blur wearing a
-        // Kuwahara's name.
-        //
-        // uVarRef is therefore where a look chooses how much abstraction it
-        // wants, and 1.0 is exactly the ungoverned form: verified bit-for-bit
-        // at every sample. chiaroscuro asks for 1.0 on purpose.
-        //
-        // No backticks in this comment, deliberately: the whole shader is a
-        // TypeScript template literal and one would end it here.
-        float scaled = variance / (uVarRef * uVarRef);
-        float w = 1.0 / (1.0 + pow(scaled, 0.5 * uHardness));
-        num += mu * w;
-        den += w;
-    }
+        for (int j = -dSamples; j <= dSamples; ++j) {
+            for (int i = -dSamples; i <= dSamples; ++i) {
+                vec2 u = vec2(float(i), float(j)) / float(dSamples);
+                float r2 = dot(u, u);
+                if (r2 > 1.0) continue;
 
-    // A second guard on the same failure, and independent of the first: if the
-    // brush found nothing to average — every tap in the disc across a depth
-    // break from an isolated pixel — the answer is the pixel itself, not black
-    // and certainly not transparent.
-    vec4 here = fetchAt(gl_FragCoord.xy);
-    vec4 painted = den > 1e-5 ? num / den : here;
-    vec3 col = painted.rgb;
-    float alpha = clamp(painted.a, 0.0, 1.0);
+                vec2 pixel = gl_FragCoord.xy + u.x * axisA + u.y * axisB;
+                vec4 tap = fetchAt(pixel);
+                vec3 rgb = tap.rgb;
+
+                // The same silhouette guard the tensor smoothing uses. Without it
+                // the abstraction is also a bleed, and the subject grows a halo of
+                // its own colour against the ground.
+                float wz = exp(-abs(flowAt(pixel).w - z0) / uDepthFalloff);
+                float wr = exp(-r2 / (2.0 * 0.4 * 0.4));
+                float L = dot(rgb, vec3(0.299, 0.587, 0.114));
+                // The centre tap has no angle: atan(0.0, 0.0) is undefined in
+                // GLSL, and on a real driver it came back as NaN, which poisoned
+                // every sum in the pixel and arrived as **alpha zero**. That is not
+                // a visible artefact: it is one transparent pixel in a frame, and
+                // snapshot() refuses the whole capture on it, because on an
+                // opaque canvas a transparent pixel means part of the image was
+                // never rendered. Found by a 1890px plate of haemoglobin.
+                bool centred = r2 < 1e-12;
+                float ang = centred ? 0.0 : atan(u.y, u.x);
+
+                for (int k = 0; k < 8; ++k) {
+                    float delta = ang - TAU * float(k) / 8.0;
+                    delta = mod(delta + 3.14159265, TAU) - 3.14159265;
+                    // Hann windows two sectors wide at 50% overlap are a partition
+                    // of unity: they sum to exactly 1, so no tap is double counted
+                    // and no sector boundary is a seam. A hard pie slice leaves a
+                    // faint eight-pointed star on every flat region, which is the
+                    // most recognisable way this filter looks wrong.
+                    // The centre belongs to every sector equally, at an eighth
+                    // each — which keeps the same total of 1 without pretending it
+                    // points somewhere.
+                    float wa = centred
+                        ? 0.125
+                        : (abs(delta) < TAU / 8.0 ? 0.5 + 0.5 * cos(delta * 4.0) : 0.0);
+                    float w = wa * wr * wz;
+                    mean[k] += tap * w;
+                    lsum[k] += L * w;
+                    l2sum[k] += L * L * w;
+                    nsum[k] += w;
+                }
+            }
+        }
+
+        vec4 num = vec4(0.0);
+        float den = 0.0;
+        for (int k = 0; k < 8; ++k) {
+            if (nsum[k] <= 0.0) continue;
+            vec4 mu = mean[k] / nsum[k];
+            float lmu = lsum[k] / nsum[k];
+            // Luminance variance rather than the sum of per-channel variances. A
+            // structure coloured by chain has hue boundaries with no luminance
+            // step; on RGB variance the brush refuses to work across them and
+            // leaves a hard plastic seam at every one.
+            float variance = max(0.0, l2sum[k] / nsum[k] - lmu * lmu);
+            // Divided by a reference variance before the exponent bites. Written
+            // this way because the published formula (Kyprianidis & Doellner) is
+            // for 0-255 values: on the [0,1] the shader carries, raw variance
+            // never leaves the flat top of the curve — at hardness 8 its entire
+            // range is 1.0000000 to 0.9999847, which is a Gaussian blur wearing a
+            // Kuwahara's name.
+            //
+            // uVarRef is therefore where a look chooses how much abstraction it
+            // wants, and 1.0 is exactly the ungoverned form: verified bit-for-bit
+            // at every sample. chiaroscuro asks for 1.0 on purpose.
+            //
+            // No backticks in this comment, deliberately: the whole shader is a
+            // TypeScript template literal and one would end it here.
+            float scaled = variance / (uVarRef * uVarRef);
+            float w = 1.0 / (1.0 + pow(scaled, 0.5 * uHardness));
+            num += mu * w;
+            den += w;
+        }
+
+        // A second guard on the same failure, and independent of the first: if
+        // the brush found nothing to average — every tap in the disc across a
+        // depth break from an isolated pixel — the answer is the pixel itself,
+        // not black and certainly not transparent.
+        vec4 painted = den > 1e-5 ? num / den : here;
+        col = painted.rgb;
+        alpha = clamp(painted.a, 0.0, 1.0);
+    }
 
     // -- the mark of the brush ------------------------------------------------
     float acc = valueNoise(gl_FragCoord.xy / uGrain);

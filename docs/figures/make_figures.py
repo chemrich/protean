@@ -672,12 +672,12 @@ async def neon() -> list[Path]:
 
 @figure("brushwork")
 async def brushwork() -> list[Path]:
-    """The oil painting, at one plate size, beside the render underneath it.
+    """The plain render, then every painterly look, at one plate size each.
 
-    Two tiles rather than a sweep of brush sizes, and deliberately: the claim
-    the section makes is that the viewer *paints*, and the only way to see that
-    is the same scene with and without. The sizes differ by the width of a mark,
-    which a 520px tile cannot show and a differential test can.
+    Derived from `server._PAINTERLY_LOOKS` rather than naming a look, so a
+    third one lands in this figure the day it ships rather than the day
+    someone notices it never has — `engraving` shipped and missed the
+    print-finishes figure once already, and that gap is now closed for both.
     """
     await load("1ubq")
     # Read before anything is painted, and put back after. A painterly look and
@@ -688,6 +688,7 @@ async def brushwork() -> list[Path]:
     # painted canvas, then refused its own capture as blank.
     ground = await ground_colour()
     await server.preset("painting")
+    looks = sorted(look for look in server._PAINTERLY_LOOKS if look != "off")
     with scratch() as tmp:
         await server.brushwork(look="off")
         # Captured well above the tile it lands in. `contact_sheet` crops to the
@@ -695,24 +696,23 @@ async def brushwork() -> list[Path]:
         # as wide as the tile arrives *magnified* — and magnifying a painterly
         # frame coarsens exactly the marks the figure exists to show.
         plain = await capture(tmp / "plain.png", pixels=1400)
-        # The preset's own look, read rather than named: a figure whose label
-        # says `chiaroscuro` under a picture of something else is exactly the
-        # stale caption this whole script exists to prevent.
-        look = server._PAINTING_LOOK
-        await server.brushwork(look=look)
-        painted = await capture(tmp / "painted.png", pixels=1400)
+
+        painted = {}
+        for look in looks:
+            await server.brushwork(look=look)
+            painted[look] = await capture(tmp / f"painted-{look}.png", pixels=1400)
         await server.brushwork(look="off")
         await server.background(color=ground)
 
-        # Both cropped to the *render's* bounds, because nothing can find the
-        # subject in the painted one: the canvas weave reaches every pixel, so
-        # `_bounds` returns the whole frame and the sheet's shared window
-        # becomes the whole frame too, stranding the molecule in the middle of
-        # its tile. It is the same fact that makes `snapshot(crop=True)` refuse
-        # while a look is on.
+        # All cropped to the *plain render's* bounds, because nothing can find
+        # the subject in a painted one: a canvas weave or a dab lattice both
+        # reach every pixel, so `_bounds` returns the whole frame and the
+        # sheet's shared window becomes the whole frame too, stranding the
+        # molecule in the middle of its tile. It is the same fact that makes
+        # `snapshot(crop=True)` refuse while a look is on.
         window = _bounds(plain)
         tiles = []
-        for name, source in (("the render", plain), (look, painted)):
+        for name, source in [("the render", plain), *painted.items()]:
             cut = tmp / f"cut-{source.name}"
             Image.open(source).convert("RGB").crop(window).save(cut)
             tiles.append((name, cut))
@@ -720,7 +720,7 @@ async def brushwork() -> list[Path]:
             contact_sheet(
                 IMAGES / "brushwork.png",
                 tiles,
-                columns=2,
+                columns=len(tiles),
                 tile_width=560,
                 share_frame=False,
             )
