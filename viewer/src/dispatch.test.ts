@@ -2299,6 +2299,32 @@ describe('settling a visible tab', () => {
     expect(raf.mock.calls.length).toBeGreaterThan(3);
   });
 
+  it('settles a structure with no representations rather than spinning for the whole budget', async () => {
+    // `remove()` deletes a component's representations without deleting the
+    // structure itself — the documented way to clear a preset's default
+    // representation before adding custom ones, and a permanent state, not
+    // a transient one. A version of the busy check that reads
+    // "structure present, nothing drawn yet" as "still building" forever
+    // cannot tell that apart from this, and every render:true action after
+    // would burn the full 10s VISIBLE_TIMEOUT_MS budget instead of settling
+    // in a handful of frames.
+    //
+    // The test above already covers this fixture's frame count from below
+    // (`toBeGreaterThan(3)`, so a fix that returns too early is caught); this
+    // one covers it from above, which a permanently-busy loop would fail —
+    // without an upper bound, a spin that only stopped at the time budget
+    // would still pass "greater than 3".
+    const { plugin, raf } = withCommitLoop(0);
+    window.__protean = { setTurbo: vi.fn() };
+
+    await createDispatcher(plugin)('select', {
+      name: 'sele',
+      expression: '(sel.atom.all)',
+    });
+
+    expect(raf.mock.calls.length).toBeLessThan(20);
+  });
+
   it('waits for the camera the load preset moved, after the scene commits', async () => {
     // The preset frames the new molecule and Mol* tweens that like any other
     // camera move, so settling the *geometry* says nothing about it: a capture

@@ -468,7 +468,15 @@ async def _call(action: str, args: dict[str, Any] | None = None) -> dict[str, An
     this makes that declaration true rather than assumed.
     """
     bridge = _require_viewer()
-    result = await bridge.request(action, args or {})
+    # withRenderPump's own budget goes to TRACED_TIMEOUT_MS (300s) for any
+    # render:true action, not only snapshot(), while path tracing is on and
+    # the tab is hidden — a capture is not the only thing that can take that
+    # long. The bridge's flat 60s default sits below that budget, which cut
+    # the wait off first with a generic message instead of the viewer's own
+    # diagnosis. Kept in step with _TRACED_SCREENSHOT_TIMEOUT rather than a
+    # new number: the same "path tracing needs real headroom" fact either way.
+    timeout = _TRACED_SCREENSHOT_TIMEOUT if _path_tracing else 60.0
+    result = await bridge.request(action, args or {}, timeout=timeout)
     if not isinstance(result, dict):
         raise ViewerError(
             f"Viewer returned {type(result).__name__} for {action!r}, expected an object"
