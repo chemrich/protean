@@ -420,11 +420,11 @@ ribbon drawing — brush strokes and canvas texture. Dutch Master first, then a
 Seurat pointillist, then a bold Van Gogh.** They chose **live in the viewer**
 rather than a capture-time finish, which is why #137 was done first.
 
-The Dutch Master is shipped as `chiaroscuro`. `divisionist` (Seurat) is now
-shipped too, as its own entry in `PAINTERLY_LOOKS` over the same engine — the
-flow field, the bristle and the relief were already there and go unused here;
-what a dab look needed instead is below. `impasto` (Van Gogh) is still not
-built — see its own entry further down.
+The Dutch Master is shipped as `chiaroscuro`. `divisionist` (Seurat) shipped
+next, as its own entry in `PAINTERLY_LOOKS` over the same engine — the flow
+field, the bristle and the relief were already there and go unused here; what
+a dab look needed instead is below. `impasto` (Van Gogh) has shipped too, as
+the third and last entry in this direction — see its own entry further down.
 
 **`divisionist`**, shipped 2026-09-04, over several rounds of bracketing
 against real renders rather than a single number chosen up front:
@@ -491,6 +491,42 @@ Getting there took three real fixes, not one:
 The fine end of the size range (`dabSpacing` finer than what shipped) reads as
 a distinct "colour static" style in its own right — set aside deliberately as
 a possible future look rather than folded into `divisionist`.
+
+**`impasto`**, shipped 2026-09-06, is `chiaroscuro`'s own machinery turned
+up — longer strokes, deeper relief, bolder chroma — plus one real addition:
+`chromaBoost`, a saturation lift applied in HSL rather than by scaling and
+clamping RGB. The naive form clips per channel in sRGB, and clipping rotates
+hue at the high end — a blue chain pushed hard enough drifts toward magenta,
+which would misdescribe protean's own colour coding rather than merely paint
+it bolder. Going through HSL and touching only saturation cannot rotate hue,
+because hue is not one of the terms it changes; a synthetic blue-violet test
+vector in `painterly-looks.test.ts` checks the hue-preserving version holds
+exactly (not merely closely) and that the naive version really does drift,
+so the fix is proven against a real failure rather than a hypothetical one.
+
+Bracketing this one took a detour worth recording: a Charlie complaint that
+the shipped tuning read too dark led first to zeroing `relief`, which is
+genuinely brighter but also gives up the raised, raking-lit paint surface
+that makes this impasto rather than a flat fill — too much lost for the
+brightness gained, so `relief` stayed at a real value and the brightness
+question was answered through the *palette* instead of through the look. A
+second detour covered lighting directly: all six rigs, each pushed toward
+two extremes, on the same scene. `standard` — Mol\*'s own plain single-key
+rig — reads better on this look than the warm/cool `studio` rig `chiaroscuro`
+uses, and a second variant earns its own name: `flat` lighting with
+`ambient` overridden to 1.3, which drops all directional shading and reads
+as a sketch rather than a painting. Both were confirmed across several
+palettes, not just the one they were picked on, before being written down
+here. No preset bakes either one in yet — `lighting(rig="standard")` or
+`lighting(rig="flat", ambient=1.3)` are both called directly, the same way
+`brushwork(look="impasto")` itself is.
+
+A set of six Van Gogh-titled colour palettes were built and bracketed
+alongside this work, to answer whether `chiaroscuro`'s own earth-pigment
+palette undersold impasto's bolder chroma. None of them shipped — no
+palette decision has been made, and `impasto` does not depend on one; any
+existing `color()` theme works with it. If a default is ever wanted, that
+palette work is the starting point.
 
 ### 2. Decide whether a third treatment is worth building
 

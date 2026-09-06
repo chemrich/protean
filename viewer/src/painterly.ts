@@ -229,6 +229,7 @@ const BrushSchema = {
   uDabJitter: UniformSpec('f'),
   uDabChroma: UniformSpec('f'),
   uDabSizeVariance: UniformSpec('f'),
+  uChromaBoost: UniformSpec('f'),
   dSamples: DefineSpec('number'),
   dStroke: DefineSpec('number'),
 };
@@ -340,6 +341,7 @@ function buildState(webgl: any, width: number, height: number, radius: number): 
     uDabJitter: ValueCell.create(0),
     uDabChroma: ValueCell.create(0),
     uDabSizeVariance: ValueCell.create(0),
+    uChromaBoost: ValueCell.create(0),
     dSamples: ValueCell.create(samples),
     dStroke: ValueCell.create(1),
   };
@@ -585,6 +587,7 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uDabJitter, look.dabJitter);
   ValueCell.updateIfChanged(state.brush.values.uDabChroma, look.dabChroma);
   ValueCell.updateIfChanged(state.brush.values.uDabSizeVariance, look.dabSizeVariance);
+  ValueCell.updateIfChanged(state.brush.values.uChromaBoost, look.chromaBoost);
   state.brush.update();
 
   const bounce = destination !== null;

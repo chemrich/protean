@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { PAINTERLY_LOOKS, sectorWeight } from './painterly-looks';
+import { PAINTERLY_LOOKS, boostChroma, rgb2hsl, sectorWeight } from './painterly-looks';
 import { painterly_brush_frag } from './painterly-shaders';
 
 describe('the brush sector weight', () => {
@@ -53,6 +53,55 @@ describe('the brush sector weight', () => {
     expect(painterly_brush_frag).toContain('float scaled = variance / (uVarRef * uVarRef);');
     expect(painterly_brush_frag).toContain(
       'float w = 1.0 / (1.0 + pow(scaled, 0.5 * uHardness));'
+    );
+  });
+});
+
+describe("impasto's hue-preserving chroma boost", () => {
+  // A saturated blue-violet, the specific chain the naive approach is known
+  // to fail on: pushed hard, it drifts toward magenta rather than just
+  // getting bolder.
+  const BLUE_VIOLET: [number, number, number] = [0.35, 0.08, 0.85];
+  const hueDeg = (rgb: [number, number, number]) => rgb2hsl(rgb)[0] * 360;
+
+  const naiveBoost = (rgb: [number, number, number], boost: number): [number, number, number] => {
+    const [r, g, b] = rgb;
+    const L = 0.299 * r + 0.587 * g + 0.114 * b;
+    const clamp = (x: number) => Math.min(1, Math.max(0, x));
+    return [clamp(L + (r - L) * (1 + boost)), clamp(L + (g - L) * (1 + boost)), clamp(L + (b - L) * (1 + boost))];
+  };
+
+  it('cannot rotate hue, by construction — only saturation is in the equation', () => {
+    const before = hueDeg(BLUE_VIOLET);
+    // Well past impasto's own 0.5, to show this holds under a boost harder
+    // than any shipped look asks for, not just the one that happens to ship.
+    for (const boost of [0.5, 2.0, 5.0]) {
+      const after = hueDeg(boostChroma(BLUE_VIOLET, boost));
+      expect(Math.abs(after - before)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('is not a phantom fix: the naive per-channel clamp really does rotate this hue toward magenta', () => {
+    // The positive control. If this drifted by nothing either, the
+    // hue-preserving version above would be solving a problem that does not
+    // exist rather than the one its own docstring names.
+    const before = hueDeg(BLUE_VIOLET);
+    const after = hueDeg(naiveBoost(BLUE_VIOLET, 5.0));
+    const drift = after - before;
+    expect(drift).toBeGreaterThan(15);
+    // Magenta is 300°; drifting *toward* it from this blue-violet's ~261°
+    // means increasing, not decreasing or wrapping the other way.
+    expect(after).toBeGreaterThan(before);
+    expect(after).toBeLessThan(300);
+  });
+
+  it('is the formula the shader is running', () => {
+    // Same duplication price as sectorWeight above: a change to the GLSL
+    // tone-mapping that does not reach here leaves the tests above
+    // exercising a formula nobody runs.
+    expect(painterly_brush_frag).toContain('if (uChromaBoost > 0.0) {');
+    expect(painterly_brush_frag).toContain(
+      'hsl.y = clamp(hsl.y * (1.0 + uChromaBoost), 0.0, 1.0);'
     );
   });
 });

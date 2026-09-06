@@ -839,3 +839,137 @@ async def test_divisionist_paints_the_ground_and_chiaroscuro_does_not(
         "is close enough to complete that this comparison would stop "
         "meaning anything even if divisionist agreed"
     )
+
+
+@pytest.fixture(scope="module")
+async def painted_impasto() -> dict[str, Any]:
+    """The same walk `painted` does, for `impasto`.
+
+    Its own fixture rather than a parametrized version of `painted`, the
+    same reasoning as `painted_divisionist`: mixing looks with different
+    claims into one fixture risks a guard that passes for either without
+    distinguishing them. Impasto's mechanism is continuous like
+    chiaroscuro's — a stroke, not a dab lattice — so this mirrors `painted`
+    directly rather than `painted_divisionist`.
+    """
+    frames: dict[str, Any] = {}
+    async with viewer_session(FIXTURE) as session:
+        await _widen(session)
+        await _ribbon(session)
+
+        frames["plain"] = await _capture(session)
+        frames["plain_canvas"] = await _canvas(session)
+
+        frames["reply"] = await session.request(
+            "brushwork", {"look": "impasto", "brush_size": "medium"}
+        )
+        frames["painted"] = await _capture(session)
+        frames["painted_canvas"] = await _canvas(session)
+
+        frames["sizes"] = (await session.request("capabilities", {}))["brush_sizes"]
+        for size in frames["sizes"]:
+            frames[f"{size}_reply"] = await session.request(
+                "brushwork", {"brush_size": size}
+            )
+            frames[size] = await _capture(session)
+
+        frames["off_reply"] = await session.request("brushwork", {"look": "off"})
+        frames["off"] = await _capture(session)
+        frames["off_canvas"] = await _canvas(session)
+
+        await session.evaluate(
+            "JSON.stringify(!!window.__protean.plugin.canvas3d"
+            ".setProps({ multiSample: { mode: 'off' } }))"
+        )
+        frames["single_plain"] = await _canvas(session)
+        await session.request("brushwork", {"look": "impasto"})
+        frames["single_painted"] = await _canvas(session)
+        await session.request("brushwork", {"look": "off"})
+        await session.request("background", {"color": "#123456", "gradient": "off"})
+        frames["single_after"] = await _canvas(session)
+    return frames
+
+
+async def test_impasto_reaches_the_capture(painted_impasto):
+    """Mirrors `test_the_finish_reaches_the_capture` for this look."""
+    changed = _repainted(painted_impasto["plain"], painted_impasto["painted"])
+    assert changed > PAINTED, (
+        f"the capture changed on {changed:.4f} of the subject, so impasto "
+        "never reached ImagePass"
+    )
+
+
+async def test_impasto_reaches_the_canvas(painted_impasto):
+    """Mirrors `test_the_finish_reaches_the_canvas` for this look."""
+    changed = _repainted(
+        painted_impasto["plain_canvas"], painted_impasto["painted_canvas"]
+    )
+    assert changed > PAINTED, (
+        f"the drawing buffer changed on {changed:.4f} of the subject, so "
+        "impasto is in the file and not on the screen"
+    )
+
+
+async def test_impasto_is_patched_into_the_viewer_that_is_running(painted_impasto):
+    assert painted_impasto["reply"]["reaches_viewer"] is True
+
+
+async def test_impasto_survives_multisampling_being_switched_off(painted_impasto):
+    """Mirrors `test_the_finish_survives_multisampling_being_switched_off`."""
+    plain = painted_impasto["single_plain"]
+    for name in ("single_plain", "single_painted"):
+        lit = float(painted_impasto[name].pixels[:, :, :3].mean())
+        assert lit > 16, f"{name} came back at a mean brightness of {lit:.1f}"
+
+    changed = _repainted(plain, painted_impasto["single_painted"])
+    assert changed > PAINTED, (
+        f"with multisampling off the canvas changed on {changed:.4f} of the "
+        "subject, so the plain draw route has no impasto on it"
+    )
+
+    assert close(background(painted_impasto["single_after"]), (0x12, 0x34, 0x56, 255)), (
+        f"the canvas reads {background(painted_impasto['single_after'])} "
+        "after the background was changed, so the plain draw route stopped "
+        "updating it"
+    )
+
+
+async def test_taking_impasto_off_gives_back_the_exact_picture(painted_impasto):
+    """Mirrors `test_taking_the_finish_off_gives_back_the_exact_picture`."""
+    assert difference(painted_impasto["plain"], painted_impasto["off"]) == 0.0
+    assert (
+        difference(painted_impasto["plain_canvas"], painted_impasto["off_canvas"]) == 0.0
+    )
+    assert painted_impasto["off_reply"]["look"] == "off"
+
+
+async def test_the_impasto_brush_size_changes_the_mark_and_not_only_the_number(
+    painted_impasto,
+):
+    """Mirrors `test_the_brush_size_changes_the_mark_and_not_only_the_number`."""
+    sizes = painted_impasto["sizes"]
+    assert len(sizes) >= 2, sizes
+    brush = [painted_impasto[f"{size}_reply"]["brush_px"] for size in sizes]
+    stroke = [painted_impasto[f"{size}_reply"]["stroke_px"] for size in sizes]
+    assert brush == sorted(brush), dict(zip(sizes, brush, strict=True))
+    assert stroke == sorted(stroke), dict(zip(sizes, stroke, strict=True))
+    assert len(set(brush)) == len(sizes) and len(set(stroke)) == len(sizes)
+
+    marked = difference(painted_impasto[sizes[0]], painted_impasto[sizes[-1]])
+    drawn = coverage(painted_impasto["plain"])
+    assert marked > MARKED_FRACTION_OF_SUBJECT * drawn, (
+        f"{sizes[0]} and {sizes[-1]} differ on {marked:.4f} of the frame against "
+        f"a subject covering {drawn:.4f}, so the size is reported and the mark "
+        "is not drawn"
+    )
+
+
+async def test_an_impasto_ground_also_refuses_to_be_cropped():
+    """Mirrors `test_a_painted_ground_refuses_to_be_cropped` for this look —
+    the check itself is look-agnostic, but nothing exercised that for
+    impasto until now."""
+    async with viewer_session(FIXTURE) as session:
+        await _ribbon(session)
+        await session.request("brushwork", {"look": "impasto"})
+        with pytest.raises(ViewerError, match="paints the ground"):
+            await session.request("snapshot", {"width": 400, "crop": True}, timeout=240)

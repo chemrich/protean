@@ -4003,7 +4003,7 @@ async def shading(
 #: The viewer holds the real list and `capabilities()` reports it; this copy
 #: exists so a refusal can name the choices without a round trip, and
 #: `test_the_looks_are_the_ones_the_viewer_offers` compares the two.
-_PAINTERLY_LOOKS = ("off", "chiaroscuro", "divisionist")
+_PAINTERLY_LOOKS = ("off", "chiaroscuro", "divisionist", "impasto")
 _BRUSH_SIZES = ("fine", "medium", "broad")
 
 
@@ -4045,6 +4045,17 @@ async def brushwork(
                    scaled lattices, unioned by nearest point, stand in for
                    one ruled-then-jittered lattice, which keeps a visible
                    grid no matter how hard it is jittered.
+      impasto      Chiaroscuro's own machinery turned up: longer strokes,
+                   deeper relief, bolder chroma. The chroma boost runs in a
+                   hue-preserving space rather than by scaling and clamping
+                   RGB, because clamping clips per channel and rotates hue
+                   at the high end — a blue chain pushed hard enough drifts
+                   toward magenta, which would misdescribe protean's own
+                   colour coding rather than merely paint it bolder. Pairs
+                   with `lighting(rig="standard")` for the default reading,
+                   or `lighting(rig="flat", ambient=1.3)` for a flatter,
+                   sketch-like variant — no preset built for either yet, so
+                   both are reached by calling `lighting()` directly.
       off          Back to a plain render. Bit-for-bit the picture you had
                    before, which is asserted rather than hoped.
 
