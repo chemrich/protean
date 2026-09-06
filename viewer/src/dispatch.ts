@@ -12,6 +12,7 @@
 import type { Handler } from './bridge';
 import {
   BRUSH_SIZES,
+  MAX_STROKE_STEPS,
   MIN_BRUSH_PX,
   PAINTERLY_LOOKS,
   brushPixels,
@@ -2291,8 +2292,15 @@ export function createDispatcher(plugin: any): Handler {
           brush_px: Number.isFinite(px) ? Math.round(px * 100) / 100 : null,
           // The other length that decides the mark. Reported because
           // `brush_size` claims to change how the paint looks, and the width of
-          // the abstraction on its own does not — see `resolveBrush`.
-          stroke_px: lengths ? Math.round(lengths.stroke * 100) / 100 : null,
+          // the abstraction on its own does not — see `resolveBrush`. Capped
+          // at `MAX_STROKE_STEPS`, the same ceiling `painterly.ts` clamps the
+          // march to — past it, the mark itself stops growing with this
+          // number, and reporting the uncapped value would be exactly the
+          // "changes and the picture does not" shape this project keeps
+          // meeting.
+          stroke_px: lengths
+            ? Math.round(Math.min(lengths.stroke, MAX_STROKE_STEPS) * 100) / 100
+            : null,
           // The length a dab-based look's mark actually resolves to — the
           // baseline radius before per-dab size variance, in pixels of this
           // frame. `null` for a look with no dab lattice.

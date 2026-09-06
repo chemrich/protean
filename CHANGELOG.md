@@ -104,6 +104,24 @@ nothing is released yet, so everything below is unreleased.
 
 ### Views
 
+- **`impasto` ships — `brushwork()`'s third look, Van Gogh's mechanism.**
+  `chiaroscuro`'s own machinery turned up: longer strokes, deeper relief,
+  bolder chroma. One real addition, `chromaBoost`: a saturation lift run in
+  HSL rather than by scaling and clamping RGB, because per-channel clipping
+  in sRGB rotates a blue chain toward magenta at the top end. Going through
+  HSL and touching only saturation cannot rotate hue — checked against a
+  synthetic blue-violet vector, both that the hue-preserving version holds
+  exactly and that the naive version really does drift.
+
+  A brightness complaint was chased through the look itself first —
+  zeroing `relief` reads brighter, but gives up the raised, raking-lit
+  paint surface that is the look, so it stayed put. `lighting(rig=
+  "standard")` is the pairing that actually answers it, confirmed across
+  several palettes; `lighting(rig="flat", ambient=1.3)` is a second,
+  sketch-like variant. Neither is baked into a preset yet. A set of Van
+  Gogh-titled palettes bracketed alongside this did not ship — no palette
+  decision has been made, and the look does not depend on one.
+
 - **`divisionist` ships — `brushwork()`'s second look, Seurat's mechanism.**
   Dabs, not a continuous filter: each one coloured once at its own centre,
   never re-sampled per pixel, at full coverage — foreground and background

@@ -92,6 +92,13 @@ export interface Look {
    * reaching furthest, and its edge would clip against its neighbour's
    * boundary rather than draw a whole circle. */
   dabSizeVariance: number;
+
+  /** Saturation boost, applied in a hue-preserving space. Zero leaves colour
+   * untouched. The naive way to boost chroma — scale RGB away from luminance,
+   * then clamp — clips per channel in sRGB, and clipping rotates hue: a blue
+   * chain pushed hard enough drifts toward magenta, which would misdescribe
+   * protean's own colour coding rather than merely paint it bolder. */
+  chromaBoost: number;
 }
 
 export const PAINTERLY_LOOKS: Record<string, Look> = {
@@ -123,6 +130,47 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     dabRadius: 0,
     dabChroma: 0,
     dabSizeVariance: 0,
+    chromaBoost: 0,
+  },
+
+  // Chiaroscuro's own machinery turned up, per docs/soft-matter-status.md
+  // §1b — longer strokes, deeper relief, bolder chroma. Chiaroscuro's own
+  // stroke comment calls it "a twelfth of a Van Gogh", but literally
+  // multiplying by twelve (1/12.5) overshoots the *other* documented
+  // ceiling on the same field — past ~1/20 of the diagonal a stroke reads
+  // as a novelty filter, not a bolder brush — so this sits inside that
+  // ceiling rather than at the naive full scale.
+  //
+  // Bracketed against real renders across several rounds. Relief carries
+  // this look's raised-paint character and was tried at zero to chase a
+  // brightness complaint — genuinely brighter, but flat rather than
+  // impasto, so it stays at a real value and the brightness question was
+  // answered through the palette instead, not through this look.
+  //
+  // Pairs with `lighting(rig="standard")` for the default reading, or
+  // `lighting(rig="flat", ambient=1.3)` for a flatter, sketch-like variant
+  // — both confirmed across several palettes, not just one.
+  impasto: {
+    glaze: 0.12,
+    glazeColor: [0.55, 0.42, 0.3],
+    highlight: 0.42,
+    highlightColor: [0.949, 0.91, 0.835],
+    edge: 0.08,
+    hardness: 8,
+    varRef: 1.0,
+    eccentricity: 1,
+    weave: 0.13,
+    stroke: 1 / 25,
+    grain: 1 / 100,
+    bristle: 0.32,
+    relief: 18,
+    groundPaint: 0.0,
+    dabSpacing: 0,
+    dabJitter: 0,
+    dabRadius: 0,
+    dabChroma: 0,
+    dabSizeVariance: 0,
+    chromaBoost: 0.5,
   },
 
   // Seurat's mechanism, not his palette: dabs, each one colour sampled once
@@ -167,6 +215,7 @@ export const PAINTERLY_LOOKS: Record<string, Look> = {
     dabRadius: 0.8,
     dabChroma: 0.16,
     dabSizeVariance: 0.8,
+    chromaBoost: 0,
   },
 };
 
@@ -205,6 +254,67 @@ export function sectorWeight(variance: number, hardness: number, varRef: number)
   return 1 / (1 + Math.pow(variance / (varRef * varRef), 0.5 * hardness));
 }
 
+/** The GLSL RGB-to-HSL conversion `impasto`'s chroma boost runs through, in
+ * TypeScript, so the suite can reason about it. Duplicated deliberately and
+ * guarded by a test that reads the shader source — see
+ * `painterly-looks.test.ts`. */
+export function rgb2hsl(rgb: [number, number, number]): [number, number, number] {
+  const [r, g, b] = rgb;
+  const maxc = Math.max(r, g, b);
+  const minc = Math.min(r, g, b);
+  const l = (maxc + minc) * 0.5;
+  const d = maxc - minc;
+  let h = 0;
+  let s = 0;
+  if (d > 1e-6) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (maxc === r) {
+      h = ((g - b) / d) % 6;
+      if (h < 0) h += 6;
+    } else if (maxc === g) {
+      h = (b - r) / d + 2;
+    } else {
+      h = (r - g) / d + 4;
+    }
+    h /= 6;
+  }
+  return [h, s, l];
+}
+
+function hueToRgb(p: number, q: number, t: number): number {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1 / 6) return p + (q - p) * 6 * t;
+  if (t < 0.5) return q;
+  if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+  return p;
+}
+
+/** The inverse of {@link rgb2hsl}, same duplication-and-guard reasoning. */
+export function hsl2rgb(hsl: [number, number, number]): [number, number, number] {
+  const [h, s, l] = hsl;
+  if (s < 1e-6) return [l, l, l];
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [hueToRgb(p, q, h + 1 / 3), hueToRgb(p, q, h), hueToRgb(p, q, h - 1 / 3)];
+}
+
+/** `impasto`'s chroma boost itself: saturation scaled in HSL, hue untouched
+ * by construction — the boost cannot rotate a colour's hue because hue is
+ * not one of the terms it changes. The naive alternative (scale RGB away
+ * from luminance, then clamp per channel) does rotate hue at the high end,
+ * which is exactly the failure this earns its own function to avoid. */
+export function boostChroma(rgb: [number, number, number], boost: number): [number, number, number] {
+  const clamped: [number, number, number] = [
+    Math.min(1, Math.max(0, rgb[0])),
+    Math.min(1, Math.max(0, rgb[1])),
+    Math.min(1, Math.max(0, rgb[2])),
+  ];
+  const hsl = rgb2hsl(clamped);
+  hsl[1] = Math.min(1, Math.max(0, hsl[1] * (1 + boost)));
+  return hsl2rgb(hsl);
+}
+
 /** The brush radius in pixels for a frame of this size. NaN for an unknown
  * size name, so the caller's own check is the one that reports it. */
 export function brushPixels(width: number, height: number, brushSize: string): number {
@@ -224,6 +334,34 @@ export function brushPixels(width: number, height: number, brushSize: string): n
  *
  * Here rather than in `painterly.ts` so that it can be tested without a GPU.
  */
+
+/** The march in `painterly_brush_frag` walks a fixed, compile-time number of
+ * steps (`dStroke`) — GLSL ES 1.00 has no dynamic loop bound — capped here so
+ * the shader recompiles at most a handful of times rather than once per
+ * pixel of stroke length.
+ *
+ * Sized against this file's own documented ceiling on `stroke` itself
+ * (past 1/20 of the diagonal a stroke reads as a novelty filter, not a
+ * bolder brush) at a plate-sized capture and the broadest brush: a ~1890px
+ * plate's diagonal at `stroke: 1/20`, scaled by `broad`'s 1.625x, resolves
+ * to ~200 — so that combination, the most demanding one this ceiling is
+ * meant to ever have to admit, still fits. `impasto`'s own `stroke: 1/25`
+ * is comfortably inside that, but is the first shipped look whose resolved
+ * length reaches anywhere near it: on a real (device-pixel-ratio-scaled)
+ * capture at `medium`, `resolveBrush` alone resolves past 100px, and at a
+ * *smaller* ceiling every brush size collided on the same capped mark —
+ * reported honestly by the fix below, but a real regression in what
+ * `brush_size` is supposed to do, caught only by rendering at this
+ * project's own real test frame size rather than a synthetic one.
+ *
+ * Both `painterly.ts` (the uniform the march's own taper reads) and
+ * `dispatch.ts` (the `stroke_px` a caller is told) clamp to this same
+ * number, so a look that outgrows it even at this size is reported
+ * honestly rather than describing a mark longer than the compiled loop can
+ * ever draw — this project's own most-repeated failure shape, a reply that
+ * changes and a picture that does not. */
+export const MAX_STROKE_STEPS = 200;
+
 export function resolveBrush(
   width: number,
   height: number,

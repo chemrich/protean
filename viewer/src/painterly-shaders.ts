@@ -269,6 +269,7 @@ uniform float uDabRadius;
 uniform float uDabJitter;
 uniform float uDabChroma;
 uniform float uDabSizeVariance;
+uniform float uChromaBoost;
 
 const float TAU = 6.283185307;
 // Upper left, and never anywhere else. Fixed in screen space so the relief
@@ -299,6 +300,55 @@ vec2 rotate2(const in vec2 p, const in float a) {
 
 float threadHash(const in float i) {
     return fract(sin(i * 12.9898) * 43758.5453);
+}
+
+// Hue-preserving saturation boost, for impasto. Scaling RGB away from
+// luminance and clamping the result is the naive way to do this, and it
+// clips per channel in sRGB, which rotates hue at the high end — a blue
+// chain pushed hard enough drifts toward magenta. Going through HSL and
+// touching only S cannot rotate hue: it is not in the equation.
+vec3 rgb2hsl(const in vec3 c) {
+    float maxc = max(max(c.r, c.g), c.b);
+    float minc = min(min(c.r, c.g), c.b);
+    float l = (maxc + minc) * 0.5;
+    float d = maxc - minc;
+    float h = 0.0;
+    float s = 0.0;
+    if (d > 1e-6) {
+        s = d / (1.0 - abs(2.0 * l - 1.0));
+        if (maxc == c.r) {
+            h = mod((c.g - c.b) / d, 6.0);
+        } else if (maxc == c.g) {
+            h = (c.b - c.r) / d + 2.0;
+        } else {
+            h = (c.r - c.g) / d + 4.0;
+        }
+        h /= 6.0;
+    }
+    return vec3(h, s, l);
+}
+
+float hueToRgb(const in float p, const in float q, in float t) {
+    if (t < 0.0) t += 1.0;
+    if (t > 1.0) t -= 1.0;
+    if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
+    if (t < 0.5) return q;
+    if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    return p;
+}
+
+vec3 hsl2rgb(const in vec3 hsl) {
+    float h = hsl.x;
+    float s = hsl.y;
+    float l = hsl.z;
+    if (s < 1e-6) return vec3(l);
+    float q = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
+    float p = 2.0 * l - q;
+    return vec3(
+        hueToRgb(p, q, h + 1.0 / 3.0),
+        hueToRgb(p, q, h),
+        hueToRgb(p, q, h - 1.0 / 3.0)
+    );
 }
 
 /** Smooth value noise. Screen position only — never a frame counter, never a
@@ -732,6 +782,12 @@ void main(void) {
         // see.
         col *= mix(1.0, 0.62 + 0.55 * lambert, onPaint);
         col += 0.16 * spec * alpha * onPaint;
+    }
+
+    if (uChromaBoost > 0.0) {
+        vec3 hsl = rgb2hsl(clamp(col, 0.0, 1.0));
+        hsl.y = clamp(hsl.y * (1.0 + uChromaBoost), 0.0, 1.0);
+        col = hsl2rgb(hsl);
     }
 
     float L = dot(col, vec3(0.299, 0.587, 0.114));

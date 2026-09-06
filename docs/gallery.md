@@ -362,7 +362,7 @@ everything prints on one plate.
 preset("painting")
 ```
 
-![The same ubiquitin ribbon three times: a flat render, the same thing as an oil painting with visible brush marks, glazed darks and a woven ground, and again as a lattice of pointillist dabs covering the whole frame](images/brushwork.png)
+![The same ubiquitin ribbon four times: a flat render, the same thing as an oil painting with visible brush marks, glazed darks and a woven ground, again as a lattice of pointillist dabs covering the whole frame, and again with longer strokes, deeper relief and bolder chroma](images/brushwork.png)
 
 The print finishes above are Python, over pixels that have already left the
 renderer. This is the other thing entirely: **protean's own render pass, on the
@@ -388,6 +388,21 @@ near-constant area, which is the structural difference from
 `snapshot(finish="spot-ink-plates")` rather than a cosmetic one. Full account,
 including what it took to keep nine independently rotated lattices from
 beating against each other, in `docs/soft-matter-status.md` §1b.
+
+**`impasto`** is `chiaroscuro`'s own machinery turned up: longer strokes,
+deeper relief, bolder chroma. The one real addition is `chromaBoost`, a
+saturation lift run in HSL rather than by scaling and clamping RGB — the
+naive form clips per channel in sRGB, which rotates a blue chain toward
+magenta at the top end, and going through HSL touches only saturation,
+which cannot rotate hue because hue is not one of its terms. It pairs with
+`lighting(rig="standard")` for the default reading, or with
+`lighting(rig="flat", ambient=1.3)` for a flatter, sketch-like variant —
+confirmed across several palettes rather than the one it was picked on,
+though neither pairing is built into a preset yet. **Its tile above is
+still under `painting`'s own studio rig and dark ground, on purpose** —
+the figure holds one scene across all four tiles so the comparison is
+about the paint, not the light, and `standard` reads meaningfully brighter
+than what is shown here.
 
 A look sets how the paint behaves; the ribbon's colours are a separate colour
 theme, so `color("poster")` with `brushwork(look="chiaroscuro")` is still a

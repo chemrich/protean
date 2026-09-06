@@ -1532,13 +1532,33 @@ image should be only points, not points over a ribbon"* — was coverage as
 close to complete as the mechanism gets. The "positive colour, not absence of
 ink" half survived; the "below 1" half did not.
 
+#### `impasto` ships — 2026-09-06
+
+Van Gogh, the last of the three looks Charlie named. `chiaroscuro`'s own
+machinery turned up — longer strokes, deeper relief, bolder chroma — plus
+one real addition: `chromaBoost`, a saturation lift run in HSL rather than
+by scaling and clamping RGB, because per-channel clipping in sRGB rotates a
+blue chain toward magenta at the top end. Going through HSL and touching
+only saturation cannot rotate hue, since hue is not a term the boost
+changes — checked against a synthetic blue-violet vector in
+`painterly-looks.test.ts`, both that the hue-preserving version holds
+exactly and that the naive version really does drift, so the fix answers a
+demonstrated failure rather than a hypothetical one.
+
+A brightness complaint sent this through lighting rather than through the
+look itself: zeroing `relief` reads brighter but gives up the raised,
+raking-lit paint surface that is the look, so it stayed at a real value.
+`lighting(rig="standard")` is the pairing that actually answered the
+complaint, confirmed across several palettes; `lighting(rig="flat",
+ambient=1.3)` is a second, sketch-like variant worth its own name. Neither
+is baked into a preset yet. A set of Van Gogh-titled palettes was
+bracketed alongside this and did not ship — no palette decision has been
+made, and the look does not depend on one.
+
 #### What is not built
 
-`impasto` (Van Gogh) is the one look Charlie named that is still open.
-`chiaroscuro`'s own machinery turned up — longer strokes, deeper relief,
-bolder chroma — plus one real addition: the chroma boost has to happen in a
-hue-preserving space, because per-channel clipping in sRGB rotates a blue
-chain toward magenta at the top end.
+Nothing from this direction. `chiaroscuro`, `divisionist` and `impasto` —
+the three looks Charlie named — have all shipped.
 
 ---
 
