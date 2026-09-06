@@ -20,6 +20,7 @@ from types import ModuleType
 
 import pytest
 
+import protean_mcp.server as server_mod
 from protean_mcp.analysis.hatching import FINISHES
 from tests.docs_pages import documentation_pages, engineering_records
 
@@ -159,3 +160,34 @@ def test_the_print_finishes_caption_names_every_finish():
                 f"{page}'s print-finishes caption names {named} but the product "
                 f"ships {shipped} — missing {sorted(set(shipped) - set(named))}"
             )
+
+
+_COUNT_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight")
+
+
+def test_the_brushwork_caption_names_the_right_number_of_looks():
+    """The same class of staleness `test_the_print_finishes_caption_names_every_finish`
+    guards against, for `brushwork()`'s own figure.
+
+    The caption describes each look in prose rather than naming it (`off`
+    is "a flat render", not the string `"off"`), so it cannot be checked the
+    same way — but it does commit to a tile *count*, spelled out as a word
+    ("four times"), and that much is still a claim a shipped look can
+    silently outgrow. The plain render is one of the "times" the caption
+    counts, so it is `_PAINTERLY_LOOKS`'s own length — `off` included —
+    that matches the number of tiles `make_figures.py`'s `brushwork()`
+    actually renders, one per entry.
+    """
+    shipped = len(server_mod._PAINTERLY_LOOKS)
+    assert 0 < shipped < len(_COUNT_WORDS), shipped
+    word = _COUNT_WORDS[shipped]
+
+    text = (REPO / "docs" / "gallery.md").read_text()
+    captions = re.findall(r"!\[([^\]]*ubiquitin ribbon[^\]]*times[^\]]*)\]", text)
+    assert captions, "docs/gallery.md no longer carries the brushwork figure's caption"
+    for caption in captions:
+        assert re.search(rf"\b{word}\b", caption), (
+            f"caption says {caption!r} but {shipped} tiles are shipped "
+            f"({sorted(server_mod._PAINTERLY_LOOKS)}) — expected the word "
+            f"{word!r} in it"
+        )

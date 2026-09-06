@@ -65,7 +65,13 @@ import { DrawPass } from 'molstar/lib/mol-canvas3d/passes/draw';
 import { MultiSamplePass } from 'molstar/lib/mol-canvas3d/passes/multi-sample';
 import { IlluminationPass } from 'molstar/lib/mol-canvas3d/passes/illumination';
 
-import { PAINTERLY_LOOKS, brushPixels, resolveBrush, resolveDabs } from './painterly-looks';
+import {
+  MAX_STROKE_STEPS,
+  PAINTERLY_LOOKS,
+  brushPixels,
+  resolveBrush,
+  resolveDabs,
+} from './painterly-looks';
 import {
   painterly_blur_frag,
   painterly_brush_frag,
@@ -528,7 +534,7 @@ function paint(
   const lengths = resolveBrush(width, height, look, settings.brushSize);
   const strokePx = lengths.stroke;
   const samples = samplesFor(radius);
-  const strokeSteps = Math.max(2, Math.min(48, Math.round(strokePx)));
+  const strokeSteps = Math.max(2, Math.min(MAX_STROKE_STEPS, Math.round(strokePx)));
   if (samples !== state.samples || strokeSteps !== state.stroke) {
     // Defines, so this recompiles the program. They change only when the brush
     // size, the look or the frame size changes — a tool call or a resize.
@@ -548,7 +554,14 @@ function paint(
   ValueCell.updateIfChanged(state.brush.values.uHardness, look.hardness);
   ValueCell.updateIfChanged(state.brush.values.uVarRef, look.varRef);
   ValueCell.updateIfChanged(state.brush.values.uDepthFalloff, falloff);
-  ValueCell.updateIfChanged(state.brush.values.uStroke, strokePx);
+  // Clamped to the same ceiling as `dStroke` above, the loop's own compiled
+  // bound — otherwise the march's taper (`1.0 - i/uStroke`) never reaches
+  // nought within the steps the loop actually runs, and the mark cuts off
+  // hard at the loop bound instead of feathering out at its own tip.
+  ValueCell.updateIfChanged(
+    state.brush.values.uStroke,
+    Math.max(2, Math.min(MAX_STROKE_STEPS, strokePx))
+  );
   ValueCell.updateIfChanged(state.brush.values.uGrain, Math.max(1, lengths.grain));
   ValueCell.updateIfChanged(state.brush.values.uBristle, look.bristle);
   // Scaled with the grain, not fixed. The relief reads `dFdx` of the streak

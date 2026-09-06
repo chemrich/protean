@@ -504,13 +504,15 @@ vector in `painterly-looks.test.ts` checks the hue-preserving version holds
 exactly (not merely closely) and that the naive version really does drift,
 so the fix is proven against a real failure rather than a hypothetical one.
 
-Bracketing this one took a detour worth recording: a Charlie complaint that
-the shipped tuning read too dark led first to zeroing `relief`, which is
-genuinely brighter but also gives up the raised, raking-lit paint surface
-that makes this impasto rather than a flat fill — too much lost for the
-brightness gained, so `relief` stayed at a real value and the brightness
-question was answered through the *palette* instead of through the look. A
-second detour covered lighting directly: all six rigs, each pushed toward
+Getting to the shipped tuning already meant pulling `glaze`, `edge` and
+`relief` down once from their first, bolder-than-`chiaroscuro`'s starting
+point (0.45, 0.22 and 34) to what shipped (0.12, 0.08 and 18) — a real,
+kept fix, not the detour. The detour worth recording came after that, on a
+second complaint that the result still read too dark: zeroing `relief`
+entirely is genuinely brighter, but also gives up the raised, raking-lit
+paint surface that makes this impasto rather than a flat fill — too much
+lost for the brightness gained, so `relief` went back to 18 rather than 0.
+A second detour covered lighting directly: all six rigs, each pushed toward
 two extremes, on the same scene. `standard` — Mol\*'s own plain single-key
 rig — reads better on this look than the warm/cool `studio` rig `chiaroscuro`
 uses, and a second variant earns its own name: `flat` lighting with

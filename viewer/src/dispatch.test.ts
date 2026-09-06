@@ -9,7 +9,7 @@ import {
   rotateAbout,
   summarise,
 } from './dispatch';
-import { PAINTERLY_LOOKS, resolveBrush } from './painterly-looks';
+import { MAX_STROKE_STEPS, PAINTERLY_LOOKS, resolveBrush } from './painterly-looks';
 
 /** A structure shaped like Mol*'s, with the table layout the real one uses:
  *  comp_id on the atom table, seq/ins_code on the residue table. */
@@ -1362,6 +1362,29 @@ describe('brushwork', () => {
     const off: any = await dispatch('brushwork', { look: 'chiaroscuro' });
     expect(off.dab_px).toBeNull();
     expect(off.stroke_px).toBeGreaterThan(0);
+  });
+
+  // The march in `painterly_brush_frag` walks a fixed, compile-time number
+  // of steps (`dStroke`, capped at `MAX_STROKE_STEPS`) — GLSL ES 1.00 has no
+  // dynamic loop bound. A plate-sized capture (~5000px diagonal, comparable
+  // to `test_a_plate_sized_capture_of_a_large_molecule_survives`'s 1890px
+  // plate at a broader brush) pushes even `impasto`'s own `stroke: 1/25`
+  // past that ceiling at `broad`. Reporting the uncapped number there would
+  // be the "reply changes, picture does not" shape this project keeps
+  // meeting, this time from the other direction — the reply claiming a
+  // *longer* mark than the compiled loop can draw, rather than a look
+  // reporting a length it never uses at all.
+  it("caps stroke_px at what the shader's own compiled loop can actually march", async () => {
+    withPainterly();
+    const plugin: any = withCanvas(fakePlugin());
+    plugin.canvas3d.webgl.getDrawingBufferSize = () => ({ width: 4000, height: 3000 });
+    const dispatch = createDispatcher(plugin);
+
+    const raw = resolveBrush(4000, 3000, PAINTERLY_LOOKS.impasto, 'broad');
+    expect(raw.stroke).toBeGreaterThan(MAX_STROKE_STEPS);
+
+    const broad: any = await dispatch('brushwork', { look: 'impasto', brush_size: 'broad' });
+    expect(broad.stroke_px).toBe(MAX_STROKE_STEPS);
   });
 
   it('moves the dab length with brush size, for every size it offers', async () => {

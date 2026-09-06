@@ -334,6 +334,34 @@ export function brushPixels(width: number, height: number, brushSize: string): n
  *
  * Here rather than in `painterly.ts` so that it can be tested without a GPU.
  */
+
+/** The march in `painterly_brush_frag` walks a fixed, compile-time number of
+ * steps (`dStroke`) — GLSL ES 1.00 has no dynamic loop bound — capped here so
+ * the shader recompiles at most a handful of times rather than once per
+ * pixel of stroke length.
+ *
+ * Sized against this file's own documented ceiling on `stroke` itself
+ * (past 1/20 of the diagonal a stroke reads as a novelty filter, not a
+ * bolder brush) at a plate-sized capture and the broadest brush: a ~1890px
+ * plate's diagonal at `stroke: 1/20`, scaled by `broad`'s 1.625x, resolves
+ * to ~200 — so that combination, the most demanding one this ceiling is
+ * meant to ever have to admit, still fits. `impasto`'s own `stroke: 1/25`
+ * is comfortably inside that, but is the first shipped look whose resolved
+ * length reaches anywhere near it: on a real (device-pixel-ratio-scaled)
+ * capture at `medium`, `resolveBrush` alone resolves past 100px, and at a
+ * *smaller* ceiling every brush size collided on the same capped mark —
+ * reported honestly by the fix below, but a real regression in what
+ * `brush_size` is supposed to do, caught only by rendering at this
+ * project's own real test frame size rather than a synthetic one.
+ *
+ * Both `painterly.ts` (the uniform the march's own taper reads) and
+ * `dispatch.ts` (the `stroke_px` a caller is told) clamp to this same
+ * number, so a look that outgrows it even at this size is reported
+ * honestly rather than describing a mark longer than the compiled loop can
+ * ever draw — this project's own most-repeated failure shape, a reply that
+ * changes and a picture that does not. */
+export const MAX_STROKE_STEPS = 200;
+
 export function resolveBrush(
   width: number,
   height: number,

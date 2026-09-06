@@ -398,7 +398,11 @@ which cannot rotate hue because hue is not one of its terms. It pairs with
 `lighting(rig="standard")` for the default reading, or with
 `lighting(rig="flat", ambient=1.3)` for a flatter, sketch-like variant —
 confirmed across several palettes rather than the one it was picked on,
-though neither pairing is built into a preset yet.
+though neither pairing is built into a preset yet. **Its tile above is
+still under `painting`'s own studio rig and dark ground, on purpose** —
+the figure holds one scene across all four tiles so the comparison is
+about the paint, not the light, and `standard` reads meaningfully brighter
+than what is shown here.
 
 A look sets how the paint behaves; the ribbon's colours are a separate colour
 theme, so `color("poster")` with `brushwork(look="chiaroscuro")` is still a

@@ -104,4 +104,33 @@ describe("impasto's hue-preserving chroma boost", () => {
       'hsl.y = clamp(hsl.y * (1.0 + uChromaBoost), 0.0, 1.0);'
     );
   });
+
+  it('is also the conversion the shader is running, not just the call site', () => {
+    // The call site above is two lines; the conversion it calls is the part
+    // that actually has room for a wrong branch boundary, a transposed
+    // r/g/b, or a sign flip to hide in — none of which would touch the two
+    // lines the test above checks. Every branch of `rgb2hsl`, `hueToRgb` and
+    // `hsl2rgb` that decides *which* value comes back, quoted verbatim.
+    for (const line of [
+      // rgb2hsl: which channel is max decides the hue branch, and each
+      // branch's own algebra decides where in the wheel it lands.
+      'if (maxc == c.r) {',
+      'h = mod((c.g - c.b) / d, 6.0);',
+      '} else if (maxc == c.g) {',
+      'h = (c.b - c.r) / d + 2.0;',
+      'h = (c.r - c.g) / d + 4.0;',
+      's = d / (1.0 - abs(2.0 * l - 1.0));',
+      // hueToRgb: the four-way split a hue is reconstructed through.
+      'if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;',
+      'if (t < 0.5) return q;',
+      'if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;',
+      // hsl2rgb: the p/q pair every hueToRgb call above is built from.
+      'float q = l < 0.5 ? l * (1.0 + s) : l + s - l * s;',
+      'float p = 2.0 * l - q;',
+      'hueToRgb(p, q, h + 1.0 / 3.0)',
+      'hueToRgb(p, q, h - 1.0 / 3.0)',
+    ]) {
+      expect(painterly_brush_frag).toContain(line);
+    }
+  });
 });

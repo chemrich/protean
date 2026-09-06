@@ -851,11 +851,18 @@ async def painted_impasto() -> dict[str, Any]:
     distinguishing them. Impasto's mechanism is continuous like
     chiaroscuro's — a stroke, not a dab lattice — so this mirrors `painted`
     directly rather than `painted_divisionist`.
+
+    `_ribbon()` sets up `studio`, the rig `chiaroscuro` was built for —
+    `standard` is the rig this look was actually bracketed and shipped
+    against, so the switch below is not cosmetic: without it, every
+    mechanism claim below would be checked under the one rig this look's
+    own docs say reads worse on it, never the one it is meant to ship with.
     """
     frames: dict[str, Any] = {}
     async with viewer_session(FIXTURE) as session:
         await _widen(session)
         await _ribbon(session)
+        await session.request("lighting", {"rig": "standard"})
 
         frames["plain"] = await _capture(session)
         frames["plain_canvas"] = await _canvas(session)
