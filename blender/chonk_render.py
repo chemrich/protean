@@ -21,9 +21,15 @@ Rig provenance
 --------------
 The studio (camera solve, cyclorama, ground, key light, world) is copied from
 stylespace_render.py rather than imported -- that script builds its whole panel
-set at import time and cannot be imported. The copies are verbatim so the two
-sheets share a register. Factor them out when a third consumer appears, not
-before: a speculative split would need re-rendering to re-verify.
+set at import time and cannot be imported.
+
+The copies are CLOSE, NOT VERBATIM, and the difference matters to anyone editing
+both: the studio and the signature functions were carried over, while the
+material, the subject handle and the panel loop differ per sheet, and this file
+fixed a menu-socket bug in the signature that the original had. Expect to make
+the same edit twice. The refactor is still deferred because each script is
+verified by rendering, and a shared module would put every sheet back in the
+queue to re-verify at once.
 
 Guards, and why each one is here
 --------------------------------
@@ -624,8 +630,11 @@ def _tree_hash(nt):
         for s in n.inputs:
             try:
                 dv = s.default_value
+                # str before __len__: see the note in sig_geometry.
                 dv = (
-                    tuple(round(float(x), 5) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 5) for x in dv)
                     if hasattr(dv, "__len__")
                     else round(float(dv), 5)
                     if isinstance(dv, (int, float))
@@ -681,8 +690,14 @@ def sig_geometry():
                 continue
             try:
                 dv = s.default_value
+                # A MENU socket's default_value is a str, and str has
+                # __len__ — so the vector branch used to run first, float("C")
+                # raised, the bare except swallowed it, and EVERY menu socket
+                # hashed to the same None. Test str before __len__.
                 dv = (
-                    tuple(round(float(x), 4) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 4) for x in dv)
                     if hasattr(dv, "__len__")
                     else round(float(dv), 4)
                     if isinstance(dv, (int, float))
@@ -714,6 +729,8 @@ def snapshot_state():
 
 RESULTS = []
 CARRIER = None
+# geometry signature -> the panel id that first produced it
+SEEN_GEOM = {}
 
 
 def carrier_studio():
@@ -753,6 +770,17 @@ def render(pid, name, varies, build, note):
         bpy.context.view_layer.update()
 
         st = snapshot_state()
+        # A panel whose geometry is bit-identical to an earlier panel is a
+        # panel that shows nothing new. Without this, a socket set to its own
+        # default renders a duplicate and reports success.
+        gkey = hashlib.sha256(repr(st["geometry"]).encode()).hexdigest()[:16]
+        rec["geometry_sig"] = gkey
+        if gkey in SEEN_GEOM:
+            rec["violations"].append(f"IDENTICAL GEOMETRY to {SEEN_GEOM[gkey]}")
+            log(f"[discipline] !! identical geometry to panel {SEEN_GEOM[gkey]}")
+        else:
+            SEEN_GEOM[gkey] = pid
+
         if CARRIER is None:
             CARRIER = st
             log("[discipline] carrier established")
@@ -982,6 +1010,14 @@ else:
     )
 
 log(f"[plan] {len(PANELS)} panels -> {OUT}")
+
+if ONLY:
+    _ids = {p[0] for p in PANELS}
+    _unknown = ONLY - _ids
+    assert not _unknown, (
+        f"--only names panels that do not exist: {sorted(_unknown)}; "
+        f"this sheet has {sorted(_ids)}"
+    )
 
 for pid, name, varies, build, note in PANELS:
     render(pid, name, varies, build, note)

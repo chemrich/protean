@@ -562,9 +562,32 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
 
     Left deliberately unanswered: whether the Blender path should ever read
     protean's molecule state — selections, handles, computed channels like
-    conservation or RMSF. It cannot today, and until it can, this path makes
-    pictures rather than data-bearing ones. That is the next real decision and
+    conservation or RMSF. It cannot today. That is the next real decision and
     it should be taken on its own, not smuggled in with a directory layout.
+
+    **Amended.** This decision originally added "and until it can, this path
+    makes pictures rather than data-bearing ones." That half is now false, and
+    the distinction it missed is worth keeping. Molecular Nodes writes about
+    thirty per-atom attributes onto the mesh when a structure loads — b_factor,
+    occupancy, charge, sec_struct, chain_id, lipophobicity among them — and
+    every thickness, width and radius socket on Style Cartoon and Style Ribbon
+    accepts a per-point field, so geometry can already carry a measurement that
+    arrives *with the structure*. `section_render.py` does exactly that: a
+    ribbon whose thickness follows an AlphaFold model's own pLDDT confidence,
+    thick across the folded domain and thin along the disordered tails, against
+    a flat-mean and a shuffled control.
+
+    What remains unanswered is narrower and unchanged: channels protean
+    *computes* — conservation, RMSF, SASA, electrostatics — still have no route
+    across. The cheapest honest one needs no bridge at all: protean writes a
+    table of `(chain, residue, value)` and a Blender script joins it on with
+    `Molecule.store_named_attribute()`. The join key is the trap — on the mesh
+    `chain_id` is an integer index, not a letter.
+
+    One measured negative belongs here too, because it closes a door that looks
+    open: Style Surface's `Offset` socket is declared field-capable but silently
+    flattens a field and resets the offset to zero. A data-bound *surface* needs
+    a different mechanism than a data-bound ribbon.
 
     Not in CI. CI runs on GPU-less standard runners and the existing browser
     job's cost is already a settled, documented fight. Verification here is by

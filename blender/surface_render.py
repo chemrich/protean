@@ -529,8 +529,11 @@ def _tree_hash(nt):
         for s in n.inputs:
             try:
                 dv = s.default_value
+                # str before __len__: see the note in sig_geometry.
                 dv = (
-                    tuple(round(float(x), 5) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 5) for x in dv)
                     if hasattr(dv, "__len__")
                     else round(float(dv), 5)
                     if isinstance(dv, (int, float))
@@ -586,8 +589,14 @@ def sig_geometry():
                 continue
             try:
                 dv = s.default_value
+                # A MENU socket's default_value is a str, and str has
+                # __len__ — so the vector branch used to run first, float("C")
+                # raised, the bare except swallowed it, and EVERY menu socket
+                # hashed to the same None. Test str before __len__.
                 dv = (
-                    tuple(round(float(x), 4) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 4) for x in dv)
                     if hasattr(dv, "__len__")
                     else round(float(dv), 4)
                     if isinstance(dv, (int, float))
@@ -619,6 +628,8 @@ def snapshot_state():
 
 RESULTS = []
 CARRIER = None
+# geometry signature -> the panel id that first produced it
+SEEN_GEOM = {}
 
 
 def carrier_studio():
@@ -658,6 +669,17 @@ def render(pid, name, varies, build, note):
         bpy.context.view_layer.update()
 
         st = snapshot_state()
+        # A panel whose geometry is bit-identical to an earlier panel is a
+        # panel that shows nothing new. Without this, a socket set to its own
+        # default renders a duplicate and reports success.
+        gkey = hashlib.sha256(repr(st["geometry"]).encode()).hexdigest()[:16]
+        rec["geometry_sig"] = gkey
+        if gkey in SEEN_GEOM:
+            rec["violations"].append(f"IDENTICAL GEOMETRY to {SEEN_GEOM[gkey]}")
+            log(f"[discipline] !! identical geometry to panel {SEEN_GEOM[gkey]}")
+        else:
+            SEEN_GEOM[gkey] = pid
+
         if CARRIER is None:
             CARRIER = st
             log("[discipline] carrier established")
@@ -847,25 +869,24 @@ PANELS = [
     ),
 ]
 
-# One fused envelope vs one surface per chain. Only meaningful with >1 chain,
-# and the control has to be verified fused rather than assumed -- at rest the
-# two look nearly identical.
+# One fused envelope against the default, which is ALREADY per-chain.
+#
+# This started as a pair, A19 "per-chain" and A20 "fused". A19 set Separate By
+# to "chain_id" -- its own shipped default -- so it was a no-op and rendered
+# bit-identically to A01: same 39,046 verts, same area 103.1. It reported
+# success and told us nothing. The default IS the per-chain surface, so the
+# only panel worth rendering here is the fused one, and its control is A01.
+# The duplicate-geometry guard in render() now catches this class outright.
 if N_CHAINS > 1:
     PANELS += [
         (
             "A19",
-            "per-chain",
+            "fused-envelope",
             G,
-            lambda: [setp(ST_SURF, "Separate By", "chain_id")],
-            f"one surface per chain ({N_CHAINS} chains) -- separable, so chains "
-            f"can take separate materials or be pulled apart",
-        ),
-        (
-            "A20",
-            "fused",
-            G,
-            lambda: [*s_set(separate_by="Group ID"), setp(ST_SURF, "Group ID", 0)],
-            "one fused envelope over every chain -- the control for A19",
+            lambda: s_set(separate_by="Group ID"),
+            f"one fused envelope over all {N_CHAINS} chains, against A01's "
+            f"per-chain default -- separate surfaces can take separate "
+            f"materials or be pulled apart, a fused one cannot",
         ),
     ]
 else:
@@ -875,6 +896,14 @@ else:
     )
 
 log(f"[plan] {len(PANELS)} panels -> {OUT}")
+
+if ONLY:
+    _ids = {p[0] for p in PANELS}
+    _unknown = ONLY - _ids
+    assert not _unknown, (
+        f"--only names panels that do not exist: {sorted(_unknown)}; "
+        f"this sheet has {sorted(_ids)}"
+    )
 
 for pid, name, varies, build, note in PANELS:
     render(pid, name, varies, build, note)

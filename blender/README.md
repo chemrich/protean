@@ -19,6 +19,17 @@ length as a subprocess rather than importing it — keeps the core's licensing
 uncomplicated. `docs/soft-matter-plan.md` reached the same conclusion
 independently before any of this was written.
 
+Two details worth stating exactly, because "nothing here ships" is easy to read
+more broadly than it is meant. The **wheel** contains only `src/protean_mcp`;
+verified by building it, and by building a wheel *from* the sdist, both of which
+have zero `blender/` entries. So nothing here is ever installed or importable.
+The **sdist** is a source snapshot of the repository and does contain these
+files, as does the public repository itself. They sit under the root MIT
+`LICENSE` while importing a GPL-3.0 add-on and running inside GPL Blender. No
+Molecular Nodes or Blender code is vendored or copied here — these are original
+scripts that call an API — but if you redistribute them, that is the
+relationship to be aware of.
+
 **Python version.** Molecular Nodes and the `bpy` wheel are pinned to Python
 3.13 exactly. protean supports 3.11 and up. These cannot share an interpreter,
 which is fine, because they do not need to: Blender brings its own.
@@ -81,15 +92,30 @@ Facts that cost time to discover, recorded so nobody rediscovers them:
 | `measure_stylespace.py` | Measurement instrument for the style-space panels. |
 | `measure_materials.py` | Measurement instrument for the material sheet. |
 | `probe_env.py` | Environment probe used to check what the installed Molecular Nodes actually exposes, rather than trusting recalled API shapes. |
+| `chonk_render.py` | Sheet B: Style Cartoon thickened and reshaped. Two ladders — everything scaled together, and thickness raised with width pinned, which is the one that turns a ribbon into a bar. |
+| `surface_render.py` | Sheet A: six kinds of SDF surface — dilated, eroded, melted, filleted, inflated, and fused instead of per-chain. |
+| `section_render.py` | Sheets C and D: the backbone swept with arbitrary cross-sections, and ribbon thickness driven by a per-residue measurement against both a flat and a shuffled control. |
 
-Run any of them as:
+Run them as:
 
 ```
-blender --background --python blender/stylespace_render.py -- --help
+blender --background --python blender/chonk_render.py -- --subject 4HHB
+blender --background --python blender/surface_render.py -- --subject 1HSG
+blender --background --python blender/section_render.py -- --mode sections --subject 4HHB
+blender --background --python blender/section_render.py -- --mode databound --subject P04637 --plddt
 ```
 
-Output goes to a directory you pass on the command line; render output is
-gitignored.
+There is no `--help`. Each script parses only its own flags and ignores
+anything else, so a typo in a flag name is silent — but a typo in a panel id
+passed to `--only` is not, because the id is checked against the sheet.
+
+The three sheet scripts take `--subject`, `--samples`, `--only` and `--out`.
+`stylespace_render.py` and `materials_render.py` take `--only`, `--samples`,
+`--out` (and `--tag` for the latter). Output defaults under `research/`, which
+is gitignored in full; pass `--out` to put it anywhere else.
+
+**Run Blender serially.** Two concurrent `--background` processes once broke
+biotite's import through a bytecode-cache race.
 
 ## The discipline harness
 
@@ -131,10 +157,25 @@ signal to stop.
 
 The rig, the materials and the harness are working scratch code, landed as-is
 rather than refactored, because they have been verified by rendering and a
-speculative split would need re-rendering to re-verify. The rig and material
-definitions currently live inside the two render scripts and have not been
-factored into importable modules. That is deliberate deferral, not an oversight;
-do it when there is a second consumer that needs them.
+speculative split would need re-rendering to re-verify.
+
+**The rig is now copied into five scripts rather than imported, and that is a
+debt with a due date.** The original note here said to factor it out "when
+there is a second consumer"; three more arrived at once. The copies are close
+but not identical — the studio, the camera solve and the signature functions
+were carried over, while the material, the subject handle and the panel loop
+differ per sheet, and the newer scripts fixed a menu-socket bug in the
+signature that the older ones had. Anyone touching two of these files should
+expect to make the same edit twice. The refactor was still deferred because
+each script has been verified by rendering, and a shared module would put all
+five sheets back in the queue to re-verify at once.
+
+One consequence worth knowing before you copy the rig a sixth time: the
+discipline harness declares `geometry` varied on every panel of every sheet,
+so the geometry signature guards nothing between a panel and the carrier. What
+it does guard is panel-against-panel — a panel whose evaluated geometry is
+bit-identical to an earlier one is reported as a violation, which is how a
+"per-chain" panel that merely set a socket to its own default was caught.
 
 Nothing here is wired to protean. There is no MCP tool, no bridge, and no
 import in either direction.

@@ -9,22 +9,42 @@ Steps 3 and 4 of the two-direction plan. Two modes:
     --mode databound   ribbon thickness driven by a per-residue measurement
 
     blender --background --python blender/section_render.py -- --mode sections --subject 4HHB
-    blender --background --python blender/section_render.py -- --mode databound --subject P04637
+    blender --background --python blender/section_render.py -- --mode databound --subject P04637 --plddt
+
+--plddt is not cosmetic. b_factor holds crystallographic B on an experimental
+structure and pLDDT confidence on a predicted one, and NOTHING IN THE FILE
+DISTINGUISHES THEM -- 4HHB's B runs 4.91..80.12, which sails through any range
+test for pLDDT and was duly captioned as prediction confidence once. So the
+meaning is declared on the command line rather than guessed, and every Sheet D
+caption takes its wording from it.
 
 NEVER pass --factory-startup: it disables the MolecularNodes extension.
 
 The mechanism, measured before this was written
 ------------------------------------------------
 Atoms to CA Curves -> Curve to Mesh(Profile Curve) sweeps any closed curve
-along the backbone. Measured on 4HHB's 574 alpha carbons: a 2.0x0.6
-quadrilateral gives area 1,256.6, a 4.0x4.0 one gives 11,938.1, a six-point
-star 8,986.6, a unit circle 2,394.4.
+along the backbone: square bar, hexagonal rod, star, tape, anything closed.
+
+The profile is in the CURVE's space, where the whole 4HHB tetramer spans about
+6.5 units -- roughly ten angstroms per unit. Style Cartoon's own sockets are
+NOT in that space (its helix_width of 2.2 is angstrom-scale). Assuming they
+matched put every profile about 20x too large, so residues 0.38 units apart
+overlapped violently and every swept panel rendered as a ball of shards -- with
+entirely plausible vertex counts and surface areas throughout. A ribbon a few
+angstroms across is r ~ 0.10-0.20 here.
+
+Atoms to CA Curves also returns a POLYLINE, one straight segment per residue.
+Swept directly it is an angular wireframe, which is faithful to the data and
+quite unlike a ribbon diagram; Set Spline Type + Resample Curve give the smooth
+rod that "ribbon" implies. Both are on the sheet.
 
 A section that VARIES along the chain goes through Curve to Mesh > Scale.
-It does NOT go through Set Curve Radius, which is a no-op in this chain --
-a hard-coded radius of 2.0 left the result bit-identical at 2394.4445. That
-cost a probe to find and is exactly the kind of thing that renders a uniform
-tube while looking deliberate.
+It does NOT go through Set Curve Radius, which is a no-op in this chain: a
+hard-coded radius of 2.0 left the swept mesh bit-identical to the untouched
+one, down to the last digit of its surface area. (That probe ran at the old
+oversized profile scale, so its absolute numbers do not correspond to any panel
+here; the no-op is what transfers.) Exactly the kind of thing that renders a
+uniform tube while looking deliberate.
 
 Controls, which are the point of Sheet D
 ----------------------------------------
@@ -177,7 +197,12 @@ log(f"[subject] {SUBJECT} atoms={N_ATOMS}")
 
 AG = MOL.universe.select_atoms("protein")
 assert AG.n_atoms > 0, "selection 'protein' matched zero atoms"
+assert len(MOL.position) == N_ATOMS, "vertex/atom mapping is not 1:1"
 N_CA = int(MOL.named_attribute("is_alpha_carbon").sum())
+assert N_CA > 0, (
+    f"{SUBJECT} has no alpha carbons -- Atoms to CA Curves would return an "
+    f"empty curve and every swept panel would be blank"
+)
 log(f"[selection] protein -> {AG.n_atoms} atoms, {N_CA} alpha carbons")
 
 # ---- the data channel, for --mode databound -------------------------------
@@ -705,8 +730,11 @@ def _tree_hash(nt):
         for s in n.inputs:
             try:
                 dv = s.default_value
+                # str before __len__: see the note in sig_geometry.
                 dv = (
-                    tuple(round(float(x), 5) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 5) for x in dv)
                     if hasattr(dv, "__len__")
                     else round(float(dv), 5)
                     if isinstance(dv, (int, float))
@@ -768,6 +796,8 @@ def snapshot_state():
 
 RESULTS = []
 CARRIER = None
+# geometry signature -> the panel id that first produced it
+SEEN_GEOM = {}
 
 
 def carrier_studio():
@@ -804,6 +834,17 @@ def render(pid, name, build, note):
         build()
         bpy.context.view_layer.update()
         st = snapshot_state()
+        # A panel whose geometry is bit-identical to an earlier panel is a
+        # panel that shows nothing new. Without this, a socket set to its own
+        # default renders a duplicate and reports success.
+        gkey = hashlib.sha256(repr(st["geometry"]).encode()).hexdigest()[:16]
+        rec["geometry_sig"] = gkey
+        if gkey in SEEN_GEOM:
+            rec["violations"].append(f"IDENTICAL GEOMETRY to {SEEN_GEOM[gkey]}")
+            log(f"[discipline] !! identical geometry to panel {SEEN_GEOM[gkey]}")
+        else:
+            SEEN_GEOM[gkey] = pid
+
         if CARRIER is None:
             CARRIER = st
             log("[discipline] carrier established")
@@ -934,30 +975,61 @@ if MODE == "sections":
     ]
 else:
     # --- the data channel, and its two controls ---------------------------
+    #
+    # All three fields are built by the SAME per-residue aggregation and differ
+    # ONLY in assignment. That matters: an earlier version drove the panel with
+    # the raw per-atom field but shuffled a per-residue MAXIMUM, so the driven
+    # and shuffled panels differed in aggregation as well as in assignment and
+    # the control was not a control. Averaging within a residue first makes the
+    # comparison honest.
     LO, HI = 0.5, 4.0
-    driven = norm_to(LO, HI)
-    flat = np.full(N_ATOMS, float(driven.mean()), dtype=np.float32)
     rng = np.random.default_rng(SEED)
-    # Shuffle by RESIDUE, not by atom: permuting atoms within a residue would
-    # leave the per-residue mean almost unchanged and understate the control.
     res_key = MOL.named_attribute("chain_id").astype(
         np.int64
     ) * 100000 + MOL.named_attribute("res_id").astype(np.int64)
     uniq, inv = np.unique(res_key, return_inverse=True)
-    per_res = np.zeros(len(uniq), dtype=np.float32)
-    np.maximum.at(per_res, inv, driven)
-    shuffled = per_res[rng.permutation(len(uniq))][inv].astype(np.float32)
+
+    _sum = np.zeros(len(uniq), dtype=np.float64)
+    np.add.at(_sum, inv, norm_to(LO, HI).astype(np.float64))
+    per_res = (_sum / np.bincount(inv, minlength=len(uniq))).astype(np.float32)
+
+    driven = per_res[inv].astype(np.float32)
+    flat = np.full(len(driven), float(driven.mean()), dtype=np.float32)
+    # norm_to(lo, hi, invert=True) is exactly lo + hi - norm_to(lo, hi), so the
+    # inverted field stays on the same per-residue aggregation as the rest.
+    inverted = (LO + HI - per_res)[inv].astype(np.float32)
+
+    # The shuffle preserves the per-RESIDUE distribution exactly -- it is a
+    # permutation of per_res -- but NOT the per-atom one, because residues hold
+    # different numbers of atoms and each residue's value is broadcast to all
+    # of them. Glycine carries its value on ~7 atoms and tryptophan on ~24, so
+    # permuting values across residues reweights the per-atom histogram.
+    #
+    # An earlier version of this assert compared per-atom medians and duly
+    # fired: it was asserting something false. The claim being made is about
+    # residues, so it is checked on the residue-level array.
+    _perm = rng.permutation(len(uniq))
+    shuffled = per_res[_perm][inv].astype(np.float32)
+    assert np.array_equal(np.sort(per_res), np.sort(per_res[_perm])), (
+        "shuffled must be a permutation of the driven per-residue values -- "
+        "same multiset, different assignment"
+    )
+    log(
+        f"[data] shuffle preserves the per-residue distribution exactly; the "
+        f"per-atom mean shifts "
+        f"{abs(float(driven.mean()) - float(shuffled.mean())):.4f} because "
+        f"residues differ in atom count"
+    )
     log(
         f"[data] {len(uniq)} residues; driven {driven.min():.2f}..{driven.max():.2f} "
-        f"mean {driven.mean():.3f}; shuffled mean {shuffled.mean():.3f}"
+        f"mean {driven.mean():.3f}; shuffled mean {shuffled.mean():.3f} "
+        f"(same values, permuted across residues)"
     )
 
     MOL.store_named_attribute(driven, "bf_driven", "FLOAT", "POINT")
     MOL.store_named_attribute(flat, "bf_flat", "FLOAT", "POINT")
     MOL.store_named_attribute(shuffled, "bf_shuffled", "FLOAT", "POINT")
-    MOL.store_named_attribute(
-        norm_to(LO, HI, invert=True), "bf_inverted", "FLOAT", "POINT"
-    )
+    MOL.store_named_attribute(inverted, "bf_inverted", "FLOAT", "POINT")
     # Sweep scale wants a smaller range than ribbon thickness.
     for nm, arr in (
         ("sw_driven", norm_to(0.4, 2.4)),
@@ -1043,6 +1115,14 @@ else:
     ]
 
 log(f"[plan] mode={MODE} {len(PANELS)} panels -> {OUT}")
+if ONLY:
+    _ids = {p[0] for p in PANELS}
+    _unknown = ONLY - _ids
+    assert not _unknown, (
+        f"--only names panels that do not exist: {sorted(_unknown)}; "
+        f"this sheet has {sorted(_ids)}"
+    )
+
 for pid, name, build, note in PANELS:
     render(pid, name, build, note)
 
@@ -1073,7 +1153,7 @@ man = {
     "resolution": list(RES),
     "seed": SEED,
     "b_factor_range": [BF_LO, BF_HI],
-    "looks_like_plddt": IS_PLDDT,
+    "plddt_declared": IS_PLDDT,
     "panels": RESULTS,
 }
 with open(os.path.join(OUT, "manifest.json"), "w") as f:

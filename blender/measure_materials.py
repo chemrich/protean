@@ -12,12 +12,20 @@ measurement, it is a decoration.
 import json
 import os
 
+# Where materials_render.py writes by default. Override with the first
+# positional argument. This was an absolute path into one machine's agent
+# scratchpad, carrying a username and a long-dead session id.
+import sys
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 OUT = (
-    "/private/tmp/claude-501/-Users-charlie-code-protean/"
-    "b549de8d-56f4-456e-9de7-823d312c525f/scratchpad/materials"
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "research", "renders", "materials"
+    )
 )
 
 # ------------------------------------------------------------------ manifests

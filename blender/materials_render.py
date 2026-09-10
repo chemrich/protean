@@ -35,6 +35,7 @@ argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
 ONLY = None
 SAMPLES = 64
 TAG = ""
+BASE = None
 for i, a in enumerate(argv):
     if a == "--only":
         ONLY = set(argv[i + 1].split(","))
@@ -42,11 +43,14 @@ for i, a in enumerate(argv):
         SAMPLES = int(argv[i + 1])
     if a == "--tag":
         TAG = argv[i + 1]
+    if a == "--out":
+        BASE = argv[i + 1]
 
-BASE = (
-    "/private/tmp/claude-501/-Users-charlie-code-protean/"
-    "b549de8d-56f4-456e-9de7-823d312c525f/scratchpad"
-)
+# Default under blender/research/, which is gitignored as a whole directory.
+# This used to be an absolute path into one machine's agent scratchpad,
+# carrying a username and a long-dead session id; it worked nowhere else.
+if BASE is None:
+    BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "research", "renders")
 OUT = os.path.join(BASE, "materials")
 PREV = os.path.join(BASE, "stylespace")
 os.makedirs(OUT, exist_ok=True)
@@ -1543,7 +1547,9 @@ def _tree_hash(nt):
             try:
                 dv = s.default_value
                 dv = (
-                    tuple(round(float(x), 5) for x in dv)
+                    dv
+                    if isinstance(dv, str)
+                    else tuple(round(float(x), 5) for x in dv)
                     if hasattr(dv, "__len__")
                     else (
                         round(float(dv), 5) if isinstance(dv, (int, float)) else str(dv)
@@ -1667,7 +1673,9 @@ def sig_geometry():
                 try:
                     dv = s.default_value
                     dv = (
-                        tuple(round(float(x), 4) for x in dv)
+                        dv
+                        if isinstance(dv, str)
+                        else tuple(round(float(x), 4) for x in dv)
                         if hasattr(dv, "__len__")
                         else (
                             round(float(dv), 4)
