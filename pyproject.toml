@@ -98,6 +98,21 @@ ignore = [
 # debugging port, broad excepts that report a refusal rather than crashing a
 # twenty-figure run — and its thresholds are one-off framing constants that
 # naming would not clarify.
+# The Blender scripts run inside Blender's own Python, not protean's, and are
+# excluded from the package entirely. They are written the way a bpy script is
+# written: module-level handles on the scene and the loaded molecule, because
+# there is exactly one of each and threading them through every call would
+# obscure the scene-building; long builder signatures, because a material really
+# does take roughness, coat, colour and a mix target; and a great many bare
+# numbers, which are one-off framing, lighting and threshold constants that
+# naming would not clarify. PT018 is a pytest rule catching the harness's
+# preflight assertions, which are not tests. The genuine findings here — an
+# unused local, a zip that could truncate silently, a dead comprehension — were
+# fixed rather than ignored.
+"blender/*" = [
+    "PLR2004", "PLR0913", "PLR0915", "PLR0917", "PLW0603",
+    "PT018", "SIM105", "SIM115", "E501", "PLC0206",
+]
 "docs/figures/*" = [
     "ASYNC220", "ASYNC221", "PLW1510", "PLW0603", "BLE001", "PLR2004",
     "PLC0415", "PLR0913", "PLR0917", "PLR0402", "T201", "INP001",

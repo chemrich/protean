@@ -526,3 +526,71 @@ README (installation for Claude Code / Desktop / uvx, tool tables, example promp
     Handle transport is unaffected — every conformer row carries its own
     `atom_site.id` — and that is asserted against a real viewer by atom
     identity rather than assumed, because assuming it is what item 7 punished.
+
+## Decisions (2026-09-07) — the Blender path, reopened
+
+17. **`blender/` is a top-level directory, on the `viewer/` pattern.**
+    Supersedes the sentence in Phase 4 reading *"The Blender bridge is dropped
+    — proteinblend-mcp does it better and nothing here needs it."*
+
+    Both halves of that reason have expired. `proteinblend-mcp` is abandoned
+    and is being deleted, so the work it was deferred to has no home. And
+    "nothing here needs it" was true of Phase 4, which was about surfacing
+    knobs Mol\* already had; it is not true of the thing now being asked for,
+    which is imagery at journal-cover quality rather than a better screenshot.
+
+    What settled it was rendering rather than arguing. Four rounds of test
+    renders established that Cycles reaches a register the viewer's path
+    tracer does not — real subsurface scattering, transmission that survives
+    contact with the subject, instanced geometry that breaks a silhouette, and
+    material variation driven by ambient occlusion that is already being
+    computed. The rejected first attempts failed for reasons now understood
+    and recorded: an isolated subject on a flat backdrop gives path tracing
+    nothing to do that a rasteriser was not already doing, and polished
+    transmissive glass destroys a molecule's legibility at any chroma, while
+    frosted or absorbing glass does not.
+
+    **The directory is not a bridge, and that distinction is the decision.**
+    `pyproject.toml` packages only `src/protean_mcp`, so nothing in `blender/`
+    ships with the package, nothing imports it, and no MCP tool reaches it.
+    Molecular Nodes is GPL-3.0 and protean is MIT; driving Blender at arm's
+    length as a subprocess, from code outside the packaged tree, keeps that
+    boundary uncomplicated — the same conclusion `docs/soft-matter-plan.md`
+    reached independently. Molecular Nodes also pins Python 3.13 exactly where
+    protean supports 3.11 and up, and Blender brings its own interpreter, so
+    the two never have to agree.
+
+    Left deliberately unanswered: whether the Blender path should ever read
+    protean's molecule state — selections, handles, computed channels like
+    conservation or RMSF. It cannot today. That is the next real decision and
+    it should be taken on its own, not smuggled in with a directory layout.
+
+    **Amended.** This decision originally added "and until it can, this path
+    makes pictures rather than data-bearing ones." That half is now false, and
+    the distinction it missed is worth keeping. Molecular Nodes writes about
+    thirty per-atom attributes onto the mesh when a structure loads — b_factor,
+    occupancy, charge, sec_struct, chain_id, lipophobicity among them — and
+    every thickness, width and radius socket on Style Cartoon and Style Ribbon
+    accepts a per-point field, so geometry can already carry a measurement that
+    arrives *with the structure*. `section_render.py` does exactly that: a
+    ribbon whose thickness follows an AlphaFold model's own pLDDT confidence,
+    thick across the folded domain and thin along the disordered tails, against
+    a flat-mean and a shuffled control.
+
+    What remains unanswered is narrower and unchanged: channels protean
+    *computes* — conservation, RMSF, SASA, electrostatics — still have no route
+    across. The cheapest honest one needs no bridge at all: protean writes a
+    table of `(chain, residue, value)` and a Blender script joins it on with
+    `Molecule.store_named_attribute()`. The join key is the trap — on the mesh
+    `chain_id` is an integer index, not a letter.
+
+    One measured negative belongs here too, because it closes a door that looks
+    open: Style Surface's `Offset` socket is declared field-capable but silently
+    flattens a field and resets the offset to zero. A data-bound *surface* needs
+    a different mechanism than a data-bound ribbon.
+
+    Not in CI. CI runs on GPU-less standard runners and the existing browser
+    job's cost is already a settled, documented fight. Verification here is by
+    rendering and looking, with the discipline harness described in
+    `blender/README.md` asserting that any two panels differ only in the
+    dimension they declare.

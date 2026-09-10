@@ -27,5 +27,21 @@ viewer/dist
 viewer/public/molstar*
 src/protean_mcp/static
 
+# blender/ runs inside Blender's own Python and writes renders next to itself.
+# Render output is regenerable and large; the rigs and materials are the asset.
+blender/out
+
+# blender/research/ holds working material for the Blender exploration: our own
+# renders, and analysis of published figures. It is NEVER committed. Some of the
+# source material it was derived from is third-party copyrighted artwork, and no
+# copyrighted work or art that is not ours belongs in this repository. Local
+# copies are fine for development; committing them is not.
+blender/research/
+blender/**/*.png
+blender/**/*.jpg
+blender/**/*.blend
+blender/**/*.blend1
+blender/**/*.vdb
+
 # Misc
 .DS_Store
